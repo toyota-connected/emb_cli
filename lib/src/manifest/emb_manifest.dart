@@ -30,10 +30,7 @@ class EmbManifest {
   /// Parse a manifest map. Detects structured vs legacy host-dep schemas
   /// automatically, so both `emb` manifests and legacy `configs/*.json`
   /// documents flow through one path.
-  factory EmbManifest.fromMap(
-    Map<String, dynamic> map, {
-    String? sourcePath,
-  }) {
+  factory EmbManifest.fromMap(Map<String, dynamic> map, {String? sourcePath}) {
     final deps = _parseDeps(map);
     final srcList = (map['src'] ?? map['repos']) as List<dynamic>? ?? const [];
 
@@ -41,10 +38,12 @@ class EmbManifest {
       id: (map['id'] ?? '') as String,
       type: (map['type'] ?? 'app') as String,
       load: (map['load'] ?? true) as bool,
-      supportedArchs:
-          _stringList(map['supported_archs'] ?? map['supportedArchs']),
+      supportedArchs: _stringList(
+        map['supported_archs'] ?? map['supportedArchs'],
+      ),
       supportedHostTypes: _stringList(
-          map['supported_host_types'] ?? map['supportedHostTypes']),
+        map['supported_host_types'] ?? map['supportedHostTypes'],
+      ),
       env: _stringMap(map['env']),
       src: srcList
           .whereType<Map<dynamic, dynamic>>()
@@ -128,6 +127,7 @@ class EmbManifest {
   }
 
   @override
-  String toString() => 'EmbManifest($id, type: $type, '
+  String toString() =>
+      'EmbManifest($id, type: $type, '
       'deps: ${deps.rules.length} rules)';
 }

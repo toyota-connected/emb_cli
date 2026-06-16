@@ -25,8 +25,15 @@ void main() {
     File(p.join(app.path, 'libapp.so.release')).writeAsStringSync('APP');
 
     // Engine half: bundle-release-x86_64/{data/icudtl.dat,lib/libflutter_engine.so}
-    final eng = Directory(p.join(ws.path, '.config', 'flutter_workspace',
-        'flutter-engine', 'bundle-release-x86_64'));
+    final eng = Directory(
+      p.join(
+        ws.path,
+        '.config',
+        'flutter_workspace',
+        'flutter-engine',
+        'bundle-release-x86_64',
+      ),
+    );
     File(p.join(eng.path, 'data', 'icudtl.dat'))
       ..createSync(recursive: true)
       ..writeAsStringSync('ICU');
@@ -51,8 +58,9 @@ void main() {
     expect(result.success, isTrue);
     expect(result.outputDir, out);
     expect(
-      File(p.join(out, 'data', 'flutter_assets', 'fonts', 'MaterialIcons.ttf'))
-          .existsSync(),
+      File(
+        p.join(out, 'data', 'flutter_assets', 'fonts', 'MaterialIcons.ttf'),
+      ).existsSync(),
       isTrue,
     );
     expect(File(p.join(out, 'data', 'icudtl.dat')).existsSync(), isTrue);
@@ -63,8 +71,9 @@ void main() {
     );
     // AOT (release): the JIT kernel is stripped — the app runs from libapp.so.
     expect(
-      File(p.join(out, 'data', 'flutter_assets', 'kernel_blob.bin'))
-          .existsSync(),
+      File(
+        p.join(out, 'data', 'flutter_assets', 'kernel_blob.bin'),
+      ).existsSync(),
       isFalse,
     );
   });
@@ -73,8 +82,15 @@ void main() {
     final s = stageInputs();
     // Remove the AOT lib and stage a debug engine bundle instead.
     File(p.join(s.app.path, 'libapp.so.release')).deleteSync();
-    final eng = Directory(p.join(s.ws.path, '.config', 'flutter_workspace',
-        'flutter-engine', 'bundle-debug-x86_64'));
+    final eng = Directory(
+      p.join(
+        s.ws.path,
+        '.config',
+        'flutter_workspace',
+        'flutter-engine',
+        'bundle-debug-x86_64',
+      ),
+    );
     File(p.join(eng.path, 'data', 'icudtl.dat'))
       ..createSync(recursive: true)
       ..writeAsStringSync('ICU');
@@ -93,13 +109,16 @@ void main() {
     expect(result.success, isTrue);
     // flutter_assets + engine present; libapp.so absent (JIT runs kernel_blob).
     expect(File(p.join(out, 'data', 'icudtl.dat')).existsSync(), isTrue);
-    expect(File(p.join(out, 'lib', 'libflutter_engine.so')).existsSync(),
-        isTrue);
+    expect(
+      File(p.join(out, 'lib', 'libflutter_engine.so')).existsSync(),
+      isTrue,
+    );
     expect(File(p.join(out, 'lib', 'libapp.so')).existsSync(), isFalse);
     // debug keeps kernel_blob.bin (it's what the JIT engine runs).
     expect(
-      File(p.join(out, 'data', 'flutter_assets', 'kernel_blob.bin'))
-          .existsSync(),
+      File(
+        p.join(out, 'data', 'flutter_assets', 'kernel_blob.bin'),
+      ).existsSync(),
       isTrue,
     );
   });
@@ -107,10 +126,23 @@ void main() {
   test('maps arch token to the engine bundle dir (arm64)', () {
     final s = stageInputs();
     // Rename engine dir to the arm64 token to prove arch mapping is used.
-    Directory(p.join(s.ws.path, '.config', 'flutter_workspace',
-            'flutter-engine', 'bundle-release-x86_64'))
-        .renameSync(p.join(s.ws.path, '.config', 'flutter_workspace',
-            'flutter-engine', 'bundle-release-arm64'));
+    Directory(
+      p.join(
+        s.ws.path,
+        '.config',
+        'flutter_workspace',
+        'flutter-engine',
+        'bundle-release-x86_64',
+      ),
+    ).renameSync(
+      p.join(
+        s.ws.path,
+        '.config',
+        'flutter_workspace',
+        'flutter-engine',
+        'bundle-release-arm64',
+      ),
+    );
 
     final result = BundleBuilder(Workspace(s.ws)).assemble(
       appPath: s.app.path,

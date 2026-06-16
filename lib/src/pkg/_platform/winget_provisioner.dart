@@ -84,9 +84,11 @@ class WingetProvisioner implements HostProvisioner {
     final failed = <String>[];
     for (final id in toGet) {
       final tx = client.installPackage(id);
-      final sub = tx.progress.listen((p) => onProgress?.call(
-            ProvisionProgress(label: '$id ${p.label}', percent: p.percent),
-          ));
+      final sub = tx.progress.listen(
+        (p) => onProgress?.call(
+          ProvisionProgress(label: '$id ${p.label}', percent: p.percent),
+        ),
+      );
       try {
         await tx.result;
         installed.add(id);

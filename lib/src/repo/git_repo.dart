@@ -4,17 +4,17 @@ import 'package:emb_cli/src/manifest/source_repo.dart';
 import 'package:path/path.dart' as p;
 
 /// Runs a git subcommand in [workingDirectory]. Injectable for testing.
-typedef GitRunner = Future<ProcessResult> Function(
-  List<String> args, {
-  required String workingDirectory,
-});
+typedef GitRunner =
+    Future<ProcessResult> Function(
+      List<String> args, {
+      required String workingDirectory,
+    });
 
 /// Default [GitRunner] backed by `Process.run`.
 Future<ProcessResult> defaultGitRunner(
   List<String> args, {
   required String workingDirectory,
-}) =>
-    Process.run('git', args, workingDirectory: workingDirectory);
+}) => Process.run('git', args, workingDirectory: workingDirectory);
 
 /// The outcome of syncing a single repository.
 class RepoResult {
@@ -37,19 +37,10 @@ class RepoResult {
 /// otherwise `reset --hard` + `fetch --all` + `pull --ff-only`; then checkout
 /// the requested rev/branch and fetch LFS objects and submodules when present.
 class GitRepo {
-  const GitRepo({
-    required this.uri,
-    this.branch,
-    this.rev,
-    this.destName,
-  });
+  const GitRepo({required this.uri, this.branch, this.rev, this.destName});
 
-  factory GitRepo.fromSource(SourceRepo s) => GitRepo(
-        uri: s.uri,
-        branch: s.branch,
-        rev: s.rev,
-        destName: s.destName,
-      );
+  factory GitRepo.fromSource(SourceRepo s) =>
+      GitRepo(uri: s.uri, branch: s.branch, rev: s.rev, destName: s.destName);
 
   final String uri;
   final String? branch;
@@ -88,11 +79,12 @@ class GitRepo {
         if (Directory(gitFolder).existsSync()) {
           Directory(gitFolder).deleteSync(recursive: true);
         }
-        await _run(
-          runner,
-          ['clone', uri, folderName, if (branch != null) ...['-b', branch!]],
-          base,
-        );
+        await _run(runner, [
+          'clone',
+          uri,
+          folderName,
+          if (branch != null) ...['-b', branch!],
+        ], base);
       }
 
       if (rev != null) {
@@ -102,15 +94,20 @@ class GitRepo {
       }
 
       if (File(p.join(gitFolder, '.gitattributes')).existsSync()) {
-        await _run(runner, ['lfs', 'fetch', '--all'], gitFolder,
-            allowFailure: true);
-      }
-      if (File(p.join(gitFolder, '.gitmodules')).existsSync()) {
         await _run(
           runner,
-          ['submodule', 'update', '--init', '--recursive'],
+          ['lfs', 'fetch', '--all'],
           gitFolder,
+          allowFailure: true,
         );
+      }
+      if (File(p.join(gitFolder, '.gitmodules')).existsSync()) {
+        await _run(runner, [
+          'submodule',
+          'update',
+          '--init',
+          '--recursive',
+        ], gitFolder);
       }
 
       return RepoResult(folderName: folderName, uri: uri, success: true);
@@ -133,7 +130,8 @@ class GitRepo {
     final r = await runner(args, workingDirectory: cwd);
     if (r.exitCode != 0 && !allowFailure) {
       throw _GitException(
-          'git ${args.join(" ")} failed (${r.exitCode}): ${r.stderr}');
+        'git ${args.join(" ")} failed (${r.exitCode}): ${r.stderr}',
+      );
     }
   }
 }

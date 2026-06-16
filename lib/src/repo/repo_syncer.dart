@@ -36,9 +36,7 @@ class RepoSyncer {
     }
 
     final workerCount = concurrency < 1 ? 1 : concurrency;
-    await Future.wait(
-      List.generate(workerCount, (_) => worker()),
-    );
+    await Future.wait(List.generate(workerCount, (_) => worker()));
     return results;
   }
 }

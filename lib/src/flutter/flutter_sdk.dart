@@ -82,20 +82,20 @@ class FlutterSdk {
       '--enable-custom-devices',
       ...switch (h.os) {
         HostOs.linux => [
-            '--enable-linux-desktop',
-            '--no-enable-macos-desktop',
-            '--no-enable-windows-desktop',
-          ],
+          '--enable-linux-desktop',
+          '--no-enable-macos-desktop',
+          '--no-enable-windows-desktop',
+        ],
         HostOs.macos => [
-            '--enable-macos-desktop',
-            '--no-enable-linux-desktop',
-            '--no-enable-windows-desktop',
-          ],
+          '--enable-macos-desktop',
+          '--no-enable-linux-desktop',
+          '--no-enable-windows-desktop',
+        ],
         HostOs.windows => [
-            '--enable-windows-desktop',
-            '--no-enable-linux-desktop',
-            '--no-enable-macos-desktop',
-          ],
+          '--enable-windows-desktop',
+          '--no-enable-linux-desktop',
+          '--no-enable-macos-desktop',
+        ],
       },
     ];
     final config = await Process.run(flutterBin, args);

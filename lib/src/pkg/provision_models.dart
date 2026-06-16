@@ -9,8 +9,10 @@ class ProvisionPlan {
   });
 
   /// An empty plan (nothing to do).
-  static const ProvisionPlan empty =
-      ProvisionPlan(requested: [], toInstall: []);
+  static const ProvisionPlan empty = ProvisionPlan(
+    requested: [],
+    toInstall: [],
+  );
 
   /// The package names that were requested.
   final List<String> requested;

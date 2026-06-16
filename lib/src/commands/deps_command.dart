@@ -19,10 +19,10 @@ class DepsCommand extends Command<int> {
     HostInfo? host,
     HostProvisioner Function(HostInfo host)? provisionerFactory,
     ManifestLoader loader = const ManifestLoader(),
-  })  : _logger = logger,
-        _host = host,
-        _loader = loader,
-        _provisionerFactory = provisionerFactory ?? HostProvisioner.forHost {
+  }) : _logger = logger,
+       _host = host,
+       _loader = loader,
+       _provisionerFactory = provisionerFactory ?? HostProvisioner.forHost {
     argParser
       ..addMultiOption(
         'config',
@@ -33,7 +33,8 @@ class DepsCommand extends Command<int> {
       ..addMultiOption(
         'packages',
         abbr: 'p',
-        help: 'Directory to discover self-describing emb manifests '
+        help:
+            'Directory to discover self-describing emb manifests '
             '(repeatable).',
       )
       ..addFlag(
@@ -76,8 +77,10 @@ class DepsCommand extends Command<int> {
     }
 
     if (manifests.isEmpty) {
-      _logger.warn('No manifests found. '
-          'Pass --config <dir> and/or --packages <dir>.');
+      _logger.warn(
+        'No manifests found. '
+        'Pass --config <dir> and/or --packages <dir>.',
+      );
       return ExitCode.success.code;
     }
 
@@ -86,11 +89,15 @@ class DepsCommand extends Command<int> {
     final coalesced = resolver.coalesce(manifests);
 
     _logger
-      ..info('Host: ${host.os.name}/${host.machineArch} '
-          '(${host.hostType} ${host.versionId})')
-      ..info('Manifests: ${manifests.length}, '
-          'contributing: ${coalesced.byComponent.length}, '
-          'skipped: ${coalesced.skipped.length}')
+      ..info(
+        'Host: ${host.os.name}/${host.machineArch} '
+        '(${host.hostType} ${host.versionId})',
+      )
+      ..info(
+        'Manifests: ${manifests.length}, '
+        'contributing: ${coalesced.byComponent.length}, '
+        'skipped: ${coalesced.skipped.length}',
+      )
       ..info('Coalesced packages: ${coalesced.packages.length}')
       ..detail('Cache key: ${coalesced.contentHash}');
 
@@ -113,21 +120,30 @@ class DepsCommand extends Command<int> {
             plan.additional.isEmpty &&
             plan.unresolved.isEmpty) {
           _logger.info(
-              lightGreen.wrap('All ${coalesced.packages.length} dependencies '
-                  'already satisfied.'));
+            lightGreen.wrap(
+              'All ${coalesced.packages.length} dependencies '
+              'already satisfied.',
+            ),
+          );
           return ExitCode.success.code;
         }
         if (plan.toInstall.isNotEmpty) {
-          _logger.info('Would install (${plan.toInstall.length}): '
-              '${plan.toInstall.join(", ")}');
+          _logger.info(
+            'Would install (${plan.toInstall.length}): '
+            '${plan.toInstall.join(", ")}',
+          );
         }
         if (plan.additional.isNotEmpty) {
-          _logger.info('Additional deps (${plan.additional.length}): '
-              '${plan.additional.join(", ")}');
+          _logger.info(
+            'Additional deps (${plan.additional.length}): '
+            '${plan.additional.join(", ")}',
+          );
         }
         if (plan.unresolved.isNotEmpty) {
-          _logger.warn('Unresolved (${plan.unresolved.length}): '
-              '${plan.unresolved.join(", ")}');
+          _logger.warn(
+            'Unresolved (${plan.unresolved.length}): '
+            '${plan.unresolved.join(", ")}',
+          );
         }
         return ExitCode.success.code;
       }
@@ -135,14 +151,19 @@ class DepsCommand extends Command<int> {
       // ── Filter ──────────────────────────────────────────────────────────
       final filtered = await resolver.filter(coalesced, provisioner);
       if (filtered.isSatisfied) {
-        _logger.info(lightGreen
-            .wrap('All ${coalesced.packages.length} dependencies already '
-                'satisfied.'));
+        _logger.info(
+          lightGreen.wrap(
+            'All ${coalesced.packages.length} dependencies already '
+            'satisfied.',
+          ),
+        );
         return ExitCode.success.code;
       }
 
-      _logger.info('Missing (${filtered.missing.length}): '
-          '${filtered.missing.join(", ")}');
+      _logger.info(
+        'Missing (${filtered.missing.length}): '
+        '${filtered.missing.join(", ")}',
+      );
 
       if (!(args['yes'] as bool)) {
         final proceed = _logger.confirm(
@@ -156,8 +177,9 @@ class DepsCommand extends Command<int> {
       }
 
       // ── Install (single transaction) ────────────────────────────────────
-      final progress =
-          _logger.progress('Installing ${filtered.missing.length} package(s)');
+      final progress = _logger.progress(
+        'Installing ${filtered.missing.length} package(s)',
+      );
       final result = await provisioner.install(
         filtered.missing.toSet(),
         onProgress: (p) => progress.update(

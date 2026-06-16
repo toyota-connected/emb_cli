@@ -62,7 +62,8 @@ class AotBuilder {
     List<String> args, {
     required String workingDirectory,
     Map<String, String>? environment,
-  }) runProcess;
+  })
+  runProcess;
 
   static Future<int> _defaultRun(
     String executable,
@@ -81,10 +82,26 @@ class AotBuilder {
   }
 
   String get _flutterBin => FlutterSdk(workspace).flutterBin;
-  Directory get _hostEngine => Directory(p.join(workspace.flutterDir.path,
-      'bin', 'cache', 'artifacts', 'engine', 'linux-x64'));
-  Directory get _engineCommon => Directory(p.join(workspace.flutterDir.path,
-      'bin', 'cache', 'artifacts', 'engine', 'common'));
+  Directory get _hostEngine => Directory(
+    p.join(
+      workspace.flutterDir.path,
+      'bin',
+      'cache',
+      'artifacts',
+      'engine',
+      'linux-x64',
+    ),
+  );
+  Directory get _engineCommon => Directory(
+    p.join(
+      workspace.flutterDir.path,
+      'bin',
+      'cache',
+      'artifacts',
+      'engine',
+      'common',
+    ),
+  );
   String get _dartSdkBin =>
       p.join(workspace.flutterDir.path, 'bin', 'cache', 'dart-sdk', 'bin');
 
@@ -102,11 +119,11 @@ class AotBuilder {
       'profile' => '--profile',
       _ => '--release',
     };
-    final code = await runProcess(
-      _flutterBin,
-      ['build', 'bundle', flag],
-      workingDirectory: p.absolute(appPath),
-    );
+    final code = await runProcess(_flutterBin, [
+      'build',
+      'bundle',
+      flag,
+    ], workingDirectory: p.absolute(appPath));
     return code == 0;
   }
 
@@ -132,32 +149,39 @@ class AotBuilder {
       ]);
     }
 
-    final newScheme = File(p.join(_hostEngine.path,
-            'frontend_server_aot.dart.snapshot'))
-        .existsSync();
+    final newScheme = File(
+      p.join(_hostEngine.path, 'frontend_server_aot.dart.snapshot'),
+    ).existsSync();
     final targetArch = arch ?? host.machineArch;
     final gen = genSnapshot ?? await _resolveGenSnapshot(targetArch, modes);
 
     final results = <AotModeResult>[];
     for (final mode in modes) {
       onStep?.call('[$mode] flutter build bundle');
-      if (await runProcess(_flutterBin, ['build', 'bundle'],
-              workingDirectory: app) !=
+      if (await runProcess(_flutterBin, [
+            'build',
+            'bundle',
+          ], workingDirectory: app) !=
           0) {
-        results.add(AotModeResult(
-          mode: mode,
-          success: false,
-          message: 'flutter build bundle failed',
-        ));
+        results.add(
+          AotModeResult(
+            mode: mode,
+            success: false,
+            message: 'flutter build bundle failed',
+          ),
+        );
         continue;
       }
 
       final buildDir = _firstBuildDir(app);
       if (buildDir == null) {
-        results.add(AotModeResult(
+        results.add(
+          AotModeResult(
             mode: mode,
             success: false,
-            message: 'No .dart_tool/flutter_build/<hash> dir found'));
+            message: 'No .dart_tool/flutter_build/<hash> dir found',
+          ),
+        );
         continue;
       }
 
@@ -170,44 +194,51 @@ class AotBuilder {
         newScheme: newScheme,
       );
       if (kernelOk != 0) {
-        results.add(AotModeResult(
-            mode: mode, success: false, message: 'kernel snapshot failed'));
+        results.add(
+          AotModeResult(
+            mode: mode,
+            success: false,
+            message: 'kernel snapshot failed',
+          ),
+        );
         continue;
       }
 
       onStep?.call('[$mode] gen_snapshot app-aot-elf');
       if (gen == null) {
         final token = EngineArtifacts.engineArch(targetArch);
-        results.add(AotModeResult(
+        results.add(
+          AotModeResult(
             mode: mode,
             success: false,
-            message: 'No $token gen_snapshot for engine '
+            message:
+                'No $token gen_snapshot for engine '
                 '${workspace.engineCommit() ?? "<unknown>"} — run '
                 '`emb engine --arch $targetArch` (its gen_snapshot must come '
-                'from the same engine as the SDK frontend_server)'));
+                'from the same engine as the SDK frontend_server)',
+          ),
+        );
         continue;
       }
       final out = 'libapp.so.$mode';
       final (genExe, genLead) = _genSnapshotInvocation(gen);
-      final genCode = await runProcess(
-        genExe,
-        [
-          ...genLead,
-          '--deterministic',
-          '--snapshot_kind=app-aot-elf',
-          '--elf=$out',
-          '--strip',
-          '--obfuscate',
-          p.join(buildDir, 'app.dill'),
-        ],
-        workingDirectory: app,
+      final genCode = await runProcess(genExe, [
+        ...genLead,
+        '--deterministic',
+        '--snapshot_kind=app-aot-elf',
+        '--elf=$out',
+        '--strip',
+        '--obfuscate',
+        p.join(buildDir, 'app.dill'),
+      ], workingDirectory: app);
+      results.add(
+        AotModeResult(
+          mode: mode,
+          success: genCode == 0,
+          output: genCode == 0 ? p.join(app, out) : null,
+          message: genCode == 0 ? null : 'gen_snapshot failed',
+        ),
       );
-      results.add(AotModeResult(
-        mode: mode,
-        success: genCode == 0,
-        output: genCode == 0 ? p.join(app, out) : null,
-        message: genCode == 0 ? null : 'gen_snapshot failed',
-      ));
     }
     return AotResult(results);
   }
@@ -228,12 +259,16 @@ class AotBuilder {
           ? 'frontend_server_aot.dart.snapshot'
           : 'frontend_server.dart.snapshot',
     );
-    final depfile = p.join(buildDir,
-        newScheme ? 'kernel_snapshot_program.d' : 'kernel_snapshot.d');
+    final depfile = p.join(
+      buildDir,
+      newScheme ? 'kernel_snapshot_program.d' : 'kernel_snapshot.d',
+    );
 
     final isRelease = mode == 'release';
-    var patched = p.join(_engineCommon.path,
-        isRelease ? 'flutter_patched_sdk_product' : 'flutter_patched_sdk');
+    var patched = p.join(
+      _engineCommon.path,
+      isRelease ? 'flutter_patched_sdk_product' : 'flutter_patched_sdk',
+    );
     if (!Directory(patched).existsSync()) {
       patched = p.join(_engineCommon.path, 'flutter_patched_sdk');
     }
@@ -241,7 +276,8 @@ class AotBuilder {
     final args = <String>[
       '--disable-dart-dev',
       frontend,
-      '--sdk-root', '$patched/',
+      '--sdk-root',
+      '$patched/',
       '--target=flutter',
       '--no-print-incremental-dependencies',
       '-Ddart.vm.profile=${mode == "profile"}',
@@ -251,10 +287,14 @@ class AotBuilder {
       if (mode == 'profile') '--track-widget-creation',
       '--aot',
       '--tfa',
-      '--target-os', 'linux',
-      '--packages', p.join(app, '.dart_tool', 'package_config.json'),
-      '--output-dill', p.join(buildDir, 'app.dill'),
-      '--depfile', depfile,
+      '--target-os',
+      'linux',
+      '--packages',
+      p.join(app, '.dart_tool', 'package_config.json'),
+      '--output-dill',
+      p.join(buildDir, 'app.dill'),
+      '--depfile',
+      depfile,
       ..._sourceFlags(app),
       ..._nativeAssets(buildDir),
       '--verbosity=error',
@@ -265,12 +305,15 @@ class AotBuilder {
 
   /// Optional dart_plugin_registrant source flags (mirrors create_aot.py).
   List<String> _sourceFlags(String app) {
-    final reg = File(p.join(
-        app, '.dart_tool', 'flutter_build', 'dart_plugin_registrant.dart'));
+    final reg = File(
+      p.join(app, '.dart_tool', 'flutter_build', 'dart_plugin_registrant.dart'),
+    );
     if (!reg.existsSync()) return const [];
     return [
-      '--source', 'file://${reg.path}',
-      '--source', 'package:flutter/src/dart_plugin_registrant.dart',
+      '--source',
+      'file://${reg.path}',
+      '--source',
+      'package:flutter/src/dart_plugin_registrant.dart',
       '-Dflutter.dart_plugin_registrant=file://${reg.path}',
     ];
   }
@@ -301,11 +344,13 @@ class AotBuilder {
     final commit = workspace.engineCommit();
     if (commit != null) {
       for (final mode in [...modes, 'release', 'profile', 'debug']) {
-        final dir = Directory(p.join(
-          workspace.platformDir('flutter-engine').path,
-          commit,
-          'engine-sdk-$mode-$targetToken',
-        ));
+        final dir = Directory(
+          p.join(
+            workspace.platformDir('flutter-engine').path,
+            commit,
+            'engine-sdk-$mode-$targetToken',
+          ),
+        );
         if (!dir.existsSync()) continue;
         for (final e in dir.listSync(recursive: true, followLinks: false)) {
           if (e is! File || p.basename(e.path) != 'gen_snapshot') continue;

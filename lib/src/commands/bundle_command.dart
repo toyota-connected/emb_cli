@@ -21,11 +21,10 @@ class BundleCommand extends Command<int> {
     HostInfo? host,
     BundleBuilder Function(Workspace ws)? bundleFactory,
     AotBuilder Function(Workspace ws, HostInfo host)? aotFactory,
-  })  : _logger = logger,
-        _host = host,
-        _bundleFactory = bundleFactory ?? BundleBuilder.new,
-        _aotFactory =
-            aotFactory ?? ((ws, host) => AotBuilder(ws, host: host)) {
+  }) : _logger = logger,
+       _host = host,
+       _bundleFactory = bundleFactory ?? BundleBuilder.new,
+       _aotFactory = aotFactory ?? ((ws, host) => AotBuilder(ws, host: host)) {
     argParser
       ..addOption(
         'app-path',
@@ -53,7 +52,8 @@ class BundleCommand extends Command<int> {
         'output',
         abbr: 'o',
         aliases: ['out'],
-        help: 'Output bundle directory, any path (defaults under the '
+        help:
+            'Output bundle directory, any path (defaults under the '
             'workspace).',
       )
       ..addFlag(
@@ -89,7 +89,8 @@ class BundleCommand extends Command<int> {
       return ExitCode.usage.code;
     }
 
-    final output = (args['output'] as String?) ??
+    final output =
+        (args['output'] as String?) ??
         defaultBundleOutput(workspace, appPath, mode, arch);
 
     final progress = _logger.progress('Bundle $mode/$arch');

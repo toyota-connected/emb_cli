@@ -2,13 +2,13 @@ import 'package:emb_cli/src/host/host_info.dart';
 import 'package:test/test.dart';
 
 HostInfo _fedora({String arch = 'x86_64', Set<String>? aliases}) => HostInfo(
-      os: HostOs.linux,
-      machineArch: arch,
-      archAliases: aliases ?? {'x86_64', 'amd64', 'x64'},
-      hostType: 'fedora',
-      versionId: '43',
-      prettyName: 'Fedora Linux 43 (Workstation Edition)',
-    );
+  os: HostOs.linux,
+  machineArch: arch,
+  archAliases: aliases ?? {'x86_64', 'amd64', 'x64'},
+  hostType: 'fedora',
+  versionId: '43',
+  prettyName: 'Fedora Linux 43 (Workstation Edition)',
+);
 
 void main() {
   group('parseOsRelease', () {

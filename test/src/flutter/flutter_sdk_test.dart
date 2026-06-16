@@ -30,10 +30,13 @@ void main() {
 
     expect(result.path, p.join(tmp.path, 'flutter'));
     // Clone with the version as branch/tag into the `flutter` dir.
-    expect(
-      git.calls.first,
-      ['clone', FlutterSdk.repoUrl, 'flutter', '-b', '3.44.2'],
-    );
+    expect(git.calls.first, [
+      'clone',
+      FlutterSdk.repoUrl,
+      'flutter',
+      '-b',
+      '3.44.2',
+    ]);
     expect(git.calls, contains(equals(['checkout', '3.44.2'])));
   });
 
@@ -44,11 +47,13 @@ void main() {
     Directory(p.join(tmp.path, 'flutter', '.git')).createSync(recursive: true);
     final internal = Directory(p.join(tmp.path, 'flutter', 'bin', 'internal'))
       ..createSync(recursive: true);
-    File(p.join(internal.path, 'engine.version'))
-        .writeAsStringSync('deadbeefcafe\n');
+    File(
+      p.join(internal.path, 'engine.version'),
+    ).writeAsStringSync('deadbeefcafe\n');
 
-    final result =
-        await FlutterSdk(ws).install('3.44.2', runner: _FakeGit().run);
+    final result = await FlutterSdk(
+      ws,
+    ).install('3.44.2', runner: _FakeGit().run);
     expect(result.engineCommit, 'deadbeefcafe');
   });
 }

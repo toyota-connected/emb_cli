@@ -25,13 +25,12 @@ class BuildCommand extends Command<int> {
     AotBuilder Function(Workspace ws, HostInfo host)? aotFactory,
     BundleBuilder Function(Workspace ws)? bundleFactory,
     EngineArtifacts Function(Workspace ws)? engineFactory,
-  })  : _logger = logger,
-        _host = host,
-        _loader = loader,
-        _aotFactory = aotFactory ??
-            ((ws, host) => AotBuilder(ws, host: host)),
-        _bundleFactory = bundleFactory ?? BundleBuilder.new,
-        _engineFactory = engineFactory ?? EngineArtifacts.new {
+  }) : _logger = logger,
+       _host = host,
+       _loader = loader,
+       _aotFactory = aotFactory ?? ((ws, host) => AotBuilder(ws, host: host)),
+       _bundleFactory = bundleFactory ?? BundleBuilder.new,
+       _engineFactory = engineFactory ?? EngineArtifacts.new {
     argParser
       ..addOption(
         'workspace',
@@ -74,8 +73,10 @@ class BuildCommand extends Command<int> {
     final args = argResults!;
     final rest = args.rest;
     if (rest.isEmpty) {
-      _logger.err('Usage: emb build <package-dir> '
-          '(a dir with emb.yaml or pubspec.yaml emb:)');
+      _logger.err(
+        'Usage: emb build <package-dir> '
+        '(a dir with emb.yaml or pubspec.yaml emb:)',
+      );
       return ExitCode.usage.code;
     }
     final host = _host ?? HostInfo.detect();
@@ -84,8 +85,10 @@ class BuildCommand extends Command<int> {
     final pkgDir = Directory(rest.first);
     final manifest = _loader.loadPackageDir(pkgDir);
     if (manifest == null) {
-      _logger.err('No emb manifest in ${pkgDir.path} '
-          '(expected emb.yaml or an emb: key in pubspec.yaml).');
+      _logger.err(
+        'No emb manifest in ${pkgDir.path} '
+        '(expected emb.yaml or an emb: key in pubspec.yaml).',
+      );
       return ExitCode.usage.code;
     }
     final build = manifest.build;
@@ -96,8 +99,9 @@ class BuildCommand extends Command<int> {
 
     // Resolve the matrix: CLI overrides win, else the manifest, else defaults.
     final appPath = p.normalize(p.join(pkgDir.absolute.path, build.appPath));
-    final archs = (args['arch'] as List<String>)
-        .ifEmpty(build.archs.isEmpty ? [host.machineArch] : build.archs);
+    final archs = (args['arch'] as List<String>).ifEmpty(
+      build.archs.isEmpty ? [host.machineArch] : build.archs,
+    );
     final modes = (args['mode'] as List<String>).ifEmpty(build.modes);
 
     if (!Directory(appPath).existsSync()) {
@@ -105,15 +109,22 @@ class BuildCommand extends Command<int> {
       return ExitCode.usage.code;
     }
 
-    _logger.info(styleBold.wrap('Building ${manifest.id}: '
-        'archs=${archs.join(",")} modes=${modes.join(",")}'));
+    _logger.info(
+      styleBold.wrap(
+        'Building ${manifest.id}: '
+        'archs=${archs.join(",")} modes=${modes.join(",")}',
+      ),
+    );
 
     var failures = 0;
     for (final arch in archs) {
       for (final mode in modes) {
         final out = build.output != null
-            ? p.join(workspace.root.path, build.output,
-                '${manifest.id}-$mode-${EngineArtifacts.engineArch(arch)}')
+            ? p.join(
+                workspace.root.path,
+                build.output,
+                '${manifest.id}-$mode-${EngineArtifacts.engineArch(arch)}',
+              )
             : defaultBundleOutput(workspace, appPath, mode, arch);
 
         final progress = _logger.progress('$mode/$arch');

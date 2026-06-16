@@ -60,10 +60,11 @@ deps:
     expect(m.deps.resolve(fedora), ['pkg-config', 'freetype-devel']);
   });
 
-  test('loads an emb: key from pubspec.yaml, defaulting id to package name',
-      () {
-    final pkg = Directory(p.join(tmp.path, 'pkgb'))..createSync();
-    File(p.join(pkg.path, 'pubspec.yaml')).writeAsStringSync('''
+  test(
+    'loads an emb: key from pubspec.yaml, defaulting id to package name',
+    () {
+      final pkg = Directory(p.join(tmp.path, 'pkgb'))..createSync();
+      File(p.join(pkg.path, 'pubspec.yaml')).writeAsStringSync('''
 name: pkgb
 environment:
   sdk: ^3.4.0
@@ -73,11 +74,12 @@ emb:
     linux:
       fedora: [cmake]
 ''');
-    final m = loader.loadPackageDir(pkg);
-    expect(m, isNotNull);
-    expect(m!.id, 'pkgb');
-    expect(m.deps.resolve(fedora), ['cmake']);
-  });
+      final m = loader.loadPackageDir(pkg);
+      expect(m, isNotNull);
+      expect(m!.id, 'pkgb');
+      expect(m.deps.resolve(fedora), ['cmake']);
+    },
+  );
 
   test('discoverPackages finds manifests in subdirectories', () {
     final a = Directory(p.join(tmp.path, 'a'))..createSync();

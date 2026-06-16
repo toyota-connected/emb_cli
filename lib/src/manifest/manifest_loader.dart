@@ -19,13 +19,14 @@ class ManifestLoader {
   /// Skips `globals.json` (workspace globals, not a component).
   List<EmbManifest> loadConfigDir(Directory dir) {
     if (!dir.existsSync()) return const [];
-    final files = dir
-        .listSync()
-        .whereType<File>()
-        .where((f) => f.path.endsWith('.json'))
-        .where((f) => p.basename(f.path) != 'globals.json')
-        .toList()
-      ..sort((a, b) => a.path.compareTo(b.path));
+    final files =
+        dir
+            .listSync()
+            .whereType<File>()
+            .where((f) => f.path.endsWith('.json'))
+            .where((f) => p.basename(f.path) != 'globals.json')
+            .toList()
+          ..sort((a, b) => a.path.compareTo(b.path));
     final out = <EmbManifest>[];
     for (final f in files) {
       final manifest = _tryLoadJson(f);
@@ -45,8 +46,10 @@ class ManifestLoader {
     if (embYaml.existsSync()) {
       final map = _yamlToMap(loadYaml(embYaml.readAsStringSync()));
       if (map != null) {
-        return EmbManifest.fromMap(_withDefaultId(map, dir),
-            sourcePath: embYaml.path);
+        return EmbManifest.fromMap(
+          _withDefaultId(map, dir),
+          sourcePath: embYaml.path,
+        );
       }
     }
     final pubspec = File(p.join(dir.path, 'pubspec.yaml'));
@@ -81,9 +84,14 @@ class ManifestLoader {
     try {
       final decoded = jsonDecode(file.readAsStringSync());
       if (decoded is Map<String, dynamic>) {
-        return EmbManifest.fromMap(_withDefaultId(decoded, file.parent,
-            fallbackId: p.basenameWithoutExtension(file.path)),
-            sourcePath: file.path);
+        return EmbManifest.fromMap(
+          _withDefaultId(
+            decoded,
+            file.parent,
+            fallbackId: p.basenameWithoutExtension(file.path),
+          ),
+          sourcePath: file.path,
+        );
       }
     } on FormatException {
       // Skip malformed config files rather than aborting the whole load.
@@ -108,8 +116,7 @@ class ManifestLoader {
 
   dynamic _convertYaml(dynamic node) {
     if (node is YamlMap) {
-      return node.map(
-          (k, v) => MapEntry(k.toString(), _convertYaml(v)));
+      return node.map((k, v) => MapEntry(k.toString(), _convertYaml(v)));
     }
     if (node is YamlList) {
       return node.map(_convertYaml).toList();

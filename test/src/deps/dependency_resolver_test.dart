@@ -22,42 +22,40 @@ class _FakeProvisioner implements HostProvisioner {
 
   @override
   Future<ProvisionPlan> simulate(Set<String> names) async => ProvisionPlan(
-        requested: names.toList(),
-        toInstall: names.difference(installed).toList(),
-      );
+    requested: names.toList(),
+    toInstall: names.difference(installed).toList(),
+  );
 
   @override
   Future<ProvisionResult> install(
     Set<String> names, {
     void Function(ProvisionProgress progress)? onProgress,
-  }) async =>
-      ProvisionResult(installed: names.toList());
+  }) async => ProvisionResult(installed: names.toList());
 
   @override
   Future<void> dispose() async {}
 }
 
 HostInfo _fedora() => const HostInfo(
-      os: HostOs.linux,
-      machineArch: 'x86_64',
-      archAliases: {'x86_64', 'x64', 'amd64'},
-      hostType: 'fedora',
-      versionId: '43',
-    );
+  os: HostOs.linux,
+  machineArch: 'x86_64',
+  archAliases: {'x86_64', 'x64', 'amd64'},
+  hostType: 'fedora',
+  versionId: '43',
+);
 
 EmbManifest _manifest(
   String id,
   Map<String, dynamic> deps, {
   List<String> archs = const [],
   List<String> hostTypes = const [],
-}) =>
-    EmbManifest.fromMap({
-      'id': id,
-      'type': 'dependency',
-      if (archs.isNotEmpty) 'supported_archs': archs,
-      if (hostTypes.isNotEmpty) 'supported_host_types': hostTypes,
-      'deps': deps,
-    });
+}) => EmbManifest.fromMap({
+  'id': id,
+  'type': 'dependency',
+  if (archs.isNotEmpty) 'supported_archs': archs,
+  if (hostTypes.isNotEmpty) 'supported_host_types': hostTypes,
+  'deps': deps,
+});
 
 void main() {
   final resolver = DependencyResolver(_fedora());
@@ -136,30 +134,31 @@ void main() {
           },
         }),
       ]);
-      final filtered =
-          await resolver.filter(coalesced, _FakeProvisioner({'git'}));
+      final filtered = await resolver.filter(
+        coalesced,
+        _FakeProvisioner({'git'}),
+      );
       expect(filtered.isSatisfied, isTrue);
     });
   });
 
   group('contentHash', () {
     List<EmbManifest> manifests() => [
-          _manifest('a', {
-            'linux': {
-              'fedora': ['git', 'cmake'],
-            },
-          }),
-          _manifest('b', {
-            'linux': {
-              'fedora': ['cmake', 'ninja-build'],
-            },
-          }),
-        ];
+      _manifest('a', {
+        'linux': {
+          'fedora': ['git', 'cmake'],
+        },
+      }),
+      _manifest('b', {
+        'linux': {
+          'fedora': ['cmake', 'ninja-build'],
+        },
+      }),
+    ];
 
     test('is stable regardless of manifest order', () {
       final h1 = resolver.coalesce(manifests()).contentHash;
-      final h2 =
-          resolver.coalesce(manifests().reversed.toList()).contentHash;
+      final h2 = resolver.coalesce(manifests().reversed.toList()).contentHash;
       expect(h1, h2);
     });
 
@@ -188,22 +187,20 @@ void main() {
         ),
       );
       // Same package set, different host identity → different cache key.
-      final ubuntuHash = ubuntu
-          .coalesce([
-            _manifest('a', {
-              'linux': {
-                'fedora': ['git', 'cmake'],
-                'ubuntu': ['git', 'cmake'],
-              },
-            }),
-            _manifest('b', {
-              'linux': {
-                'fedora': ['cmake', 'ninja-build'],
-                'ubuntu': ['cmake', 'ninja-build'],
-              },
-            }),
-          ])
-          .contentHash;
+      final ubuntuHash = ubuntu.coalesce([
+        _manifest('a', {
+          'linux': {
+            'fedora': ['git', 'cmake'],
+            'ubuntu': ['git', 'cmake'],
+          },
+        }),
+        _manifest('b', {
+          'linux': {
+            'fedora': ['cmake', 'ninja-build'],
+            'ubuntu': ['cmake', 'ninja-build'],
+          },
+        }),
+      ]).contentHash;
       expect(fedoraHash, isNot(ubuntuHash));
     });
   });

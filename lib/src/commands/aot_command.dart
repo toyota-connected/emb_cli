@@ -16,12 +16,13 @@ class AotCommand extends Command<int> {
     required Logger logger,
     HostInfo? host,
     AotBuilder Function(Workspace ws, HostInfo host, String? glibcSysroot)?
-        builderFactory,
-  })  : _logger = logger,
-        _host = host,
-        _builderFactory = builderFactory ??
-            ((ws, host, sysroot) =>
-                AotBuilder(ws, host: host, glibcSysroot: sysroot)) {
+    builderFactory,
+  }) : _logger = logger,
+       _host = host,
+       _builderFactory =
+           builderFactory ??
+           ((ws, host, sysroot) =>
+               AotBuilder(ws, host: host, glibcSysroot: sysroot)) {
     argParser
       ..addOption(
         'app-path',
@@ -43,7 +44,8 @@ class AotCommand extends Command<int> {
       )
       ..addOption(
         'arch',
-        help: 'Target arch for the engine gen_snapshot (defaults to host). '
+        help:
+            'Target arch for the engine gen_snapshot (defaults to host). '
             'Use e.g. arm64 to cross-build for a Raspberry Pi.',
       )
       ..addOption(
@@ -52,7 +54,8 @@ class AotCommand extends Command<int> {
       )
       ..addOption(
         'glibc-sysroot',
-        help: 'Directory with ld-linux + libc to run gen_snapshot under '
+        help:
+            'Directory with ld-linux + libc to run gen_snapshot under '
             "(defaults to the artifact's bundled clang_x64/lib64).",
       );
   }
@@ -60,7 +63,7 @@ class AotCommand extends Command<int> {
   final Logger _logger;
   final HostInfo? _host;
   final AotBuilder Function(Workspace ws, HostInfo host, String? glibcSysroot)
-      _builderFactory;
+  _builderFactory;
 
   @override
   String get description =>
@@ -82,8 +85,11 @@ class AotCommand extends Command<int> {
       return ExitCode.usage.code;
     }
 
-    final builder =
-        _builderFactory(workspace, host, args['glibc-sysroot'] as String?);
+    final builder = _builderFactory(
+      workspace,
+      host,
+      args['glibc-sysroot'] as String?,
+    );
     final result = await builder.build(
       appPath: appPath,
       modes: args['mode'] as List<String>,

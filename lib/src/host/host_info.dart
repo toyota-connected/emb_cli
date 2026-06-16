@@ -14,10 +14,10 @@ enum HostOs {
   /// non-Linux operating systems. On Linux the distro id is used instead
   /// (see [HostInfo.hostType]).
   String get configToken => switch (this) {
-        HostOs.linux => 'linux',
-        HostOs.macos => 'darwin',
-        HostOs.windows => 'windows',
-      };
+    HostOs.linux => 'linux',
+    HostOs.macos => 'darwin',
+    HostOs.windows => 'windows',
+  };
 }
 
 /// Immutable description of the machine `emb` is executing on.
@@ -102,11 +102,11 @@ class HostInfo {
   /// The Flutter/Google architecture token (`x64`, `arm64`, `aarch64`).
   /// Mirrors `get_flutter_arch`.
   String get flutterArch => switch (machineArch) {
-        'x86_64' || 'AMD64' || 'x64' => 'x64',
-        'arm64' || 'ARM64' => 'arm64',
-        'aarch64' => 'arm64',
-        _ => machineArch,
-      };
+    'x86_64' || 'AMD64' || 'x64' => 'x64',
+    'arm64' || 'ARM64' => 'arm64',
+    'aarch64' => 'arm64',
+    _ => machineArch,
+  };
 
   /// Whether any of [archs] matches this host's architecture.
   bool supportsArch(Iterable<String> archs) =>
@@ -122,7 +122,8 @@ class HostInfo {
     if (Platform.isMacOS) return HostOs.macos;
     if (Platform.isWindows) return HostOs.windows;
     throw UnsupportedError(
-        'Unsupported host operating system: ${Platform.operatingSystem}');
+      'Unsupported host operating system: ${Platform.operatingSystem}',
+    );
   }
 
   /// Map the FFI [Abi] to the raw machine string the config files use. This
@@ -185,7 +186,8 @@ class HostInfo {
   }
 
   @override
-  String toString() => 'HostInfo(os: ${os.name}, arch: $machineArch, '
+  String toString() =>
+      'HostInfo(os: ${os.name}, arch: $machineArch, '
       'hostType: $hostType, versionId: $versionId)';
 }
 

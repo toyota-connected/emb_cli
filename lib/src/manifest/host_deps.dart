@@ -45,7 +45,8 @@ class DepRule {
   }
 
   @override
-  String toString() => 'DepRule(${os.name}'
+  String toString() =>
+      'DepRule(${os.name}'
       '${hostType != null ? "/$hostType" : ""}'
       '${versionId != null ? "/$versionId" : ""}'
       '${arch != null ? "@$arch" : ""}: ${packages.join(" ")})';
@@ -79,11 +80,13 @@ class HostDeps {
         for (final sub in value.entries) {
           final pkgs = sub.value;
           if (pkgs is List) {
-            rules.add(DepRule(
-              os: os,
-              hostType: sub.key.toString().toLowerCase(),
-              packages: _stringList(pkgs),
-            ));
+            rules.add(
+              DepRule(
+                os: os,
+                hostType: sub.key.toString().toLowerCase(),
+                packages: _stringList(pkgs),
+              ),
+            );
           }
         }
       }
@@ -110,8 +113,9 @@ class HostDeps {
         // Distro-level cmds apply to all versions of this distro+arch.
         final distroPkgs = _packagesFromCmds(distroMap['cmds']);
         if (distroPkgs.isNotEmpty) {
-          rules.add(DepRule(
-              os: os, arch: arch, hostType: distro, packages: distroPkgs));
+          rules.add(
+            DepRule(os: os, arch: arch, hostType: distro, packages: distroPkgs),
+          );
         }
 
         // Version-specific nested cmds (keys that are version ids).
@@ -122,13 +126,15 @@ class HostDeps {
           if (versionMap is! Map) continue;
           final versionPkgs = _packagesFromCmds(versionMap['cmds']);
           if (versionPkgs.isNotEmpty) {
-            rules.add(DepRule(
-              os: os,
-              arch: arch,
-              hostType: distro,
-              versionId: key,
-              packages: versionPkgs,
-            ));
+            rules.add(
+              DepRule(
+                os: os,
+                arch: arch,
+                hostType: distro,
+                versionId: key,
+                packages: versionPkgs,
+              ),
+            );
           }
         }
       }

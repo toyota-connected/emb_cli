@@ -30,40 +30,63 @@ class SetupCommand extends Command<int> {
     HostProvisioner Function(HostInfo host)? provisionerFactory,
     FlutterSdk Function(Workspace ws, HostInfo host)? sdkFactory,
     EngineArtifacts Function(Workspace ws)? engineFactory,
-  })  : _logger = logger,
-        _host = host,
-        _loader = loader,
-        _provisionerFactory = provisionerFactory ?? HostProvisioner.forHost,
-        _sdkFactory =
-            sdkFactory ?? ((ws, host) => FlutterSdk(ws, host: host)),
-        _engineFactory = engineFactory ?? EngineArtifacts.new {
+  }) : _logger = logger,
+       _host = host,
+       _loader = loader,
+       _provisionerFactory = provisionerFactory ?? HostProvisioner.forHost,
+       _sdkFactory = sdkFactory ?? ((ws, host) => FlutterSdk(ws, host: host)),
+       _engineFactory = engineFactory ?? EngineArtifacts.new {
     argParser
-      ..addMultiOption('config',
-          abbr: 'c',
-          help: 'Legacy JSON config directory.',
-          defaultsTo: const ['configs'])
-      ..addMultiOption('packages',
-          abbr: 'p', help: 'Directory to discover self-describing manifests.')
-      ..addOption('workspace',
-          abbr: 'w',
-          help: r'Workspace root (defaults to $FLUTTER_WORKSPACE or cwd).')
-      ..addOption('flutter-version',
-          help: "Flutter version (defaults to globals.json's flutter_version).")
+      ..addMultiOption(
+        'config',
+        abbr: 'c',
+        help: 'Legacy JSON config directory.',
+        defaultsTo: const ['configs'],
+      )
+      ..addMultiOption(
+        'packages',
+        abbr: 'p',
+        help: 'Directory to discover self-describing manifests.',
+      )
+      ..addOption(
+        'workspace',
+        abbr: 'w',
+        help: r'Workspace root (defaults to $FLUTTER_WORKSPACE or cwd).',
+      )
+      ..addOption(
+        'flutter-version',
+        help: "Flutter version (defaults to globals.json's flutter_version).",
+      )
       ..addOption('arch', help: 'Engine arch (defaults to host).')
-      ..addMultiOption('mode',
-          abbr: 'm',
-          help: 'Engine runtime modes to prefetch.',
-          allowed: engineRuntimeModes,
-          defaultsTo: const ['release'])
-      ..addFlag('yes',
-          abbr: 'y', help: 'Skip the deps confirmation.', negatable: false)
-      ..addFlag('skip-deps', help: 'Skip host dependency install.',
-          negatable: false)
+      ..addMultiOption(
+        'mode',
+        abbr: 'm',
+        help: 'Engine runtime modes to prefetch.',
+        allowed: engineRuntimeModes,
+        defaultsTo: const ['release'],
+      )
+      ..addFlag(
+        'yes',
+        abbr: 'y',
+        help: 'Skip the deps confirmation.',
+        negatable: false,
+      )
+      ..addFlag(
+        'skip-deps',
+        help: 'Skip host dependency install.',
+        negatable: false,
+      )
       ..addFlag('skip-sync', help: 'Skip repository sync.', negatable: false)
-      ..addFlag('skip-flutter', help: 'Skip Flutter SDK install.',
-          negatable: false)
-      ..addFlag('skip-engine', help: 'Skip engine artifact fetch.',
-          negatable: false);
+      ..addFlag(
+        'skip-flutter',
+        help: 'Skip Flutter SDK install.',
+        negatable: false,
+      )
+      ..addFlag(
+        'skip-engine',
+        help: 'Skip engine artifact fetch.',
+        negatable: false,
+      );
   }
 
   final Logger _logger;
@@ -95,8 +118,12 @@ class SetupCommand extends Command<int> {
       manifests.addAll(_loader.discoverPackages(Directory(dir)));
     }
 
-    _logger.info(styleBold.wrap('emb setup → ${workspace.root.path} '
-        '(${host.os.name}/${host.machineArch})'));
+    _logger.info(
+      styleBold.wrap(
+        'emb setup → ${workspace.root.path} '
+        '(${host.os.name}/${host.machineArch})',
+      ),
+    );
     workspace.ensureAppDir();
 
     if (!(args['skip-deps'] as bool)) {
@@ -128,11 +155,13 @@ class SetupCommand extends Command<int> {
 
     // Emit setup_env.sh so the workspace's Flutter/Dart are on PATH.
     final envFile = File(p.join(workspace.root.path, 'setup_env.sh'))
-      ..writeAsStringSync(generateSetupEnv(
-        workspace: workspace,
-        host: host,
-        engineVersion: workspace.engineCommit(),
-      ));
+      ..writeAsStringSync(
+        generateSetupEnv(
+          workspace: workspace,
+          host: host,
+          engineVersion: workspace.engineCommit(),
+        ),
+      );
 
     _logger
       ..info(lightGreen.wrap('emb setup complete.'))
@@ -164,8 +193,10 @@ class SetupCommand extends Command<int> {
       }
       _logger.info('  Missing (${missing.length}): ${missing.join(", ")}');
       if (!yes &&
-          !_logger.confirm('  Install ${missing.length} package(s)?',
-              defaultValue: true)) {
+          !_logger.confirm(
+            '  Install ${missing.length} package(s)?',
+            defaultValue: true,
+          )) {
         _logger.info('  Skipped.');
         return ExitCode.success.code;
       }
@@ -200,8 +231,10 @@ class SetupCommand extends Command<int> {
     final results = await const RepoSyncer().syncAll(
       repos,
       workspace.appDir,
-      onResult: (r) => progress.update('  [${++done}/${repos.length}] '
-          '${r.folderName}${r.success ? "" : " FAILED"}'),
+      onResult: (r) => progress.update(
+        '  [${++done}/${repos.length}] '
+        '${r.folderName}${r.success ? "" : " FAILED"}',
+      ),
     );
     final failed = results.where((r) => !r.success).toList();
     if (failed.isEmpty) {
@@ -224,8 +257,10 @@ class SetupCommand extends Command<int> {
     _logger.info(styleBold.wrap('▸ Flutter SDK'));
     final resolved = version ?? _versionFromGlobals(configDirs);
     if (resolved == null || resolved.isEmpty) {
-      _logger.err('  No Flutter version: set --flutter-version or '
-          'globals.json.');
+      _logger.err(
+        '  No Flutter version: set --flutter-version or '
+        'globals.json.',
+      );
       return ExitCode.usage.code;
     }
     final progress = _logger.progress('  Installing Flutter SDK $resolved');
@@ -236,8 +271,10 @@ class SetupCommand extends Command<int> {
       return ExitCode.software.code;
     }
     final commit = result.engineCommit;
-    progress.complete('  Flutter SDK $resolved'
-        '${commit != null ? " (engine $commit)" : ""}');
+    progress.complete(
+      '  Flutter SDK $resolved'
+      '${commit != null ? " (engine $commit)" : ""}',
+    );
     return ExitCode.success.code;
   }
 
@@ -259,8 +296,11 @@ class SetupCommand extends Command<int> {
     try {
       for (final mode in modes) {
         final progress = _logger.progress('  Engine $mode');
-        final r =
-            await engine.fetch(runtime: mode, arch: token, commit: commit);
+        final r = await engine.fetch(
+          runtime: mode,
+          arch: token,
+          commit: commit,
+        );
         switch (r.status) {
           case EngineFetchStatus.fetched:
           case EngineFetchStatus.upToDate:

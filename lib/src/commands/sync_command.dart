@@ -20,8 +20,8 @@ class SyncCommand extends Command<int> {
   SyncCommand({
     required Logger logger,
     ManifestLoader loader = const ManifestLoader(),
-  })  : _logger = logger,
-        _loader = loader {
+  }) : _logger = logger,
+       _loader = loader {
     argParser
       ..addMultiOption(
         'config',
@@ -36,7 +36,8 @@ class SyncCommand extends Command<int> {
       )
       ..addMultiOption(
         'repos',
-        help: 'A JSON file containing a bare array of repo entries '
+        help:
+            'A JSON file containing a bare array of repo entries '
             '(repeatable).',
       )
       ..addOption(
@@ -65,8 +66,7 @@ class SyncCommand extends Command<int> {
   @override
   Future<int> run() async {
     final args = argResults!;
-    final workspace =
-        Workspace.resolve(override: args['workspace'] as String?);
+    final workspace = Workspace.resolve(override: args['workspace'] as String?);
 
     // Collect repos from manifests' `src` lists.
     final manifests = <EmbManifest>[];
@@ -95,13 +95,14 @@ class SyncCommand extends Command<int> {
       return ExitCode.success.code;
     }
 
-    final concurrency =
-        int.tryParse(args['concurrency'] as String) ?? 4;
+    final concurrency = int.tryParse(args['concurrency'] as String) ?? 4;
     final appDir = workspace.appDir;
     _logger
       ..info('Workspace: ${workspace.root.path}')
-      ..info('Syncing ${unique.length} repo(s) into ${appDir.path} '
-          '(concurrency: $concurrency)');
+      ..info(
+        'Syncing ${unique.length} repo(s) into ${appDir.path} '
+        '(concurrency: $concurrency)',
+      );
 
     final progress = _logger.progress('Syncing repositories');
     var done = 0;
@@ -110,8 +111,10 @@ class SyncCommand extends Command<int> {
       appDir,
       onResult: (r) {
         done++;
-        progress.update('[$done/${unique.length}] ${r.folderName}'
-            '${r.success ? "" : " FAILED"}');
+        progress.update(
+          '[$done/${unique.length}] ${r.folderName}'
+          '${r.success ? "" : " FAILED"}',
+        );
       },
     );
 

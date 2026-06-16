@@ -55,7 +55,7 @@ class EngineFetchResult {
 /// layout.
 class EngineArtifacts {
   EngineArtifacts(this.workspace, {HttpClient? httpClient})
-      : _http = httpClient ?? HttpClient();
+    : _http = httpClient ?? HttpClient();
 
   final Workspace workspace;
   final HttpClient _http;
@@ -132,8 +132,9 @@ class EngineArtifacts {
       ..createSync(recursive: true);
     final archiveFile = File(p.join(cwdEngine.path, filename));
     final sha256File = File('${archiveFile.path}.sha256');
-    final bundleDir =
-        Directory(p.join(engineDir.path, 'bundle-$runtime-$arch'));
+    final bundleDir = Directory(
+      p.join(engineDir.path, 'bundle-$runtime-$arch'),
+    );
 
     // Download unless a verified copy already exists.
     if (!_sha256Matches(archiveFile, sha256File)) {
@@ -160,12 +161,14 @@ class EngineArtifacts {
 
     // Extract.
     final restoreDir = Directory(
-        p.join(cwdEngine.path, 'engine-sdk-$runtime-$arch'))
-      ..createSync(recursive: true);
-    final tar = await Process.run(
-      'tar',
-      ['-xzf', archiveFile.path, '-C', restoreDir.path],
-    );
+      p.join(cwdEngine.path, 'engine-sdk-$runtime-$arch'),
+    )..createSync(recursive: true);
+    final tar = await Process.run('tar', [
+      '-xzf',
+      archiveFile.path,
+      '-C',
+      restoreDir.path,
+    ]);
     if (tar.exitCode != 0) {
       return EngineFetchResult(
         runtime: runtime,

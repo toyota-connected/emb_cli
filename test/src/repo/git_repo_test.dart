@@ -24,8 +24,9 @@ void main() {
   group('folderName', () {
     test('strips trailing .git from the uri basename', () {
       expect(
-        const GitRepo(uri: 'https://github.com/flutter/super_dash.git')
-            .folderName,
+        const GitRepo(
+          uri: 'https://github.com/flutter/super_dash.git',
+        ).folderName,
         'super_dash',
       );
     });
@@ -60,8 +61,13 @@ void main() {
       final result = await repo.sync(tmp, runner: git.run);
 
       expect(result.success, isTrue);
-      expect(git.calls.first,
-          ['clone', 'https://x/y/foo.git', 'foo', '-b', 'main']);
+      expect(git.calls.first, [
+        'clone',
+        'https://x/y/foo.git',
+        'foo',
+        '-b',
+        'main',
+      ]);
       expect(git.calls, contains(equals(['checkout', 'main'])));
     });
 
@@ -93,8 +99,11 @@ void main() {
 
     test('checks out an explicit rev over the branch', () async {
       final git = _FakeGit();
-      const repo =
-          GitRepo(uri: 'https://x/y/foo.git', branch: 'main', rev: 'abc123');
+      const repo = GitRepo(
+        uri: 'https://x/y/foo.git',
+        branch: 'main',
+        rev: 'abc123',
+      );
       await repo.sync(tmp, runner: git.run);
       expect(git.calls, contains(equals(['checkout', 'abc123'])));
       expect(git.calls, isNot(contains(equals(['checkout', 'main']))));

@@ -43,10 +43,12 @@ class BundleBuilder {
   final Workspace workspace;
 
   /// The engine bundle directory staged by `emb engine` for [mode]/[arch].
-  Directory engineBundleDir(String mode, String arch) => Directory(p.join(
-        workspace.platformDir('flutter-engine').path,
-        'bundle-$mode-${EngineArtifacts.engineArch(arch)}',
-      ));
+  Directory engineBundleDir(String mode, String arch) => Directory(
+    p.join(
+      workspace.platformDir('flutter-engine').path,
+      'bundle-$mode-${EngineArtifacts.engineArch(arch)}',
+    ),
+  );
 
   /// Assemble the bundle for the app at [appPath] into [outputDir].
   BundleResult assemble({
@@ -63,16 +65,16 @@ class BundleBuilder {
     final libapp = File(p.join(app, 'libapp.so.$mode'));
     final engineDir = engineBundleDir(mode, arch);
     final icu = File(p.join(engineDir.path, 'data', 'icudtl.dat'));
-    final engineSo =
-        File(p.join(engineDir.path, 'lib', 'libflutter_engine.so'));
+    final engineSo = File(
+      p.join(engineDir.path, 'lib', 'libflutter_engine.so'),
+    );
 
     final missing = <String>[
       if (!assets.existsSync())
         'flutter_assets — run `emb bundle --build` (or flutter build bundle)',
       if (!isDebug && !libapp.existsSync())
         'libapp.so.$mode — run `emb aot --mode $mode`',
-      if (!icu.existsSync())
-        'icudtl.dat — run `emb engine --arch $arch`',
+      if (!icu.existsSync()) 'icudtl.dat — run `emb engine --arch $arch`',
       if (!engineSo.existsSync())
         'libflutter_engine.so — run `emb engine --arch $arch`',
     ];

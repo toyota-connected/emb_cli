@@ -7,14 +7,13 @@ HostInfo _host({
   String hostType = 'fedora',
   String versionId = '43',
   String arch = 'x86_64',
-}) =>
-    HostInfo(
-      os: os,
-      machineArch: arch,
-      archAliases: arch == 'x86_64' ? {'x86_64', 'x64', 'amd64'} : {arch},
-      hostType: hostType,
-      versionId: versionId,
-    );
+}) => HostInfo(
+  os: os,
+  machineArch: arch,
+  archAliases: arch == 'x86_64' ? {'x86_64', 'x64', 'amd64'} : {arch},
+  hostType: hostType,
+  versionId: versionId,
+);
 
 void main() {
   group('extractPackageNames', () {
@@ -28,7 +27,8 @@ void main() {
     test('extracts from apt-get with mixed flags', () {
       expect(
         extractPackageNames(
-            'sudo apt-get install -yq graphviz libffi-dev ninja-build'),
+          'sudo apt-get install -yq graphviz libffi-dev ninja-build',
+        ),
         ['graphviz', 'libffi-dev', 'ninja-build'],
       );
     });
@@ -36,7 +36,8 @@ void main() {
     test('extracts from apt with long flags', () {
       expect(
         extractPackageNames(
-            'sudo apt install --no-install-recommends -y git curl'),
+          'sudo apt install --no-install-recommends -y git curl',
+        ),
         ['git', 'curl'],
       );
     });
@@ -49,10 +50,10 @@ void main() {
     });
 
     test('handles pacman -S', () {
-      expect(
-        extractPackageNames('sudo pacman -S wayland weston'),
-        ['wayland', 'weston'],
-      );
+      expect(extractPackageNames('sudo pacman -S wayland weston'), [
+        'wayland',
+        'weston',
+      ]);
     });
   });
 
@@ -71,17 +72,16 @@ void main() {
     });
 
     test('resolves macos flat list', () {
-      expect(
-        deps.resolve(_host(os: HostOs.macos, hostType: 'darwin')),
-        ['pkg-config', 'freetype'],
-      );
+      expect(deps.resolve(_host(os: HostOs.macos, hostType: 'darwin')), [
+        'pkg-config',
+        'freetype',
+      ]);
     });
 
     test('resolves windows list', () {
-      expect(
-        deps.resolve(_host(os: HostOs.windows, hostType: 'windows')),
-        ['Kitware.CMake'],
-      );
+      expect(deps.resolve(_host(os: HostOs.windows, hostType: 'windows')), [
+        'Kitware.CMake',
+      ]);
     });
   });
 

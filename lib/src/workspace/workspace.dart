@@ -19,7 +19,8 @@ class Workspace {
   /// current working directory).
   factory Workspace.resolve({String? override, Directory? fallback}) {
     final envPath = Platform.environment['FLUTTER_WORKSPACE'];
-    final path = override ??
+    final path =
+        override ??
         (envPath != null && envPath.isNotEmpty ? envPath : null) ??
         (fallback ?? Directory.current).path;
     return Workspace(Directory(p.normalize(p.absolute(path))));
@@ -55,8 +56,9 @@ class Workspace {
   /// `get_flutter_engine_version` / `get_flutter_engine_commit`. Returns null
   /// when the SDK (or the file) is absent.
   String? engineCommit() {
-    final f =
-        File(p.join(flutterDir.path, 'bin', 'internal', 'engine.version'));
+    final f = File(
+      p.join(flutterDir.path, 'bin', 'internal', 'engine.version'),
+    );
     if (!f.existsSync()) return null;
     final v = f.readAsStringSync().trim();
     return v.isEmpty ? null : v;

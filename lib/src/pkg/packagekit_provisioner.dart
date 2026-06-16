@@ -44,8 +44,9 @@ class PackageKitProvisioner implements HostProvisioner {
     final client = await _connect();
     // A name is satisfied if an installed package matches it directly, or if
     // an installed package *provides* it.
-    final installedByName =
-        await _resolveNames(client, names.toList(), const [PkFilter.installed]);
+    final installedByName = await _resolveNames(client, names.toList(), const [
+      PkFilter.installed,
+    ]);
     final satisfied = installedByName.keys.toSet();
     for (final n in names.difference(satisfied)) {
       if (await _providesInstalled(client, n)) satisfied.add(n);
@@ -98,7 +99,8 @@ class PackageKitProvisioner implements HostProvisioner {
       return ProvisionResult(
         installed: const [],
         failed: res.unresolved,
-        message: 'No installable packages found for: '
+        message:
+            'No installable packages found for: '
             '${res.unresolved.join(", ")}',
       );
     }
@@ -108,10 +110,12 @@ class PackageKitProvisioner implements HostProvisioner {
       final label = p.packageId.isNotEmpty
           ? p.packageId.split(';').first
           : p.status.name;
-      onProgress?.call(ProvisionProgress(
-        label: label,
-        percent: p.percentageKnown ? p.percentage : null,
-      ));
+      onProgress?.call(
+        ProvisionProgress(
+          label: label,
+          percent: p.percentageKnown ? p.percentage : null,
+        ),
+      );
     });
     final errors = <String>[];
     final errSub = tx.errors.listen((e) => errors.add(e.details));
@@ -176,8 +180,11 @@ class PackageKitProvisioner implements HostProvisioner {
     PkClient client,
     Set<String> names,
   ) async {
-    final byName =
-        await _resolveNames(client, names.toList(), _installableFilters);
+    final byName = await _resolveNames(
+      client,
+      names.toList(),
+      _installableFilters,
+    );
     final ids = <String>{...byName.values};
     final unresolved = <String>[];
 

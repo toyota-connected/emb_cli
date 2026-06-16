@@ -47,8 +47,7 @@ class BrewProvisioner implements HostProvisioner {
     final batch = await _brew.installAll(
       toGet.toList(),
       parallel: true,
-      onEach: (pkg, result) =>
-          onProgress?.call(ProvisionProgress(label: pkg)),
+      onEach: (pkg, result) => onProgress?.call(ProvisionProgress(label: pkg)),
     );
     _installedCache = null; // invalidate after mutation
     return ProvisionResult(

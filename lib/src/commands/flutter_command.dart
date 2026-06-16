@@ -19,10 +19,9 @@ class FlutterCommand extends Command<int> {
     required Logger logger,
     HostInfo? host,
     FlutterSdk Function(Workspace ws, HostInfo host)? sdkFactory,
-  })  : _logger = logger,
-        _host = host,
-        _sdkFactory = sdkFactory ??
-            ((ws, host) => FlutterSdk(ws, host: host)) {
+  }) : _logger = logger,
+       _host = host,
+       _sdkFactory = sdkFactory ?? ((ws, host) => FlutterSdk(ws, host: host)) {
     argParser
       ..addOption(
         'workspace',
@@ -31,7 +30,8 @@ class FlutterCommand extends Command<int> {
       )
       ..addOption(
         'flutter-version',
-        help: 'Flutter version/tag/branch to check out. Defaults to '
+        help:
+            'Flutter version/tag/branch to check out. Defaults to '
             "globals.json's flutter_version.",
       )
       ..addMultiOption(
@@ -42,7 +42,8 @@ class FlutterCommand extends Command<int> {
       )
       ..addFlag(
         'configure',
-        help: 'Run `flutter config` (desktop + custom devices) and '
+        help:
+            'Run `flutter config` (desktop + custom devices) and '
             '`flutter doctor` after install.',
         negatable: false,
       );
@@ -53,8 +54,7 @@ class FlutterCommand extends Command<int> {
   final FlutterSdk Function(Workspace ws, HostInfo host) _sdkFactory;
 
   @override
-  String get description =>
-      'Install the Flutter SDK into <workspace>/flutter.';
+  String get description => 'Install the Flutter SDK into <workspace>/flutter.';
 
   @override
   String get name => 'flutter';
@@ -65,18 +65,22 @@ class FlutterCommand extends Command<int> {
     final host = _host ?? HostInfo.detect();
     final workspace = Workspace.resolve(override: args['workspace'] as String?);
 
-    final version = (args['flutter-version'] as String?) ??
+    final version =
+        (args['flutter-version'] as String?) ??
         _versionFromGlobals(args['config'] as List<String>);
     if (version == null || version.isEmpty) {
-      _logger.err('No Flutter version. Pass --flutter-version or provide a '
-          'globals.json with "flutter_version" via --config.');
+      _logger.err(
+        'No Flutter version. Pass --flutter-version or provide a '
+        'globals.json with "flutter_version" via --config.',
+      );
       return ExitCode.usage.code;
     }
 
     final sdk = _sdkFactory(workspace, host);
-    final progress =
-        _logger.progress('Installing Flutter SDK $version into '
-            '${workspace.flutterDir.path}');
+    final progress = _logger.progress(
+      'Installing Flutter SDK $version into '
+      '${workspace.flutterDir.path}',
+    );
     final result = await sdk.install(version);
     if (!result.success) {
       progress.fail('Flutter SDK install failed');

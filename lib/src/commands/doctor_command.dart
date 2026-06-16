@@ -13,9 +13,9 @@ class DoctorCommand extends Command<int> {
     required Logger logger,
     HostInfo? host,
     HostProvisioner Function(HostInfo host)? provisionerFactory,
-  })  : _logger = logger,
-        _host = host,
-        _provisionerFactory = provisionerFactory ?? HostProvisioner.forHost;
+  }) : _logger = logger,
+       _host = host,
+       _provisionerFactory = provisionerFactory ?? HostProvisioner.forHost;
 
   final Logger _logger;
   final HostInfo? _host;
@@ -35,8 +35,10 @@ class DoctorCommand extends Command<int> {
     _logger
       ..info(styleBold.wrap('Host'))
       ..info('  os:        ${host.os.name}')
-      ..info('  arch:      ${host.machineArch} (flutter: ${host.flutterArch}, '
-          'engine: ${EngineArtifacts.engineArchForHost(host)})')
+      ..info(
+        '  arch:      ${host.machineArch} (flutter: ${host.flutterArch}, '
+        'engine: ${EngineArtifacts.engineArchForHost(host)})',
+      )
       ..info('  host type: ${host.hostType}')
       ..info('  version:   ${host.versionId}');
     if (host.prettyName != null) {

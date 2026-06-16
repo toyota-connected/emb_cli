@@ -14,8 +14,8 @@ import 'package:path/path.dart' as p;
 class EnvCommand extends Command<int> {
   /// {@macro env_command}
   EnvCommand({required Logger logger, HostInfo? host})
-      : _logger = logger,
-        _host = host {
+    : _logger = logger,
+      _host = host {
     argParser
       ..addOption(
         'workspace',
@@ -61,7 +61,8 @@ class EnvCommand extends Command<int> {
       return ExitCode.success.code;
     }
 
-    final out = (args['output'] as String?) ??
+    final out =
+        (args['output'] as String?) ??
         p.join(workspace.root.path, 'setup_env.sh');
     File(out).writeAsStringSync(script);
     _logger

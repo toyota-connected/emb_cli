@@ -39,9 +39,10 @@ class _FakeProvisioner implements HostProvisioner {
   Future<ProvisionPlan> simulate(Set<String> names) async =>
       ProvisionPlan(requested: names.toList(), toInstall: const []);
   @override
-  Future<ProvisionResult> install(Set<String> names,
-          {void Function(ProvisionProgress)? onProgress}) async =>
-      ProvisionResult(installed: names.toList());
+  Future<ProvisionResult> install(
+    Set<String> names, {
+    void Function(ProvisionProgress)? onProgress,
+  }) async => ProvisionResult(installed: names.toList());
   @override
   Future<void> dispose() async {}
 }
@@ -58,11 +59,13 @@ void main() {
 
   CommandRunner<int> runnerWith(_FakeProvisioner prov) {
     final runner = CommandRunner<int>('emb', 't')
-      ..addCommand(SetupCommand(
-        logger: logger,
-        host: _host,
-        provisionerFactory: (_) => prov,
-      ));
+      ..addCommand(
+        SetupCommand(
+          logger: logger,
+          host: _host,
+          provisionerFactory: (_) => prov,
+        ),
+      );
     return runner;
   }
 
@@ -77,8 +80,10 @@ void main() {
     final prov = _FakeProvisioner();
     final code = await runnerWith(prov).run([
       'setup',
-      '--config', tmp.path,
-      '-w', tmp.path,
+      '--config',
+      tmp.path,
+      '-w',
+      tmp.path,
       '--skip-sync',
       '--skip-flutter',
       '--skip-engine',
@@ -95,8 +100,10 @@ void main() {
     final prov = _FakeProvisioner();
     final code = await runnerWith(prov).run([
       'setup',
-      '--config', tmp.path,
-      '-w', tmp.path,
+      '--config',
+      tmp.path,
+      '-w',
+      tmp.path,
       '--skip-deps',
       '--skip-sync',
       '--skip-flutter',

@@ -18,9 +18,9 @@ class EngineCommand extends Command<int> {
     required Logger logger,
     HostInfo? host,
     EngineArtifacts Function(Workspace ws)? engineFactory,
-  })  : _logger = logger,
-        _host = host,
-        _engineFactory = engineFactory ?? EngineArtifacts.new {
+  }) : _logger = logger,
+       _host = host,
+       _engineFactory = engineFactory ?? EngineArtifacts.new {
     argParser
       ..addOption(
         'workspace',
@@ -29,7 +29,8 @@ class EngineCommand extends Command<int> {
       )
       ..addOption(
         'commit',
-        help: 'Engine commit (defaults to '
+        help:
+            'Engine commit (defaults to '
             '<workspace>/flutter/bin/internal/engine.version).',
       )
       ..addOption(
@@ -39,7 +40,8 @@ class EngineCommand extends Command<int> {
       ..addMultiOption(
         'mode',
         abbr: 'm',
-        help: 'Runtime modes to fetch (others are auto-fetched on demand by '
+        help:
+            'Runtime modes to fetch (others are auto-fetched on demand by '
             '`emb bundle`/`build`).',
         allowed: engineRuntimeModes,
         defaultsTo: const ['release'],
@@ -73,12 +75,13 @@ class EngineCommand extends Command<int> {
     final host = _host ?? HostInfo.detect();
     final workspace = Workspace.resolve(override: args['workspace'] as String?);
 
-    final commit =
-        (args['commit'] as String?) ?? workspace.engineCommit();
+    final commit = (args['commit'] as String?) ?? workspace.engineCommit();
     if (commit == null || commit.isEmpty) {
-      _logger.err('Could not determine the engine commit. '
-          'Provide --commit or ensure '
-          '${workspace.flutterDir.path}/bin/internal/engine.version exists.');
+      _logger.err(
+        'Could not determine the engine commit. '
+        'Provide --commit or ensure '
+        '${workspace.flutterDir.path}/bin/internal/engine.version exists.',
+      );
       return ExitCode.usage.code;
     }
     // Determine the proper engine SDK arch token for this machine (or honor
@@ -88,8 +91,10 @@ class EngineCommand extends Command<int> {
     );
     final modes = args['mode'] as List<String>;
 
-    _logger.info('Engine commit: $commit  arch: $arch '
-        '(host: ${host.machineArch})  modes: ${modes.join(", ")}');
+    _logger.info(
+      'Engine commit: $commit  arch: $arch '
+      '(host: ${host.machineArch})  modes: ${modes.join(", ")}',
+    );
 
     final engine = _engineFactory(workspace);
     var anyBuildNeeded = false;
@@ -131,10 +136,12 @@ class EngineCommand extends Command<int> {
     if (anyBuildNeeded) {
       _logger
         ..info('')
-        ..warn('One or more modes have no published prebuilt. '
+        ..warn(
+          'One or more modes have no published prebuilt. '
           'Source-build (gclient + gn + autoninja) is not yet implemented in '
           'emb — run the legacy flutter_workspace.py engine build, or build '
-          'from meta-flutter/flutter-engine, for now.');
+          'from meta-flutter/flutter-engine, for now.',
+        );
       return ExitCode.unavailable.code;
     }
     return ExitCode.success.code;
