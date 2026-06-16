@@ -56,6 +56,23 @@ class ManifestLoader {
       if (enable.contains(m.id) || (m.load && !disable.contains(m.id))) m,
   ];
 
+  /// Load a self-describing manifest from an explicit YAML [file] (e.g. an
+  /// `examples/cross/pi5.emb.yaml`). The id defaults to the file's base name
+  /// (sans extensions). Returns null if the file is absent or not a map.
+  EmbManifest? loadManifestFile(File file) {
+    if (!file.existsSync()) return null;
+    final map = _yamlToMap(loadYaml(file.readAsStringSync()));
+    if (map == null) return null;
+    return EmbManifest.fromMap(
+      _withDefaultId(
+        map,
+        file.parent,
+        fallbackId: p.basename(file.path).split('.').first,
+      ),
+      sourcePath: file.path,
+    );
+  }
+
   /// Load a self-describing manifest from a package directory: prefers
   /// `emb.yaml`, falls back to an `emb:` key in `pubspec.yaml`. Returns null
   /// if neither is present.
