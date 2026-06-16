@@ -86,6 +86,26 @@ class CrossBuilder {
     return out;
   }
 
+  /// The configure/build environment: the profile's env, but with the host's
+  /// compiler variables neutralized first so e.g. a clang
+  /// `CXXFLAGS=-stdlib=libc++` from the host shell can't poison a cross `gcc`
+  /// build. The profile's own values (a Yocto SDK's `CC`/`CXX`/`CFLAGS`)
+  /// override the blanks; an ARM GNU profile leaves them empty (its flags live
+  /// in the toolchain file).
+  Map<String, String> _env() => {
+    for (final v in const [
+      'CC',
+      'CXX',
+      'CPP',
+      'CFLAGS',
+      'CXXFLAGS',
+      'CPPFLAGS',
+      'LDFLAGS',
+    ])
+      v: '',
+    ...profile.buildEnv(),
+  };
+
   Future<CrossBuildResult> _cmake(
     Directory src,
     Directory build,
@@ -101,7 +121,7 @@ class CrossBuilder {
       if (tc != null && tc.isNotEmpty) '-DCMAKE_TOOLCHAIN_FILE=$tc',
       '-DCMAKE_BUILD_TYPE=$buildType',
       for (final e in defines.entries) '-D${e.key}=${e.value}',
-    ], environment: profile.buildEnv());
+    ], environment: _env());
     if (configure.exitCode != 0) {
       return CrossBuildResult(
         success: false,
@@ -113,7 +133,7 @@ class CrossBuilder {
       '--build',
       build.path,
       '--parallel',
-    ], environment: profile.buildEnv());
+    ], environment: _env());
     return CrossBuildResult(
       success: compile.exitCode == 0,
       buildDir: build.path,
@@ -138,7 +158,7 @@ class CrossBuilder {
       '--buildtype',
       buildType.toLowerCase(),
       for (final e in defines.entries) '-D${e.key}=${e.value}',
-    ], environment: profile.buildEnv());
+    ], environment: _env());
     if (setup.exitCode != 0) {
       return CrossBuildResult(
         success: false,
@@ -149,7 +169,7 @@ class CrossBuilder {
     final compile = await _run('ninja', [
       '-C',
       build.path,
-    ], environment: profile.buildEnv());
+    ], environment: _env());
     return CrossBuildResult(
       success: compile.exitCode == 0,
       buildDir: build.path,
