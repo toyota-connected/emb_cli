@@ -49,4 +49,36 @@ void main() {
     final pkg = pkgWith('b', 'id: b\ntype: app\ncross:\n  provider: nope\n');
     expect(await run(['cross', pkg.path]), ExitCode.usage.code);
   });
+
+  test('--dry-run plans a manifest file', () async {
+    final pkg = Directory(p.join(tmp.path, 'c'))..createSync();
+    final f = File(p.join(pkg.path, 'pi.emb.yaml'))
+      ..writeAsStringSync(
+        'id: pi\ntype: app\ncross:\n  provider: arm-gnu\n'
+        '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n',
+      );
+    expect(await run(['cross', '--dry-run', f.path]), ExitCode.success.code);
+  });
+
+  // Every shipped example must parse -> dispatch -> plan with no side effects:
+  // this validates all of the listed use cases hermetically.
+  test('--dry-run plans every example manifest', () async {
+    const examples = [
+      'pi5',
+      'unoq',
+      'radxa_zero3',
+      'beagleplay',
+      'nitrogen8mm',
+      'agl_sdk_local',
+      'agl_sdk_url',
+    ];
+    for (final name in examples) {
+      final code = await run([
+        'cross',
+        '--dry-run',
+        p.join('examples', 'cross', '$name.emb.yaml'),
+      ]);
+      expect(code, ExitCode.success.code, reason: '$name dry-run failed');
+    }
+  });
 }

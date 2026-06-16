@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
@@ -41,13 +42,12 @@ class ArmGnuCrossProvider implements CrossProvider {
   @override
   String get name => 'arm-gnu';
 
+  // Tools the resolve path actually uses: `tar` (toolchain extract), `xz`
+  // (image decompress), `rsync` (image + device sysroot). `qemu-aarch64-static`
+  // is intentionally NOT here — it's only needed for the `-dev` apt chroot,
+  // which is the sysroot layer's concern, not cross resolution.
   @override
-  List<String> get preflightTools => const [
-    'qemu-aarch64-static',
-    'tar',
-    'xz',
-    'rsync',
-  ];
+  List<String> get preflightTools => const ['tar', 'xz', 'rsync'];
 
   /// Codename → ARM GNU toolchain version. The pin tracks the target's glibc:
   /// the bundled glibc must be ≤ the target's, and libstdc++'s gthr header
@@ -318,56 +318,107 @@ class ArmGnuCrossProvider implements CrossProvider {
       if (spec.sshOpts != null) ...spec.sshOpts!.split(RegExp(r'\s+')),
     ];
 
-    final probe = await Process.run('ssh', [
-      ...sshBase,
-      host,
-      'command -v rsync >/dev/null 2>&1 && echo R; sudo -n true 2>/dev/null && echo S',
-    ]);
+    // Probe for rsync, tar, and passwordless sudo in one round-trip.
+    const probeCmd =
+        'command -v rsync >/dev/null 2>&1 && echo R; '
+        'command -v tar >/dev/null 2>&1 && echo T; '
+        'sudo -n true 2>/dev/null && echo S';
+    final probe = await Process.run('ssh', [...sshBase, host, probeCmd]);
     if (probe.exitCode != 0) {
       return CrossResolveResult.failed(
         'cannot reach $host over ssh: ${probe.stderr}',
       );
     }
     final caps = probe.stdout.toString();
-    if (!caps.contains('R')) {
-      return CrossResolveResult.failed('rsync not found on $host');
-    }
-    final passwordlessSudo = caps.contains('S');
+    final sudo = caps.contains('S');
 
-    // rsync transport: -e 'ssh -p <port> <opts>'. With passwordless sudo, read
-    // root-owned files via --rsync-path='sudo rsync'. Exclude virtual + huge
-    // runtime trees that a cross sysroot never needs.
-    final rshOpts = ['ssh', ...sshBase].join(' ');
-    final rsyncArgs = <String>[
-      '-aHAX',
-      '--delete',
-      '-e',
-      rshOpts,
-      if (passwordlessSudo) '--rsync-path=sudo rsync',
-      '--exclude=/proc/*',
-      '--exclude=/sys/*',
-      '--exclude=/dev/*',
-      '--exclude=/run/*',
-      '--exclude=/tmp/*',
-      '--exclude=/var/cache/*',
-      '--exclude=/var/log/*',
-      '--exclude=/home/*',
-      '$host:/',
-      '${sysrootDir.path}/',
-    ];
-    final rsync = await Process.run('rsync', rsyncArgs);
-    if (rsync.exitCode != 0) {
-      // 23/24 = partial transfer (skipped root-only files without sudo) — fine.
-      if (rsync.exitCode != 23 && rsync.exitCode != 24) {
-        return CrossResolveResult.failed(
-          'device rsync failed: ${rsync.stderr}',
-        );
-      }
+    // Prefer rsync; fall back to streaming tar over ssh when the device ships
+    // no rsync (common on minimal images); fail only if neither is present.
+    final CrossResolveResult? err;
+    if (caps.contains('R')) {
+      err = await _rsyncFromDevice(host, sshBase, sudo: sudo, into: sysrootDir);
+    } else if (caps.contains('T')) {
+      err = await _tarFromDevice(host, sshBase, sudo: sudo, into: sysrootDir);
+    } else {
+      return CrossResolveResult.failed('neither rsync nor tar found on $host');
     }
+    if (err != null) return err;
 
     _relativizeSymlinks(
       Directory(p.join(sysrootDir.path, 'usr', 'lib', 'aarch64-linux-gnu')),
     );
+    return null;
+  }
+
+  // Virtual + huge runtime trees a cross sysroot never needs (relative; each
+  // transport anchors them with its own prefix).
+  static const _deviceExcludes = [
+    'proc/*',
+    'sys/*',
+    'dev/*',
+    'run/*',
+    'tmp/*',
+    'var/cache/*',
+    'var/log/*',
+    'home/*',
+  ];
+
+  /// rsync the device rootfs into [into] — the fast path. With passwordless
+  /// sudo, reads root-owned files via `--rsync-path='sudo rsync'`.
+  Future<CrossResolveResult?> _rsyncFromDevice(
+    String host,
+    List<String> sshBase, {
+    required bool sudo,
+    required Directory into,
+  }) async {
+    final rshOpts = ['ssh', ...sshBase].join(' ');
+    final rsync = await Process.run('rsync', [
+      '-aHAX',
+      '--delete',
+      '-e',
+      rshOpts,
+      if (sudo) '--rsync-path=sudo rsync',
+      for (final e in _deviceExcludes) '--exclude=/$e',
+      '$host:/',
+      '${into.path}/',
+    ]);
+    // 23/24 = partial transfer (skipped root-only files without sudo) — fine.
+    if (rsync.exitCode != 0 && rsync.exitCode != 23 && rsync.exitCode != 24) {
+      return CrossResolveResult.failed('device rsync failed: ${rsync.stderr}');
+    }
+    return null;
+  }
+
+  /// Stream a `tar` of the device rootfs over ssh into [into] — the fallback
+  /// when the device has no rsync. tar ships on nearly every image, and this
+  /// still captures every world-readable header/lib the cross sysroot needs.
+  Future<CrossResolveResult?> _tarFromDevice(
+    String host,
+    List<String> sshBase, {
+    required bool sudo,
+    required Directory into,
+  }) async {
+    final remote = StringBuffer(sudo ? 'sudo ' : '')
+      ..write('tar -cf - -C / ')
+      ..writeAll(_deviceExcludes.map((e) => "--exclude='./$e'"), ' ')
+      ..write(' .');
+    final ssh = await Process.start('ssh', [
+      ...sshBase,
+      host,
+      remote.toString(),
+    ]);
+    final tar = await Process.start('tar', ['-xf', '-', '-C', into.path]);
+    unawaited(ssh.stderr.drain<void>());
+    unawaited(tar.stderr.drain<void>());
+    await ssh.stdout.pipe(tar.stdin);
+    final tarCode = await tar.exitCode;
+    final sshCode = await ssh.exitCode;
+    // tar exit 1 = "file changed as we read it" on a live fs — tolerate.
+    if (tarCode > 1 || sshCode > 1) {
+      return CrossResolveResult.failed(
+        'device tar-over-ssh from $host failed (ssh=$sshCode tar=$tarCode)',
+      );
+    }
     return null;
   }
 

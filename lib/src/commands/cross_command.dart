@@ -37,6 +37,13 @@ class CrossCommand extends Command<int> {
         'prepare',
         help: 'Also build augment libraries into the overlay.',
         negatable: false,
+      )
+      ..addFlag(
+        'dry-run',
+        help:
+            'Report the resolution plan (provider, toolchain, sysroot, '
+            'preflight, local inputs) without downloading, mounting, or ssh.',
+        negatable: false,
       );
   }
 
@@ -55,14 +62,19 @@ class CrossCommand extends Command<int> {
   Future<int> run() async {
     final args = argResults!;
     if (args.rest.isEmpty) {
-      _logger.err('Usage: emb cross <package-dir> [--prepare]');
+      _logger.err('Usage: emb cross <package-dir|manifest.yaml> [--dry-run]');
       return ExitCode.usage.code;
     }
 
-    final pkgDir = Directory(args.rest.first);
-    final manifest = _loader.loadPackageDir(pkgDir);
+    // Accept either a package directory (with emb.yaml) or an explicit manifest
+    // file (e.g. examples/cross/pi5.emb.yaml).
+    final inputPath = args.rest.first;
+    final manifest =
+        FileSystemEntity.typeSync(inputPath) == FileSystemEntityType.file
+        ? _loader.loadManifestFile(File(inputPath))
+        : _loader.loadPackageDir(Directory(inputPath));
     if (manifest == null) {
-      _logger.err('No emb manifest in ${pkgDir.path}.');
+      _logger.err('No emb manifest at $inputPath.');
       return ExitCode.usage.code;
     }
     final crossMap = manifest.raw['cross'];
@@ -89,7 +101,14 @@ class CrossCommand extends Command<int> {
       host: host,
     );
 
-    // Provider-declared preflight (qemu-static for arm-gnu apt chroot, etc.).
+    // --dry-run: report the plan without any download / mount / ssh side
+    // effects, so every target validates on any host.
+    if (args['dry-run'] == true) {
+      await _plan(provider, target, host);
+      return ExitCode.success.code;
+    }
+
+    // Provider-declared preflight (tar/xz/rsync for arm-gnu, etc.).
     final missing = await _missingTools(provider.preflightTools);
     if (missing.isNotEmpty) {
       _logger.err(
@@ -137,6 +156,70 @@ class CrossCommand extends Command<int> {
       ..info('  cmake tc file : ${p.cmakeToolchainFile ?? "(emit)"}')
       ..info('  meson cross   : ${p.mesonCrossFile ?? "(emit/none)"}')
       ..info('  cpu flags     : ${p.cFlags.join(" ")}');
+  }
+
+  /// Report the resolution plan with no download / mount / ssh side effects.
+  Future<void> _plan(
+    CrossProvider provider,
+    CrossTarget target,
+    HostInfo host,
+  ) async {
+    final missing = await _missingTools(provider.preflightTools);
+    _logger
+      ..info(styleBold.wrap('Cross plan (${provider.name})'))
+      ..info('  triple        : ${target.triple ?? "(provider default)"}')
+      ..info('  cpu flags     : ${target.cpuFlags.join(" ")}')
+      ..info('  host          : ${host.os.name}/${host.machineArch}')
+      ..info(
+        '  preflight     : '
+        '${missing.isEmpty ? "ok" : "MISSING ${missing.join(", ")}"}',
+      );
+    switch (target.provider) {
+      case CrossProviderKind.armGnu:
+        final tc = target.versionPolicy == ToolchainVersionPolicy.pinned
+            ? (target.toolchainVersion ?? '(unset!)')
+            : 'derive from sysroot codename';
+        final s = target.sysroot;
+        final sysroot = switch (s?.source) {
+          SysrootProvenance.image => 'image  ${s?.imageUrl}',
+          SysrootProvenance.device =>
+            'device ${s?.deviceHost} (ssh:${s?.sshPort})',
+          null => '(none configured)',
+        };
+        _logger
+          ..info('  toolchain     : $tc')
+          ..info('  sysroot       : $sysroot');
+        if (host.os != HostOs.linux) {
+          _logger.info('  note          : resolve needs a Linux host + root');
+        }
+      case CrossProviderKind.yoctoRecipe:
+        final build = target.yoctoBuild;
+        final present = build != null && Directory(build).existsSync();
+        _logger
+          ..info(
+            '  recipe        : ${target.recipe} @ ${build ?? "(unset!)"} '
+            '${present ? "[present]" : "[absent]"}',
+          )
+          ..info('  machine tuple : ${target.machineTuple ?? "(unset!)"}');
+      case CrossProviderKind.yoctoSdk:
+        final loc = target.sdkEnvSetup ?? target.sdkPath ?? target.sdkUrl;
+        final isUrl =
+            target.sdkUrl != null &&
+            target.sdkPath == null &&
+            target.sdkEnvSetup == null;
+        final present = target.sdkEnvSetup != null
+            ? File(target.sdkEnvSetup!).existsSync()
+            : target.sdkPath != null && Directory(target.sdkPath!).existsSync();
+        final state = isUrl
+            ? '[download]'
+            : (present ? '[present]' : '[absent]');
+        _logger.info('  sdk           : ${loc ?? "(none!)"} $state');
+    }
+    if (target.augment.isNotEmpty) {
+      _logger.info(
+        '  augment       : ${target.augment.map((a) => a.pkg).join(", ")}',
+      );
+    }
   }
 
   Future<List<String>> _missingTools(List<String> tools) async {
