@@ -45,6 +45,9 @@ class ArmGnuCrossProvider implements CrossProvider {
   @override
   String get name => 'arm-gnu';
 
+  @override
+  String get triple => target.targetTriple ?? _defaultTriple;
+
   // Tools the resolve path actually uses: `tar` (toolchain extract), `xz`
   // (image decompress), `rsync` (image + device sysroot). `qemu-aarch64-static`
   // is intentionally NOT here — it's only needed for the `-dev` apt chroot,

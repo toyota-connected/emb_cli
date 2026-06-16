@@ -62,6 +62,20 @@ class CrossCommand extends Command<int> {
             'After building, package each backend binary into a .deb '
             '(root-free; Depends derived from the binary + sysroot).',
         negatable: false,
+      )
+      ..addFlag(
+        'clean',
+        help:
+            'Remove this target build + overlay dirs (keeps the toolchain '
+            'and sysroot), then exit.',
+        negatable: false,
+      )
+      ..addFlag(
+        'clean-all',
+        help:
+            'Also remove the downloaded/extracted toolchain + sysroot (and '
+            'apt/deb caches) for this target, then exit.',
+        negatable: false,
       );
   }
 
@@ -118,6 +132,11 @@ class CrossCommand extends Command<int> {
       workspace: workspace,
       host: host,
     );
+
+    // --clean / --clean-all: remove working dirs and exit (no download).
+    if (args['clean'] == true || args['clean-all'] == true) {
+      return _clean(provider, workspace, all: args['clean-all'] == true);
+    }
 
     // --dry-run: report the plan without any download / mount / ssh side
     // effects, so every target validates on any host.
@@ -250,6 +269,74 @@ class CrossCommand extends Command<int> {
       );
     }
     return ExitCode.success.code;
+  }
+
+  /// Remove this target's cross working dirs and report freed space. `--clean`
+  /// keeps the expensive toolchain + sysroot (the `cross-<triple>` dir);
+  /// `--clean-all` ([all]) removes those plus the shared overlay sources too.
+  Future<int> _clean(
+    CrossProvider provider,
+    Workspace workspace, {
+    required bool all,
+  }) async {
+    final triple = provider.triple;
+    final targets = <Directory>[
+      workspace.platformDir('cross-build-$triple'),
+      workspace.platformDir('overlay-$triple'),
+      if (all) ...[
+        workspace.platformDir('cross-$triple'),
+        workspace.platformDir('overlay-src'),
+        if (provider.name == 'yocto-sdk') workspace.platformDir('yocto-sdk'),
+      ],
+    ];
+
+    var freed = 0;
+    var removed = 0;
+    for (final dir in targets) {
+      if (!dir.existsSync()) continue;
+      final bytes = _dirSize(dir);
+      dir.deleteSync(recursive: true);
+      freed += bytes;
+      removed++;
+      _logger.info('  removed ${dir.path} (${_human(bytes)})');
+    }
+    if (removed == 0) {
+      _logger.info('Nothing to clean for $triple.');
+    } else {
+      _logger.info('Freed ${_human(freed)}.');
+      if (!all) {
+        _logger.detail(
+          'Kept the toolchain + sysroot; use --clean-all to remove those.',
+        );
+      }
+    }
+    return ExitCode.success.code;
+  }
+
+  /// Total size of [dir] in bytes, not following symlinks.
+  int _dirSize(Directory dir) {
+    var total = 0;
+    for (final e in dir.listSync(recursive: true, followLinks: false)) {
+      if (e is File) {
+        try {
+          total += e.lengthSync();
+        } on FileSystemException {
+          // Dangling entry mid-delete; ignore.
+        }
+      }
+    }
+    return total;
+  }
+
+  String _human(int bytes) {
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    var n = bytes.toDouble();
+    var i = 0;
+    while (n >= 1024 && i < units.length - 1) {
+      n /= 1024;
+      i++;
+    }
+    return '${n.toStringAsFixed(i == 0 || n >= 100 ? 0 : 1)}${units[i]}';
   }
 
   /// Package each successfully-built backend binary into a `.deb` under

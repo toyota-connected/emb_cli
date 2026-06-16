@@ -71,6 +71,47 @@ void main() {
     expect(await run(['cross', '--dry-run', f.path]), ExitCode.success.code);
   });
 
+  test('--clean removes build + overlay dirs, keeps the toolchain', () async {
+    final pkg = pkgWith(
+      'cl',
+      'id: cl\ntype: app\ncross:\n  provider: arm-gnu\n'
+          '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n',
+    );
+    // Stage the per-target working dirs under an explicit workspace.
+    const triple = 'aarch64-none-linux-gnu';
+    final root = p.join(tmp.path, '.config', 'flutter_workspace');
+    for (final d in [
+      'cross-$triple',
+      'cross-build-$triple',
+      'overlay-$triple',
+    ]) {
+      Directory(p.join(root, d)).createSync(recursive: true);
+    }
+
+    final code = await run(['cross', '-w', tmp.path, '--clean', pkg.path]);
+    expect(code, ExitCode.success.code);
+    final build = Directory(p.join(root, 'cross-build-$triple'));
+    expect(build.existsSync(), isFalse);
+    expect(Directory(p.join(root, 'overlay-$triple')).existsSync(), isFalse);
+    // The expensive toolchain/sysroot dir is preserved by plain --clean.
+    expect(Directory(p.join(root, 'cross-$triple')).existsSync(), isTrue);
+  });
+
+  test('--clean-all also removes the toolchain + sysroot dir', () async {
+    final pkg = pkgWith(
+      'ca',
+      'id: ca\ntype: app\ncross:\n  provider: arm-gnu\n'
+          '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n',
+    );
+    const triple = 'aarch64-none-linux-gnu';
+    final root = p.join(tmp.path, '.config', 'flutter_workspace');
+    Directory(p.join(root, 'cross-$triple')).createSync(recursive: true);
+
+    final code = await run(['cross', '-w', tmp.path, '--clean-all', pkg.path]);
+    expect(code, ExitCode.success.code);
+    expect(Directory(p.join(root, 'cross-$triple')).existsSync(), isFalse);
+  });
+
   // Every shipped example must parse -> dispatch -> plan with no side effects:
   // this validates all of the listed use cases hermetically.
   test('--dry-run plans every example manifest', () async {

@@ -37,6 +37,9 @@ class YoctoSdkCrossProvider implements CrossProvider {
   @override
   String get name => 'yocto-sdk';
 
+  @override
+  String get triple => target.targetTriple ?? 'aarch64-poky-linux';
+
   // The SDK is relocatable. `sh` runs a downloaded installer when sdk_url is
   // used; bash sources the environment-setup script.
   @override
