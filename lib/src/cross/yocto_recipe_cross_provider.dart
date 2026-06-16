@@ -33,6 +33,9 @@ class YoctoRecipeCrossProvider implements CrossProvider {
   String get name => 'yocto-recipe';
 
   @override
+  String get triple => target.targetTriple ?? 'aarch64-poky-linux';
+
+  @override
   List<String> get preflightTools => const ['pkg-config'];
 
   /// Default OE tuning when the manifest gives none — matches the i.MX8MM

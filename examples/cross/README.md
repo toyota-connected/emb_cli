@@ -2,18 +2,55 @@
 
 One manifest per `ivi-homescreen/scripts/build_*.sh`, plus both Yocto-SDK
 locations. Each exercises the `cross:` block parsed by `CrossTarget.fromMap`
-(`lib/src/cross/cross_target.dart`). Values are lifted verbatim from the
+(`lib/src/cross/cross_target.dart`).
+
+`pi5.emb.yaml` is **validated end-to-end** (`--build` + `--deb` produce an
+aarch64 binary and an installable `.deb`) and carries the full
+`sysroot.dev_packages` / `backends` / `package` config. The rest are **parse /
+plan validated** (`--dry-run`); their values are lifted verbatim from the
 scripts.
 
 | manifest | script | provider | toolchain / sysroot | tuning | augment |
 |---|---|---|---|---|---|
-| `pi5.emb.yaml` | `build_pi.sh --target pi5` | `arm-gnu` | pinned 12.3.rel1 / raspios bookworm **image** | `-mcpu=cortex-a76` | libdisplay-info + vulkan-headers |
+| `pi5.emb.yaml` ✅ | `build_pi.sh --target pi5` | `arm-gnu` | pinned 12.3.rel1 / raspios bookworm **image** | `-mcpu=cortex-a76` | libdisplay-info |
 | `unoq.emb.yaml` | `build_unoq.sh` | `arm-gnu` | **derive** / **device rsync** | `-mcpu=cortex-a53` | libdisplay-info |
 | `radxa_zero3.emb.yaml` | `build_radxa_zero3.sh` | `arm-gnu` | pinned 12.3.rel1 / radxa bookworm **image** | `-mcpu=cortex-a55` | libdisplay-info + vulkan-headers |
 | `beagleplay.emb.yaml` | `build_beagleplay.sh` (k3) | `arm-gnu` | pinned 15.2.rel1 / beagleplay trixie **image** | `-mcpu=cortex-a53` | none (trixie new enough) |
 | `nitrogen8mm.emb.yaml` | `build_nitrogen8mm.sh` | `yocto-recipe` | located weston recipe-sysroot | OE `-march` | libdisplay-info |
 | `agl_sdk_local.emb.yaml` | (AGL SDK, installed) | `yocto-sdk` | `sdk_path` → `environment-setup-aarch64-agl-linux` | from `CFLAGS` | none |
 | `agl_sdk_url.emb.yaml` | (AGL SDK, downloaded) | `yocto-sdk` | `sdk_url` → install → `environment-setup-aarch64-agl-linux` | from `CFLAGS` | none |
+
+## Validated workflow (pi5)
+
+Run from the `ivi-homescreen` package dir (where its `emb.yaml` lives). `emb
+cross` accepts a package dir or an explicit manifest file.
+
+```sh
+# 1. Inspect the plan — no download / mount / ssh side effects.
+emb cross . --dry-run
+
+# 2. Resolve toolchain + sysroot (root-free) and build each cross.backends
+#    entry. Augment libs (libdisplay-info 0.2.0) are built and staged first.
+emb cross . --build
+
+# 3. Build, then package each backend binary into a root-free .deb. Depends is
+#    auto-derived from the binary's DT_NEEDED. Output: cross-build-<triple>/dist.
+emb cross . --build --deb
+
+# 4. Reclaim disk. --clean drops the build + overlay dirs (keeps the multi-GB
+#    toolchain + sysroot); --clean-all also removes the downloaded/extracted
+#    toolchain + sysroot and the apt/deb caches.
+emb cross . --clean
+emb cross . --clean-all
+```
+
+What lands where, under `<workspace>/.config/flutter_workspace/`:
+
+- `cross-<triple>/` — downloaded + extracted toolchain, the assembled sysroot,
+  and the resolver's `debs/` + apt cache.
+- `cross-build-<triple>/build-<backend>/` — one CMake/Meson build tree per
+  backend; `cross-build-<triple>/dist/` — the generated `.deb`(s).
+- `overlay-<triple>/`, `overlay-src/` — augment build prefix + sources.
 
 ## Sysroot provenance (arm-gnu)
 

@@ -21,4 +21,11 @@ void main() {
     expect(debianMultiarch('riscv64-poky-linux'), 'riscv64-linux-gnu');
     expect(debianMultiarch('x86_64-linux-gnu'), 'x86_64-linux-gnu');
   });
+
+  test('debianArch maps to the dpkg arch name', () {
+    expect(debianArch('aarch64-none-linux-gnu'), 'arm64');
+    expect(debianArch('arm-none-linux-gnueabihf'), 'armhf');
+    expect(debianArch('riscv64-poky-linux'), 'riscv64');
+    expect(debianArch('x86_64-linux-gnu'), 'amd64');
+  });
 }

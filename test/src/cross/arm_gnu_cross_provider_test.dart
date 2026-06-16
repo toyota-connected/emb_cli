@@ -66,7 +66,14 @@ void main() {
     final pf = r.profile!;
     expect(pf.cc, endsWith('$_triple-gcc'));
     expect(pf.targetSysroot, endsWith('sysroot'));
-    expect(pf.cFlags, ['-mcpu=cortex-a76']);
+    expect(pf.cFlags, contains('-mcpu=cortex-a76'));
+    // Debian multiarch search path for crt*.o (-B) and libs (-L).
+    expect(
+      pf.cFlags.any(
+        (f) => f.startsWith('-B') && f.contains('aarch64-linux-gnu'),
+      ),
+      isTrue,
+    );
     expect(pf.cmakeToolchainFile, isNotNull);
   });
 

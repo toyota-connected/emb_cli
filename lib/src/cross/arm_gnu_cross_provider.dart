@@ -2,10 +2,12 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
+import 'package:emb_cli/src/cross/apt_resolver.dart';
 import 'package:emb_cli/src/cross/cross_arch.dart';
 import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_provider.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
+import 'package:emb_cli/src/cross/sysroot_extract.dart';
 import 'package:emb_cli/src/cross/toolchain_emitter.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
@@ -42,6 +44,9 @@ class ArmGnuCrossProvider implements CrossProvider {
 
   @override
   String get name => 'arm-gnu';
+
+  @override
+  String get triple => target.targetTriple ?? _defaultTriple;
 
   // Tools the resolve path actually uses: `tar` (toolchain extract), `xz`
   // (image decompress), `rsync` (image + device sysroot). `qemu-aarch64-static`
@@ -80,7 +85,7 @@ class ArmGnuCrossProvider implements CrossProvider {
 
     // Ordering edge: derive-from-sysroot prepares the sysroot first so its
     // codename can pick the toolchain version; otherwise the version is pinned
-    // and the two phases are independent.
+    // and the two steps are independent.
     final sysrootDir = Directory(p.join(platformDir.path, 'sysroot'));
     String? codename;
     if (target.versionPolicy == ToolchainVersionPolicy.deriveFromSysroot) {
@@ -113,7 +118,26 @@ class ArmGnuCrossProvider implements CrossProvider {
       if (err != null) return err;
     }
 
-    final cpuFlags = target.cpuFlags;
+    // A Debian sysroot keeps crt*.o / libc / libm under the multiarch subdir
+    // (`usr/lib/<multiarch>`) and the arch-specific `bits/` headers under
+    // `usr/include/<multiarch>`, but the `*-none-linux-gnu` toolchain only
+    // searches `usr/lib`/`lib` and `usr/include`. Point it at the multiarch
+    // dirs: `-B` for the crt startup objects, `-L` for libraries, `-I` for the
+    // `bits/wordsize.h` / `bits/libc-header-start.h` headers.
+    final maLib = p.join(sysrootDir.path, 'usr', 'lib', _multiarch);
+    final maLib2 = p.join(sysrootDir.path, 'lib', _multiarch);
+    final maInc = p.join(sysrootDir.path, 'usr', 'include', _multiarch);
+    final cpuFlags = [
+      ...target.cpuFlags,
+      '-B$maLib',
+      '-L$maLib',
+      '-L$maLib2',
+      '-I$maInc',
+      // Let ld resolve the indirect (DT_NEEDED) deps of shared libs on the link
+      // line (e.g. libinput.so -> libevdev/libwacom/libmtdev) from the
+      // multiarch dirs; `-L` only drives direct `-l` resolution.
+      '-Wl,-rpath-link,$maLib:$maLib2',
+    ];
     final cmakeTc = _emitter.emitCMake(
       outDir: platformDir,
       triple: triple,
@@ -203,19 +227,122 @@ class ArmGnuCrossProvider implements CrossProvider {
   /// this yields a base sysroot; dev-package staging is layered on before
   /// configure.
   Future<CrossResolveResult?> _prepareSysroot(Directory sysrootDir) async {
-    if (File(p.join(sysrootDir.path, 'etc', 'os-release')).existsSync()) {
-      return null; // already populated
-    }
     final spec = target.sysroot;
     if (spec == null) {
       return const CrossResolveResult.unavailable(
         'arm-gnu needs a cross.sysroot block (image_url, or source: device)',
       );
     }
-    return switch (spec.source) {
-      SysrootProvenance.image => _prepareSysrootFromImage(sysrootDir, spec),
-      SysrootProvenance.device => _prepareSysrootFromDevice(sysrootDir, spec),
-    };
+
+    // Acquire the base rootfs (skip if already populated).
+    if (!File(p.join(sysrootDir.path, 'etc', 'os-release')).existsSync()) {
+      final err = switch (spec.source) {
+        SysrootProvenance.image => await _prepareSysrootFromImage(
+          sysrootDir,
+          spec,
+        ),
+        SysrootProvenance.device => await _prepareSysrootFromDevice(
+          sysrootDir,
+          spec,
+        ),
+      };
+      if (err != null) return err;
+    }
+
+    // Layer the `-dev` packages in, root-free (download + dpkg-deb -x).
+    if (spec.devPackages.isNotEmpty) {
+      return _populateDevPackages(sysrootDir, spec);
+    }
+    return null;
+  }
+
+  /// Resolve `cross.sysroot.dev_packages` (package *names*) to their dependency
+  /// closure using the sysroot's own apt sources, then download each `.deb` and
+  /// `dpkg-deb -x` it in — no apt, no chroot, no root. Idempotent via a
+  /// per-package marker.
+  Future<CrossResolveResult?> _populateDevPackages(
+    Directory sysrootDir,
+    SysrootSpec spec,
+  ) async {
+    final arch = debianArch(target.targetTriple ?? _defaultTriple);
+    final urls = aptIndexUrls(_readAptSources(sysrootDir), arch);
+    if (urls.isEmpty) {
+      return CrossResolveResult.failed(
+        'no apt sources in ${sysrootDir.path}/etc/apt (cannot resolve -dev)',
+      );
+    }
+
+    final cache = Directory(p.join(sysrootDir.parent.path, 'apt'))
+      ..createSync(recursive: true);
+    final index = AptIndex();
+    for (final url in urls) {
+      final text = await _fetchIndex(url, cache);
+      if (text == null) continue; // missing component index — skip
+      index.addAll(
+        parsePackagesIndex(
+          text,
+          repoBase: url.replaceFirst(RegExp(r'/dists/.*$'), ''),
+        ),
+      );
+    }
+    if (index.packages.isEmpty) {
+      return const CrossResolveResult.failed(
+        'failed to fetch any apt Packages index',
+      );
+    }
+
+    final status = File(
+      p.join(sysrootDir.path, 'var', 'lib', 'dpkg', 'status'),
+    );
+    final installed = status.existsSync()
+        ? parseInstalled(status.readAsStringSync())
+        : <String>{};
+
+    final debs = Directory(p.join(sysrootDir.parent.path, 'debs'))
+      ..createSync(recursive: true);
+    final done = Directory(p.join(sysrootDir.path, '.emb', 'dev-packages'))
+      ..createSync(recursive: true);
+    for (final pkg in index.closure(spec.devPackages, satisfied: installed)) {
+      final name = p.basename(Uri.parse(pkg.url).path);
+      final marker = File(p.join(done.path, name));
+      if (marker.existsSync()) continue;
+      final deb = File(p.join(debs.path, name));
+      if (!deb.existsSync() && !await _download(pkg.url, deb)) {
+        return CrossResolveResult.failed('deb download failed: ${pkg.url}');
+      }
+      if (!await extractDeb(deb, sysrootDir)) {
+        return CrossResolveResult.failed('dpkg-deb -x failed for $name');
+      }
+      marker.writeAsStringSync('');
+    }
+    return null;
+  }
+
+  /// Concatenate the sysroot's `/etc/apt/sources.list` and
+  /// `sources.list.d/*.list` for [aptIndexUrls].
+  String _readAptSources(Directory sysrootDir) {
+    final buf = StringBuffer();
+    final main = File(p.join(sysrootDir.path, 'etc', 'apt', 'sources.list'));
+    if (main.existsSync()) buf.writeln(main.readAsStringSync());
+    final dir = Directory(
+      p.join(sysrootDir.path, 'etc', 'apt', 'sources.list.d'),
+    );
+    if (dir.existsSync()) {
+      for (final f in dir.listSync().whereType<File>()) {
+        if (f.path.endsWith('.list')) buf.writeln(f.readAsStringSync());
+      }
+    }
+    return buf.toString();
+  }
+
+  /// Download a compressed `Packages` index (cached) and decompress it to text.
+  Future<String?> _fetchIndex(String url, Directory cache) async {
+    final dest = File(
+      p.join(cache.path, '${url.hashCode.toRadixString(16)}.xz'),
+    );
+    if (!dest.existsSync() && !await _download(url, dest)) return null;
+    final un = await Process.run('xz', ['-dc', dest.path]);
+    return un.exitCode == 0 ? un.stdout.toString() : null;
   }
 
   /// Unpack a distro image: download/decompress, loop-mount the rootfs
@@ -251,6 +378,74 @@ class ArmGnuCrossProvider implements CrossProvider {
     }
 
     sysrootDir.createSync(recursive: true);
+
+    // Prefer the root-free extraction (sfdisk + dd + debugfs rdump) when the
+    // tools are present; fall back to the privileged loop-mount otherwise.
+    final rootless = await _hasTool('sfdisk') && await _hasTool('debugfs');
+    final err = rootless
+        ? await _extractImageRootless(img, spec.partition, sysrootDir)
+        : await _extractImageViaLoopMount(img, spec.partition, sysrootDir);
+    if (err != null) return err;
+
+    relativizeSysrootSymlinks(
+      sysrootDir,
+      Directory(p.join(sysrootDir.path, 'usr', 'lib', _multiarch)),
+    );
+    return null;
+  }
+
+  Future<bool> _hasTool(String tool) async =>
+      (await Process.run('which', [tool])).exitCode == 0;
+
+  /// Root-free rootfs extraction: read the partition table, carve the rootfs
+  /// partition out with `dd`, and dump it with `debugfs rdump` — no loop
+  /// device, no `sudo`.
+  Future<CrossResolveResult?> _extractImageRootless(
+    File img,
+    int partition,
+    Directory dest,
+  ) async {
+    final sf = await Process.run('sfdisk', ['-J', img.path]);
+    if (sf.exitCode != 0) {
+      return CrossResolveResult.failed('sfdisk failed: ${sf.stderr}');
+    }
+    final extent = ext4PartitionExtent(sf.stdout.toString(), partition);
+    if (extent == null) {
+      return CrossResolveResult.failed(
+        'no partition $partition in ${img.path}',
+      );
+    }
+    final part = File('${img.path}.p$partition');
+    if (!part.existsSync()) {
+      final dd = await Process.run('dd', [
+        'if=${img.path}',
+        'of=${part.path}',
+        'bs=${extent.sectorSize}',
+        'skip=${extent.startSector}',
+        'count=${extent.sizeSectors}',
+        'status=none',
+      ]);
+      if (dd.exitCode != 0) {
+        return CrossResolveResult.failed('dd failed: ${dd.stderr}');
+      }
+    }
+    if (!await extractExt4Tree(part, dest)) {
+      return CrossResolveResult.failed(
+        'debugfs rdump did not populate ${dest.path}',
+      );
+    }
+    // debugfs can mangle the usr-merge symlinks (/lib -> usr/lib); restore them
+    // so libc.so's /lib/... references resolve inside the sysroot.
+    normalizeUsrMerge(dest);
+    return null;
+  }
+
+  /// Privileged fallback: loop-mount the rootfs partition and rsync it out.
+  Future<CrossResolveResult?> _extractImageViaLoopMount(
+    File img,
+    int partition,
+    Directory dest,
+  ) async {
     final mnt = await Directory.systemTemp.createTemp('emb-rootfs.');
     final loop = await Process.run('sudo', [
       'losetup',
@@ -263,7 +458,7 @@ class ArmGnuCrossProvider implements CrossProvider {
     }
     final loopDev = loop.stdout.toString().trim();
     try {
-      final part = '${loopDev}p${spec.partition}';
+      final part = '${loopDev}p$partition';
       final mount = await Process.run('sudo', ['mount', part, mnt.path]);
       if (mount.exitCode != 0) {
         return CrossResolveResult.failed('mount failed: ${mount.stderr}');
@@ -272,7 +467,7 @@ class ArmGnuCrossProvider implements CrossProvider {
         'rsync',
         '-aHAX',
         '${mnt.path}/',
-        '${sysrootDir.path}/',
+        '${dest.path}/',
       ]);
       await Process.run('sudo', ['umount', mnt.path]);
       if (rsync.exitCode != 0) {
@@ -282,11 +477,6 @@ class ArmGnuCrossProvider implements CrossProvider {
       await Process.run('sudo', ['losetup', '-d', loopDev]);
       mnt.deleteSync(recursive: true);
     }
-
-    relativizeSysrootSymlinks(
-      sysrootDir,
-      Directory(p.join(sysrootDir.path, 'usr', 'lib', _multiarch)),
-    );
     return null;
   }
 

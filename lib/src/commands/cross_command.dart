@@ -1,14 +1,18 @@
 import 'dart:io';
 
 import 'package:args/command_runner.dart';
+import 'package:emb_cli/src/cross/cross_arch.dart';
+import 'package:emb_cli/src/cross/cross_builder.dart';
 import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_provider.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
+import 'package:emb_cli/src/cross/deb_packager.dart';
 import 'package:emb_cli/src/cross/overlay_builder.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
 import 'package:mason_logger/mason_logger.dart';
+import 'package:path/path.dart' as p;
 
 /// {@template cross_command}
 /// `emb cross <package>` — resolve a target manifest's `cross:` block into a
@@ -16,7 +20,7 @@ import 'package:mason_logger/mason_logger.dart';
 /// `--prepare` also build its augment libraries into the overlay.
 ///
 /// This is the consumer that turns the cross layer into a usable command; the
-/// per-backend configure/build (Phase D) hangs off the resolved profile.
+/// per-backend configure/build hangs off the resolved profile.
 /// {@endtemplate}
 class CrossCommand extends Command<int> {
   /// {@macro cross_command}
@@ -43,6 +47,34 @@ class CrossCommand extends Command<int> {
         help:
             'Report the resolution plan (provider, toolchain, sysroot, '
             'preflight, local inputs) without downloading, mounting, or ssh.',
+        negatable: false,
+      )
+      ..addFlag(
+        'build',
+        help:
+            'Configure + build the embedder under the resolved profile, one '
+            'build per cross.backends entry.',
+        negatable: false,
+      )
+      ..addFlag(
+        'deb',
+        help:
+            'After building, package each backend binary into a .deb '
+            '(root-free; Depends derived from the binary + sysroot).',
+        negatable: false,
+      )
+      ..addFlag(
+        'clean',
+        help:
+            'Remove this target build + overlay dirs (keeps the toolchain '
+            'and sysroot), then exit.',
+        negatable: false,
+      )
+      ..addFlag(
+        'clean-all',
+        help:
+            'Also remove the downloaded/extracted toolchain + sysroot (and '
+            'apt/deb caches) for this target, then exit.',
         negatable: false,
       );
   }
@@ -101,6 +133,11 @@ class CrossCommand extends Command<int> {
       host: host,
     );
 
+    // --clean / --clean-all: remove working dirs and exit (no download).
+    if (args['clean'] == true || args['clean-all'] == true) {
+      return _clean(provider, workspace, all: args['clean-all'] == true);
+    }
+
     // --dry-run: report the plan without any download / mount / ssh side
     // effects, so every target validates on any host.
     if (args['dry-run'] == true) {
@@ -143,8 +180,253 @@ class CrossCommand extends Command<int> {
         overlay.close();
       }
     }
+
+    if (args['build'] == true) {
+      return _build(
+        profile,
+        target,
+        workspace,
+        inputPath,
+        deb: args['deb'] == true,
+        defaultName: manifest.id,
+      );
+    }
     return ExitCode.success.code;
   }
+
+  /// Configure + build the embedder under [profile], one build per
+  /// `cross.backends` entry (or a single plain build when none are declared).
+  /// The CMake/meson source is the package directory (the manifest file's
+  /// parent for a file input).
+  Future<int> _build(
+    CrossProfile profile,
+    CrossTarget target,
+    Workspace workspace,
+    String inputPath, {
+    bool deb = false,
+    String defaultName = 'app',
+  }) async {
+    final source =
+        FileSystemEntity.typeSync(inputPath) == FileSystemEntityType.file
+        ? File(inputPath).parent
+        : Directory(inputPath);
+
+    // Stage any augment libraries the sysroot doesn't already satisfy (e.g.
+    // libdisplay-info >= 0.2.0) into the sysroot before configuring, so the
+    // embedder's pkg-config probes resolve them.
+    if (target.augment.isNotEmpty) {
+      final overlay = OverlayBuilder(workspace, profile);
+      try {
+        await overlay.build(
+          target.augment,
+          stageInto: Directory(profile.targetSysroot),
+        );
+      } on OverlayBuildException catch (e) {
+        _logger.err('augment: ${e.message}');
+        return ExitCode.software.code;
+      } finally {
+        overlay.close();
+      }
+    }
+
+    final buildRoot = workspace.ensurePlatformDir(
+      'cross-build-${target.triple ?? profile.targetTriple}',
+    );
+    final builder = CrossBuilder(profile);
+
+    final results = target.backends.isEmpty
+        ? [
+            await builder.build(
+              sourceDir: source,
+              buildDir: Directory('${buildRoot.path}/build'),
+              generator: target.generator,
+            ),
+          ]
+        : await builder.buildBackends(
+            sourceDir: source,
+            buildRoot: buildRoot,
+            generator: target.generator,
+            backends: target.backends,
+          );
+
+    for (final r in results) {
+      final tag = r.backend != null ? '${r.backend}: ' : '';
+      if (r.success) {
+        _logger.info('  ${tag}built → ${r.buildDir}');
+      } else {
+        _logger.err('  $tag${r.message ?? "build failed"}');
+      }
+    }
+    if (!results.every((r) => r.success)) return ExitCode.software.code;
+
+    if (deb) {
+      return _packageDebs(
+        profile,
+        target,
+        buildRoot,
+        results.where((r) => r.success).toList(),
+        defaultName,
+      );
+    }
+    return ExitCode.success.code;
+  }
+
+  /// Remove this target's cross working dirs and report freed space. `--clean`
+  /// keeps the expensive toolchain + sysroot (the `cross-<triple>` dir);
+  /// `--clean-all` ([all]) removes those plus the shared overlay sources too.
+  Future<int> _clean(
+    CrossProvider provider,
+    Workspace workspace, {
+    required bool all,
+  }) async {
+    final triple = provider.triple;
+    final targets = <Directory>[
+      workspace.platformDir('cross-build-$triple'),
+      workspace.platformDir('overlay-$triple'),
+      if (all) ...[
+        workspace.platformDir('cross-$triple'),
+        workspace.platformDir('overlay-src'),
+        if (provider.name == 'yocto-sdk') workspace.platformDir('yocto-sdk'),
+      ],
+    ];
+
+    var freed = 0;
+    var removed = 0;
+    for (final dir in targets) {
+      if (!dir.existsSync()) continue;
+      final bytes = _dirSize(dir);
+      dir.deleteSync(recursive: true);
+      freed += bytes;
+      removed++;
+      _logger.info('  removed ${dir.path} (${_human(bytes)})');
+    }
+    if (removed == 0) {
+      _logger.info('Nothing to clean for $triple.');
+    } else {
+      _logger.info('Freed ${_human(freed)}.');
+      if (!all) {
+        _logger.detail(
+          'Kept the toolchain + sysroot; use --clean-all to remove those.',
+        );
+      }
+    }
+    return ExitCode.success.code;
+  }
+
+  /// Total size of [dir] in bytes, not following symlinks.
+  int _dirSize(Directory dir) {
+    var total = 0;
+    for (final e in dir.listSync(recursive: true, followLinks: false)) {
+      if (e is File) {
+        try {
+          total += e.lengthSync();
+        } on FileSystemException {
+          // Dangling entry mid-delete; ignore.
+        }
+      }
+    }
+    return total;
+  }
+
+  String _human(int bytes) {
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    var n = bytes.toDouble();
+    var i = 0;
+    while (n >= 1024 && i < units.length - 1) {
+      n /= 1024;
+      i++;
+    }
+    return '${n.toStringAsFixed(i == 0 || n >= 100 ? 0 : 1)}${units[i]}';
+  }
+
+  /// Package each successfully-built backend binary into a `.deb` under
+  /// `<buildRoot>/dist`. Multiple backends get a `-<backend>` name suffix.
+  Future<int> _packageDebs(
+    CrossProfile profile,
+    CrossTarget target,
+    Directory buildRoot,
+    List<CrossBuildResult> built,
+    String defaultName,
+  ) async {
+    final spec = target.package ?? const PackageSpec();
+    final arch = debianArch(target.triple ?? profile.targetTriple);
+    final baseName = spec.name ?? defaultName;
+    final outDir = Directory(p.join(buildRoot.path, 'dist'));
+    // The resolver's downloaded `.deb`s sit beside the sysroot, in `debs/`.
+    final debDirs = [
+      Directory(p.join(p.dirname(profile.targetSysroot), 'debs')),
+    ];
+    final packager = DebPackager(readelf: _readelfFor(profile));
+
+    for (final r in built) {
+      final binary = _artifactFor(r.buildDir, spec.bin);
+      if (binary == null) {
+        _logger.err(
+          '  ${r.backend ?? ""}: no binary to package in ${r.buildDir} '
+          '(set cross.package.bin)',
+        );
+        return ExitCode.software.code;
+      }
+      final multi = built.length > 1 && r.backend != null;
+      final name = multi ? '$baseName-${r.backend}' : baseName;
+      final meta = DebMetadata(
+        name: name,
+        version: spec.version,
+        architecture: arch,
+        maintainer: spec.maintainer,
+        description: spec.description ?? '$name (cross-built by emb for $arch)',
+        section: spec.section,
+        priority: spec.priority,
+        dependsExtra: spec.depends,
+        autoDepends: spec.autoDepends,
+      );
+      try {
+        final out = await packager.build(
+          binary: binary,
+          installPath: p.join(spec.installDir, p.basename(binary.path)),
+          meta: meta,
+          outDir: outDir,
+          sysroot: Directory(profile.targetSysroot),
+          debDirs: debDirs,
+        );
+        _logger.info('  ${r.backend ?? ""}: packaged → ${out.path}');
+      } on DebPackageException catch (e) {
+        _logger.err('  ${r.backend ?? ""}: ${e.message}');
+        return ExitCode.software.code;
+      }
+    }
+    return ExitCode.success.code;
+  }
+
+  /// The binary to package: [bin] resolved under [buildDir], else the first ELF
+  /// executable found there.
+  File? _artifactFor(String buildDir, String? bin) {
+    if (bin != null) {
+      final f = File(p.join(buildDir, bin));
+      return f.existsSync() ? f : null;
+    }
+    for (final e in Directory(buildDir).listSync(recursive: true)) {
+      if (e is! File) continue;
+      final stat = e.statSync();
+      // Executable bit + ELF magic.
+      if (stat.mode & 0x49 == 0) continue;
+      final head = e.openSync()..setPositionSync(0);
+      final magic = head.readSync(4);
+      head.closeSync();
+      if (magic.length == 4 &&
+          magic[0] == 0x7f &&
+          magic[1] == 0x45 &&
+          magic[2] == 0x4c &&
+          magic[3] == 0x46) {
+        return e;
+      }
+    }
+    return null;
+  }
+
+  /// Derive the cross `readelf` path from the profile's `gcc`.
+  String _readelfFor(CrossProfile profile) =>
+      profile.cc.replaceFirst(RegExp(r'gcc$'), 'readelf');
 
   void _report(CrossProfile p) {
     _logger
@@ -218,6 +500,12 @@ class CrossCommand extends Command<int> {
     if (target.augment.isNotEmpty) {
       _logger.info(
         '  augment       : ${target.augment.map((a) => a.pkg).join(", ")}',
+      );
+    }
+    if (target.backends.isNotEmpty) {
+      _logger.info(
+        '  backends      : ${target.backends.keys.join(", ")} '
+        '(${target.generator.name})',
       );
     }
   }

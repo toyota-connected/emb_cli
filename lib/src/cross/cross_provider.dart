@@ -18,6 +18,11 @@ abstract class CrossProvider {
   /// Provider token for diagnostics (`arm-gnu`, `yocto-recipe`, `yocto-sdk`).
   String get name;
 
+  /// The effective target triple used to name this provider's working dirs
+  /// (`cross-<triple>`, `cross-build-<triple>`, `overlay-<triple>`).
+  /// Best-effort and resolve-free, so `emb cross --clean` needs no download.
+  String get triple;
+
   /// Host tools that must be present for this provider to function.
   ///
   /// Provider-declared rather than a fixed preflight list: the ARM GNU path

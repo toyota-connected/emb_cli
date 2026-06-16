@@ -52,7 +52,7 @@ enum ToolchainVersionPolicy {
 /// One source-built library staged into a workspace overlay prefix
 /// (libdisplay-info, Vulkan-Headers, …).
 ///
-/// Generalizes the scripts' phase2b/2c: the library is built against the
+/// Generalizes the scripts' local deps: the library is built against the
 /// resolved [CrossProfile] and installed into an overlay that is prepended to
 /// the include/lib/pkg-config search paths, leaving the (possibly shared or
 /// read-only) sysroot pristine.
@@ -91,6 +91,62 @@ class AugmentLib {
   final bool staticLink;
 }
 
+/// The `package:` block of a cross manifest — how `emb cross --deb` turns a
+/// built binary into a `.deb`. All fields are optional; the command fills in
+/// sensible defaults (name from the manifest id, arch from the triple).
+class PackageSpec {
+  const PackageSpec({
+    this.name,
+    this.version = '0.0.0',
+    this.maintainer = 'emb <emb@localhost>',
+    this.description,
+    this.section = 'misc',
+    this.priority = 'optional',
+    this.bin,
+    this.installDir = '/usr/bin',
+    this.depends = const [],
+    this.autoDepends = true,
+  });
+
+  factory PackageSpec.fromMap(Map<dynamic, dynamic> map) => PackageSpec(
+    name: map['name']?.toString(),
+    version: (map['version'] ?? '0.0.0').toString(),
+    maintainer: (map['maintainer'] ?? 'emb <emb@localhost>').toString(),
+    description: map['description']?.toString(),
+    section: (map['section'] ?? 'misc').toString(),
+    priority: (map['priority'] ?? 'optional').toString(),
+    bin: map['bin']?.toString(),
+    installDir: (map['install_dir'] ?? '/usr/bin').toString(),
+    depends: (map['depends'] as List<dynamic>? ?? const [])
+        .map((e) => e.toString())
+        .toList(),
+    autoDepends: (map['auto_depends'] ?? true) as bool,
+  );
+
+  /// Package name; defaults to the manifest id when unset.
+  final String? name;
+  final String version;
+  final String maintainer;
+
+  /// Synopsis; a generated default is used when unset.
+  final String? description;
+  final String section;
+  final String priority;
+
+  /// Binary to package, relative to a backend's build dir (e.g.
+  /// `shell/homescreen`). When unset the command auto-finds the ELF executable.
+  final String? bin;
+
+  /// Absolute install directory on the target (the binary keeps its basename).
+  final String installDir;
+
+  /// Explicit `Depends`, merged with the auto-derived set.
+  final List<String> depends;
+
+  /// Derive `Depends` from the binary's `DT_NEEDED` libraries.
+  final bool autoDepends;
+}
+
 /// Where an `arm-gnu` target's sysroot comes from.
 enum SysrootProvenance {
   /// Unpacked from a distro image (`.img`/`.img.xz`) — pi / radxa / beagleplay.
@@ -120,6 +176,7 @@ class SysrootSpec {
     this.sshPort = 22,
     this.sshOpts,
     this.partition = 2,
+    this.devPackages = const [],
   });
 
   factory SysrootSpec.fromMap(Map<dynamic, dynamic> map) => SysrootSpec(
@@ -131,6 +188,9 @@ class SysrootSpec {
     partition:
         int.tryParse('${map['partition'] ?? map['rootfs_partition'] ?? 2}') ??
         2,
+    devPackages: (map['dev_packages'] as List<dynamic>? ?? const [])
+        .map((e) => e.toString())
+        .toList(),
   );
 
   final SysrootProvenance source;
@@ -151,6 +211,13 @@ class SysrootSpec {
   /// most Debian images put rootfs on `p2`; override with
   /// `sysroot.partition`/`rootfs_partition` for images that differ).
   final int partition;
+
+  /// `-dev` Debian package **names** to layer into the sysroot root-free. emb
+  /// resolves their dependency closure against the sysroot's own apt sources,
+  /// then downloads each `.deb` and `dpkg-deb -x`'s it in — no apt, no chroot,
+  /// no root. List only the top-level packages (e.g. `libdrm-dev`,
+  /// `libegl-dev`); deps are pulled in automatically.
+  final List<String> devPackages;
 }
 
 /// The parsed `cross:` block of a target manifest.
@@ -178,6 +245,9 @@ class CrossTarget {
     this.sdkUrl,
     this.sdkEnvSetup,
     this.augment = const [],
+    this.generator = CrossGenerator.cmake,
+    this.backends = const {},
+    this.package,
   });
 
   factory CrossTarget.fromMap(Map<dynamic, dynamic> map) {
@@ -205,6 +275,15 @@ class CrossTarget {
           .whereType<Map<dynamic, dynamic>>()
           .map(AugmentLib.fromMap)
           .toList(),
+      generator: CrossGenerator.fromToken(
+        (map['generator'] ?? 'cmake').toString(),
+      ),
+      backends: _parseBackends(map['backends']),
+      package: map['package'] is Map
+          ? PackageSpec.fromMap(
+              Map<dynamic, dynamic>.from(map['package'] as Map),
+            )
+          : null,
     );
   }
 
@@ -263,15 +342,49 @@ class CrossTarget {
   /// Source-built libraries to stage into the overlay (libdisplay-info, …).
   final List<AugmentLib> augment;
 
+  /// Build system to configure the embedder with (default CMake).
+  final CrossGenerator generator;
+
+  /// Per-backend build matrix: backend name → the build-system `-D` defines it
+  /// implies, e.g. `{wayland-egl: {BUILD_BACKEND_WAYLAND_EGL: ON}}`. Each is
+  /// built into its own `build-<backend>` dir by `emb cross --build`.
+  final Map<String, Map<String, String>> backends;
+
+  /// Optional `.deb` packaging config for `emb cross --deb`.
+  final PackageSpec? package;
+
+  /// Parse the `backends:` block (backend name → `{define: value}` map).
+  static Map<String, Map<String, String>> _parseBackends(Object? value) {
+    if (value is! Map) return const {};
+    final out = <String, Map<String, String>>{};
+    value.forEach((name, defines) {
+      if (defines is Map) {
+        out[name.toString()] = {
+          for (final e in defines.entries) e.key.toString(): e.value.toString(),
+        };
+      }
+    });
+    return out;
+  }
+
   /// Parse the `sysroot:` block, folding a bare top-level `image_url:` into an
   /// image-sourced spec for backward compatibility. Returns null when neither
   /// is present (the Yocto providers).
   static SysrootSpec? _parseSysroot(Map<dynamic, dynamic> map) {
     final block = map['sysroot'];
+    final topImageUrl = map['image_url']?.toString();
     if (block is Map) {
-      return SysrootSpec.fromMap(Map<dynamic, dynamic>.from(block));
+      // A top-level `image_url:` is a convenience alias; fold it in as the
+      // default when the `sysroot:` block doesn't carry its own.
+      final merged = Map<dynamic, dynamic>.from(block);
+      if ((merged['image_url']?.toString() ?? '').isEmpty &&
+          topImageUrl != null &&
+          topImageUrl.isNotEmpty) {
+        merged['image_url'] = topImageUrl;
+      }
+      return SysrootSpec.fromMap(merged);
     }
-    final imageUrl = map['image_url']?.toString();
+    final imageUrl = topImageUrl;
     if (imageUrl != null && imageUrl.isNotEmpty) {
       return SysrootSpec(source: SysrootProvenance.image, imageUrl: imageUrl);
     }

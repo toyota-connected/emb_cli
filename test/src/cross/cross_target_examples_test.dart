@@ -53,7 +53,7 @@ void main() {
       }
     });
 
-    test('pi5 — arm-gnu, pinned bookworm, cortex-a76, image sysroot', () {
+    test('pi5 — arm-gnu, pinned bookworm, cortex-a76, validated build+deb', () {
       final t = _loadCross('pi5.emb.yaml');
       expect(t.provider, CrossProviderKind.armGnu);
       expect(t.triple, 'aarch64-none-linux-gnu');
@@ -62,13 +62,18 @@ void main() {
       expect(t.sysroot?.source, SysrootProvenance.image);
       expect(t.imageUrl, contains('raspios-bookworm'));
       expect(t.cpuFlags, ['-mcpu=cortex-a76']);
-      expect(t.augment, hasLength(2));
-      expect(t.augment[0].pkg, 'libdisplay-info');
-      expect(t.augment[0].build, CrossGenerator.meson);
-      expect(t.augment[0].staticLink, isTrue);
-      expect(t.augment[1].pkg, 'vulkan-headers');
-      expect(t.augment[1].build, CrossGenerator.cmake);
-      expect(t.augment[1].staticLink, isFalse);
+      // The validated config builds the drm-kms-egl backend with a single
+      // source-built augment (libdisplay-info 0.2.0) and packages a .deb.
+      expect(t.augment.single.pkg, 'libdisplay-info');
+      expect(t.augment.single.build, CrossGenerator.meson);
+      expect(t.augment.single.staticLink, isTrue);
+      expect(t.sysroot?.devPackages, contains('libdrm-dev'));
+      expect(t.sysroot?.devPackages, contains('libegl-dev'));
+      expect(t.backends.keys, ['drm-kms-egl']);
+      expect(t.backends['drm-kms-egl']!['BUILD_BACKEND_DRM_KMS_EGL'], 'ON');
+      expect(t.package?.name, 'ivi-homescreen');
+      expect(t.package?.bin, 'shell/homescreen');
+      expect(t.package?.installDir, '/usr/bin');
     });
 
     test('unoq — arm-gnu, derive, DEVICE sysroot (rsync)', () {
@@ -164,6 +169,22 @@ void main() {
       expect(t.imageUrl, 'https://example/x.img.xz');
     });
 
+    test('top-level image_url folds into a sysroot block that omits it', () {
+      // A `sysroot:` block carrying only dev_packages/partition still picks up
+      // the convenience top-level image_url.
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'image_url': 'https://example/x.img.xz',
+        'sysroot': {
+          'partition': 2,
+          'dev_packages': ['libdrm-dev'],
+        },
+      });
+      expect(t.sysroot?.source, SysrootProvenance.image);
+      expect(t.imageUrl, 'https://example/x.img.xz');
+      expect(t.sysroot?.devPackages, ['libdrm-dev']);
+    });
+
     test('rootfs partition defaults to 2 and is overridable (#6)', () {
       final def = CrossTarget.fromMap(const {
         'provider': 'arm-gnu',
@@ -179,6 +200,68 @@ void main() {
         },
       });
       expect(ovr.sysroot?.partition, 3);
+    });
+
+    test('parses the package: block for --deb', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'image_url': 'https://example/x.img.xz',
+        'package': {
+          'name': 'ivi-homescreen',
+          'version': '1.0.0',
+          'maintainer': 'Me <me@x>',
+          'bin': 'shell/homescreen',
+          'install_dir': '/usr/bin',
+          'depends': ['libfoo1'],
+        },
+      });
+      expect(t.package, isNotNull);
+      expect(t.package!.name, 'ivi-homescreen');
+      expect(t.package!.version, '1.0.0');
+      expect(t.package!.bin, 'shell/homescreen');
+      expect(t.package!.installDir, '/usr/bin');
+      expect(t.package!.depends, ['libfoo1']);
+      expect(t.package!.autoDepends, isTrue); // default
+    });
+
+    test('package: defaults when absent', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'image_url': 'https://example/x.img.xz',
+      });
+      expect(t.package, isNull);
+    });
+
+    test('parses sysroot.dev_packages (root-free -dev set)', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'sysroot': {
+          'source': 'image',
+          'image_url': 'https://example/x.img.xz',
+          'dev_packages': [
+            'https://repo/libdrm-dev_2.4_arm64.deb',
+            'https://repo/libegl-dev_1.0_arm64.deb',
+          ],
+        },
+      });
+      expect(t.sysroot?.devPackages, hasLength(2));
+      expect(
+        t.sysroot?.devPackages.first,
+        endsWith('libdrm-dev_2.4_arm64.deb'),
+      );
+    });
+
+    test('parses the backends matrix + generator (defaults to cmake)', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'backends': {
+          'wayland-egl': {'BUILD_BACKEND_WAYLAND_EGL': 'ON'},
+          'drm-kms-egl': {'BUILD_BACKEND_DRM_GLES2': 'ON'},
+        },
+      });
+      expect(t.generator, CrossGenerator.cmake);
+      expect(t.backends.keys, ['wayland-egl', 'drm-kms-egl']);
+      expect(t.backends['wayland-egl'], {'BUILD_BACKEND_WAYLAND_EGL': 'ON'});
     });
   });
 }
