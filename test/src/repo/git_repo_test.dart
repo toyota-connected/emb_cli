@@ -9,6 +9,7 @@ import 'package:test/test.dart';
 class _FakeGit {
   final List<List<String>> calls = [];
   int Function(List<String> args)? exitFor;
+  String Function(List<String> args)? stdoutFor;
 
   Future<ProcessResult> run(
     List<String> args, {
@@ -16,7 +17,8 @@ class _FakeGit {
   }) async {
     calls.add(args);
     final code = exitFor?.call(args) ?? 0;
-    return ProcessResult(0, code, '', '');
+    final out = stdoutFor?.call(args) ?? '';
+    return ProcessResult(0, code, out, '');
   }
 }
 
@@ -107,6 +109,43 @@ void main() {
       await repo.sync(tmp, runner: git.run);
       expect(git.calls, contains(equals(['checkout', 'abc123'])));
       expect(git.calls, isNot(contains(equals(['checkout', 'main']))));
+    });
+
+    test('tolerates a failed post-checkout hook when HEAD landed', () async {
+      Directory(p.join(tmp.path, 'foo', '.git')).createSync(recursive: true);
+      // checkout exits non-zero (hook adopted its status), but HEAD and the
+      // requested rev resolve to the same commit -> the checkout succeeded.
+      int checkoutFails(List<String> a) => a.first == 'checkout' ? 1 : 0;
+      String sameSha(List<String> a) =>
+          a.first == 'rev-parse' ? 'cafe1234' : '';
+      final git = _FakeGit()
+        ..exitFor = checkoutFails
+        ..stdoutFor = sameSha;
+      const repo = GitRepo(uri: 'https://x/y/foo.git', rev: 'v1');
+      final result = await repo.sync(tmp, runner: git.run);
+
+      expect(result.success, isTrue);
+      expect(git.calls, contains(equals(['rev-parse', 'HEAD'])));
+      expect(git.calls, contains(equals(['rev-parse', 'v1^{commit}'])));
+    });
+
+    test('reports failure when checkout does not land on the ref', () async {
+      Directory(p.join(tmp.path, 'foo', '.git')).createSync(recursive: true);
+      // checkout exits non-zero AND HEAD != ref -> a genuine failure.
+      int checkoutFails(List<String> a) => a.first == 'checkout' ? 1 : 0;
+      String mismatchedSha(List<String> a) {
+        if (a.first != 'rev-parse') return '';
+        return a.contains('HEAD') ? 'aaaa' : 'bbbb';
+      }
+
+      final git = _FakeGit()
+        ..exitFor = checkoutFails
+        ..stdoutFor = mismatchedSha;
+      const repo = GitRepo(uri: 'https://x/y/foo.git', rev: 'v1');
+      final result = await repo.sync(tmp, runner: git.run);
+
+      expect(result.success, isFalse);
+      expect(result.message, contains('checkout v1 failed'));
     });
   });
 }

@@ -88,9 +88,9 @@ class GitRepo {
       }
 
       if (rev != null) {
-        await _run(runner, ['checkout', rev!], gitFolder);
+        await _checkout(runner, rev!, gitFolder);
       } else if (branch != null) {
-        await _run(runner, ['checkout', branch!], gitFolder);
+        await _checkout(runner, branch!, gitFolder);
       }
 
       if (File(p.join(gitFolder, '.gitattributes')).existsSync()) {
@@ -119,6 +119,38 @@ class GitRepo {
         message: e.message,
       );
     }
+  }
+
+  /// Check out [ref] (a branch, tag, or commit), tolerating a failing
+  /// `post-checkout` hook.
+  ///
+  /// `post-checkout` runs *after* the worktree is updated, and per
+  /// githooks(5) its exit status becomes the exit status of `git checkout`.
+  /// So a hook that fails — e.g. Flutter's monorepo hooks call depot_tools'
+  /// `vpython3`, which may be absent — makes the command report failure even
+  /// though the checkout itself succeeded. Judge the result by HEAD instead:
+  /// if it resolves to [ref]'s commit, the checkout landed and the hook's
+  /// exit status is not a checkout failure.
+  Future<void> _checkout(GitRunner runner, String ref, String cwd) async {
+    final r = await runner(['checkout', ref], workingDirectory: cwd);
+    if (r.exitCode == 0) return;
+    if (await _headIsAt(runner, ref, cwd)) return;
+    throw _GitException(
+      'git checkout $ref failed (${r.exitCode}): ${r.stderr}',
+    );
+  }
+
+  /// Whether HEAD now resolves to the same commit as [ref].
+  Future<bool> _headIsAt(GitRunner runner, String ref, String cwd) async {
+    final head = await runner(['rev-parse', 'HEAD'], workingDirectory: cwd);
+    final target = await runner([
+      'rev-parse',
+      '$ref^{commit}',
+    ], workingDirectory: cwd);
+    if (head.exitCode != 0 || target.exitCode != 0) return false;
+    final headSha = '${head.stdout}'.trim();
+    final targetSha = '${target.stdout}'.trim();
+    return headSha.isNotEmpty && headSha == targetSha;
   }
 
   Future<void> _run(
