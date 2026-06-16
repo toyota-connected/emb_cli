@@ -40,6 +40,14 @@ builds the file's parent dir) and:
 emb cross all-backends.emb.yaml --target local --build
 ```
 
+`build-all-backends.sh` is a tiny wrapper that drops the manifest next to a
+given ivi-homescreen checkout and builds every backend:
+
+```sh
+./build-all-backends.sh ~/workspace-automation/app/ivi-homescreen
+./build-all-backends.sh ~/.../ivi-homescreen --backend drm-kms-egl   # one
+```
+
 ## Validated workflow (pi5)
 
 Run from the `ivi-homescreen` package dir (where its `emb.yaml` lives). `emb
