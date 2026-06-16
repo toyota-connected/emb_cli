@@ -6,6 +6,7 @@ import 'package:emb_cli/src/cross/cross_arch.dart';
 import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_provider.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
+import 'package:emb_cli/src/cross/sysroot_extract.dart';
 import 'package:emb_cli/src/cross/toolchain_emitter.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
@@ -251,6 +252,71 @@ class ArmGnuCrossProvider implements CrossProvider {
     }
 
     sysrootDir.createSync(recursive: true);
+
+    // Prefer the root-free extraction (sfdisk + dd + debugfs rdump) when the
+    // tools are present; fall back to the privileged loop-mount otherwise.
+    final rootless = await _hasTool('sfdisk') && await _hasTool('debugfs');
+    final err = rootless
+        ? await _extractImageRootless(img, spec.partition, sysrootDir)
+        : await _extractImageViaLoopMount(img, spec.partition, sysrootDir);
+    if (err != null) return err;
+
+    relativizeSysrootSymlinks(
+      sysrootDir,
+      Directory(p.join(sysrootDir.path, 'usr', 'lib', _multiarch)),
+    );
+    return null;
+  }
+
+  Future<bool> _hasTool(String tool) async =>
+      (await Process.run('which', [tool])).exitCode == 0;
+
+  /// Root-free rootfs extraction: read the partition table, carve the rootfs
+  /// partition out with `dd`, and dump it with `debugfs rdump` — no loop
+  /// device, no `sudo`.
+  Future<CrossResolveResult?> _extractImageRootless(
+    File img,
+    int partition,
+    Directory dest,
+  ) async {
+    final sf = await Process.run('sfdisk', ['-J', img.path]);
+    if (sf.exitCode != 0) {
+      return CrossResolveResult.failed('sfdisk failed: ${sf.stderr}');
+    }
+    final extent = ext4PartitionExtent(sf.stdout.toString(), partition);
+    if (extent == null) {
+      return CrossResolveResult.failed(
+        'no partition $partition in ${img.path}',
+      );
+    }
+    final part = File('${img.path}.p$partition');
+    if (!part.existsSync()) {
+      final dd = await Process.run('dd', [
+        'if=${img.path}',
+        'of=${part.path}',
+        'bs=${extent.sectorSize}',
+        'skip=${extent.startSector}',
+        'count=${extent.sizeSectors}',
+        'status=none',
+      ]);
+      if (dd.exitCode != 0) {
+        return CrossResolveResult.failed('dd failed: ${dd.stderr}');
+      }
+    }
+    if (!await extractExt4Tree(part, dest)) {
+      return CrossResolveResult.failed(
+        'debugfs rdump did not populate ${dest.path}',
+      );
+    }
+    return null;
+  }
+
+  /// Privileged fallback: loop-mount the rootfs partition and rsync it out.
+  Future<CrossResolveResult?> _extractImageViaLoopMount(
+    File img,
+    int partition,
+    Directory dest,
+  ) async {
     final mnt = await Directory.systemTemp.createTemp('emb-rootfs.');
     final loop = await Process.run('sudo', [
       'losetup',
@@ -263,7 +329,7 @@ class ArmGnuCrossProvider implements CrossProvider {
     }
     final loopDev = loop.stdout.toString().trim();
     try {
-      final part = '${loopDev}p${spec.partition}';
+      final part = '${loopDev}p$partition';
       final mount = await Process.run('sudo', ['mount', part, mnt.path]);
       if (mount.exitCode != 0) {
         return CrossResolveResult.failed('mount failed: ${mount.stderr}');
@@ -272,7 +338,7 @@ class ArmGnuCrossProvider implements CrossProvider {
         'rsync',
         '-aHAX',
         '${mnt.path}/',
-        '${sysrootDir.path}/',
+        '${dest.path}/',
       ]);
       await Process.run('sudo', ['umount', mnt.path]);
       if (rsync.exitCode != 0) {
@@ -282,11 +348,6 @@ class ArmGnuCrossProvider implements CrossProvider {
       await Process.run('sudo', ['losetup', '-d', loopDev]);
       mnt.deleteSync(recursive: true);
     }
-
-    relativizeSysrootSymlinks(
-      sysrootDir,
-      Directory(p.join(sysrootDir.path, 'usr', 'lib', _multiarch)),
-    );
     return null;
   }
 
