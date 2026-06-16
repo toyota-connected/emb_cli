@@ -251,8 +251,16 @@ class ArmGnuCrossProvider implements CrossProvider {
 
     // Layer the `-dev` packages in, root-free (download + dpkg-deb -x).
     if (spec.devPackages.isNotEmpty) {
-      return _populateDevPackages(sysrootDir, spec);
+      final err = await _populateDevPackages(sysrootDir, spec);
+      if (err != null) return err;
     }
+
+    // Restore Debian's usr-merge symlinks (/lib -> usr/lib, …) *after* all
+    // staging. debugfs mangles them on extraction, and `dpkg-deb -x` of the
+    // `-dev` set re-materializes them as real dirs — either leaves libc.so's
+    // `/lib/...` linker-script refs unresolved and silently poisons every
+    // configure that probes the sysroot (e.g. meson's `find_library('m')`).
+    normalizeUsrMerge(sysrootDir);
     return null;
   }
 
@@ -434,9 +442,6 @@ class ArmGnuCrossProvider implements CrossProvider {
         'debugfs rdump did not populate ${dest.path}',
       );
     }
-    // debugfs can mangle the usr-merge symlinks (/lib -> usr/lib); restore them
-    // so libc.so's /lib/... references resolve inside the sysroot.
-    normalizeUsrMerge(dest);
     return null;
   }
 
