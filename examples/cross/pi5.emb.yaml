@@ -1,4 +1,9 @@
-# ivi-homescreen on Raspberry Pi 5 — mirrors scripts/build_pi.sh --pios bookworm --target pi5
+# ivi-homescreen on Raspberry Pi 5 (also Pi 4 / Pi Zero 2 W — change cpu_flags).
+#
+# VALIDATED END-TO-END on this exact config: `emb cross . --build --deb`
+# produced an aarch64 ELF `homescreen` (drm-kms-egl backend) and packaged it as
+# `ivi-homescreen_1.0.0_arm64.deb`, root-free, against the raspios image below.
+#
 # Engine SHA pin (handled by EngineArtifacts, not the cross block):
 #   13e658725ddaa270601426d1485636157e38c34c
 id: ivi-homescreen
@@ -17,19 +22,56 @@ cross:
   triple: aarch64-none-linux-gnu
   version_policy: pinned
   toolchain_version: 12.3.rel1            # bookworm → gcc 12 / glibc 2.36
-  image_url: https://downloads.raspberrypi.com/raspios_oldstable_lite_arm64/images/raspios_oldstable_lite_arm64-2026-04-14/2026-04-13-raspios-bookworm-arm64-lite.img.xz
+  image_url: https://downloads.raspberrypi.com/raspios_lite_arm64/images/raspios_lite_arm64-2024-11-19/2024-11-19-raspios-bookworm-arm64-lite.img.xz
   cpu_flags: [-mcpu=cortex-a76]           # pi5; pi4=cortex-a72, piz2=cortex-a53, generic=[]
+
+  sysroot:
+    # rootfs is p2 on a raspios .img (default). dev_packages are resolved to
+    # their dependency closure against the image's own apt sources and layered
+    # in root-free (dpkg-deb -x) — no apt, no chroot, no sudo.
+    partition: 2
+    dev_packages:
+      - libdrm-dev
+      - libgbm-dev
+      - libinput-dev
+      - libxcursor-dev
+      - libseat-dev
+      - libegl-dev
+      - libgles2-mesa-dev
+      - libwayland-dev
+      - libxkbcommon-dev
+      - libudev-dev
+      - libsystemd-dev
+      - libglib2.0-dev
+      - wayland-protocols
+      - zlib1g-dev
+
   augment:
-    # bookworm ships libdisplay-info 0.1.1 (< drm-cxx 0.2.0 floor) and an old
-    # Vulkan SDK, so both are staged into the overlay. On a trixie target both
-    # disappear (see beagleplay).
+    # bookworm ships libdisplay-info 0.1.1 (< drm-cxx's 0.2.0 floor), so 0.2.0 is
+    # built from source and staged into the sysroot. On a trixie target this
+    # disappears (see beagleplay). A Vulkan backend would also stage
+    # vulkan-headers (build: cmake) — not exercised by drm-kms-egl below.
     - pkg: libdisplay-info
       min: "0.2.0"
       url: https://gitlab.freedesktop.org/emersion/libdisplay-info/-/archive/0.2.0/libdisplay-info-0.2.0.tar.gz
       build: meson
       static: true
-    - pkg: vulkan-headers
-      min: "1.4.309"
-      url: https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/vulkan-sdk-1.4.309.0.tar.gz
-      build: cmake
-      static: false                       # header-only; staged as includes
+
+  backends:
+    # One build per entry, into cross-build-<triple>/build-<name>.
+    drm-kms-egl:
+      BUILD_BACKEND_DRM_KMS_EGL: 'ON'
+      BUILD_BACKEND_WAYLAND_EGL: 'OFF'     # default-on; mutually exclusive
+      BUILD_BACKEND_WAYLAND_VULKAN: 'OFF'
+      DISABLE_PLUGINS: 'ON'
+
+  package:
+    # `emb cross . --deb` → cross-build-<triple>/dist/<name>_<version>_arm64.deb.
+    # Depends is auto-derived from the binary's DT_NEEDED.
+    name: ivi-homescreen
+    version: 1.0.0
+    maintainer: "Joel Winarske <joel.winarske@gmail.com>"
+    description: "IVI Flutter Shell (drm-kms-egl backend), cross-built by emb"
+    section: utils
+    bin: shell/homescreen                  # relative to each backend build dir
+    install_dir: /usr/bin

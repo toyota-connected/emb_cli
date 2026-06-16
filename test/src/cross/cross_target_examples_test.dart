@@ -53,7 +53,7 @@ void main() {
       }
     });
 
-    test('pi5 — arm-gnu, pinned bookworm, cortex-a76, image sysroot', () {
+    test('pi5 — arm-gnu, pinned bookworm, cortex-a76, validated build+deb', () {
       final t = _loadCross('pi5.emb.yaml');
       expect(t.provider, CrossProviderKind.armGnu);
       expect(t.triple, 'aarch64-none-linux-gnu');
@@ -62,13 +62,18 @@ void main() {
       expect(t.sysroot?.source, SysrootProvenance.image);
       expect(t.imageUrl, contains('raspios-bookworm'));
       expect(t.cpuFlags, ['-mcpu=cortex-a76']);
-      expect(t.augment, hasLength(2));
-      expect(t.augment[0].pkg, 'libdisplay-info');
-      expect(t.augment[0].build, CrossGenerator.meson);
-      expect(t.augment[0].staticLink, isTrue);
-      expect(t.augment[1].pkg, 'vulkan-headers');
-      expect(t.augment[1].build, CrossGenerator.cmake);
-      expect(t.augment[1].staticLink, isFalse);
+      // The validated config builds the drm-kms-egl backend with a single
+      // source-built augment (libdisplay-info 0.2.0) and packages a .deb.
+      expect(t.augment.single.pkg, 'libdisplay-info');
+      expect(t.augment.single.build, CrossGenerator.meson);
+      expect(t.augment.single.staticLink, isTrue);
+      expect(t.sysroot?.devPackages, contains('libdrm-dev'));
+      expect(t.sysroot?.devPackages, contains('libegl-dev'));
+      expect(t.backends.keys, ['drm-kms-egl']);
+      expect(t.backends['drm-kms-egl']!['BUILD_BACKEND_DRM_KMS_EGL'], 'ON');
+      expect(t.package?.name, 'ivi-homescreen');
+      expect(t.package?.bin, 'shell/homescreen');
+      expect(t.package?.installDir, '/usr/bin');
     });
 
     test('unoq — arm-gnu, derive, DEVICE sysroot (rsync)', () {

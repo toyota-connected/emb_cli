@@ -341,6 +341,71 @@ deps:                      # optional host packages, by OS / distro
 
 ---
 
+### `emb cross`
+
+Cross-compile a **native** embedder (e.g. ivi-homescreen) for an `arm64` /
+`riscv64` target from an `x86_64` host, driven by the manifest's `cross:` block.
+This is the C/C++ toolchain + sysroot path — distinct from the Dart AOT cross
+used by `emb build` / `emb bundle`. Three providers: `arm-gnu` (a downloaded ARM
+GNU toolchain plus a sysroot unpacked from a distro image or rsync'd from a
+device), `yocto-recipe` (a located OE `recipe-sysroot`), and `yocto-sdk` (a
+`populate_sdk` install). The input is a **positional** package dir (with
+`emb.yaml`) or an explicit manifest file.
+
+```
+emb cross <package-dir|manifest.yaml> [options]
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `<package-dir\|manifest>` | **mandatory (positional)** | Dir with `emb.yaml`, or a manifest file. |
+| `-w`, `--workspace <dir>` | resolution order | Workspace root. |
+| `--dry-run` | off | Report the resolution plan (provider, toolchain, sysroot, preflight, augment, backends) with no download / mount / ssh. |
+| `--prepare` | off | After resolving, build the `augment` libraries into the overlay. |
+| `--build` | off | Configure + build the embedder under the resolved profile, one build per `cross.backends` entry. |
+| `--deb` | off | With `--build`: package each backend binary into a root-free `.deb` (Depends auto-derived from the binary's needed libraries). |
+| `--clean` | off | Remove this target's build + overlay dirs (keeps the toolchain + sysroot), then exit. |
+| `--clean-all` | off | Also remove the downloaded / extracted toolchain + sysroot and the apt / deb caches, then exit. |
+
+```sh
+emb cross ./app/ivi-homescreen --dry-run      # plan only, no side effects
+emb cross ./app/ivi-homescreen --build        # toolchain + sysroot + build
+emb cross ./app/ivi-homescreen --build --deb  # ...and package a .deb
+emb cross ./app/ivi-homescreen --clean        # drop build dirs (keep toolchain)
+emb cross ./app/ivi-homescreen --clean-all    # drop everything for this target
+```
+
+Everything is **root-free**: the sysroot is extracted with `debugfs` /
+`dpkg-deb`, and `-dev` packages are resolved against the image's own apt sources
+— no `apt`, no `chroot`, no `sudo`. Validated end-to-end on Raspberry Pi
+(arm-gnu, raspios bookworm): `--build --deb` produces an aarch64 ELF and an
+installable `.deb`. See [`examples/cross/`](examples/cross/) for one manifest
+per board (`pi5` is the validated end-to-end example) and the full schema.
+
+#### Manifest (`cross:` block)
+
+```yaml
+cross:
+  provider: arm-gnu               # arm-gnu | yocto-recipe | yocto-sdk
+  toolchain_version: 12.3.rel1    # pinned ARM GNU release (or version_policy: derive)
+  image_url: https://.../raspios-bookworm-arm64-lite.img.xz
+  cpu_flags: [-mcpu=cortex-a76]   # pi5; pi4=cortex-a72, pi-zero-2=cortex-a53
+  sysroot:
+    partition: 2                  # rootfs partition in the image (default 2)
+    dev_packages: [libdrm-dev, libegl-dev, libgbm-dev, libinput-dev]
+  augment:                        # libs built from source when the sysroot is too old
+    - { pkg: libdisplay-info, min: "0.2.0", url: https://.../libdisplay-info-0.2.0.tar.gz, build: meson, static: true }
+  backends:                       # one build per entry
+    drm-kms-egl: { BUILD_BACKEND_DRM_KMS_EGL: 'ON', DISABLE_PLUGINS: 'ON' }
+  package:                        # optional, consumed by --deb
+    name: ivi-homescreen
+    version: 1.0.0
+    bin: shell/homescreen         # binary, relative to each backend build dir
+    install_dir: /usr/bin
+```
+
+---
+
 ### `emb env`
 
 Write `setup_env.sh` (`PATH` for Flutter/Dart, `FLUTTER_WORKSPACE`, `PUB_CACHE`,

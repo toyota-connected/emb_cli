@@ -62,47 +62,47 @@ lrwxrwxrwx root/root 0 2024-01-01 ./usr/lib/aarch64-linux-gnu/libgbm.so.1 -> lib
     return sr;
   }
 
-  File fakeBinary() => File(p.join(tmp.path, 'homescreen'))
-    ..writeAsBytesSync([0x7f, 0x45, 0x4c, 0x46, 0, 0, 0, 0]);
+  File fakeBinary() =>
+      File(p.join(tmp.path, 'homescreen'))
+        ..writeAsBytesSync([0x7f, 0x45, 0x4c, 0x46, 0, 0, 0, 0]);
 
-  test('builds a .deb and auto-derives Depends from NEEDED + ownership',
-      () async {
-    // A non-empty .deb marker so the resolver-deb scan visits it.
-    final debDir = Directory(p.join(tmp.path, 'debs'))..createSync();
-    File(p.join(debDir.path, 'libgbm1_22_arm64.deb')).writeAsStringSync('x');
+  test(
+    'builds a .deb and auto-derives Depends from NEEDED + ownership',
+    () async {
+      // A non-empty .deb marker so the resolver-deb scan visits it.
+      final debDir = Directory(p.join(tmp.path, 'debs'))..createSync();
+      File(p.join(debDir.path, 'libgbm1_22_arm64.deb')).writeAsStringSync('x');
 
-    final packager = DebPackager(
-      readelf: '/x/aarch64-none-linux-gnu-readelf',
-      runProcess: fakeRun,
-    );
-    final out = await packager.build(
-      binary: fakeBinary(),
-      installPath: '/usr/bin/homescreen',
-      meta: const DebMetadata(
-        name: 'ivi-homescreen',
-        version: '1.0.0',
-        architecture: 'arm64',
-        maintainer: 'me <me@x>',
-        description: 'IVI shell',
-      ),
-      outDir: Directory(p.join(tmp.path, 'dist')),
-      sysroot: fakeSysroot(),
-      debDirs: [debDir],
-    );
+      final packager = DebPackager(
+        readelf: '/x/aarch64-none-linux-gnu-readelf',
+        runProcess: fakeRun,
+      );
+      final out = await packager.build(
+        binary: fakeBinary(),
+        installPath: '/usr/bin/homescreen',
+        meta: const DebMetadata(
+          name: 'ivi-homescreen',
+          version: '1.0.0',
+          architecture: 'arm64',
+          maintainer: 'me <me@x>',
+          description: 'IVI shell',
+        ),
+        outDir: Directory(p.join(tmp.path, 'dist')),
+        sysroot: fakeSysroot(),
+        debDirs: [debDir],
+      );
 
-    expect(out.path, endsWith('ivi-homescreen_1.0.0_arm64.deb'));
-    expect(builtTo, out.path);
-    expect(capturedControl, contains('Package: ivi-homescreen'));
-    expect(capturedControl, contains('Architecture: arm64'));
-    // libc.so.6 + libm.so.6 -> libc6 (dpkg db); libgbm.so.1 -> libgbm1 (deb).
-    expect(capturedControl, contains('Depends: libc6, libgbm1'));
-  });
+      expect(out.path, endsWith('ivi-homescreen_1.0.0_arm64.deb'));
+      expect(builtTo, out.path);
+      expect(capturedControl, contains('Package: ivi-homescreen'));
+      expect(capturedControl, contains('Architecture: arm64'));
+      // libc.so.6 + libm.so.6 -> libc6 (dpkg db); libgbm.so.1 -> libgbm1 (deb).
+      expect(capturedControl, contains('Depends: libc6, libgbm1'));
+    },
+  );
 
   test('autoDepends: false uses only the explicit Depends', () async {
-    final packager = DebPackager(
-      readelf: '/x/readelf',
-      runProcess: fakeRun,
-    );
+    final packager = DebPackager(readelf: '/x/readelf', runProcess: fakeRun);
     await packager.build(
       binary: fakeBinary(),
       installPath: '/usr/bin/homescreen',

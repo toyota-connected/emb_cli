@@ -374,8 +374,7 @@ class CrossCommand extends Command<int> {
         version: spec.version,
         architecture: arch,
         maintainer: spec.maintainer,
-        description:
-            spec.description ?? '$name (cross-built by emb for $arch)',
+        description: spec.description ?? '$name (cross-built by emb for $arch)',
         section: spec.section,
         priority: spec.priority,
         dependsExtra: spec.depends,

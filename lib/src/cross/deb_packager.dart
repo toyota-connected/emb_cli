@@ -191,19 +191,16 @@ class DebPackager {
       throw DebPackageException('readelf -d failed: ${r.stderr}');
     }
     final re = RegExp(r'Shared library:\s*\[([^\]]+)\]');
-    return [
-      for (final m in re.allMatches('${r.stdout}')) m.group(1)!,
-    ];
+    return [for (final m in re.allMatches('${r.stdout}')) m.group(1)!];
   }
 
   /// Basenames of the shared-object entries in `dpkg-deb -c` output.
   Set<String> _sonamesIn(String contents) {
     final out = <String>{};
     for (final line in contents.split('\n')) {
-      final tok = line.split(RegExp(r'\s+')).firstWhere(
-        (t) => t.startsWith('./'),
-        orElse: () => '',
-      );
+      final tok = line
+          .split(RegExp(r'\s+'))
+          .firstWhere((t) => t.startsWith('./'), orElse: () => '');
       if (tok.isEmpty) continue;
       final base = p.basename(tok);
       if (base.contains('.so')) out.add(base);
