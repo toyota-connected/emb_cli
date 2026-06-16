@@ -75,4 +75,42 @@ void main() {
       );
     });
   });
+
+  group('extractDeb (real dpkg-deb, no root)', () {
+    late Directory tmp;
+    setUp(() => tmp = Directory.systemTemp.createTempSync('emb_deb_'));
+    tearDown(() => tmp.deleteSync(recursive: true));
+
+    test('extracts a .deb payload into the sysroot', () async {
+      // Build a minimal .deb with ar+tar (no dpkg, no root).
+      final payload = Directory(p.join(tmp.path, 'payload'));
+      File(p.join(payload.path, 'usr', 'include', 'foo', 'foo.h'))
+        ..createSync(recursive: true)
+        ..writeAsStringSync('#define FOO 1\n');
+      Future<int> sh(String cmd) async => (await Process.run('sh', [
+        '-c',
+        cmd,
+      ], workingDirectory: tmp.path)).exitCode;
+      final built =
+          await sh('tar -caf data.tar.xz -C payload .') == 0 &&
+          await sh('echo 2.0 > debian-binary') == 0 &&
+          await sh('echo Package: foo-dev > control') == 0 &&
+          await sh('tar -caf control.tar.xz control') == 0 &&
+          await sh('ar rc foo.deb debian-binary control.tar.xz data.tar.xz') ==
+              0;
+      if (!built) {
+        markTestSkipped('deb build tooling (ar/tar) unavailable');
+        return;
+      }
+
+      final dest = Directory(p.join(tmp.path, 'sysroot'));
+      final ok = await extractDeb(File(p.join(tmp.path, 'foo.deb')), dest);
+
+      expect(ok, isTrue);
+      expect(
+        File(p.join(dest.path, 'usr', 'include', 'foo', 'foo.h')).existsSync(),
+        isTrue,
+      );
+    });
+  });
 }

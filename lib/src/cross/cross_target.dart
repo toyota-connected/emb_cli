@@ -120,6 +120,7 @@ class SysrootSpec {
     this.sshPort = 22,
     this.sshOpts,
     this.partition = 2,
+    this.devPackages = const [],
   });
 
   factory SysrootSpec.fromMap(Map<dynamic, dynamic> map) => SysrootSpec(
@@ -131,6 +132,9 @@ class SysrootSpec {
     partition:
         int.tryParse('${map['partition'] ?? map['rootfs_partition'] ?? 2}') ??
         2,
+    devPackages: (map['dev_packages'] as List<dynamic>? ?? const [])
+        .map((e) => e.toString())
+        .toList(),
   );
 
   final SysrootProvenance source;
@@ -151,6 +155,11 @@ class SysrootSpec {
   /// most Debian images put rootfs on `p2`; override with
   /// `sysroot.partition`/`rootfs_partition` for images that differ).
   final int partition;
+
+  /// `-dev` Debian package URLs to download and `dpkg-deb -x` into the sysroot
+  /// (no apt, no chroot, no root). The manifest lists the set the build needs;
+  /// dependency resolution is deferred (list deps explicitly for now).
+  final List<String> devPackages;
 }
 
 /// The parsed `cross:` block of a target manifest.

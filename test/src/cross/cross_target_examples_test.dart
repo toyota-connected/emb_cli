@@ -181,6 +181,25 @@ void main() {
       expect(ovr.sysroot?.partition, 3);
     });
 
+    test('parses sysroot.dev_packages (root-free -dev set)', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'sysroot': {
+          'source': 'image',
+          'image_url': 'https://example/x.img.xz',
+          'dev_packages': [
+            'https://repo/libdrm-dev_2.4_arm64.deb',
+            'https://repo/libegl-dev_1.0_arm64.deb',
+          ],
+        },
+      });
+      expect(t.sysroot?.devPackages, hasLength(2));
+      expect(
+        t.sysroot?.devPackages.first,
+        endsWith('libdrm-dev_2.4_arm64.deb'),
+      );
+    });
+
     test('parses the backends matrix + generator (defaults to cmake)', () {
       final t = CrossTarget.fromMap(const {
         'provider': 'arm-gnu',

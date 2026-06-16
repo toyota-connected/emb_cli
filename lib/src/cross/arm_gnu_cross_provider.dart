@@ -204,19 +204,62 @@ class ArmGnuCrossProvider implements CrossProvider {
   /// this yields a base sysroot; dev-package staging is layered on before
   /// configure.
   Future<CrossResolveResult?> _prepareSysroot(Directory sysrootDir) async {
-    if (File(p.join(sysrootDir.path, 'etc', 'os-release')).existsSync()) {
-      return null; // already populated
-    }
     final spec = target.sysroot;
     if (spec == null) {
       return const CrossResolveResult.unavailable(
         'arm-gnu needs a cross.sysroot block (image_url, or source: device)',
       );
     }
-    return switch (spec.source) {
-      SysrootProvenance.image => _prepareSysrootFromImage(sysrootDir, spec),
-      SysrootProvenance.device => _prepareSysrootFromDevice(sysrootDir, spec),
-    };
+
+    // Acquire the base rootfs (skip if already populated).
+    if (!File(p.join(sysrootDir.path, 'etc', 'os-release')).existsSync()) {
+      final err = switch (spec.source) {
+        SysrootProvenance.image => await _prepareSysrootFromImage(
+          sysrootDir,
+          spec,
+        ),
+        SysrootProvenance.device => await _prepareSysrootFromDevice(
+          sysrootDir,
+          spec,
+        ),
+      };
+      if (err != null) return err;
+    }
+
+    // Layer the `-dev` packages in, root-free (download + dpkg-deb -x).
+    if (spec.devPackages.isNotEmpty) {
+      return _populateDevPackages(sysrootDir, spec);
+    }
+    return null;
+  }
+
+  /// Download each `cross.sysroot.dev_packages` `.deb` and extract it into the
+  /// sysroot with `dpkg-deb -x` — no apt, no chroot, no root. Idempotent via a
+  /// per-package marker so re-resolving is cheap.
+  Future<CrossResolveResult?> _populateDevPackages(
+    Directory sysrootDir,
+    SysrootSpec spec,
+  ) async {
+    final debs = Directory(p.join(sysrootDir.parent.path, 'debs'))
+      ..createSync(recursive: true);
+    final done = Directory(p.join(sysrootDir.path, '.emb', 'dev-packages'))
+      ..createSync(recursive: true);
+    for (final url in spec.devPackages) {
+      final name = p.basename(Uri.parse(url).path);
+      final marker = File(p.join(done.path, name));
+      if (marker.existsSync()) continue;
+      final deb = File(p.join(debs.path, name));
+      if (!deb.existsSync()) {
+        if (!await _download(url, deb)) {
+          return CrossResolveResult.failed('dev package download failed: $url');
+        }
+      }
+      if (!await extractDeb(deb, sysrootDir)) {
+        return CrossResolveResult.failed('dpkg-deb -x failed for $name');
+      }
+      marker.writeAsStringSync('');
+    }
+    return null;
   }
 
   /// Unpack a distro image: download/decompress, loop-mount the rootfs

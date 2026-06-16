@@ -62,3 +62,16 @@ Future<bool> extractExt4Tree(
   // debugfs exits 0 even on a partial dump, so confirm dest was populated.
   return r.exitCode == 0 && dest.listSync().isNotEmpty;
 }
+
+/// Extract a Debian `.deb` package's payload into [dest] with `dpkg-deb -x` —
+/// no apt, no `chroot`, **no root**. This is how `-dev` packages are layered
+/// into a cross sysroot without the qemu apt-chroot.
+Future<bool> extractDeb(
+  File deb,
+  Directory dest, {
+  ProcessRunner run = defaultProcessRunner,
+}) async {
+  dest.createSync(recursive: true);
+  final r = await run('dpkg-deb', ['-x', deb.path, dest.path]);
+  return r.exitCode == 0;
+}
