@@ -197,6 +197,36 @@ void main() {
       expect(ovr.sysroot?.partition, 3);
     });
 
+    test('parses the package: block for --deb', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'image_url': 'https://example/x.img.xz',
+        'package': {
+          'name': 'ivi-homescreen',
+          'version': '1.0.0',
+          'maintainer': 'Me <me@x>',
+          'bin': 'shell/homescreen',
+          'install_dir': '/usr/bin',
+          'depends': ['libfoo1'],
+        },
+      });
+      expect(t.package, isNotNull);
+      expect(t.package!.name, 'ivi-homescreen');
+      expect(t.package!.version, '1.0.0');
+      expect(t.package!.bin, 'shell/homescreen');
+      expect(t.package!.installDir, '/usr/bin');
+      expect(t.package!.depends, ['libfoo1']);
+      expect(t.package!.autoDepends, isTrue); // default
+    });
+
+    test('package: defaults when absent', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'image_url': 'https://example/x.img.xz',
+      });
+      expect(t.package, isNull);
+    });
+
     test('parses sysroot.dev_packages (root-free -dev set)', () {
       final t = CrossTarget.fromMap(const {
         'provider': 'arm-gnu',

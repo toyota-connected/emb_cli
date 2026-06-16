@@ -91,6 +91,62 @@ class AugmentLib {
   final bool staticLink;
 }
 
+/// The `package:` block of a cross manifest — how `emb cross --deb` turns a
+/// built binary into a `.deb`. All fields are optional; the command fills in
+/// sensible defaults (name from the manifest id, arch from the triple).
+class PackageSpec {
+  const PackageSpec({
+    this.name,
+    this.version = '0.0.0',
+    this.maintainer = 'emb <emb@localhost>',
+    this.description,
+    this.section = 'misc',
+    this.priority = 'optional',
+    this.bin,
+    this.installDir = '/usr/bin',
+    this.depends = const [],
+    this.autoDepends = true,
+  });
+
+  factory PackageSpec.fromMap(Map<dynamic, dynamic> map) => PackageSpec(
+    name: map['name']?.toString(),
+    version: (map['version'] ?? '0.0.0').toString(),
+    maintainer: (map['maintainer'] ?? 'emb <emb@localhost>').toString(),
+    description: map['description']?.toString(),
+    section: (map['section'] ?? 'misc').toString(),
+    priority: (map['priority'] ?? 'optional').toString(),
+    bin: map['bin']?.toString(),
+    installDir: (map['install_dir'] ?? '/usr/bin').toString(),
+    depends: (map['depends'] as List<dynamic>? ?? const [])
+        .map((e) => e.toString())
+        .toList(),
+    autoDepends: (map['auto_depends'] ?? true) as bool,
+  );
+
+  /// Package name; defaults to the manifest id when unset.
+  final String? name;
+  final String version;
+  final String maintainer;
+
+  /// Synopsis; a generated default is used when unset.
+  final String? description;
+  final String section;
+  final String priority;
+
+  /// Binary to package, relative to a backend's build dir (e.g.
+  /// `shell/homescreen`). When unset the command auto-finds the ELF executable.
+  final String? bin;
+
+  /// Absolute install directory on the target (the binary keeps its basename).
+  final String installDir;
+
+  /// Explicit `Depends`, merged with the auto-derived set.
+  final List<String> depends;
+
+  /// Derive `Depends` from the binary's `DT_NEEDED` libraries.
+  final bool autoDepends;
+}
+
 /// Where an `arm-gnu` target's sysroot comes from.
 enum SysrootProvenance {
   /// Unpacked from a distro image (`.img`/`.img.xz`) — pi / radxa / beagleplay.
@@ -191,6 +247,7 @@ class CrossTarget {
     this.augment = const [],
     this.generator = CrossGenerator.cmake,
     this.backends = const {},
+    this.package,
   });
 
   factory CrossTarget.fromMap(Map<dynamic, dynamic> map) {
@@ -222,6 +279,11 @@ class CrossTarget {
         (map['generator'] ?? 'cmake').toString(),
       ),
       backends: _parseBackends(map['backends']),
+      package: map['package'] is Map
+          ? PackageSpec.fromMap(
+              Map<dynamic, dynamic>.from(map['package'] as Map),
+            )
+          : null,
     );
   }
 
@@ -287,6 +349,9 @@ class CrossTarget {
   /// implies, e.g. `{wayland-egl: {BUILD_BACKEND_WAYLAND_EGL: ON}}`. Each is
   /// built into its own `build-<backend>` dir by `emb cross --build`.
   final Map<String, Map<String, String>> backends;
+
+  /// Optional `.deb` packaging config for `emb cross --deb`.
+  final PackageSpec? package;
 
   /// Parse the `backends:` block (backend name → `{define: value}` map).
   static Map<String, Map<String, String>> _parseBackends(Object? value) {

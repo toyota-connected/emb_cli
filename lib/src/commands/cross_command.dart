@@ -1,15 +1,18 @@
 import 'dart:io';
 
 import 'package:args/command_runner.dart';
+import 'package:emb_cli/src/cross/cross_arch.dart';
 import 'package:emb_cli/src/cross/cross_builder.dart';
 import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_provider.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
+import 'package:emb_cli/src/cross/deb_packager.dart';
 import 'package:emb_cli/src/cross/overlay_builder.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
 import 'package:mason_logger/mason_logger.dart';
+import 'package:path/path.dart' as p;
 
 /// {@template cross_command}
 /// `emb cross <package>` — resolve a target manifest's `cross:` block into a
@@ -51,6 +54,13 @@ class CrossCommand extends Command<int> {
         help:
             'Configure + build the embedder under the resolved profile, one '
             'build per cross.backends entry.',
+        negatable: false,
+      )
+      ..addFlag(
+        'deb',
+        help:
+            'After building, package each backend binary into a .deb '
+            '(root-free; Depends derived from the binary + sysroot).',
         negatable: false,
       );
   }
@@ -153,7 +163,14 @@ class CrossCommand extends Command<int> {
     }
 
     if (args['build'] == true) {
-      return _build(profile, target, workspace, inputPath);
+      return _build(
+        profile,
+        target,
+        workspace,
+        inputPath,
+        deb: args['deb'] == true,
+        defaultName: manifest.id,
+      );
     }
     return ExitCode.success.code;
   }
@@ -166,8 +183,10 @@ class CrossCommand extends Command<int> {
     CrossProfile profile,
     CrossTarget target,
     Workspace workspace,
-    String inputPath,
-  ) async {
+    String inputPath, {
+    bool deb = false,
+    String defaultName = 'app',
+  }) async {
     final source =
         FileSystemEntity.typeSync(inputPath) == FileSystemEntityType.file
         ? File(inputPath).parent
@@ -219,10 +238,109 @@ class CrossCommand extends Command<int> {
         _logger.err('  $tag${r.message ?? "build failed"}');
       }
     }
-    return results.every((r) => r.success)
-        ? ExitCode.success.code
-        : ExitCode.software.code;
+    if (!results.every((r) => r.success)) return ExitCode.software.code;
+
+    if (deb) {
+      return _packageDebs(
+        profile,
+        target,
+        buildRoot,
+        results.where((r) => r.success).toList(),
+        defaultName,
+      );
+    }
+    return ExitCode.success.code;
   }
+
+  /// Package each successfully-built backend binary into a `.deb` under
+  /// `<buildRoot>/dist`. Multiple backends get a `-<backend>` name suffix.
+  Future<int> _packageDebs(
+    CrossProfile profile,
+    CrossTarget target,
+    Directory buildRoot,
+    List<CrossBuildResult> built,
+    String defaultName,
+  ) async {
+    final spec = target.package ?? const PackageSpec();
+    final arch = debianArch(target.triple ?? profile.targetTriple);
+    final baseName = spec.name ?? defaultName;
+    final outDir = Directory(p.join(buildRoot.path, 'dist'));
+    // The resolver's downloaded `.deb`s sit beside the sysroot, in `debs/`.
+    final debDirs = [
+      Directory(p.join(p.dirname(profile.targetSysroot), 'debs')),
+    ];
+    final packager = DebPackager(readelf: _readelfFor(profile));
+
+    for (final r in built) {
+      final binary = _artifactFor(r.buildDir, spec.bin);
+      if (binary == null) {
+        _logger.err(
+          '  ${r.backend ?? ""}: no binary to package in ${r.buildDir} '
+          '(set cross.package.bin)',
+        );
+        return ExitCode.software.code;
+      }
+      final multi = built.length > 1 && r.backend != null;
+      final name = multi ? '$baseName-${r.backend}' : baseName;
+      final meta = DebMetadata(
+        name: name,
+        version: spec.version,
+        architecture: arch,
+        maintainer: spec.maintainer,
+        description:
+            spec.description ?? '$name (cross-built by emb for $arch)',
+        section: spec.section,
+        priority: spec.priority,
+        dependsExtra: spec.depends,
+        autoDepends: spec.autoDepends,
+      );
+      try {
+        final out = await packager.build(
+          binary: binary,
+          installPath: p.join(spec.installDir, p.basename(binary.path)),
+          meta: meta,
+          outDir: outDir,
+          sysroot: Directory(profile.targetSysroot),
+          debDirs: debDirs,
+        );
+        _logger.info('  ${r.backend ?? ""}: packaged → ${out.path}');
+      } on DebPackageException catch (e) {
+        _logger.err('  ${r.backend ?? ""}: ${e.message}');
+        return ExitCode.software.code;
+      }
+    }
+    return ExitCode.success.code;
+  }
+
+  /// The binary to package: [bin] resolved under [buildDir], else the first ELF
+  /// executable found there.
+  File? _artifactFor(String buildDir, String? bin) {
+    if (bin != null) {
+      final f = File(p.join(buildDir, bin));
+      return f.existsSync() ? f : null;
+    }
+    for (final e in Directory(buildDir).listSync(recursive: true)) {
+      if (e is! File) continue;
+      final stat = e.statSync();
+      // Executable bit + ELF magic.
+      if (stat.mode & 0x49 == 0) continue;
+      final head = e.openSync()..setPositionSync(0);
+      final magic = head.readSync(4);
+      head.closeSync();
+      if (magic.length == 4 &&
+          magic[0] == 0x7f &&
+          magic[1] == 0x45 &&
+          magic[2] == 0x4c &&
+          magic[3] == 0x46) {
+        return e;
+      }
+    }
+    return null;
+  }
+
+  /// Derive the cross `readelf` path from the profile's `gcc`.
+  String _readelfFor(CrossProfile profile) =>
+      profile.cc.replaceFirst(RegExp(r'gcc$'), 'readelf');
 
   void _report(CrossProfile p) {
     _logger
