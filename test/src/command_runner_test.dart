@@ -155,19 +155,20 @@ void main() {
       });
 
       test('enables verbose logging for sub commands', () async {
+        final progress = _MockProgress();
+        when(() => logger.progress(any())).thenReturn(progress);
+
         final result = await commandRunner.run([
           '--verbose',
-          'sample',
-          '--cyan',
+          'update',
         ]);
         expect(result, equals(ExitCode.success.code));
 
         verify(() => logger.detail('Argument information:')).called(1);
         verify(() => logger.detail('  Top level options:')).called(1);
         verify(() => logger.detail('  - verbose: true')).called(1);
-        verify(() => logger.detail('  Command: sample')).called(1);
+        verify(() => logger.detail('  Command: update')).called(1);
         verify(() => logger.detail('    Command options:')).called(1);
-        verify(() => logger.detail('    - cyan: true')).called(1);
       });
     });
   });

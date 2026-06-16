@@ -39,7 +39,16 @@ class EmbCliCommandRunner extends CompletionCommandRunner<int> {
       );
 
     // Add sub commands
-    addCommand(SampleCommand(logger: _logger));
+    addCommand(SetupCommand(logger: _logger));
+    addCommand(DoctorCommand(logger: _logger));
+    addCommand(DepsCommand(logger: _logger));
+    addCommand(SyncCommand(logger: _logger));
+    addCommand(FlutterCommand(logger: _logger));
+    addCommand(EngineCommand(logger: _logger));
+    addCommand(AotCommand(logger: _logger));
+    addCommand(BundleCommand(logger: _logger));
+    addCommand(BuildCommand(logger: _logger));
+    addCommand(EnvCommand(logger: _logger));
     addCommand(UpdateCommand(logger: _logger, pubUpdater: _pubUpdater));
   }
 

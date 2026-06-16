@@ -1,16 +1,31 @@
 name: emb_cli
-description: Flutter Embedder CLI Tool
-version: 0.0.1
+description: >-
+  Flutter Embedder CLI: provision an embedded-Linux Flutter workspace and build
+  ivi-homescreen bundles (cross-compiled AOT for arm64/riscv64).
+version: 0.1.0
+repository: https://github.com/toyota-connected/emb_cli
+# Not published to pub.dev yet: depends on sibling packages via path.
+# To publish, see README/CHANGELOG — the path deps must become hosted.
+publish_to: none
 
 
 environment:
-  sdk: ^3.4.0
+  sdk: ">=3.10.1 <4.0.0"
 
 dependencies:
   args: ^2.5.0
   cli_completion: ^0.5.0
+  crypto: ^3.0.0
   mason_logger: ">=0.2.16 <0.4.0"
+  # Linux backend only. The macOS (brew_dart) and Windows (winget_dart)
+  # backends live in lib/src/pkg/_platform/ and are wired in per-OS builds —
+  # Dart has no OS-conditional dependencies, so depending on them here would
+  # force them to compile on every platform. See lib/src/pkg/_platform/README.
+  packagekit_dart:
+    path: ../app/packagekit_dart
+  path: ^1.9.0
   pub_updater: ">=0.4.0 <0.6.0"
+  yaml: ^3.1.0
 
 dev_dependencies:
   build_runner: ^2.4.11
@@ -18,7 +33,7 @@ dev_dependencies:
   build_version: ^2.1.1
   mocktail: ^1.0.4
   test: ^1.25.8
-  very_good_analysis: ">=6.0.0 <8.0.0"
+  very_good_analysis: ">=6.0.0 <11.0.0"
 
 executables:
   emb:

@@ -1,10 +1,14 @@
-/// emb_cli, Flutter Embedder CLI Tool
+/// emb — Flutter Embedder CLI.
+///
+/// Provisions a Flutter embedded-Linux workspace (host deps, repos, SDK,
+/// engine) and builds ivi-homescreen bundles, including cross-compiled AOT for
+/// arm64 / riscv64 from an x86_64 host.
 ///
 /// ```sh
-/// # activate emb_cli
-/// dart pub global activate emb_cli
+/// # activate
+/// dart pub global activate --source=path .
 ///
-/// # see usage
+/// # usage
 /// emb --help
 /// ```
 library;
