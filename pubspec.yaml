@@ -4,10 +4,7 @@ description: >-
   ivi-homescreen bundles (cross-compiled AOT for arm64/riscv64).
 version: 0.1.0
 repository: https://github.com/toyota-connected/emb_cli
-# Not published to pub.dev yet: depends on sibling packages via path.
-# To publish, see README/CHANGELOG — the path deps must become hosted.
-publish_to: none
-
+issue_tracker: https://github.com/toyota-connected/emb_cli/issues
 
 environment:
   sdk: ">=3.10.1 <4.0.0"
@@ -21,8 +18,7 @@ dependencies:
   # backends live in lib/src/pkg/_platform/ and are wired in per-OS builds —
   # Dart has no OS-conditional dependencies, so depending on them here would
   # force them to compile on every platform. See lib/src/pkg/_platform/README.
-  packagekit_dart:
-    path: ../app/packagekit_dart
+  packagekit_dart: ^0.3.2
   path: ^1.9.0
   pub_updater: ">=0.4.0 <0.6.0"
   yaml: ^3.1.0

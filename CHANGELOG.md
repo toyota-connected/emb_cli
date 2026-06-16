@@ -16,6 +16,13 @@ Port of `meta-flutter/workspace-automation` to a Dart CLI.
   matrix.
 - feat: `emb setup` — one-shot provision; emits `setup_env.sh`.
 - feat: `emb env` — write `setup_env.sh`.
+- feat: depend on the published `packagekit_dart` `^0.3.2` (hosted, not a path
+  dependency).
+- feat: auto-resolve the PackageKit native bridge (`libpackagekit_nc.so`) — from
+  the package's own build or, for hosted installs, the `package:hooks` build-hook
+  output under `.dart_tool/` — so the Linux backend works without `PK_NC_LIB`.
+- docs: full per-command reference (every option, default, and value set) in the
+  README; add `example/`.
 
 # 0.0.1
 
