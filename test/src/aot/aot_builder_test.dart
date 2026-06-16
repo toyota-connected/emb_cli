@@ -14,6 +14,22 @@ const _host = HostInfo(
   versionId: '43',
 );
 
+const _armHost = HostInfo(
+  os: HostOs.linux,
+  machineArch: 'aarch64',
+  archAliases: {'arm64', 'aarch64'},
+  hostType: 'fedora',
+  versionId: '43',
+);
+
+const _riscvHost = HostInfo(
+  os: HostOs.linux,
+  machineArch: 'riscv64',
+  archAliases: {'riscv64'},
+  hostType: 'fedora',
+  versionId: '43',
+);
+
 /// Records every process invocation and returns success; simulates the build
 /// dir + app.dill appearing after `flutter build bundle`.
 class _Recorder {
@@ -45,8 +61,8 @@ void main() {
 
   // Native x86_64 build: target == host, so the resolver picks the host SDK
   // cache gen_snapshot directly (no artifact/probe needed).
-  AotBuilder builder(Directory ws, _Recorder rec) =>
-      AotBuilder(Workspace(ws), host: _host, runProcess: rec.run);
+  AotBuilder builder(Directory ws, _Recorder rec, {HostInfo host = _host}) =>
+      AotBuilder(Workspace(ws), host: host, runProcess: rec.run);
 
   void writeApp(Directory app, {String name = 'myapp'}) {
     app.createSync(recursive: true);
@@ -54,8 +70,9 @@ void main() {
   }
 
   // Create a fake new-scheme SDK cache so the builder picks dartaotruntime +
-  // frontend_server_aot and finds a host gen_snapshot.
-  void writeSdk(Directory ws) {
+  // frontend_server_aot and finds a host gen_snapshot. [engineDir] is the
+  // host engine-artifacts dir name (`linux-x64`, `linux-arm64`, …).
+  void writeSdk(Directory ws, {String engineDir = 'linux-x64'}) {
     final hostEngine = p.join(
       ws.path,
       'flutter',
@@ -63,13 +80,26 @@ void main() {
       'cache',
       'artifacts',
       'engine',
-      'linux-x64',
+      engineDir,
     );
     Directory(hostEngine).createSync(recursive: true);
-    File(
-      p.join(hostEngine, 'frontend_server_aot.dart.snapshot'),
-    ).writeAsStringSync('x');
     File(p.join(hostEngine, 'gen_snapshot')).writeAsStringSync('x');
+    // The new-scheme frontend_server_aot snapshot lives in the Dart SDK and is
+    // always host-arch — unlike the engine-artifacts copy, which is x64 even
+    // inside the linux-arm64 bundle.
+    final snapshots = p.join(
+      ws.path,
+      'flutter',
+      'bin',
+      'cache',
+      'dart-sdk',
+      'bin',
+      'snapshots',
+    );
+    Directory(snapshots).createSync(recursive: true);
+    File(
+      p.join(snapshots, 'frontend_server_aot.dart.snapshot'),
+    ).writeAsStringSync('x');
     Directory(
       p.join(
         ws.path,
@@ -116,7 +146,52 @@ void main() {
       kernel.args.any((a) => a.contains('flutter_patched_sdk_product')),
       isTrue,
     );
+
+    // x86_64 host: frontend_server comes from the Dart SDK (host-arch). The
+    // gen_snapshot call above succeeding also proves _hostEngine resolved to
+    // linux-x64, where writeSdk placed it.
+    final frontend = kernel.args.firstWhere(
+      (a) => a.endsWith('frontend_server_aot.dart.snapshot'),
+    );
+    expect(frontend, contains(p.join('dart-sdk', 'bin', 'snapshots')));
   });
+
+  // Regression: on a non-x64 host the engine-artifacts dir is e.g.
+  // `linux-arm64`/`linux-riscv64` (not `linux-x64`), and its
+  // frontend_server_aot snapshot is an x64 binary the host dartaotruntime can't
+  // run. The builder must resolve the host engine dir from the host arch and
+  // take frontend_server from the Dart SDK (host-arch).
+  for (final (host, engineDir) in [
+    (_armHost, 'linux-arm64'),
+    (_riscvHost, 'linux-riscv64'),
+  ]) {
+    test('${host.machineArch} host resolves $engineDir engine + '
+        'dart-sdk frontend_server', () async {
+      final ws = Directory(p.join(tmp.path, 'ws'))..createSync();
+      final app = Directory(p.join(tmp.path, 'app'));
+      writeApp(app);
+      writeSdk(ws, engineDir: engineDir);
+      final rec = _Recorder(app.path);
+
+      final result = await builder(
+        ws,
+        rec,
+        host: host,
+      ).build(appPath: app.path, modes: const ['release']);
+
+      // Succeeds only if _hostEngine resolved to [engineDir] (gen_snapshot is
+      // written there) — proving the arch-derived path fix.
+      expect(result.success, isTrue);
+
+      final kernel = rec.calls.firstWhere((c) => c.exe == 'dartaotruntime');
+      final frontend = kernel.args.firstWhere(
+        (a) => a.endsWith('frontend_server_aot.dart.snapshot'),
+      );
+      // Host-arch snapshot from the Dart SDK, not the x64 engine copy.
+      expect(frontend, contains(p.join('dart-sdk', 'bin', 'snapshots')));
+      expect(frontend, isNot(contains(p.join('artifacts', 'engine'))));
+    });
+  }
 
   test('fails cleanly when pubspec has no name', () async {
     final ws = Directory(p.join(tmp.path, 'ws'))..createSync();

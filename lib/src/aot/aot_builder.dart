@@ -89,7 +89,7 @@ class AotBuilder {
       'cache',
       'artifacts',
       'engine',
-      'linux-x64',
+      '${host.os.configToken}-${host.flutterArch}',
     ),
   );
   Directory get _engineCommon => Directory(
@@ -104,6 +104,15 @@ class AotBuilder {
   );
   String get _dartSdkBin =>
       p.join(workspace.flutterDir.path, 'bin', 'cache', 'dart-sdk', 'bin');
+
+  /// Host-arch AOT `frontend_server` snapshot shipped with the Dart SDK.
+  ///
+  /// The engine-artifacts copy (`artifacts/engine/<host>/`) is built on x64 CI
+  /// and is x86-64 even inside the `linux-arm64` bundle, so it can't run under
+  /// the arm64 `dartaotruntime`. The `dart-sdk/bin/snapshots/` copy is always
+  /// host-arch — this is the one modern Flutter itself uses.
+  String get _frontendServerAot =>
+      p.join(_dartSdkBin, 'snapshots', 'frontend_server_aot.dart.snapshot');
 
   /// Run `flutter build bundle --<mode>` to produce `build/flutter_assets`.
   ///
@@ -149,9 +158,7 @@ class AotBuilder {
       ]);
     }
 
-    final newScheme = File(
-      p.join(_hostEngine.path, 'frontend_server_aot.dart.snapshot'),
-    ).existsSync();
+    final newScheme = File(_frontendServerAot).existsSync();
     final targetArch = arch ?? host.machineArch;
     final gen = genSnapshot ?? await _resolveGenSnapshot(targetArch, modes);
 
@@ -253,12 +260,9 @@ class AotBuilder {
     final dartRuntime = newScheme
         ? p.join(_dartSdkBin, 'dartaotruntime')
         : p.join(_dartSdkBin, 'dart');
-    final frontend = p.join(
-      _hostEngine.path,
-      newScheme
-          ? 'frontend_server_aot.dart.snapshot'
-          : 'frontend_server.dart.snapshot',
-    );
+    final frontend = newScheme
+        ? _frontendServerAot
+        : p.join(_hostEngine.path, 'frontend_server.dart.snapshot');
     final depfile = p.join(
       buildDir,
       newScheme ? 'kernel_snapshot_program.d' : 'kernel_snapshot.d',
