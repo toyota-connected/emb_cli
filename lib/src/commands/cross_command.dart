@@ -8,6 +8,7 @@ import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_provider.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/cross/deb_packager.dart';
+import 'package:emb_cli/src/cross/local_cross_provider.dart';
 import 'package:emb_cli/src/cross/overlay_builder.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
@@ -134,19 +135,32 @@ class CrossCommand extends Command<int> {
       return ExitCode.usage.code;
     }
     final targets = crossMap['targets'];
+    final hasTargets = targets is Map && targets.isNotEmpty;
 
-    // --list-targets: print the platform names this manifest defines, exit.
+    // --list-targets: print the platforms this manifest defines, exit.
     if (args['list-targets'] == true) {
-      _logger.info(
-        targets is Map && targets.isNotEmpty
-            ? 'Targets: ${targets.keys.join(", ")}'
-            : 'No cross.targets defined (single cross: block).',
-      );
+      final names = hasTargets ? targets.keys.join(', ') : '(none)';
+      _logger.info('Targets: $names  (plus the built-in: local)');
       return ExitCode.success.code;
     }
 
-    // Select a platform from cross.targets and merge it over the shared fields.
-    final selected = _selectCrossMap(crossMap, args['target'] as String?);
+    // Resolve the effective target. `local`/`host` is the native host build;
+    // it's the default when the manifest defines targets but none is chosen.
+    final targetArg = args['target'] as String?;
+    final effectiveTarget = targetArg ?? (hasTargets ? 'local' : null);
+    final isNative = effectiveTarget == 'local' || effectiveTarget == 'host';
+
+    final Map<dynamic, dynamic>? selected;
+    if (isNative) {
+      // Native uses the shared fields (backends / defines / package); the
+      // cross-only fields (image_url, toolchain, cpu_flags) don't apply.
+      selected = {
+        for (final e in crossMap.entries)
+          if (e.key != 'targets') e.key: e.value,
+      };
+    } else {
+      selected = _selectCrossMap(crossMap, effectiveTarget);
+    }
     if (selected == null) return ExitCode.usage.code;
 
     final CrossTarget target;
@@ -174,11 +188,9 @@ class CrossCommand extends Command<int> {
 
     final host = _host ?? HostInfo.detect();
     final workspace = Workspace.resolve(override: args['workspace'] as String?);
-    final provider = CrossProvider.forTarget(
-      target,
-      workspace: workspace,
-      host: host,
-    );
+    final provider = isNative
+        ? LocalCrossProvider(host)
+        : CrossProvider.forTarget(target, workspace: workspace, host: host);
 
     // --clean / --clean-all: remove working dirs and exit (no download).
     if (args['clean'] == true || args['clean-all'] == true) {
@@ -193,6 +205,16 @@ class CrossCommand extends Command<int> {
     // --dry-run: report the plan without any download / mount / ssh side
     // effects, so every target validates on any host.
     if (args['dry-run'] == true) {
+      if (isNative) {
+        final be = target.backends.isEmpty
+            ? '(plain)'
+            : target.backends.keys.join(', ');
+        _logger
+          ..info(styleBold.wrap('Cross plan (local)'))
+          ..info('  native build  : ${host.machineArch} (host toolchain)')
+          ..info('  backends      : $be');
+        return ExitCode.success.code;
+      }
       await _plan(provider, target, host);
       return ExitCode.success.code;
     }
@@ -307,6 +329,9 @@ class CrossCommand extends Command<int> {
         ? File(inputPath).parent
         : Directory(inputPath);
 
+    // A native `local` build: no sysroot, host toolchain, no augment staging.
+    final native = profile.providerName == 'local';
+
     // --backend filters the matrix (validated in run()); merge shared
     // cross.defines into each backend (a backend define wins on a clash).
     final backends = {
@@ -317,8 +342,9 @@ class CrossCommand extends Command<int> {
 
     // Stage any augment libraries the sysroot doesn't already satisfy (e.g.
     // libdisplay-info >= 0.2.0) into the sysroot before configuring, so the
-    // embedder's pkg-config probes resolve them.
-    if (target.augment.isNotEmpty) {
+    // embedder's pkg-config probes resolve them. Native builds use the host's
+    // system libraries instead (install via the manifest deps / emb deps).
+    if (!native && target.augment.isNotEmpty) {
       final overlay = OverlayBuilder(workspace, profile);
       try {
         await overlay.build(
@@ -333,11 +359,11 @@ class CrossCommand extends Command<int> {
       }
     }
 
-    final triple = target.triple ?? profile.targetTriple;
     final buildRoot = workspace.ensurePlatformDir(
-      'cross-build-$triple-${buildKey(target)}',
+      'cross-build-${profile.targetTriple}-${buildKey(target)}',
     );
-    final builder = CrossBuilder(profile);
+    // Native keeps the host compiler env; cross neutralizes it.
+    final builder = CrossBuilder(profile, neutralizeHostEnv: !native);
 
     final results = backends.isEmpty
         ? [
@@ -461,7 +487,7 @@ class CrossCommand extends Command<int> {
     String defaultName,
   ) async {
     final spec = target.package ?? const PackageSpec();
-    final arch = debianArch(target.triple ?? profile.targetTriple);
+    final arch = debianArch(profile.targetTriple);
     final baseName = spec.name ?? defaultName;
     final outDir = Directory(p.join(buildRoot.path, 'dist'));
     // The resolver's downloaded `.deb`s sit beside the sysroot, in `debs/`.

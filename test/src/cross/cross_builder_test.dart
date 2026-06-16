@@ -130,6 +130,36 @@ void main() {
     expect(r.message, contains('ninja failed'));
   });
 
+  test(
+    'both modes blank host *FLAGS; only cross blanks the compiler',
+    () async {
+      final cross = recorder();
+      await CrossBuilder(_profile, runProcess: cross.run).build(
+        sourceDir: dir('s'),
+        buildDir: dir('b'),
+        generator: CrossGenerator.cmake,
+      );
+      // Cross: stray flags AND the compiler selection are blanked.
+      expect(cross.envs.first!['CXXFLAGS'], '');
+      expect(cross.envs.first!['CXX'], '');
+
+      final native = recorder();
+      await CrossBuilder(
+        _profile,
+        runProcess: native.run,
+        neutralizeHostEnv: false,
+      ).build(
+        sourceDir: dir('s2'),
+        buildDir: dir('b2'),
+        generator: CrossGenerator.cmake,
+      );
+      // Native: stray flags blanked (no clang -stdlib leak), but the host
+      // compiler choice passes through (CXX not forced empty).
+      expect(native.envs.first!['CXXFLAGS'], '');
+      expect(native.envs.first!.containsKey('CXX'), isFalse);
+    },
+  );
+
   test('cmake: appends raw cmakeArgs verbatim after the defines', () async {
     final rec = recorder();
     final r = await CrossBuilder(_profile, runProcess: rec.run).build(

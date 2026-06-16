@@ -32,11 +32,22 @@ class CrossBuildResult {
 /// injectable [ProcessRunner] seam, so the command construction is unit-tested
 /// without a real cross toolchain.
 class CrossBuilder {
-  CrossBuilder(this.profile, {ProcessRunner runProcess = defaultProcessRunner})
-    : _run = runProcess;
+  CrossBuilder(
+    this.profile, {
+    ProcessRunner runProcess = defaultProcessRunner,
+    bool neutralizeHostEnv = true,
+  }) : _run = runProcess,
+       _neutralize = neutralizeHostEnv;
 
   final CrossProfile profile;
   final ProcessRunner _run;
+
+  /// Whether to blank the host *compiler selection* (`CC`/`CXX`/`CPP`) before
+  /// applying the profile env. True for cross builds (the compiler comes from
+  /// the toolchain file); false for a native `local` build, which keeps the
+  /// host's compiler. Stray host `*FLAGS` are blanked in **both** modes so a
+  /// `CXXFLAGS=-stdlib=libc++` from a shell profile can't reach the build.
+  final bool _neutralize;
 
   /// Configure [sourceDir] into [buildDir] with [generator] + [defines] and the
   /// profile's toolchain/env, then build.
@@ -102,16 +113,11 @@ class CrossBuilder {
   /// override the blanks; an ARM GNU profile leaves them empty (its flags live
   /// in the toolchain file).
   Map<String, String> _env() => {
-    for (final v in const [
-      'CC',
-      'CXX',
-      'CPP',
-      'CFLAGS',
-      'CXXFLAGS',
-      'CPPFLAGS',
-      'LDFLAGS',
-    ])
-      v: '',
+    // Stray host flag vars are dropped in both modes.
+    for (final v in const ['CFLAGS', 'CXXFLAGS', 'CPPFLAGS', 'LDFLAGS']) v: '',
+    // The compiler selection is dropped only for cross (toolchain-file driven).
+    if (_neutralize)
+      for (final v in const ['CC', 'CXX', 'CPP']) v: '',
     ...profile.buildEnv(),
   };
 

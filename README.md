@@ -360,8 +360,8 @@ emb cross <package-dir|manifest.yaml> [options]
 |---|---|---|
 | `<package-dir\|manifest>` | **mandatory (positional)** | Dir with `emb.yaml`, or a manifest file. |
 | `-w`, `--workspace <dir>` | resolution order | Workspace root. |
-| `-t`, `--target <name>` | — | Select a platform from `cross.targets` (e.g. `rpi5`, `radxa-zero3`); its fields override the shared `cross:` block. Required when the manifest defines `cross.targets`. |
-| `--list-targets` | off | List the platforms defined under `cross.targets`, then exit. |
+| `-t`, `--target <name>` | `local` if `cross.targets` defined | Select a platform from `cross.targets` (e.g. `rpi5`, `radxa-zero3`), or `local`/`host` for a native build on this machine. When the manifest defines `cross.targets`, omitting `--target` defaults to `local`. |
+| `--list-targets` | off | List the platforms defined under `cross.targets` (plus the built-in `local`), then exit. |
 | `--dry-run` | off | Report the resolution plan (provider, toolchain, sysroot, preflight, augment, backends) with no download / mount / ssh. |
 | `--prepare` | off | After resolving, build the `augment` libraries into the overlay. |
 | `--build` | off | Configure + build the embedder under the resolved profile, one build per `cross.backends` entry. |
@@ -439,6 +439,18 @@ folds into `sysroot`). Working dirs are content-hash-keyed, so boards that share
 a sysroot (rpi4/rpi5/zero-2w — same image, only `-mcpu` differs) **extract it
 once**, while a different image (radxa) gets its own. A manifest with no
 `cross.targets` behaves exactly as before (one implicit target).
+
+There's always a built-in **`local`** target (alias `host`): a native build on
+this machine — no cross toolchain or sysroot, host compiler + system libraries
+(install host dev deps via `emb deps`). It's the **default** when a manifest
+defines `cross.targets` and you don't pass `--target`, so `emb cross . --build`
+builds for the dev box while `--target rpi5` cross-builds.
+
+```sh
+emb cross . --build            # native local build (default with cross.targets)
+emb cross . --target local     # …the same, explicit (or --target host)
+emb cross . --target rpi5 --build
+```
 
 ---
 

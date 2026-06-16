@@ -93,10 +93,33 @@ void main() {
     );
   });
 
-  test('a targets manifest needs --target', () async {
+  test('a targets manifest defaults to the native local build', () async {
     final pkg = pkgWith('mt2', targetsManifest());
-    // No --target → usage error (don't guess a platform).
-    expect(await run(['cross', '--dry-run', pkg.path]), ExitCode.usage.code);
+    // No --target → local (native host build), which plans successfully.
+    expect(await run(['cross', '--dry-run', pkg.path]), ExitCode.success.code);
+  });
+
+  test('--target local / host select the native build', () async {
+    final pkg = pkgWith('mt2b', targetsManifest());
+    for (final t in ['local', 'host']) {
+      expect(
+        await run(['cross', '--dry-run', '--target', t, pkg.path]),
+        ExitCode.success.code,
+        reason: '--target $t failed',
+      );
+    }
+  });
+
+  test('--target local works on a single-block manifest too', () async {
+    final pkg = pkgWith(
+      'sb',
+      'id: sb\ntype: app\ncross:\n  provider: arm-gnu\n'
+          '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n',
+    );
+    expect(
+      await run(['cross', '--dry-run', '--target', 'local', pkg.path]),
+      ExitCode.success.code,
+    );
   });
 
   test('--target selects a platform and plans it (--dry-run)', () async {
