@@ -1,0 +1,38 @@
+# ivi-homescreen on Qualcomm RB2 / unoq (QRB2210) — mirrors scripts/build_unoq.sh
+# Engine SHA pin (EngineArtifacts): 13e658725ddaa270601426d1485636157e38c34c
+id: ivi-homescreen
+type: app
+supported_archs: [arm64]
+supported_host_types: [ubuntu, fedora]
+
+build:
+  app_path: .
+  archs: [arm64]
+  modes: [release]
+  output: bundles
+
+cross:
+  provider: arm-gnu
+  triple: aarch64-none-linux-gnu
+  # The derive case: the sysroot is acquired FIRST and its Debian codename
+  # selects the toolchain version (bookworm->12.3.rel1, trixie->15.2.rel1) so
+  # libstdc++'s gthr/glibc assumptions match the target.
+  version_policy: derive
+  cpu_flags: [-mcpu=cortex-a53]           # QRB2210 Kryo (Cortex-A53)
+
+  # unoq does not unpack an image: it rsyncs the rootfs from a live device.
+  # ArmGnuCrossProvider probes the board for rsync + passwordless sudo, then
+  # mirrors the rootfs (via `--rsync-path='sudo rsync'` when available) into
+  # the workspace sysroot; _detectCodename then reads it for the derive policy.
+  sysroot:
+    source: device
+    host: ubuntu@unoq.local
+    ssh_port: 22
+    # ssh_opts: -i ~/.ssh/unoq_ed25519 -o StrictHostKeyChecking=accept-new
+
+  augment:
+    - pkg: libdisplay-info
+      min: "0.2.0"
+      url: https://gitlab.freedesktop.org/emersion/libdisplay-info/-/archive/0.2.0/libdisplay-info-0.2.0.tar.gz
+      build: meson
+      static: true

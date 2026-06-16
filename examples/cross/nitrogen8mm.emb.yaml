@@ -1,0 +1,30 @@
+# ivi-homescreen on Nitrogen8M Mini (i.MX8MM) — mirrors scripts/build_nitrogen8mm.sh
+# Yocto build-tree recipe-sysroot (located, not downloaded). No toolchain fetch,
+# no qemu chroot: the weston recipe-sysroot is a complete cross dev sysroot and
+# recipe-sysroot-native ships the matching aarch64-poky-linux gcc.
+id: ivi-homescreen
+type: app
+supported_archs: [arm64]
+supported_host_types: [ubuntu, fedora]
+
+build:
+  app_path: .
+  archs: [arm64]
+  modes: [release]
+  output: bundles
+
+cross:
+  provider: yocto-recipe
+  triple: aarch64-poky-linux
+  yocto_build: /opt/yocto/imx8mm/build    # the dir containing tmp/work/... (operator-set)
+  machine_tuple: armv8a-mx8mm-poky-linux
+  recipe: weston                          # stages the full graphics dev sysroot
+  cpu_flags: [-march=armv8-a+crc+crypto, -mbranch-protection=standard]
+  augment:
+    # libdisplay-info built static into the overlay (the script installs it into
+    # the recipe-sysroot; the overlay keeps the shared sysroot pristine).
+    - pkg: libdisplay-info
+      min: "0.2.0"
+      url: https://gitlab.freedesktop.org/emersion/libdisplay-info/-/archive/0.2.0/libdisplay-info-0.2.0.tar.gz
+      build: meson
+      static: true

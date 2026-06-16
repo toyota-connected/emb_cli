@@ -1,0 +1,26 @@
+# ivi-homescreen via an Automotive Grade Linux (AGL) SDK DOWNLOADED from a URL.
+#
+# YoctoSdkCrossProvider downloads the AGL self-extracting installer and runs it
+# non-interactively (`sh <installer> -y -d <workspace-prefix>`), then globs +
+# sources environment-setup-aarch64-agl-linux. AGL SDKs are published under
+# https://download.automotivelinux.org/AGL/release/<codename>/<version>/<machine>/deploy/sdk/
+#
+# This pins UCB 10 "Jellyfish" for an aarch64 Raspberry Pi 4 machine to show
+# the version axis distinct from the Marlin local example. Confirm the exact
+# machine dir / artifact for your release at download.automotivelinux.org.
+id: ivi-homescreen
+type: app
+supported_archs: [arm64]
+supported_host_types: [ubuntu, fedora]
+
+build:
+  app_path: .
+  archs: [arm64]
+  modes: [release]
+  output: bundles
+
+cross:
+  provider: yocto-sdk
+  sdk_url: https://download.automotivelinux.org/AGL/release/jellyfish/10.93.1/raspberrypi4/deploy/sdk/poky-agl-glibc-x86_64-agl-demo-platform-crosssdk-aarch64-raspberrypi4-64-toolchain-10.93.1.sh
+  triple: aarch64-agl-linux
+  augment: []

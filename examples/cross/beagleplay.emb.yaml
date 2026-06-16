@@ -1,0 +1,27 @@
+# ivi-homescreen on BeaglePlay (AM62x) — mirrors scripts/build_beagleplay.sh (k3 kernel)
+# Engine SHA pin (EngineArtifacts): 13e658725ddaa270601426d1485636157e38c34c
+id: ivi-homescreen
+type: app
+supported_archs: [arm64]
+supported_host_types: [ubuntu, fedora]
+
+build:
+  app_path: .
+  archs: [arm64]
+  modes: [release]
+  output: bundles
+
+cross:
+  provider: arm-gnu
+  triple: aarch64-none-linux-gnu
+  version_policy: pinned
+  toolchain_version: 15.2.rel1            # trixie → gcc 15 / glibc >= 2.41
+  # k3 kernel image; TI-kernel variant:
+  #   https://files.beagle.cc/file/beagleboard-public-2021/images/beagleplay-debian-13.5-xfce-v6.12-arm64-2026-05-19-12gb.img.xz
+  # image sha256 (verified by the sysroot layer, not the cross block):
+  #   011b205f5fc2dbf9b68fed4c06ea530b55ac6f1c9f4df87973f5992940750e48
+  image_url: https://files.beagle.cc/file/beagleboard-public-2021/images/beagleplay-debian-13.5-xfce-v6.18-k3-arm64-2026-05-19-12gb.img.xz
+  cpu_flags: [-mcpu=cortex-a53]           # AM62x (Cortex-A53)
+  # No augment: trixie ships libdisplay-info 0.2.0 (>= drm-cxx floor) and a
+  # current Vulkan SDK, so nothing is staged into the overlay.
+  augment: []

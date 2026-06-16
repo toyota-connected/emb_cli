@@ -1,0 +1,32 @@
+# ivi-homescreen via an Automotive Grade Linux (AGL) SDK INSTALLED locally.
+#
+# AGL is its own Yocto-based distro: the triple is aarch64-agl-linux (NOT
+# poky-linux), the env script is environment-setup-aarch64-agl-linux, and the
+# installer's default target dir is /opt/agl-sdk/<version>-<machine>.
+# UCB 13 "Magic Marlin" is the AGL release that integrated Toyota's embedded
+# Flutter solution, so it is the on-point version for ivi-homescreen.
+#
+# AGL codename <-> UCB version (swap per release):
+#   icefish=9  jellyfish=10  koi=11  lamprey=12  marlin=13
+#   needlefish=14  octopus=15  pike=16  trout(2025)  unagi(latest, 2026)
+id: ivi-homescreen
+type: app
+supported_archs: [arm64]
+supported_host_types: [ubuntu, fedora]
+
+build:
+  app_path: .
+  archs: [arm64]
+  modes: [release]
+  output: bundles
+
+cross:
+  provider: yocto-sdk
+  # Installed AGL SDK root (holds environment-setup-aarch64-agl-linux).
+  # Produced by: ./poky-agl-glibc-x86_64-agl-demo-platform-crosssdk-aarch64-toolchain-13.0.0.sh
+  sdk_path: /opt/agl-sdk/13.0.0-aarch64
+  # Optional explicit env-setup (else globbed under sdk_path):
+  # sdk_env_setup: /opt/agl-sdk/13.0.0-aarch64/environment-setup-aarch64-agl-linux
+  triple: aarch64-agl-linux               # AGL distro triple; do not omit (the
+                                          # OE env derives only aarch64-linux)
+  augment: []                             # AGL target sysroot is complete

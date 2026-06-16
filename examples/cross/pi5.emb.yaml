@@ -1,0 +1,35 @@
+# ivi-homescreen on Raspberry Pi 5 — mirrors scripts/build_pi.sh --pios bookworm --target pi5
+# Engine SHA pin (handled by EngineArtifacts, not the cross block):
+#   13e658725ddaa270601426d1485636157e38c34c
+id: ivi-homescreen
+type: app
+supported_archs: [arm64]
+supported_host_types: [ubuntu, fedora]
+
+build:
+  app_path: .
+  archs: [arm64]
+  modes: [release]
+  output: bundles
+
+cross:
+  provider: arm-gnu
+  triple: aarch64-none-linux-gnu
+  version_policy: pinned
+  toolchain_version: 12.3.rel1            # bookworm → gcc 12 / glibc 2.36
+  image_url: https://downloads.raspberrypi.com/raspios_oldstable_lite_arm64/images/raspios_oldstable_lite_arm64-2026-04-14/2026-04-13-raspios-bookworm-arm64-lite.img.xz
+  cpu_flags: [-mcpu=cortex-a76]           # pi5; pi4=cortex-a72, piz2=cortex-a53, generic=[]
+  augment:
+    # bookworm ships libdisplay-info 0.1.1 (< drm-cxx 0.2.0 floor) and an old
+    # Vulkan SDK, so both are staged into the overlay. On a trixie target both
+    # disappear (see beagleplay).
+    - pkg: libdisplay-info
+      min: "0.2.0"
+      url: https://gitlab.freedesktop.org/emersion/libdisplay-info/-/archive/0.2.0/libdisplay-info-0.2.0.tar.gz
+      build: meson
+      static: true
+    - pkg: vulkan-headers
+      min: "1.4.309"
+      url: https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/vulkan-sdk-1.4.309.0.tar.gz
+      build: cmake
+      static: false                       # header-only; staged as includes
