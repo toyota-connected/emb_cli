@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
+import 'package:emb_cli/src/cross/cross_arch.dart';
 import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_provider.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
@@ -59,6 +60,11 @@ class ArmGnuCrossProvider implements CrossProvider {
   };
 
   static const _defaultTriple = 'aarch64-none-linux-gnu';
+
+  /// The target's Debian multiarch tuple (e.g. `aarch64-linux-gnu`), derived
+  /// from the triple rather than hardcoded.
+  String get _multiarch =>
+      debianMultiarch(target.targetTriple ?? _defaultTriple);
 
   @override
   Future<CrossResolveResult> resolve() async {
@@ -129,13 +135,7 @@ class ArmGnuCrossProvider implements CrossProvider {
       pkgConfig: PkgConfig(
         sysrootDir: sysrootDir.path,
         libdir: [
-          p.join(
-            sysrootDir.path,
-            'usr',
-            'lib',
-            'aarch64-linux-gnu',
-            'pkgconfig',
-          ),
+          p.join(sysrootDir.path, 'usr', 'lib', _multiarch, 'pkgconfig'),
           p.join(sysrootDir.path, 'usr', 'lib', 'pkgconfig'),
           p.join(sysrootDir.path, 'usr', 'share', 'pkgconfig'),
         ],
@@ -219,7 +219,8 @@ class ArmGnuCrossProvider implements CrossProvider {
   }
 
   /// Unpack a distro image: download/decompress, loop-mount the rootfs
-  /// partition (p2), rsync it out, relativize multiarch symlinks. Root.
+  /// partition (`sysroot.partition`, default 2), rsync it out, relativize
+  /// multiarch symlinks. Root.
   Future<CrossResolveResult?> _prepareSysrootFromImage(
     Directory sysrootDir,
     SysrootSpec spec,
@@ -262,11 +263,8 @@ class ArmGnuCrossProvider implements CrossProvider {
     }
     final loopDev = loop.stdout.toString().trim();
     try {
-      final mount = await Process.run('sudo', [
-        'mount',
-        '${loopDev}p2',
-        mnt.path,
-      ]);
+      final part = '${loopDev}p${spec.partition}';
+      final mount = await Process.run('sudo', ['mount', part, mnt.path]);
       if (mount.exitCode != 0) {
         return CrossResolveResult.failed('mount failed: ${mount.stderr}');
       }
@@ -285,8 +283,9 @@ class ArmGnuCrossProvider implements CrossProvider {
       mnt.deleteSync(recursive: true);
     }
 
-    _relativizeSymlinks(
-      Directory(p.join(sysrootDir.path, 'usr', 'lib', 'aarch64-linux-gnu')),
+    relativizeSysrootSymlinks(
+      sysrootDir,
+      Directory(p.join(sysrootDir.path, 'usr', 'lib', _multiarch)),
     );
     return null;
   }
@@ -344,8 +343,9 @@ class ArmGnuCrossProvider implements CrossProvider {
     }
     if (err != null) return err;
 
-    _relativizeSymlinks(
-      Directory(p.join(sysrootDir.path, 'usr', 'lib', 'aarch64-linux-gnu')),
+    relativizeSysrootSymlinks(
+      sysrootDir,
+      Directory(p.join(sysrootDir.path, 'usr', 'lib', _multiarch)),
     );
     return null;
   }
@@ -422,25 +422,6 @@ class ArmGnuCrossProvider implements CrossProvider {
     return null;
   }
 
-  /// Rewrite absolute multiarch symlinks (`/usr/lib/...`) to relative targets
-  /// so the linker resolves them against the sysroot rather than the host.
-  void _relativizeSymlinks(Directory dir) {
-    if (!dir.existsSync()) return;
-    for (final e in dir.listSync(followLinks: false)) {
-      if (e is Link) {
-        final tgt = e.targetSync();
-        if (tgt.startsWith('/')) {
-          final rel = p.relative(tgt, from: '/');
-          final up =
-              '../' * p.split(p.relative(e.parent.path, from: '/')).length;
-          e
-            ..deleteSync()
-            ..createSync('$up$rel');
-        }
-      }
-    }
-  }
-
   String? _detectCodename(Directory sysrootDir) {
     final osRel = File(p.join(sysrootDir.path, 'etc', 'os-release'));
     if (osRel.existsSync()) {
@@ -473,4 +454,27 @@ class ArmGnuCrossProvider implements CrossProvider {
   // ignore: unused_element
   String _sha256OfFile(File f) =>
       sha256.convert(f.readAsBytesSync()).toString();
+}
+
+/// Rewrite absolute multiarch symlinks under [dir] (e.g. `libc.so → /lib/
+/// aarch64-linux-gnu/libc.so.6`) to targets relative to the link, **rebased
+/// under [sysrootRoot]** — so the cross linker resolves them inside the sysroot
+/// rather than against the host.
+///
+/// The target is absolute *within the target's own filesystem*, so it is joined
+/// onto [sysrootRoot] and then relativized against the link's directory. (The
+/// earlier implementation counted depth from the host filesystem root, which
+/// produced far too many `../` once the sysroot lived several levels deep.)
+void relativizeSysrootSymlinks(Directory sysrootRoot, Directory dir) {
+  if (!dir.existsSync()) return;
+  for (final e in dir.listSync(followLinks: false)) {
+    if (e is! Link) continue;
+    final target = e.targetSync();
+    if (!p.isAbsolute(target)) continue;
+    final inSysroot = p.join(sysrootRoot.path, p.relative(target, from: '/'));
+    final rel = p.relative(inSysroot, from: e.parent.path);
+    e
+      ..deleteSync()
+      ..createSync(rel);
+  }
 }

@@ -119,6 +119,7 @@ class SysrootSpec {
     this.deviceHost,
     this.sshPort = 22,
     this.sshOpts,
+    this.partition = 2,
   });
 
   factory SysrootSpec.fromMap(Map<dynamic, dynamic> map) => SysrootSpec(
@@ -127,6 +128,9 @@ class SysrootSpec {
     deviceHost: (map['host'] ?? map['device_host'])?.toString(),
     sshPort: int.tryParse('${map['ssh_port'] ?? 22}') ?? 22,
     sshOpts: map['ssh_opts']?.toString(),
+    partition:
+        int.tryParse('${map['partition'] ?? map['rootfs_partition'] ?? 2}') ??
+        2,
   );
 
   final SysrootProvenance source;
@@ -142,6 +146,11 @@ class SysrootSpec {
 
   /// Extra `ssh`/`rsync -e` options for the device rsync.
   final String? sshOpts;
+
+  /// The 1-based rootfs partition index within an image (Raspberry Pi and
+  /// most Debian images put rootfs on `p2`; override with
+  /// `sysroot.partition`/`rootfs_partition` for images that differ).
+  final int partition;
 }
 
 /// The parsed `cross:` block of a target manifest.

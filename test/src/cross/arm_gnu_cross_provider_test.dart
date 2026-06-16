@@ -109,4 +109,27 @@ void main() {
     );
     expect(r.status, CrossResolveStatus.unavailable);
   });
+
+  // Bug #4: an absolute multiarch symlink must be rebased *within the sysroot*,
+  // not relativized from the host filesystem root.
+  test('relativizeSysrootSymlinks rebases absolute links into the sysroot', () {
+    const ma = 'aarch64-linux-gnu';
+    final sysroot = Directory(p.join(tmp.path, 'sysroot'));
+    final libdir = Directory(p.join(sysroot.path, 'usr', 'lib', ma))
+      ..createSync(recursive: true);
+    final realLib = File(p.join(sysroot.path, 'lib', ma, 'libc.so.6'))
+      ..createSync(recursive: true)
+      ..writeAsStringSync('');
+    // The kind of absolute symlink a Debian rootfs ships.
+    Link(p.join(libdir.path, 'libc.so')).createSync('/lib/$ma/libc.so.6');
+
+    relativizeSysrootSymlinks(sysroot, libdir);
+
+    final tgt = Link(p.join(libdir.path, 'libc.so')).targetSync();
+    expect(p.isRelative(tgt), isTrue, reason: 'should be relative, got $tgt');
+    // It must resolve to the real lib inside the sysroot (not escape to host).
+    final resolved = p.normalize(p.join(libdir.path, tgt));
+    expect(resolved, realLib.path);
+    expect(File(resolved).existsSync(), isTrue);
+  });
 }

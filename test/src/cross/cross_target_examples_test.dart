@@ -163,5 +163,22 @@ void main() {
       expect(t.sysroot?.source, SysrootProvenance.image);
       expect(t.imageUrl, 'https://example/x.img.xz');
     });
+
+    test('rootfs partition defaults to 2 and is overridable (#6)', () {
+      final def = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'image_url': 'https://example/x.img.xz',
+      });
+      expect(def.sysroot?.partition, 2);
+      final ovr = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'sysroot': {
+          'source': 'image',
+          'image_url': 'https://example/x.img.xz',
+          'partition': 3,
+        },
+      });
+      expect(ovr.sysroot?.partition, 3);
+    });
   });
 }

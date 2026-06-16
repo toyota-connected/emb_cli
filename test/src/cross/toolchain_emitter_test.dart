@@ -44,6 +44,30 @@ void main() {
     expect(text, contains("'-march=armv8-a+crc+crypto'"));
   });
 
+  test('derives system processor / cpu_family from the triple (riscv64)', () {
+    const triple = 'riscv64-unknown-linux-gnu';
+    final cmake = File(
+      emitter.emitCMake(
+        outDir: tmp,
+        triple: triple,
+        crossBin: '/tc/bin',
+        sysroot: '/sr',
+        cpuFlags: const [],
+      ),
+    ).readAsStringSync();
+    expect(cmake, contains('set(CMAKE_SYSTEM_PROCESSOR riscv64)'));
+    final meson = File(
+      emitter.emitMeson(
+        outDir: tmp,
+        triple: triple,
+        crossBin: '/tc/bin',
+        sysroot: '/sr',
+        cpuFlags: const [],
+      ),
+    ).readAsStringSync();
+    expect(meson, contains("cpu_family = 'riscv64'"));
+  });
+
   test('emitMeson omits tuning args when cpuFlags is empty', () {
     final path = emitter.emitMeson(
       outDir: tmp,
