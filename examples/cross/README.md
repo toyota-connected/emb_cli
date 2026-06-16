@@ -20,6 +20,16 @@ scripts.
 | `agl_sdk_local.emb.yaml` | (AGL SDK, installed) | `yocto-sdk` | `sdk_path` → `environment-setup-aarch64-agl-linux` | from `CFLAGS` | none |
 | `agl_sdk_url.emb.yaml` | (AGL SDK, downloaded) | `yocto-sdk` | `sdk_url` → install → `environment-setup-aarch64-agl-linux` | from `CFLAGS` | none |
 
+The files above are one board per manifest. **`raspberry-pi-family.emb.yaml`**
+shows the alternative: several boards in *one* manifest via `cross.targets`
+(rpi4/rpi5/rpi-zero-2w/radxa-zero3), selected with `--target`. Shared config
+lives at the `cross:` level; each target overrides only its image + `-mcpu`.
+
+```sh
+emb cross raspberry-pi-family.emb.yaml --list-targets
+emb cross raspberry-pi-family.emb.yaml --target rpi5 --build --deb
+```
+
 ## Validated workflow (pi5)
 
 Run from the `ivi-homescreen` package dir (where its `emb.yaml` lives). `emb

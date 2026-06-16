@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/cross/cross_arch.dart';
 import 'package:emb_cli/src/cross/cross_builder.dart';
+import 'package:emb_cli/src/cross/cross_keys.dart';
 import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_provider.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
@@ -54,6 +55,18 @@ class CrossCommand extends Command<int> {
         help:
             'Configure + build the embedder under the resolved profile, one '
             'build per cross.backends entry.',
+        negatable: false,
+      )
+      ..addOption(
+        'target',
+        abbr: 't',
+        help:
+            'Select a platform from cross.targets (e.g. rpi5, radxa-zero3). '
+            'Its fields override the shared cross: block.',
+      )
+      ..addFlag(
+        'list-targets',
+        help: 'List the platforms defined under cross.targets, then exit.',
         negatable: false,
       )
       ..addMultiOption(
@@ -120,10 +133,25 @@ class CrossCommand extends Command<int> {
       _logger.err('${manifest.id} has no cross: block.');
       return ExitCode.usage.code;
     }
+    final targets = crossMap['targets'];
+
+    // --list-targets: print the platform names this manifest defines, exit.
+    if (args['list-targets'] == true) {
+      _logger.info(
+        targets is Map && targets.isNotEmpty
+            ? 'Targets: ${targets.keys.join(", ")}'
+            : 'No cross.targets defined (single cross: block).',
+      );
+      return ExitCode.success.code;
+    }
+
+    // Select a platform from cross.targets and merge it over the shared fields.
+    final selected = _selectCrossMap(crossMap, args['target'] as String?);
+    if (selected == null) return ExitCode.usage.code;
 
     final CrossTarget target;
     try {
-      target = CrossTarget.fromMap(Map<dynamic, dynamic>.from(crossMap));
+      target = CrossTarget.fromMap(selected);
       // fromMap throws ArgumentError on an unknown provider token.
       // ignore: avoid_catching_errors
     } on ArgumentError catch (e) {
@@ -154,7 +182,12 @@ class CrossCommand extends Command<int> {
 
     // --clean / --clean-all: remove working dirs and exit (no download).
     if (args['clean'] == true || args['clean-all'] == true) {
-      return _clean(provider, workspace, all: args['clean-all'] == true);
+      return _clean(
+        provider,
+        target,
+        workspace,
+        all: args['clean-all'] == true,
+      );
     }
 
     // --dry-run: report the plan without any download / mount / ssh side
@@ -214,6 +247,48 @@ class CrossCommand extends Command<int> {
     return ExitCode.success.code;
   }
 
+  /// Resolve the effective cross map. When the manifest defines
+  /// `cross.targets`, merge the [targetName] entry over the shared fields
+  /// (minus `targets`). Logs and returns null on a usage error.
+  Map<dynamic, dynamic>? _selectCrossMap(
+    Map<dynamic, dynamic> crossMap,
+    String? targetName,
+  ) {
+    final targets = crossMap['targets'];
+    final hasTargets = targets is Map && targets.isNotEmpty;
+
+    if (!hasTargets) {
+      if (targetName != null) {
+        _logger.err('--target given but the manifest has no cross.targets.');
+        return null;
+      }
+      return Map<dynamic, dynamic>.from(crossMap);
+    }
+
+    if (targetName == null) {
+      _logger.err(
+        'Manifest defines targets (${targets.keys.join(", ")}); '
+        'pass --target <name>.',
+      );
+      return null;
+    }
+    final tdef = targets[targetName];
+    if (tdef is! Map) {
+      _logger.err(
+        'Unknown target "$targetName". '
+        'Available: ${targets.keys.join(", ")}',
+      );
+      return null;
+    }
+    // Shallow-merge shared fields (minus targets) then the target's overrides;
+    // a top-level image_url override folds into the sysroot block.
+    return {
+      for (final e in crossMap.entries)
+        if (e.key != 'targets') e.key: e.value,
+      ...tdef,
+    };
+  }
+
   /// Configure + build the embedder under [profile], one build per
   /// `cross.backends` entry (or a single plain build when none are declared).
   /// The CMake/meson source is the package directory (the manifest file's
@@ -258,8 +333,9 @@ class CrossCommand extends Command<int> {
       }
     }
 
+    final triple = target.triple ?? profile.targetTriple;
     final buildRoot = workspace.ensurePlatformDir(
-      'cross-build-${target.triple ?? profile.targetTriple}',
+      'cross-build-$triple-${buildKey(target)}',
     );
     final builder = CrossBuilder(profile);
 
@@ -303,28 +379,32 @@ class CrossCommand extends Command<int> {
     return ExitCode.success.code;
   }
 
-  /// Remove this target's cross working dirs and report freed space. `--clean`
-  /// keeps the expensive toolchain + sysroot (the `cross-<triple>` dir);
-  /// `--clean-all` ([all]) removes those plus the shared overlay sources too.
+  /// Remove the selected target's cross working dirs and report freed space.
+  /// `--clean` keeps the expensive toolchain + sysroot (the keyed
+  /// `cross-<triple>-<key>` dir); `--clean-all` ([all]) removes those plus the
+  /// shared overlay sources too.
   Future<int> _clean(
     CrossProvider provider,
+    CrossTarget target,
     Workspace workspace, {
     required bool all,
   }) async {
     final triple = provider.triple;
-    final targets = <Directory>[
-      workspace.platformDir('cross-build-$triple'),
+    final sk = sysrootKey(target);
+    final dirs = <Directory>[
+      workspace.platformDir('cross-build-$triple-${buildKey(target)}'),
       workspace.platformDir('overlay-$triple'),
       if (all) ...[
-        workspace.platformDir('cross-$triple'),
+        workspace.platformDir('cross-$triple-$sk'),
         workspace.platformDir('overlay-src'),
-        if (provider.name == 'yocto-sdk') workspace.platformDir('yocto-sdk'),
+        if (provider.name == 'yocto-sdk')
+          workspace.platformDir('yocto-sdk-$sk'),
       ],
     ];
 
     var freed = 0;
     var removed = 0;
-    for (final dir in targets) {
+    for (final dir in dirs) {
       if (!dir.existsSync()) continue;
       final bytes = _dirSize(dir);
       dir.deleteSync(recursive: true);

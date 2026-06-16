@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:crypto/crypto.dart';
 import 'package:emb_cli/src/cross/apt_resolver.dart';
 import 'package:emb_cli/src/cross/cross_arch.dart';
+import 'package:emb_cli/src/cross/cross_keys.dart';
 import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_provider.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
@@ -81,7 +82,11 @@ class ArmGnuCrossProvider implements CrossProvider {
     }
 
     final triple = target.targetTriple ?? _defaultTriple;
-    final platformDir = workspace.ensurePlatformDir('cross-$triple');
+    // Key the toolchain+sysroot dir by the sysroot inputs (not cpu_flags), so
+    // cpu-only variants of one board (rpi4/rpi5) share a single extraction.
+    final platformDir = workspace.ensurePlatformDir(
+      'cross-$triple-${sysrootKey(target)}',
+    );
 
     // Ordering edge: derive-from-sysroot prepares the sysroot first so its
     // codename can pick the toolchain version; otherwise the version is pinned
@@ -144,6 +149,8 @@ class ArmGnuCrossProvider implements CrossProvider {
       crossBin: crossBin,
       sysroot: sysrootDir.path,
       cpuFlags: cpuFlags,
+      // cpu-specific name so rpi4/rpi5 can share the sysroot dir.
+      fileName: '$triple-${buildKey(target)}-toolchain.cmake',
     );
 
     final profile = CrossProfile(

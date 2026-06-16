@@ -2,6 +2,8 @@ import 'dart:io';
 
 import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/commands/cross_command.dart';
+import 'package:emb_cli/src/cross/cross_keys.dart';
+import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:mason_logger/mason_logger.dart';
 import 'package:path/path.dart' as p;
@@ -71,6 +73,60 @@ void main() {
     expect(await run(['cross', '--dry-run', f.path]), ExitCode.success.code);
   });
 
+  // A manifest whose cross: block defines several platforms via cross.targets.
+  String targetsManifest() =>
+      'id: multi\ntype: app\ncross:\n  provider: arm-gnu\n'
+      '  toolchain_version: 12.3.rel1\n'
+      '  targets:\n'
+      '    rpi5:        { image_url: https://x/raspios.img.xz, '
+      'cpu_flags: [-mcpu=cortex-a76] }\n'
+      '    rpi4:        { image_url: https://x/raspios.img.xz, '
+      'cpu_flags: [-mcpu=cortex-a72] }\n'
+      '    radxa-zero3: { image_url: https://x/radxa.img.xz, '
+      'cpu_flags: [-mcpu=cortex-a55] }\n';
+
+  test('--list-targets prints the platforms and exits', () async {
+    final pkg = pkgWith('mt', targetsManifest());
+    expect(
+      await run(['cross', '--list-targets', pkg.path]),
+      ExitCode.success.code,
+    );
+  });
+
+  test('a targets manifest needs --target', () async {
+    final pkg = pkgWith('mt2', targetsManifest());
+    // No --target → usage error (don't guess a platform).
+    expect(await run(['cross', '--dry-run', pkg.path]), ExitCode.usage.code);
+  });
+
+  test('--target selects a platform and plans it (--dry-run)', () async {
+    final pkg = pkgWith('mt3', targetsManifest());
+    expect(
+      await run(['cross', '--dry-run', '--target', 'rpi5', pkg.path]),
+      ExitCode.success.code,
+    );
+  });
+
+  test('an unknown --target is a usage error', () async {
+    final pkg = pkgWith('mt4', targetsManifest());
+    expect(
+      await run(['cross', '--dry-run', '--target', 'nope', pkg.path]),
+      ExitCode.usage.code,
+    );
+  });
+
+  test('--target on a single-block manifest is a usage error', () async {
+    final pkg = pkgWith(
+      'single',
+      'id: single\ntype: app\ncross:\n  provider: arm-gnu\n'
+          '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n',
+    );
+    expect(
+      await run(['cross', '--dry-run', '--target', 'rpi5', pkg.path]),
+      ExitCode.usage.code,
+    );
+  });
+
   test(
     '--backend with an unknown name is a usage error (no download)',
     () async {
@@ -93,18 +149,26 @@ void main() {
     },
   );
 
+  // The cross config staged here must match the manifest so the keys align.
+  final cleanTarget = CrossTarget.fromMap(const {
+    'provider': 'arm-gnu',
+    'toolchain_version': '12.3.rel1',
+    'image_url': 'https://x/y.img.xz',
+  });
+
   test('--clean removes build + overlay dirs, keeps the toolchain', () async {
     final pkg = pkgWith(
       'cl',
       'id: cl\ntype: app\ncross:\n  provider: arm-gnu\n'
           '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n',
     );
-    // Stage the per-target working dirs under an explicit workspace.
     const triple = 'aarch64-none-linux-gnu';
+    final sk = sysrootKey(cleanTarget);
+    final bk = buildKey(cleanTarget);
     final root = p.join(tmp.path, '.config', 'flutter_workspace');
     for (final d in [
-      'cross-$triple',
-      'cross-build-$triple',
+      'cross-$triple-$sk',
+      'cross-build-$triple-$bk',
       'overlay-$triple',
     ]) {
       Directory(p.join(root, d)).createSync(recursive: true);
@@ -112,11 +176,13 @@ void main() {
 
     final code = await run(['cross', '-w', tmp.path, '--clean', pkg.path]);
     expect(code, ExitCode.success.code);
-    final build = Directory(p.join(root, 'cross-build-$triple'));
-    expect(build.existsSync(), isFalse);
+    expect(
+      Directory(p.join(root, 'cross-build-$triple-$bk')).existsSync(),
+      isFalse,
+    );
     expect(Directory(p.join(root, 'overlay-$triple')).existsSync(), isFalse);
     // The expensive toolchain/sysroot dir is preserved by plain --clean.
-    expect(Directory(p.join(root, 'cross-$triple')).existsSync(), isTrue);
+    expect(Directory(p.join(root, 'cross-$triple-$sk')).existsSync(), isTrue);
   });
 
   test('--clean-all also removes the toolchain + sysroot dir', () async {
@@ -126,12 +192,21 @@ void main() {
           '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n',
     );
     const triple = 'aarch64-none-linux-gnu';
+    final sk = sysrootKey(cleanTarget);
     final root = p.join(tmp.path, '.config', 'flutter_workspace');
-    Directory(p.join(root, 'cross-$triple')).createSync(recursive: true);
+    Directory(p.join(root, 'cross-$triple-$sk')).createSync(recursive: true);
 
     final code = await run(['cross', '-w', tmp.path, '--clean-all', pkg.path]);
     expect(code, ExitCode.success.code);
-    expect(Directory(p.join(root, 'cross-$triple')).existsSync(), isFalse);
+    expect(Directory(p.join(root, 'cross-$triple-$sk')).existsSync(), isFalse);
+  });
+
+  test('--dry-run plans every target of the multi-platform example', () async {
+    final example = p.join('examples', 'cross', 'raspberry-pi-family.emb.yaml');
+    for (final t in ['rpi5', 'rpi4', 'rpi-zero-2w', 'radxa-zero3']) {
+      final code = await run(['cross', '--dry-run', '--target', t, example]);
+      expect(code, ExitCode.success.code, reason: '$t dry-run failed');
+    }
   });
 
   // Every shipped example must parse -> dispatch -> plan with no side effects:
