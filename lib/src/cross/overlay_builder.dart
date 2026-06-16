@@ -88,15 +88,22 @@ class OverlayBuilder {
 
     for (final lib in libs) {
       if (await _satisfied(lib)) continue;
-      final ok = switch (lib.build) {
-        CrossGenerator.meson => await _buildMeson(lib, overlay),
-        CrossGenerator.cmake => await _buildCMake(lib, overlay),
-      };
-      if (!ok) {
-        throw OverlayBuildException('failed to build ${lib.pkg} into overlay');
+      switch (lib.build) {
+        case CrossGenerator.meson:
+          await _buildMeson(lib, overlay);
+        case CrossGenerator.cmake:
+          await _buildCMake(lib, overlay);
       }
     }
     return paths;
+  }
+
+  /// A fresh build dir for [src] — wiped first so a re-run never reuses a stale
+  /// (possibly mis-configured) meson/cmake cache.
+  Directory _freshBuildDir(Directory src) {
+    final bld = Directory(p.join(src.path, '_build'));
+    if (bld.existsSync()) bld.deleteSync(recursive: true);
+    return bld..createSync();
   }
 
   /// True when the sysroot already provides [lib] at >= its `min` version.
@@ -133,9 +140,9 @@ class OverlayBuilder {
     return dir;
   }
 
-  Future<bool> _buildMeson(AugmentLib lib, Directory overlay) async {
+  Future<void> _buildMeson(AugmentLib lib, Directory overlay) async {
     final src = await _fetchSource(lib);
-    final bld = Directory(p.join(src.path, '_build'))..createSync();
+    final bld = _freshBuildDir(src);
     // Prefer the profile's meson cross file; else emit one from its fields.
     final cross =
         profile.mesonCrossFile ??
@@ -161,19 +168,22 @@ class OverlayBuilder {
       '--default-library',
       if (lib.staticLink) 'static' else 'shared',
     ], environment: profile.buildEnv());
-    if (setup.exitCode != 0) return false;
-    if ((await _run('ninja', ['-C', bld.path])).exitCode != 0) return false;
-    final install = await _run(
-      'ninja',
-      ['-C', bld.path, 'install'],
-      environment: {...profile.buildEnv(), 'DESTDIR': overlay.path},
+    _check(lib, 'meson setup', setup);
+    _check(lib, 'ninja', await _run('ninja', ['-C', bld.path]));
+    _check(
+      lib,
+      'ninja install',
+      await _run(
+        'ninja',
+        ['-C', bld.path, 'install'],
+        environment: {...profile.buildEnv(), 'DESTDIR': overlay.path},
+      ),
     );
-    return install.exitCode == 0;
   }
 
-  Future<bool> _buildCMake(AugmentLib lib, Directory overlay) async {
+  Future<void> _buildCMake(AugmentLib lib, Directory overlay) async {
     final src = await _fetchSource(lib);
-    final bld = Directory(p.join(src.path, '_build'))..createSync();
+    final bld = _freshBuildDir(src);
     final tc = profile.cmakeToolchainFile;
     final configure = await _run('cmake', [
       '-S',
@@ -184,15 +194,29 @@ class OverlayBuilder {
       '-DCMAKE_INSTALL_PREFIX=/usr',
       '-DCMAKE_BUILD_TYPE=Release',
     ], environment: profile.buildEnv());
-    if (configure.exitCode != 0) return false;
+    _check(lib, 'cmake configure', configure);
     // Header-only (e.g. Vulkan-Headers) installs with no build step.
-    final install = await _run('cmake', [
-      '--install',
-      bld.path,
-      '--prefix',
-      p.join(overlay.path, 'usr'),
-    ], environment: profile.buildEnv());
-    return install.exitCode == 0;
+    _check(
+      lib,
+      'cmake install',
+      await _run('cmake', [
+        '--install',
+        bld.path,
+        '--prefix',
+        p.join(overlay.path, 'usr'),
+      ], environment: profile.buildEnv()),
+    );
+  }
+
+  /// Throw with the failing [step]'s stderr so an overlay failure is
+  /// actionable rather than a bare "failed to build into overlay".
+  void _check(AugmentLib lib, String step, ProcessResult r) {
+    if (r.exitCode == 0) return;
+    final detail = '${r.stderr}'.trim();
+    throw OverlayBuildException(
+      '${lib.pkg}: $step failed (exit ${r.exitCode})'
+      '${detail.isEmpty ? '' : '\n$detail'}',
+    );
   }
 
   Future<void> _download(String url, File dest) async {
