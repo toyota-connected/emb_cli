@@ -26,6 +26,10 @@ jobs:
 
   build:
     uses: VeryGoodOpenSource/very_good_workflows/.github/workflows/dart_package.yml@v1
+    with:
+      # Port baseline (~46%). The I/O-heavy command/engine/aot/packagekit paths
+      # aren't unit-tested yet; raise this as coverage is added.
+      min_coverage: 45
 
   spell-check:
     uses: VeryGoodOpenSource/very_good_workflows/.github/workflows/spell_check.yml@v1

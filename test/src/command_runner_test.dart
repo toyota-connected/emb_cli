@@ -17,7 +17,8 @@ class _MockPubUpdater extends Mock implements PubUpdater {}
 
 const latestVersion = '0.0.0';
 
-final updatePrompt = '''
+final updatePrompt =
+    '''
 ${lightYellow.wrap('Update available!')} ${lightCyan.wrap(packageVersion)} \u2192 ${lightCyan.wrap(latestVersion)}
 Run ${lightCyan.wrap('$executableName update')} to update''';
 
@@ -52,19 +53,16 @@ void main() {
       verify(() => logger.info(updatePrompt)).called(1);
     });
 
-    test(
-      'Does not show update message when the shell calls the '
-      'completion command',
-      () async {
-        when(
-          () => pubUpdater.getLatestVersion(any()),
-        ).thenAnswer((_) async => latestVersion);
+    test('Does not show update message when the shell calls the '
+        'completion command', () async {
+      when(
+        () => pubUpdater.getLatestVersion(any()),
+      ).thenAnswer((_) async => latestVersion);
 
-        final result = await commandRunner.run(['completion']);
-        expect(result, equals(ExitCode.success.code));
-        verifyNever(() => logger.info(updatePrompt));
-      },
-    );
+      final result = await commandRunner.run(['completion']);
+      expect(result, equals(ExitCode.success.code));
+      verifyNever(() => logger.info(updatePrompt));
+    });
 
     test('does not show update message when using update command', () async {
       when(
@@ -98,12 +96,14 @@ void main() {
       verifyNever(() => logger.info(updatePrompt));
     });
 
-    test('can be instantiated without an explicit analytics/logger instance',
-        () {
-      final commandRunner = EmbCliCommandRunner();
-      expect(commandRunner, isNotNull);
-      expect(commandRunner, isA<CompletionCommandRunner<int>>());
-    });
+    test(
+      'can be instantiated without an explicit analytics/logger instance',
+      () {
+        final commandRunner = EmbCliCommandRunner();
+        expect(commandRunner, isNotNull);
+        expect(commandRunner, isA<CompletionCommandRunner<int>>());
+      },
+    );
 
     test('handles FormatException', () async {
       const exception = FormatException('oops!');
@@ -155,19 +155,17 @@ void main() {
       });
 
       test('enables verbose logging for sub commands', () async {
-        final result = await commandRunner.run([
-          '--verbose',
-          'sample',
-          '--cyan',
-        ]);
+        final progress = _MockProgress();
+        when(() => logger.progress(any())).thenReturn(progress);
+
+        final result = await commandRunner.run(['--verbose', 'update']);
         expect(result, equals(ExitCode.success.code));
 
         verify(() => logger.detail('Argument information:')).called(1);
         verify(() => logger.detail('  Top level options:')).called(1);
         verify(() => logger.detail('  - verbose: true')).called(1);
-        verify(() => logger.detail('  Command: sample')).called(1);
+        verify(() => logger.detail('  Command: update')).called(1);
         verify(() => logger.detail('    Command options:')).called(1);
-        verify(() => logger.detail('    - cyan: true')).called(1);
       });
     });
   });
