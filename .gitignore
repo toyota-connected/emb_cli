@@ -16,3 +16,6 @@ coverage/
 
 .vscode
 .idea
+# Python tooling (tool/)
+__pycache__/
+*.pyc
