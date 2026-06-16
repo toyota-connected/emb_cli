@@ -178,6 +178,8 @@ class CrossTarget {
     this.sdkUrl,
     this.sdkEnvSetup,
     this.augment = const [],
+    this.generator = CrossGenerator.cmake,
+    this.backends = const {},
   });
 
   factory CrossTarget.fromMap(Map<dynamic, dynamic> map) {
@@ -205,6 +207,10 @@ class CrossTarget {
           .whereType<Map<dynamic, dynamic>>()
           .map(AugmentLib.fromMap)
           .toList(),
+      generator: CrossGenerator.fromToken(
+        (map['generator'] ?? 'cmake').toString(),
+      ),
+      backends: _parseBackends(map['backends']),
     );
   }
 
@@ -262,6 +268,28 @@ class CrossTarget {
 
   /// Source-built libraries to stage into the overlay (libdisplay-info, …).
   final List<AugmentLib> augment;
+
+  /// Build system to configure the embedder with (default CMake).
+  final CrossGenerator generator;
+
+  /// Per-backend build matrix: backend name → the build-system `-D` defines it
+  /// implies, e.g. `{wayland-egl: {BUILD_BACKEND_WAYLAND_EGL: ON}}`. Each is
+  /// built into its own `build-<backend>` dir by `emb cross --build`.
+  final Map<String, Map<String, String>> backends;
+
+  /// Parse the `backends:` block (backend name → `{define: value}` map).
+  static Map<String, Map<String, String>> _parseBackends(Object? value) {
+    if (value is! Map) return const {};
+    final out = <String, Map<String, String>>{};
+    value.forEach((name, defines) {
+      if (defines is Map) {
+        out[name.toString()] = {
+          for (final e in defines.entries) e.key.toString(): e.value.toString(),
+        };
+      }
+    });
+    return out;
+  }
 
   /// Parse the `sysroot:` block, folding a bare top-level `image_url:` into an
   /// image-sourced spec for backward compatibility. Returns null when neither

@@ -50,6 +50,17 @@ void main() {
     expect(await run(['cross', pkg.path]), ExitCode.usage.code);
   });
 
+  test('--dry-run reports the backends matrix', () async {
+    final pkg = pkgWith(
+      'be',
+      'id: be\ntype: app\ncross:\n  provider: arm-gnu\n'
+          '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n'
+          '  backends:\n    wayland-egl:\n'
+          '      BUILD_BACKEND_WAYLAND_EGL: ON\n',
+    );
+    expect(await run(['cross', '--dry-run', pkg.path]), ExitCode.success.code);
+  });
+
   test('--dry-run plans a manifest file', () async {
     final pkg = Directory(p.join(tmp.path, 'c'))..createSync();
     final f = File(p.join(pkg.path, 'pi.emb.yaml'))

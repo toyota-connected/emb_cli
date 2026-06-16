@@ -180,5 +180,18 @@ void main() {
       });
       expect(ovr.sysroot?.partition, 3);
     });
+
+    test('parses the backends matrix + generator (defaults to cmake)', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'backends': {
+          'wayland-egl': {'BUILD_BACKEND_WAYLAND_EGL': 'ON'},
+          'drm-kms-egl': {'BUILD_BACKEND_DRM_GLES2': 'ON'},
+        },
+      });
+      expect(t.generator, CrossGenerator.cmake);
+      expect(t.backends.keys, ['wayland-egl', 'drm-kms-egl']);
+      expect(t.backends['wayland-egl'], {'BUILD_BACKEND_WAYLAND_EGL': 'ON'});
+    });
   });
 }

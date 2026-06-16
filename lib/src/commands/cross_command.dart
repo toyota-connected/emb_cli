@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:args/command_runner.dart';
+import 'package:emb_cli/src/cross/cross_builder.dart';
 import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_provider.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
@@ -43,6 +44,13 @@ class CrossCommand extends Command<int> {
         help:
             'Report the resolution plan (provider, toolchain, sysroot, '
             'preflight, local inputs) without downloading, mounting, or ssh.',
+        negatable: false,
+      )
+      ..addFlag(
+        'build',
+        help:
+            'Configure + build the embedder under the resolved profile, one '
+            'build per cross.backends entry.',
         negatable: false,
       );
   }
@@ -143,7 +151,58 @@ class CrossCommand extends Command<int> {
         overlay.close();
       }
     }
+
+    if (args['build'] == true) {
+      return _build(profile, target, workspace, inputPath);
+    }
     return ExitCode.success.code;
+  }
+
+  /// Configure + build the embedder under [profile], one build per
+  /// `cross.backends` entry (or a single plain build when none are declared).
+  /// The CMake/meson source is the package directory (the manifest file's
+  /// parent for a file input).
+  Future<int> _build(
+    CrossProfile profile,
+    CrossTarget target,
+    Workspace workspace,
+    String inputPath,
+  ) async {
+    final source =
+        FileSystemEntity.typeSync(inputPath) == FileSystemEntityType.file
+        ? File(inputPath).parent
+        : Directory(inputPath);
+    final buildRoot = workspace.ensurePlatformDir(
+      'cross-build-${target.triple ?? profile.targetTriple}',
+    );
+    final builder = CrossBuilder(profile);
+
+    final results = target.backends.isEmpty
+        ? [
+            await builder.build(
+              sourceDir: source,
+              buildDir: Directory('${buildRoot.path}/build'),
+              generator: target.generator,
+            ),
+          ]
+        : await builder.buildBackends(
+            sourceDir: source,
+            buildRoot: buildRoot,
+            generator: target.generator,
+            backends: target.backends,
+          );
+
+    for (final r in results) {
+      final tag = r.backend != null ? '${r.backend}: ' : '';
+      if (r.success) {
+        _logger.info('  ${tag}built → ${r.buildDir}');
+      } else {
+        _logger.err('  $tag${r.message ?? "build failed"}');
+      }
+    }
+    return results.every((r) => r.success)
+        ? ExitCode.success.code
+        : ExitCode.software.code;
   }
 
   void _report(CrossProfile p) {
@@ -218,6 +277,12 @@ class CrossCommand extends Command<int> {
     if (target.augment.isNotEmpty) {
       _logger.info(
         '  augment       : ${target.augment.map((a) => a.pkg).join(", ")}',
+      );
+    }
+    if (target.backends.isNotEmpty) {
+      _logger.info(
+        '  backends      : ${target.backends.keys.join(", ")} '
+        '(${target.generator.name})',
       );
     }
   }
