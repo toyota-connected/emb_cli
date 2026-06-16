@@ -38,7 +38,7 @@ class OverlayPaths {
 /// from source into a per-workspace overlay prefix, against an already-resolved
 /// [CrossProfile].
 ///
-/// Generalizes the scripts' phase2b/2c (`*_local_display_info` /
+/// Generalizes the scripts' local deps (`*_local_display_info` /
 /// `*_local_vulkan_headers`): each lib is skipped when the sysroot already
 /// satisfies its `min` version, else fetched, configured against the profile's
 /// toolchain, and installed with `DESTDIR=<overlay>` — never into the

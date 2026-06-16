@@ -16,7 +16,7 @@ import 'package:mason_logger/mason_logger.dart';
 /// `--prepare` also build its augment libraries into the overlay.
 ///
 /// This is the consumer that turns the cross layer into a usable command; the
-/// per-backend configure/build (Phase D) hangs off the resolved profile.
+/// per-backend configure/build hangs off the resolved profile.
 /// {@endtemplate}
 class CrossCommand extends Command<int> {
   /// {@macro cross_command}

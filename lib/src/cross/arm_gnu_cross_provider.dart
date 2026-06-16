@@ -80,7 +80,7 @@ class ArmGnuCrossProvider implements CrossProvider {
 
     // Ordering edge: derive-from-sysroot prepares the sysroot first so its
     // codename can pick the toolchain version; otherwise the version is pinned
-    // and the two phases are independent.
+    // and the two steps are independent.
     final sysrootDir = Directory(p.join(platformDir.path, 'sysroot'));
     String? codename;
     if (target.versionPolicy == ToolchainVersionPolicy.deriveFromSysroot) {

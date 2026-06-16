@@ -52,7 +52,7 @@ enum ToolchainVersionPolicy {
 /// One source-built library staged into a workspace overlay prefix
 /// (libdisplay-info, Vulkan-Headers, …).
 ///
-/// Generalizes the scripts' phase2b/2c: the library is built against the
+/// Generalizes the scripts' local deps: the library is built against the
 /// resolved [CrossProfile] and installed into an overlay that is prepended to
 /// the include/lib/pkg-config search paths, leaving the (possibly shared or
 /// read-only) sysroot pristine.
