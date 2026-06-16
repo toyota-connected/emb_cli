@@ -116,12 +116,25 @@ class ArmGnuCrossProvider implements CrossProvider {
     }
 
     // A Debian sysroot keeps crt*.o / libc / libm under the multiarch subdir
-    // (`usr/lib/<multiarch>`), but the `*-none-linux-gnu` toolchain only
-    // searches `usr/lib`/`lib`. Point it at the multiarch dir: `-B` for the
-    // crt startup objects, `-L` for the libraries.
+    // (`usr/lib/<multiarch>`) and the arch-specific `bits/` headers under
+    // `usr/include/<multiarch>`, but the `*-none-linux-gnu` toolchain only
+    // searches `usr/lib`/`lib` and `usr/include`. Point it at the multiarch
+    // dirs: `-B` for the crt startup objects, `-L` for libraries, `-I` for the
+    // `bits/wordsize.h` / `bits/libc-header-start.h` headers.
     final maLib = p.join(sysrootDir.path, 'usr', 'lib', _multiarch);
     final maLib2 = p.join(sysrootDir.path, 'lib', _multiarch);
-    final cpuFlags = [...target.cpuFlags, '-B$maLib', '-L$maLib', '-L$maLib2'];
+    final maInc = p.join(sysrootDir.path, 'usr', 'include', _multiarch);
+    final cpuFlags = [
+      ...target.cpuFlags,
+      '-B$maLib',
+      '-L$maLib',
+      '-L$maLib2',
+      '-I$maInc',
+      // Let ld resolve the indirect (DT_NEEDED) deps of shared libs on the link
+      // line (e.g. libinput.so -> libevdev/libwacom/libmtdev) from the
+      // multiarch dirs; `-L` only drives direct `-l` resolution.
+      '-Wl,-rpath-link,$maLib:$maLib2',
+    ];
     final cmakeTc = _emitter.emitCMake(
       outDir: platformDir,
       triple: triple,
@@ -418,6 +431,9 @@ class ArmGnuCrossProvider implements CrossProvider {
         'debugfs rdump did not populate ${dest.path}',
       );
     }
+    // debugfs can mangle the usr-merge symlinks (/lib -> usr/lib); restore them
+    // so libc.so's /lib/... references resolve inside the sysroot.
+    normalizeUsrMerge(dest);
     return null;
   }
 

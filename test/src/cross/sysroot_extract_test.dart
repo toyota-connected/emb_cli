@@ -76,6 +76,44 @@ void main() {
     });
   });
 
+  group('normalizeUsrMerge', () {
+    late Directory tmp;
+    setUp(() => tmp = Directory.systemTemp.createTempSync('emb_merge_'));
+    tearDown(() => tmp.deleteSync(recursive: true));
+
+    test('restores /lib -> usr/lib so multiarch libc resolves', () {
+      final sr = Directory(p.join(tmp.path, 'sysroot'));
+      // The real libs live under usr/lib/<multiarch> (as after a debugfs dump).
+      File(p.join(sr.path, 'usr', 'lib', 'aarch64-linux-gnu', 'libc.so.6'))
+        ..createSync(recursive: true)
+        ..writeAsStringSync('');
+      File(p.join(sr.path, 'usr', 'lib', 'ld-linux-aarch64.so.1'))
+        ..createSync(recursive: true)
+        ..writeAsStringSync('');
+      // ...but /lib is a partial real dir with stray content.
+      File(p.join(sr.path, 'lib', 'systemd', 'foo'))
+        ..createSync(recursive: true)
+        ..writeAsStringSync('');
+
+      normalizeUsrMerge(sr);
+
+      expect(FileSystemEntity.isLinkSync(p.join(sr.path, 'lib')), isTrue);
+      expect(Link(p.join(sr.path, 'lib')).targetSync(), 'usr/lib');
+      // /lib/aarch64-linux-gnu/libc.so.6 now resolves via the symlink.
+      expect(
+        File(
+          p.join(sr.path, 'lib', 'aarch64-linux-gnu', 'libc.so.6'),
+        ).existsSync(),
+        isTrue,
+      );
+      // stray /lib/systemd content was preserved under usr/lib.
+      expect(
+        File(p.join(sr.path, 'usr', 'lib', 'systemd', 'foo')).existsSync(),
+        isTrue,
+      );
+    });
+  });
+
   group('extractDeb (real dpkg-deb, no root)', () {
     late Directory tmp;
     setUp(() => tmp = Directory.systemTemp.createTempSync('emb_deb_'));

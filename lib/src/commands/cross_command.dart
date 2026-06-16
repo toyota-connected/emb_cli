@@ -172,6 +172,25 @@ class CrossCommand extends Command<int> {
         FileSystemEntity.typeSync(inputPath) == FileSystemEntityType.file
         ? File(inputPath).parent
         : Directory(inputPath);
+
+    // Stage any augment libraries the sysroot doesn't already satisfy (e.g.
+    // libdisplay-info >= 0.2.0) into the sysroot before configuring, so the
+    // embedder's pkg-config probes resolve them.
+    if (target.augment.isNotEmpty) {
+      final overlay = OverlayBuilder(workspace, profile);
+      try {
+        await overlay.build(
+          target.augment,
+          stageInto: Directory(profile.targetSysroot),
+        );
+      } on OverlayBuildException catch (e) {
+        _logger.err('augment: ${e.message}');
+        return ExitCode.software.code;
+      } finally {
+        overlay.close();
+      }
+    }
+
     final buildRoot = workspace.ensurePlatformDir(
       'cross-build-${target.triple ?? profile.targetTriple}',
     );

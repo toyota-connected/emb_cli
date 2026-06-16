@@ -307,10 +307,19 @@ class CrossTarget {
   /// is present (the Yocto providers).
   static SysrootSpec? _parseSysroot(Map<dynamic, dynamic> map) {
     final block = map['sysroot'];
+    final topImageUrl = map['image_url']?.toString();
     if (block is Map) {
-      return SysrootSpec.fromMap(Map<dynamic, dynamic>.from(block));
+      // A top-level `image_url:` is a convenience alias; fold it in as the
+      // default when the `sysroot:` block doesn't carry its own.
+      final merged = Map<dynamic, dynamic>.from(block);
+      if ((merged['image_url']?.toString() ?? '').isEmpty &&
+          topImageUrl != null &&
+          topImageUrl.isNotEmpty) {
+        merged['image_url'] = topImageUrl;
+      }
+      return SysrootSpec.fromMap(merged);
     }
-    final imageUrl = map['image_url']?.toString();
+    final imageUrl = topImageUrl;
     if (imageUrl != null && imageUrl.isNotEmpty) {
       return SysrootSpec(source: SysrootProvenance.image, imageUrl: imageUrl);
     }

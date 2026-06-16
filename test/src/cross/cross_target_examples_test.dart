@@ -164,6 +164,22 @@ void main() {
       expect(t.imageUrl, 'https://example/x.img.xz');
     });
 
+    test('top-level image_url folds into a sysroot block that omits it', () {
+      // A `sysroot:` block carrying only dev_packages/partition still picks up
+      // the convenience top-level image_url.
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'image_url': 'https://example/x.img.xz',
+        'sysroot': {
+          'partition': 2,
+          'dev_packages': ['libdrm-dev'],
+        },
+      });
+      expect(t.sysroot?.source, SysrootProvenance.image);
+      expect(t.imageUrl, 'https://example/x.img.xz');
+      expect(t.sysroot?.devPackages, ['libdrm-dev']);
+    });
+
     test('rootfs partition defaults to 2 and is overridable (#6)', () {
       final def = CrossTarget.fromMap(const {
         'provider': 'arm-gnu',

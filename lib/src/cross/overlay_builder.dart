@@ -63,10 +63,18 @@ class OverlayBuilder {
 
   /// Build every lib in [libs] that the sysroot doesn't already satisfy.
   /// Returns the overlay search paths to layer onto the build env.
-  Future<OverlayPaths> build(List<AugmentLib> libs) async {
-    final overlay = workspace.ensurePlatformDir(
-      'overlay-${profile.targetTriple}',
-    );
+  ///
+  /// When [stageInto] is given the libs install under `<stageInto>/usr`
+  /// instead of a separate overlay prefix — used to stage an augment straight
+  /// into a private, regenerable sysroot so pkg-config finds it with the
+  /// sysroot's own search env (no second `PKG_CONFIG_SYSROOT_DIR`).
+  Future<OverlayPaths> build(
+    List<AugmentLib> libs, {
+    Directory? stageInto,
+  }) async {
+    final overlay =
+        stageInto ??
+        workspace.ensurePlatformDir('overlay-${profile.targetTriple}');
     final usr = p.join(overlay.path, 'usr');
     final paths = OverlayPaths(
       prefix: overlay.path,
