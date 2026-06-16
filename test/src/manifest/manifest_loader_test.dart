@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:emb_cli/src/host/host_info.dart';
+import 'package:emb_cli/src/manifest/emb_manifest.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
@@ -92,5 +93,63 @@ emb:
   test('skips malformed JSON without throwing', () {
     File(p.join(tmp.path, 'bad.json')).writeAsStringSync('{not valid');
     expect(loader.loadConfigDir(tmp), isEmpty);
+  });
+
+  group('select (load + enable/disable)', () {
+    EmbManifest mk(String id, {Object? load}) => EmbManifest.fromMap(
+      <String, dynamic>{'id': id, if (load != null) 'load': load},
+    );
+
+    test('defaults to only load:true manifests', () {
+      final ms = [mk('a'), mk('b', load: false), mk('c', load: true)];
+      expect(loader.select(ms).map((m) => m.id), ['a', 'c']);
+    });
+
+    test('--enable forces a load:false component on', () {
+      final ms = [mk('a', load: false), mk('b', load: false)];
+      expect(loader.select(ms, enable: {'a'}).map((m) => m.id), ['a']);
+    });
+
+    test('--disable forces a load:true component off', () {
+      final ms = [mk('a'), mk('b')];
+      expect(loader.select(ms, disable: {'a'}).map((m) => m.id), ['b']);
+    });
+
+    test('enable wins when an id is both enabled and disabled', () {
+      final ms = [mk('a', load: false)];
+      final got = loader.select(ms, enable: {'a'}, disable: {'a'});
+      expect(got.map((m) => m.id), ['a']);
+    });
+
+    test('unmatched enable/disable ids are ignored', () {
+      final ms = [mk('a'), mk('b', load: false)];
+      final got = loader.select(ms, enable: {'nope'}, disable: {'ghost'});
+      expect(got.map((m) => m.id), ['a']);
+    });
+
+    test('preserves occurrence order', () {
+      final ms = [mk('z'), mk('a'), mk('m')];
+      expect(loader.select(ms).map((m) => m.id), ['z', 'a', 'm']);
+    });
+  });
+
+  group('load truthiness', () {
+    bool loadOf(Object? v) =>
+        EmbManifest.fromMap(<String, dynamic>{'id': 'x', 'load': v}).load;
+
+    test('absent load defaults to true', () {
+      expect(EmbManifest.fromMap(<String, dynamic>{'id': 'x'}).load, isTrue);
+    });
+
+    test('only explicit false-y values turn a component off', () {
+      expect(loadOf(false), isFalse);
+      expect(loadOf('false'), isFalse);
+      expect(loadOf('off'), isFalse);
+      expect(loadOf(0), isFalse);
+      expect(loadOf(''), isFalse);
+      expect(loadOf(true), isTrue);
+      expect(loadOf('true'), isTrue);
+      expect(loadOf(1), isTrue);
+    });
   });
 }

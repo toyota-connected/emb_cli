@@ -37,7 +37,7 @@ class EmbManifest {
     return EmbManifest(
       id: (map['id'] ?? '') as String,
       type: (map['type'] ?? 'app') as String,
-      load: (map['load'] ?? true) as bool,
+      load: _truthy(map['load']),
       supportedArchs: _stringList(
         map['supported_archs'] ?? map['supportedArchs'],
       ),
@@ -124,6 +124,18 @@ class EmbManifest {
       return value.map((k, v) => MapEntry(k.toString(), v.toString()));
     }
     return const {};
+  }
+
+  /// Whether a `load` value is logically true. Defaults to true when absent,
+  /// and accepts bool/number/string forms so legacy configs can't crash the
+  /// loader. Only explicit false-y values (`false`, `0`, `no`, `off`, empty)
+  /// turn a component off.
+  static bool _truthy(dynamic value) {
+    if (value == null) return true;
+    if (value is bool) return value;
+    if (value is num) return value != 0;
+    const falsey = {'false', '0', 'no', 'off', ''};
+    return !falsey.contains(value.toString().trim().toLowerCase());
   }
 
   @override

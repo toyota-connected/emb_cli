@@ -35,6 +35,18 @@ class SyncCommand extends Command<int> {
         help: 'Directory to discover self-describing emb manifests.',
       )
       ..addMultiOption(
+        'enable',
+        help:
+            'Force-load the config with this id (overrides load: false). '
+            'Repeatable; ids that match nothing are ignored.',
+      )
+      ..addMultiOption(
+        'disable',
+        help:
+            'Skip the config with this id (overrides load: true). '
+            'Repeatable; ids that match nothing are ignored.',
+      )
+      ..addMultiOption(
         'repos',
         help:
             'A JSON file containing a bare array of repo entries '
@@ -69,13 +81,18 @@ class SyncCommand extends Command<int> {
     final workspace = Workspace.resolve(override: args['workspace'] as String?);
 
     // Collect repos from manifests' `src` lists.
-    final manifests = <EmbManifest>[];
+    final raw = <EmbManifest>[];
     for (final dir in args['config'] as List<String>) {
-      manifests.addAll(_loader.loadConfigDir(Directory(dir)));
+      raw.addAll(_loader.loadConfigDir(Directory(dir)));
     }
     for (final dir in args['packages'] as List<String>) {
-      manifests.addAll(_loader.discoverPackages(Directory(dir)));
+      raw.addAll(_loader.discoverPackages(Directory(dir)));
     }
+    final manifests = _loader.select(
+      raw,
+      enable: (args['enable'] as List<String>).toSet(),
+      disable: (args['disable'] as List<String>).toSet(),
+    );
 
     final repos = <GitRepo>[];
     for (final m in manifests) {

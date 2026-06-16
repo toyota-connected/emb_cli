@@ -38,6 +38,24 @@ class ManifestLoader {
   /// Load a single legacy JSON config file.
   EmbManifest? loadConfigFile(File file) => _tryLoadJson(file);
 
+  /// Select the manifests that should apply, honoring each manifest's `load`
+  /// flag and explicit [enable]/[disable] overrides matched by
+  /// [EmbManifest.id].
+  ///
+  /// A manifest applies when its id is in [enable], or its `load` is true and
+  /// its id is not in [disable]. So `--enable` forces a `load: false` component
+  /// on, `--disable` forces a `load: true` one off, and `enable` wins if an id
+  /// is in both. Ids in [enable]/[disable] that match no manifest are ignored.
+  /// The occurrence order of [manifests] is preserved.
+  List<EmbManifest> select(
+    List<EmbManifest> manifests, {
+    Set<String> enable = const {},
+    Set<String> disable = const {},
+  }) => [
+    for (final m in manifests)
+      if (enable.contains(m.id) || (m.load && !disable.contains(m.id))) m,
+  ];
+
   /// Load a self-describing manifest from a package directory: prefers
   /// `emb.yaml`, falls back to an `emb:` key in `pubspec.yaml`. Returns null
   /// if neither is present.

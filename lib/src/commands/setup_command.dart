@@ -48,6 +48,18 @@ class SetupCommand extends Command<int> {
         abbr: 'p',
         help: 'Directory to discover self-describing manifests.',
       )
+      ..addMultiOption(
+        'enable',
+        help:
+            'Force-load the config with this id (overrides load: false). '
+            'Repeatable; ids that match nothing are ignored.',
+      )
+      ..addMultiOption(
+        'disable',
+        help:
+            'Skip the config with this id (overrides load: true). '
+            'Repeatable; ids that match nothing are ignored.',
+      )
       ..addOption(
         'workspace',
         abbr: 'w',
@@ -110,13 +122,18 @@ class SetupCommand extends Command<int> {
     final workspace = Workspace.resolve(override: args['workspace'] as String?);
     final configDirs = args['config'] as List<String>;
 
-    final manifests = <EmbManifest>[];
+    final raw = <EmbManifest>[];
     for (final dir in configDirs) {
-      manifests.addAll(_loader.loadConfigDir(Directory(dir)));
+      raw.addAll(_loader.loadConfigDir(Directory(dir)));
     }
     for (final dir in args['packages'] as List<String>) {
-      manifests.addAll(_loader.discoverPackages(Directory(dir)));
+      raw.addAll(_loader.discoverPackages(Directory(dir)));
     }
+    final manifests = _loader.select(
+      raw,
+      enable: (args['enable'] as List<String>).toSet(),
+      disable: (args['disable'] as List<String>).toSet(),
+    );
 
     _logger.info(
       styleBold.wrap(

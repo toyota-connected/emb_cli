@@ -147,6 +147,8 @@ One-shot provision: **deps → repos → Flutter SDK → engine**, then writes
 |---|---|---|
 | `-c`, `--config <dir>` | `configs` | Legacy JSON config directory. |
 | `-p`, `--packages <dir>` | — | Directory to discover self-describing `emb` manifests. |
+| `--enable <id>` | — | Force-load the config with this `id` (overrides `load: false`). Repeatable; unmatched ids ignored. |
+| `--disable <id>` | — | Skip the config with this `id` (overrides `load: true`). Repeatable; unmatched ids ignored. |
 | `-w`, `--workspace <dir>` | resolution order | Workspace root. |
 | `--flutter-version <ref>` | `globals.json` `flutter_version` | Flutter version/tag/branch. |
 | `--arch <arch>` | host arch | Engine arch to prefetch. |
@@ -160,7 +162,13 @@ One-shot provision: **deps → repos → Flutter SDK → engine**, then writes
 ```sh
 emb setup --config ../configs --yes
 emb setup --config ../configs --skip-deps --skip-sync   # SDK + engine only
+emb setup --config ../configs --enable weston --disable agl-compositor
 ```
+
+> **Config selection** (applies to `setup`, `deps`, and `sync`): legacy
+> `--config` components apply only when their `load` flag is logically true.
+> `--enable <id>` / `--disable <id>` override that per component, matched by
+> `id`; ids matching nothing are ignored, and load order is preserved.
 
 ---
 
@@ -173,6 +181,8 @@ Coalesce host dependencies across all selected manifests, filter to what's
 |---|---|---|
 | `-c`, `--config <dir>` | `configs` | Legacy JSON config directory. **Repeatable.** |
 | `-p`, `--packages <dir>` | — | Directory to discover self-describing `emb` manifests. **Repeatable.** |
+| `--enable <id>` | — | Force-load the config with this `id` (overrides `load: false`). Repeatable; unmatched ids ignored. |
+| `--disable <id>` | — | Skip the config with this `id` (overrides `load: true`). Repeatable; unmatched ids ignored. |
 | `--dry-run` | off | Resolve and print the install plan without changing the system. |
 | `-y`, `--yes` | off | Skip the confirmation prompt (CI). |
 
@@ -191,6 +201,8 @@ Clone/update source repositories into `<workspace>/app` (bounded concurrency).
 |---|---|---|
 | `-c`, `--config <dir>` | `configs` | Legacy JSON config directory. **Repeatable.** |
 | `-p`, `--packages <dir>` | — | Directory to discover self-describing `emb` manifests. |
+| `--enable <id>` | — | Force-load the config with this `id` (overrides `load: false`). Repeatable; unmatched ids ignored. |
+| `--disable <id>` | — | Skip the config with this `id` (overrides `load: true`). Repeatable; unmatched ids ignored. |
 | `--repos <file>` | — | A JSON file containing a bare array of repo entries. **Repeatable.** |
 | `-w`, `--workspace <dir>` | resolution order | Workspace root. |
 | `-j`, `--concurrency <n>` | `4` | Maximum concurrent git operations. |
