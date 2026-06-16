@@ -30,6 +30,16 @@ emb cross raspberry-pi-family.emb.yaml --list-targets
 emb cross raspberry-pi-family.emb.yaml --target rpi5 --build --deb
 ```
 
+**`all-backends.emb.yaml`** builds every ivi-homescreen backend
+(wayland-egl/-vulkan, drm-kms-egl/-vulkan, software, headless-egl) natively via
+the built-in `local` target, using the `cross.backends` matrix + a shared
+`cross.defines`. Copy it next to the ivi-homescreen source (`emb cross <file>`
+builds the file's parent dir) and:
+
+```sh
+emb cross all-backends.emb.yaml --target local --build
+```
+
 ## Validated workflow (pi5)
 
 Run from the `ivi-homescreen` package dir (where its `emb.yaml` lives). `emb

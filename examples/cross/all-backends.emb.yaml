@@ -1,0 +1,50 @@
+# Build EVERY ivi-homescreen backend in one go, natively on the dev machine.
+#
+# Demonstrates the cross.backends matrix + a shared cross.defines, built with
+# the implicit `local` (native host) target — no cross toolchain or sysroot:
+#
+#   # copy this next to the ivi-homescreen source (emb cross <file> uses the
+#   # file's parent dir as the CMake source), then:
+#   emb cross all-backends.emb.yaml --target local --build
+#   emb cross all-backends.emb.yaml --target local --build --backend drm-kms-egl
+#
+# Each backend lands in cross-build-<host-triple>-<hash>/build-<name>/. The
+# backends are mutually exclusive, so every entry turns OFF the default-on
+# Wayland backends. `DISABLE_PLUGINS` is shared via cross.defines.
+#
+# Native builds use the HOST's system libraries (install the -dev/-devel
+# packages: libdrm, gbm, egl, gles2, libinput, xkbcommon, libseat, libudev,
+# libdisplay-info >= 0.2.0, wayland + wayland-protocols, vulkan). Validated on
+# Fedora: all six backends build to distinct x86-64 binaries.
+id: ivi-homescreen
+type: app
+supported_archs: [arm64, x86_64]
+supported_host_types: [ubuntu, fedora]
+
+cross:
+  provider: arm-gnu              # required to parse; ignored for --target local
+  defines:
+    DISABLE_PLUGINS: 'ON'        # applied to every backend build
+  backends:
+    wayland-egl:
+      BUILD_BACKEND_WAYLAND_EGL: 'ON'
+      BUILD_BACKEND_WAYLAND_VULKAN: 'OFF'
+    wayland-vulkan:
+      BUILD_BACKEND_WAYLAND_EGL: 'OFF'
+      BUILD_BACKEND_WAYLAND_VULKAN: 'ON'
+    drm-kms-egl:
+      BUILD_BACKEND_DRM_KMS_EGL: 'ON'
+      BUILD_BACKEND_WAYLAND_EGL: 'OFF'
+      BUILD_BACKEND_WAYLAND_VULKAN: 'OFF'
+    drm-kms-vulkan:
+      BUILD_BACKEND_DRM_KMS_VULKAN: 'ON'
+      BUILD_BACKEND_WAYLAND_EGL: 'OFF'
+      BUILD_BACKEND_WAYLAND_VULKAN: 'OFF'
+    software:
+      BUILD_BACKEND_SOFTWARE: 'ON'
+      BUILD_BACKEND_WAYLAND_EGL: 'OFF'
+      BUILD_BACKEND_WAYLAND_VULKAN: 'OFF'
+    headless-egl:
+      BUILD_BACKEND_HEADLESS_EGL: 'ON'
+      BUILD_BACKEND_WAYLAND_EGL: 'OFF'
+      BUILD_BACKEND_WAYLAND_VULKAN: 'OFF'

@@ -224,6 +224,14 @@ void main() {
     expect(Directory(p.join(root, 'cross-$triple-$sk')).existsSync(), isFalse);
   });
 
+  test('--dry-run plans the all-backends example (local)', () async {
+    final example = p.join('examples', 'cross', 'all-backends.emb.yaml');
+    expect(
+      await run(['cross', '--dry-run', '--target', 'local', example]),
+      ExitCode.success.code,
+    );
+  });
+
   test('--dry-run plans every target of the multi-platform example', () async {
     final example = p.join('examples', 'cross', 'raspberry-pi-family.emb.yaml');
     for (final t in ['rpi5', 'rpi4', 'rpi-zero-2w', 'radxa-zero3']) {
