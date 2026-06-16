@@ -115,7 +115,13 @@ class ArmGnuCrossProvider implements CrossProvider {
       if (err != null) return err;
     }
 
-    final cpuFlags = target.cpuFlags;
+    // A Debian sysroot keeps crt*.o / libc / libm under the multiarch subdir
+    // (`usr/lib/<multiarch>`), but the `*-none-linux-gnu` toolchain only
+    // searches `usr/lib`/`lib`. Point it at the multiarch dir: `-B` for the
+    // crt startup objects, `-L` for the libraries.
+    final maLib = p.join(sysrootDir.path, 'usr', 'lib', _multiarch);
+    final maLib2 = p.join(sysrootDir.path, 'lib', _multiarch);
+    final cpuFlags = [...target.cpuFlags, '-B$maLib', '-L$maLib', '-L$maLib2'];
     final cmakeTc = _emitter.emitCMake(
       outDir: platformDir,
       triple: triple,
