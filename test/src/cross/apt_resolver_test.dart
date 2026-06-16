@@ -81,4 +81,22 @@ void main() {
     a.addAll(b);
     expect(a.packages['x']!.repoBase, 'http://a');
   });
+
+  group('aptIndexUrls', () {
+    const sources = '''
+# a comment
+deb http://deb.debian.org/debian bookworm main contrib
+deb [signed-by=/usr/share/keyrings/raspi.gpg] http://archive.raspberrypi.com/debian bookworm main
+deb-src http://deb.debian.org/debian bookworm main
+''';
+
+    test('builds one Packages URL per source/component, skips deb-src', () {
+      final urls = aptIndexUrls(sources, 'arm64');
+      expect(urls, [
+        'http://deb.debian.org/debian/dists/bookworm/main/binary-arm64/Packages.xz',
+        'http://deb.debian.org/debian/dists/bookworm/contrib/binary-arm64/Packages.xz',
+        'http://archive.raspberrypi.com/debian/dists/bookworm/main/binary-arm64/Packages.xz',
+      ]);
+    });
+  });
 }

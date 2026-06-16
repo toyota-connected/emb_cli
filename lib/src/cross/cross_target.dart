@@ -156,9 +156,11 @@ class SysrootSpec {
   /// `sysroot.partition`/`rootfs_partition` for images that differ).
   final int partition;
 
-  /// `-dev` Debian package URLs to download and `dpkg-deb -x` into the sysroot
-  /// (no apt, no chroot, no root). The manifest lists the set the build needs;
-  /// dependency resolution is deferred (list deps explicitly for now).
+  /// `-dev` Debian package **names** to layer into the sysroot root-free. emb
+  /// resolves their dependency closure against the sysroot's own apt sources,
+  /// then downloads each `.deb` and `dpkg-deb -x`'s it in — no apt, no chroot,
+  /// no root. List only the top-level packages (e.g. `libdrm-dev`,
+  /// `libegl-dev`); deps are pulled in automatically.
   final List<String> devPackages;
 }
 

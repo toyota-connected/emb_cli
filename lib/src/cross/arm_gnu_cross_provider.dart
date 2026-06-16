@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
+import 'package:emb_cli/src/cross/apt_resolver.dart';
 import 'package:emb_cli/src/cross/cross_arch.dart';
 import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_provider.dart';
@@ -233,26 +234,59 @@ class ArmGnuCrossProvider implements CrossProvider {
     return null;
   }
 
-  /// Download each `cross.sysroot.dev_packages` `.deb` and extract it into the
-  /// sysroot with `dpkg-deb -x` — no apt, no chroot, no root. Idempotent via a
-  /// per-package marker so re-resolving is cheap.
+  /// Resolve `cross.sysroot.dev_packages` (package *names*) to their dependency
+  /// closure using the sysroot's own apt sources, then download each `.deb` and
+  /// `dpkg-deb -x` it in — no apt, no chroot, no root. Idempotent via a
+  /// per-package marker.
   Future<CrossResolveResult?> _populateDevPackages(
     Directory sysrootDir,
     SysrootSpec spec,
   ) async {
+    final arch = debianArch(target.targetTriple ?? _defaultTriple);
+    final urls = aptIndexUrls(_readAptSources(sysrootDir), arch);
+    if (urls.isEmpty) {
+      return CrossResolveResult.failed(
+        'no apt sources in ${sysrootDir.path}/etc/apt (cannot resolve -dev)',
+      );
+    }
+
+    final cache = Directory(p.join(sysrootDir.parent.path, 'apt'))
+      ..createSync(recursive: true);
+    final index = AptIndex();
+    for (final url in urls) {
+      final text = await _fetchIndex(url, cache);
+      if (text == null) continue; // missing component index — skip
+      index.addAll(
+        parsePackagesIndex(
+          text,
+          repoBase: url.replaceFirst(RegExp(r'/dists/.*$'), ''),
+        ),
+      );
+    }
+    if (index.packages.isEmpty) {
+      return const CrossResolveResult.failed(
+        'failed to fetch any apt Packages index',
+      );
+    }
+
+    final status = File(
+      p.join(sysrootDir.path, 'var', 'lib', 'dpkg', 'status'),
+    );
+    final installed = status.existsSync()
+        ? parseInstalled(status.readAsStringSync())
+        : <String>{};
+
     final debs = Directory(p.join(sysrootDir.parent.path, 'debs'))
       ..createSync(recursive: true);
     final done = Directory(p.join(sysrootDir.path, '.emb', 'dev-packages'))
       ..createSync(recursive: true);
-    for (final url in spec.devPackages) {
-      final name = p.basename(Uri.parse(url).path);
+    for (final pkg in index.closure(spec.devPackages, satisfied: installed)) {
+      final name = p.basename(Uri.parse(pkg.url).path);
       final marker = File(p.join(done.path, name));
       if (marker.existsSync()) continue;
       final deb = File(p.join(debs.path, name));
-      if (!deb.existsSync()) {
-        if (!await _download(url, deb)) {
-          return CrossResolveResult.failed('dev package download failed: $url');
-        }
+      if (!deb.existsSync() && !await _download(pkg.url, deb)) {
+        return CrossResolveResult.failed('deb download failed: ${pkg.url}');
       }
       if (!await extractDeb(deb, sysrootDir)) {
         return CrossResolveResult.failed('dpkg-deb -x failed for $name');
@@ -260,6 +294,33 @@ class ArmGnuCrossProvider implements CrossProvider {
       marker.writeAsStringSync('');
     }
     return null;
+  }
+
+  /// Concatenate the sysroot's `/etc/apt/sources.list` and
+  /// `sources.list.d/*.list` for [aptIndexUrls].
+  String _readAptSources(Directory sysrootDir) {
+    final buf = StringBuffer();
+    final main = File(p.join(sysrootDir.path, 'etc', 'apt', 'sources.list'));
+    if (main.existsSync()) buf.writeln(main.readAsStringSync());
+    final dir = Directory(
+      p.join(sysrootDir.path, 'etc', 'apt', 'sources.list.d'),
+    );
+    if (dir.existsSync()) {
+      for (final f in dir.listSync().whereType<File>()) {
+        if (f.path.endsWith('.list')) buf.writeln(f.readAsStringSync());
+      }
+    }
+    return buf.toString();
+  }
+
+  /// Download a compressed `Packages` index (cached) and decompress it to text.
+  Future<String?> _fetchIndex(String url, Directory cache) async {
+    final dest = File(
+      p.join(cache.path, '${url.hashCode.toRadixString(16)}.xz'),
+    );
+    if (!dest.existsSync() && !await _download(url, dest)) return null;
+    final un = await Process.run('xz', ['-dc', dest.path]);
+    return un.exitCode == 0 ? un.stdout.toString() : null;
   }
 
   /// Unpack a distro image: download/decompress, loop-mount the rootfs

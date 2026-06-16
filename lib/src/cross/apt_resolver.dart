@@ -97,6 +97,32 @@ AptIndex parsePackagesIndex(String text, {required String repoBase}) {
   return index;
 }
 
+/// Compressed `Packages`-index URLs for [arch], parsed from a sysroot's apt
+/// sources (the one-line `deb [opts] <uri> <suite> <comp>...` format). One URL
+/// per (source, component). `deb-src`, comments, and blanks are skipped.
+List<String> aptIndexUrls(String sourcesText, String arch) {
+  final urls = <String>[];
+  for (final line in sourcesText.split('\n')) {
+    final t = line.trim();
+    if (!t.startsWith('deb ')) continue;
+    var toks = t.substring(4).trim().split(RegExp(r'\s+'));
+    if (toks.isNotEmpty && toks.first.startsWith('[')) {
+      var i = 0;
+      while (i < toks.length && !toks[i].endsWith(']')) {
+        i++;
+      }
+      toks = i + 1 < toks.length ? toks.sublist(i + 1) : const [];
+    }
+    if (toks.length < 3) continue;
+    final uri = toks[0];
+    final suite = toks[1];
+    for (final comp in toks.sublist(2)) {
+      urls.add('$uri/dists/$suite/$comp/binary-$arch/Packages.xz');
+    }
+  }
+  return urls;
+}
+
 /// Names already installed in a sysroot's `/var/lib/dpkg/status` (plus what
 /// they Provide) — treated as already satisfied so they aren't re-downloaded.
 Set<String> parseInstalled(String statusText) {

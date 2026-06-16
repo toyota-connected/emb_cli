@@ -23,3 +23,13 @@ String debianMultiarch(String triple) => switch (archOfTriple(triple)) {
   'x86_64' || 'amd64' => 'x86_64-linux-gnu',
   final a => '$a-linux-gnu',
 };
+
+/// The dpkg architecture name for a triple (`aarch64-*` → `arm64`,
+/// `arm-*` → `armhf`), used to pick the right apt `Packages` index.
+String debianArch(String triple) => switch (archOfTriple(triple)) {
+  'aarch64' || 'arm64' => 'arm64',
+  'arm' || 'armv7' || 'armv7l' || 'armhf' => 'armhf',
+  'riscv64' => 'riscv64',
+  'x86_64' || 'amd64' => 'amd64',
+  final a => a,
+};
