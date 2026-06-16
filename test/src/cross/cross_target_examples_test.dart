@@ -224,6 +224,26 @@ void main() {
       expect(t.package!.autoDepends, isTrue); // default
     });
 
+    test('parses shared defines: and raw cmake_args:', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'image_url': 'https://example/x.img.xz',
+        'defines': {'CMAKE_INSTALL_PREFIX': '/usr', 'DEBUG': 'ON'},
+        'cmake_args': ['-Wno-dev', '--fresh'],
+      });
+      expect(t.defines, {'CMAKE_INSTALL_PREFIX': '/usr', 'DEBUG': 'ON'});
+      expect(t.cmakeArgs, ['-Wno-dev', '--fresh']);
+    });
+
+    test('defines/cmake_args default to empty when absent', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'image_url': 'https://example/x.img.xz',
+      });
+      expect(t.defines, isEmpty);
+      expect(t.cmakeArgs, isEmpty);
+    });
+
     test('package: defaults when absent', () {
       final t = CrossTarget.fromMap(const {
         'provider': 'arm-gnu',

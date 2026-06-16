@@ -363,6 +363,7 @@ emb cross <package-dir|manifest.yaml> [options]
 | `--dry-run` | off | Report the resolution plan (provider, toolchain, sysroot, preflight, augment, backends) with no download / mount / ssh. |
 | `--prepare` | off | After resolving, build the `augment` libraries into the overlay. |
 | `--build` | off | Configure + build the embedder under the resolved profile, one build per `cross.backends` entry. |
+| `--backend <name>` | all | Build only the named `cross.backends` entries. Repeatable. |
 | `--deb` | off | With `--build`: package each backend binary into a root-free `.deb` (Depends auto-derived from the binary's needed libraries). |
 | `--clean` | off | Remove this target's build + overlay dirs (keeps the toolchain + sysroot), then exit. |
 | `--clean-all` | off | Also remove the downloaded / extracted toolchain + sysroot and the apt / deb caches, then exit. |
@@ -395,7 +396,10 @@ cross:
     dev_packages: [libdrm-dev, libegl-dev, libgbm-dev, libinput-dev]
   augment:                        # libs built from source when the sysroot is too old
     - { pkg: libdisplay-info, min: "0.2.0", url: https://.../libdisplay-info-0.2.0.tar.gz, build: meson, static: true }
-  backends:                       # one build per entry
+  defines:                        # -D<name>=<value> applied to every build
+    CMAKE_INSTALL_PREFIX: /usr
+  cmake_args: [-Wno-dev]          # raw cmake configure flags (cmake only)
+  backends:                       # one build per entry; -D<key>=<value> each
     drm-kms-egl: { BUILD_BACKEND_DRM_KMS_EGL: 'ON', DISABLE_PLUGINS: 'ON' }
   package:                        # optional, consumed by --deb
     name: ivi-homescreen

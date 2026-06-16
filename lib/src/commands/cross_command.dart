@@ -56,6 +56,12 @@ class CrossCommand extends Command<int> {
             'build per cross.backends entry.',
         negatable: false,
       )
+      ..addMultiOption(
+        'backend',
+        help:
+            'Build only the named cross.backends entries. Repeatable; '
+            'defaults to every backend in the manifest.',
+      )
       ..addFlag(
         'deb',
         help:
@@ -125,6 +131,19 @@ class CrossCommand extends Command<int> {
       return ExitCode.usage.code;
     }
 
+    // Validate --backend against the manifest up front, before any download.
+    final selectedBackends = args['backend'] as List<String>;
+    final unknownBackends = selectedBackends.where(
+      (b) => !target.backends.containsKey(b),
+    );
+    if (unknownBackends.isNotEmpty) {
+      _logger.err(
+        'Unknown backend(s): ${unknownBackends.join(", ")}. '
+        'Available: ${target.backends.keys.join(", ")}',
+      );
+      return ExitCode.usage.code;
+    }
+
     final host = _host ?? HostInfo.detect();
     final workspace = Workspace.resolve(override: args['workspace'] as String?);
     final provider = CrossProvider.forTarget(
@@ -189,6 +208,7 @@ class CrossCommand extends Command<int> {
         inputPath,
         deb: args['deb'] == true,
         defaultName: manifest.id,
+        selectedBackends: selectedBackends,
       );
     }
     return ExitCode.success.code;
@@ -205,11 +225,20 @@ class CrossCommand extends Command<int> {
     String inputPath, {
     bool deb = false,
     String defaultName = 'app',
+    List<String> selectedBackends = const [],
   }) async {
     final source =
         FileSystemEntity.typeSync(inputPath) == FileSystemEntityType.file
         ? File(inputPath).parent
         : Directory(inputPath);
+
+    // --backend filters the matrix (validated in run()); merge shared
+    // cross.defines into each backend (a backend define wins on a clash).
+    final backends = {
+      for (final e in target.backends.entries)
+        if (selectedBackends.isEmpty || selectedBackends.contains(e.key))
+          e.key: {...target.defines, ...e.value},
+    };
 
     // Stage any augment libraries the sysroot doesn't already satisfy (e.g.
     // libdisplay-info >= 0.2.0) into the sysroot before configuring, so the
@@ -234,19 +263,22 @@ class CrossCommand extends Command<int> {
     );
     final builder = CrossBuilder(profile);
 
-    final results = target.backends.isEmpty
+    final results = backends.isEmpty
         ? [
             await builder.build(
               sourceDir: source,
               buildDir: Directory('${buildRoot.path}/build'),
               generator: target.generator,
+              defines: target.defines,
+              cmakeArgs: target.cmakeArgs,
             ),
           ]
         : await builder.buildBackends(
             sourceDir: source,
             buildRoot: buildRoot,
             generator: target.generator,
-            backends: target.backends,
+            backends: backends,
+            cmakeArgs: target.cmakeArgs,
           );
 
     for (final r in results) {

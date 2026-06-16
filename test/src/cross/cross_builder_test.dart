@@ -130,6 +130,22 @@ void main() {
     expect(r.message, contains('ninja failed'));
   });
 
+  test('cmake: appends raw cmakeArgs verbatim after the defines', () async {
+    final rec = recorder();
+    final r = await CrossBuilder(_profile, runProcess: rec.run).build(
+      sourceDir: dir('src'),
+      buildDir: dir('b'),
+      generator: CrossGenerator.cmake,
+      defines: {'FOO': 'BAR'},
+      cmakeArgs: ['-Wno-dev', '--fresh'],
+    );
+    expect(r.success, isTrue);
+    final cfg = rec.calls.firstWhere(
+      (c) => c.first == 'cmake' && c.contains('-S'),
+    );
+    expect(cfg, containsAllInOrder(['-DFOO=BAR', '-Wno-dev', '--fresh']));
+  });
+
   test('buildBackends builds each backend into its own dir', () async {
     final rec = recorder();
     final results = await CrossBuilder(_profile, runProcess: rec.run)

@@ -71,6 +71,28 @@ void main() {
     expect(await run(['cross', '--dry-run', f.path]), ExitCode.success.code);
   });
 
+  test(
+    '--backend with an unknown name is a usage error (no download)',
+    () async {
+      final pkg = pkgWith(
+        'bk',
+        'id: bk\ntype: app\ncross:\n  provider: arm-gnu\n'
+            '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n'
+            '  backends:\n    drm-kms-egl:\n'
+            '      BUILD_BACKEND_DRM_KMS_EGL: ON\n',
+      );
+      // 'wayland-egl' isn't in the manifest → fail fast before resolving.
+      final code = await run([
+        'cross',
+        '--build',
+        '--backend',
+        'wayland-egl',
+        pkg.path,
+      ]);
+      expect(code, ExitCode.usage.code);
+    },
+  );
+
   test('--clean removes build + overlay dirs, keeps the toolchain', () async {
     final pkg = pkgWith(
       'cl',

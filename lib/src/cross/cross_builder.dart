@@ -45,11 +45,18 @@ class CrossBuilder {
     required Directory buildDir,
     required CrossGenerator generator,
     Map<String, String> defines = const {},
+    List<String> cmakeArgs = const [],
     String buildType = 'Release',
   }) {
     buildDir.createSync(recursive: true);
     return switch (generator) {
-      CrossGenerator.cmake => _cmake(sourceDir, buildDir, defines, buildType),
+      CrossGenerator.cmake => _cmake(
+        sourceDir,
+        buildDir,
+        defines,
+        cmakeArgs,
+        buildType,
+      ),
       CrossGenerator.meson => _meson(sourceDir, buildDir, defines, buildType),
     };
   }
@@ -62,6 +69,7 @@ class CrossBuilder {
     required Directory buildRoot,
     required CrossGenerator generator,
     required Map<String, Map<String, String>> backends,
+    List<String> cmakeArgs = const [],
     String buildType = 'Release',
   }) async {
     final out = <CrossBuildResult>[];
@@ -72,6 +80,7 @@ class CrossBuilder {
         buildDir: dir,
         generator: generator,
         defines: entry.value,
+        cmakeArgs: cmakeArgs,
         buildType: buildType,
       );
       out.add(
@@ -110,6 +119,7 @@ class CrossBuilder {
     Directory src,
     Directory build,
     Map<String, String> defines,
+    List<String> cmakeArgs,
     String buildType,
   ) async {
     final tc = profile.cmakeToolchainFile;
@@ -121,6 +131,7 @@ class CrossBuilder {
       if (tc != null && tc.isNotEmpty) '-DCMAKE_TOOLCHAIN_FILE=$tc',
       '-DCMAKE_BUILD_TYPE=$buildType',
       for (final e in defines.entries) '-D${e.key}=${e.value}',
+      ...cmakeArgs,
     ], environment: _env());
     if (configure.exitCode != 0) {
       return CrossBuildResult(
