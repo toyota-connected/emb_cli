@@ -2,6 +2,20 @@ import 'dart:io';
 
 import 'package:emb_cli/src/cross/process_runner.dart';
 
+/// Whether a [bundleArch] (a binary/triple arch) is compatible with a board's
+/// `uname -m` [machine], tolerating the usual aliases (arm64/aarch64,
+/// amd64/x86_64, armv7*/armhf). Unknown arches compare literally.
+bool archMatches(String bundleArch, String machine) {
+  String n(String s) => switch (s.toLowerCase()) {
+    'arm64' || 'aarch64' => 'aarch64',
+    'amd64' || 'x86_64' || 'x64' => 'x86_64',
+    'armv7l' || 'armv7hf' || 'armhf' || 'arm' => 'arm',
+    'riscv64' || 'rv64' => 'riscv64',
+    final v => v,
+  };
+  return n(bundleArch) == n(machine);
+}
+
 /// Outcome of a deploy push.
 class DeployResult {
   const DeployResult({required this.success, this.method, this.message});
@@ -98,6 +112,15 @@ class Deployer {
       method: 'tar',
       message: r.exitCode == 0 ? null : 'tar over ssh: ${r.stderr}',
     );
+  }
+
+  /// The target's machine arch (`uname -m`, e.g. `aarch64`); null if the host
+  /// is unreachable. Used to warn before pushing a wrong-arch bundle.
+  Future<String?> remoteArch(String host, {int port = 22, String? opts}) async {
+    final r = await _run('ssh', [..._sshArgs(port, opts), host, 'uname -m']);
+    if (r.exitCode != 0) return null;
+    final a = '${r.stdout}'.trim();
+    return a.isEmpty ? null : a;
   }
 
   /// The argv for running [command] in [destDir] on [host] over SSH (consumed
