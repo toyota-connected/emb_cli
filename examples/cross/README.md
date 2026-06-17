@@ -20,6 +20,34 @@ scripts.
 | `agl_sdk_local.emb.yaml` | (AGL SDK, installed) | `yocto-sdk` | `sdk_path` → `environment-setup-aarch64-agl-linux` | from `CFLAGS` | none |
 | `agl_sdk_url.emb.yaml` | (AGL SDK, downloaded) | `yocto-sdk` | `sdk_url` → install → `environment-setup-aarch64-agl-linux` | from `CFLAGS` | none |
 
+The files above are one board per manifest. **`raspberry-pi-family.emb.yaml`**
+shows the alternative: several boards in *one* manifest via `cross.targets`
+(rpi4/rpi5/rpi-zero-2w/radxa-zero3), selected with `--target`. Shared config
+lives at the `cross:` level; each target overrides only its image + `-mcpu`.
+
+```sh
+emb cross raspberry-pi-family.emb.yaml --list-targets
+emb cross raspberry-pi-family.emb.yaml --target rpi5 --build --deb
+```
+
+**`all-backends.emb.yaml`** builds every ivi-homescreen backend
+(wayland-egl/-vulkan, drm-kms-egl/-vulkan, software, headless-egl) natively via
+the built-in `local` target, using the `cross.backends` matrix + a shared
+`cross.defines`. Copy it next to the ivi-homescreen source (`emb cross <file>`
+builds the file's parent dir) and:
+
+```sh
+emb cross all-backends.emb.yaml --target local --build
+```
+
+`build-all-backends.sh` is a tiny wrapper that drops the manifest next to a
+given ivi-homescreen checkout and builds every backend:
+
+```sh
+./build-all-backends.sh ~/workspace-automation/app/ivi-homescreen
+./build-all-backends.sh ~/.../ivi-homescreen --backend drm-kms-egl   # one
+```
+
 ## Validated workflow (pi5)
 
 Run from the `ivi-homescreen` package dir (where its `emb.yaml` lives). `emb

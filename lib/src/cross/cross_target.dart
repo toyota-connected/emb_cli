@@ -248,6 +248,8 @@ class CrossTarget {
     this.generator = CrossGenerator.cmake,
     this.backends = const {},
     this.package,
+    this.defines = const {},
+    this.cmakeArgs = const [],
   });
 
   factory CrossTarget.fromMap(Map<dynamic, dynamic> map) {
@@ -284,6 +286,8 @@ class CrossTarget {
               Map<dynamic, dynamic>.from(map['package'] as Map),
             )
           : null,
+      defines: _parseDefines(map['defines']),
+      cmakeArgs: _stringList(map['cmake_args']),
     );
   }
 
@@ -353,6 +357,14 @@ class CrossTarget {
   /// Optional `.deb` packaging config for `emb cross --deb`.
   final PackageSpec? package;
 
+  /// Shared build-system `-D` defines applied to **every** build (each backend
+  /// and the no-backend build). A per-backend define of the same name wins.
+  final Map<String, String> defines;
+
+  /// Raw extra arguments passed verbatim to the CMake configure command (e.g.
+  /// `[-Wno-dev, --fresh]`). CMake-only; ignored for Meson projects.
+  final List<String> cmakeArgs;
+
   /// Parse the `backends:` block (backend name → `{define: value}` map).
   static Map<String, Map<String, String>> _parseBackends(Object? value) {
     if (value is! Map) return const {};
@@ -365,6 +377,14 @@ class CrossTarget {
       }
     });
     return out;
+  }
+
+  /// Parse the flat `defines:` block (`{name: value}` → `-Dname=value`).
+  static Map<String, String> _parseDefines(Object? value) {
+    if (value is! Map) return const {};
+    return {
+      for (final e in value.entries) e.key.toString(): e.value.toString(),
+    };
   }
 
   /// Parse the `sysroot:` block, folding a bare top-level `image_url:` into an

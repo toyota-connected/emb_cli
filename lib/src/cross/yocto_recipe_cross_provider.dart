@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:emb_cli/src/cross/cross_keys.dart';
 import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_provider.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
@@ -93,7 +94,9 @@ class YoctoRecipeCrossProvider implements CrossProvider {
     final cpuFlags = target.cpuFlags.isNotEmpty
         ? target.cpuFlags
         : _defaultCpuFlags;
-    final emitDir = workspace.ensurePlatformDir('cross-$triple');
+    final emitDir = workspace.ensurePlatformDir(
+      'cross-$triple-${sysrootKey(target)}',
+    );
     final cmakeTc = _emitter.emitCMake(
       outDir: emitDir,
       triple: triple,

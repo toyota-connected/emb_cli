@@ -360,9 +360,12 @@ emb cross <package-dir|manifest.yaml> [options]
 |---|---|---|
 | `<package-dir\|manifest>` | **mandatory (positional)** | Dir with `emb.yaml`, or a manifest file. |
 | `-w`, `--workspace <dir>` | resolution order | Workspace root. |
+| `-t`, `--target <name>` | `local` if `cross.targets` defined | Select a platform from `cross.targets` (e.g. `rpi5`, `radxa-zero3`), or `local`/`host` for a native build on this machine. When the manifest defines `cross.targets`, omitting `--target` defaults to `local`. |
+| `--list-targets` | off | List the platforms defined under `cross.targets` (plus the built-in `local`), then exit. |
 | `--dry-run` | off | Report the resolution plan (provider, toolchain, sysroot, preflight, augment, backends) with no download / mount / ssh. |
 | `--prepare` | off | After resolving, build the `augment` libraries into the overlay. |
 | `--build` | off | Configure + build the embedder under the resolved profile, one build per `cross.backends` entry. |
+| `--backend <name>` | all | Build only the named `cross.backends` entries. Repeatable. |
 | `--deb` | off | With `--build`: package each backend binary into a root-free `.deb` (Depends auto-derived from the binary's needed libraries). |
 | `--clean` | off | Remove this target's build + overlay dirs (keeps the toolchain + sysroot), then exit. |
 | `--clean-all` | off | Also remove the downloaded / extracted toolchain + sysroot and the apt / deb caches, then exit. |
@@ -395,13 +398,58 @@ cross:
     dev_packages: [libdrm-dev, libegl-dev, libgbm-dev, libinput-dev]
   augment:                        # libs built from source when the sysroot is too old
     - { pkg: libdisplay-info, min: "0.2.0", url: https://.../libdisplay-info-0.2.0.tar.gz, build: meson, static: true }
-  backends:                       # one build per entry
+  defines:                        # -D<name>=<value> applied to every build
+    CMAKE_INSTALL_PREFIX: /usr
+  cmake_args: [-Wno-dev]          # raw cmake configure flags (cmake only)
+  backends:                       # one build per entry; -D<key>=<value> each
     drm-kms-egl: { BUILD_BACKEND_DRM_KMS_EGL: 'ON', DISABLE_PLUGINS: 'ON' }
   package:                        # optional, consumed by --deb
     name: ivi-homescreen
     version: 1.0.0
     bin: shell/homescreen         # binary, relative to each backend build dir
     install_dir: /usr/bin
+```
+
+#### Multiple platforms in one manifest (`cross.targets`)
+
+To target several boards from a single manifest, put the shared config at the
+`cross:` level and a per-board override under `cross.targets`, then pick one with
+`--target`:
+
+```yaml
+cross:
+  provider: arm-gnu               # shared by every target
+  toolchain_version: 12.3.rel1
+  sysroot: { dev_packages: [libdrm-dev, libegl-dev, libgbm-dev, libinput-dev] }
+  backends: { drm-kms-egl: { BUILD_BACKEND_DRM_KMS_EGL: 'ON' } }
+  targets:                        # per-board overrides
+    rpi5:        { image_url: …raspios…, cpu_flags: [-mcpu=cortex-a76] }
+    rpi4:        { image_url: …raspios…, cpu_flags: [-mcpu=cortex-a72] }
+    rpi-zero-2w: { image_url: …raspios…, cpu_flags: [-mcpu=cortex-a53] }
+    radxa-zero3: { image_url: …radxa…,   cpu_flags: [-mcpu=cortex-a55] }
+```
+```sh
+emb cross . --list-targets
+emb cross . --target rpi5 --build --deb
+emb cross . --target radxa-zero3 --build
+```
+
+A target's fields shallow-merge over the shared block (a top-level `image_url`
+folds into `sysroot`). Working dirs are content-hash-keyed, so boards that share
+a sysroot (rpi4/rpi5/zero-2w — same image, only `-mcpu` differs) **extract it
+once**, while a different image (radxa) gets its own. A manifest with no
+`cross.targets` behaves exactly as before (one implicit target).
+
+There's always a built-in **`local`** target (alias `host`): a native build on
+this machine — no cross toolchain or sysroot, host compiler + system libraries
+(install host dev deps via `emb deps`). It's the **default** when a manifest
+defines `cross.targets` and you don't pass `--target`, so `emb cross . --build`
+builds for the dev box while `--target rpi5` cross-builds.
+
+```sh
+emb cross . --build            # native local build (default with cross.targets)
+emb cross . --target local     # …the same, explicit (or --target host)
+emb cross . --target rpi5 --build
 ```
 
 ---

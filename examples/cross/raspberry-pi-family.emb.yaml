@@ -1,0 +1,76 @@
+# Multi-platform manifest: one project, several boards via `cross.targets`.
+#
+# Shared config lives at the cross: level; each board overrides only its image
+# and cpu tuning. Pick one with `--target`:
+#
+#   emb cross . --list-targets
+#   emb cross . --target rpi5 --build --deb
+#   emb cross . --target radxa-zero3 --build
+#
+# rpi4/rpi5/rpi-zero-2w share one raspios sysroot (same image, only -mcpu
+# differs); radxa-zero3 uses a different image and gets its own. Parse/plan
+# validated via --dry-run; the rpi5 single-target config is build-validated in
+# pi5.emb.yaml.
+id: ivi-homescreen
+type: app
+supported_archs: [arm64]
+supported_host_types: [ubuntu, fedora]
+
+cross:
+  provider: arm-gnu
+  version_policy: pinned
+  toolchain_version: 12.3.rel1    # bookworm → gcc 12 / glibc 2.36
+
+  sysroot:
+    partition: 2
+    dev_packages:
+      - libdrm-dev
+      - libgbm-dev
+      - libinput-dev
+      - libxcursor-dev
+      - libseat-dev
+      - libegl-dev
+      - libgles2-mesa-dev
+      - libwayland-dev
+      - libxkbcommon-dev
+      - libudev-dev
+      - libsystemd-dev
+      - libglib2.0-dev
+      - wayland-protocols
+      - zlib1g-dev
+
+  augment:
+    - pkg: libdisplay-info
+      min: "0.2.0"
+      url: https://gitlab.freedesktop.org/emersion/libdisplay-info/-/archive/0.2.0/libdisplay-info-0.2.0.tar.gz
+      build: meson
+      static: true
+
+  backends:
+    drm-kms-egl:
+      BUILD_BACKEND_DRM_KMS_EGL: 'ON'
+      BUILD_BACKEND_WAYLAND_EGL: 'OFF'
+      BUILD_BACKEND_WAYLAND_VULKAN: 'OFF'
+      DISABLE_PLUGINS: 'ON'
+
+  package:
+    name: ivi-homescreen
+    maintainer: "Joel Winarske <joel.winarske@gmail.com>"
+    description: "IVI Flutter Shell (drm-kms-egl backend), cross-built by emb"
+    section: utils
+    bin: shell/homescreen
+    install_dir: /usr/bin
+
+  targets:
+    rpi5:
+      image_url: https://downloads.raspberrypi.com/raspios_lite_arm64/images/raspios_lite_arm64-2024-11-19/2024-11-19-raspios-bookworm-arm64-lite.img.xz
+      cpu_flags: [-mcpu=cortex-a76]
+    rpi4:
+      image_url: https://downloads.raspberrypi.com/raspios_lite_arm64/images/raspios_lite_arm64-2024-11-19/2024-11-19-raspios-bookworm-arm64-lite.img.xz
+      cpu_flags: [-mcpu=cortex-a72]
+    rpi-zero-2w:
+      image_url: https://downloads.raspberrypi.com/raspios_lite_arm64/images/raspios_lite_arm64-2024-11-19/2024-11-19-raspios-bookworm-arm64-lite.img.xz
+      cpu_flags: [-mcpu=cortex-a53]
+    radxa-zero3:
+      image_url: https://github.com/radxa-build/radxa-zero3/releases/download/rsdk-b1/radxa-zero3_bookworm_kde_b1.output_512.img.xz
+      cpu_flags: [-mcpu=cortex-a55]

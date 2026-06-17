@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:emb_cli/src/cross/cross_keys.dart';
 import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_provider.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
@@ -167,7 +168,9 @@ class YoctoSdkCrossProvider implements CrossProvider {
   /// and `-d <dir>` (install dir). The prefix is keyed by the installer
   /// filename so re-resolving is a no-op once installed.
   Future<Directory?> _materializeFromUrl(String url) async {
-    final sdkDir = workspace.ensurePlatformDir('yocto-sdk');
+    final sdkDir = workspace.ensurePlatformDir(
+      'yocto-sdk-${sysrootKey(target)}',
+    );
     final name = p.basenameWithoutExtension(Uri.parse(url).path);
     final prefix = Directory(p.join(sdkDir.path, name));
     if (_globEnvSetup(prefix) != null) return prefix; // already installed

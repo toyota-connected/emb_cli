@@ -3,10 +3,12 @@ import 'dart:io';
 import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/cross/cross_arch.dart';
 import 'package:emb_cli/src/cross/cross_builder.dart';
+import 'package:emb_cli/src/cross/cross_keys.dart';
 import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_provider.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/cross/deb_packager.dart';
+import 'package:emb_cli/src/cross/local_cross_provider.dart';
 import 'package:emb_cli/src/cross/overlay_builder.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
@@ -55,6 +57,24 @@ class CrossCommand extends Command<int> {
             'Configure + build the embedder under the resolved profile, one '
             'build per cross.backends entry.',
         negatable: false,
+      )
+      ..addOption(
+        'target',
+        abbr: 't',
+        help:
+            'Select a platform from cross.targets (e.g. rpi5, radxa-zero3). '
+            'Its fields override the shared cross: block.',
+      )
+      ..addFlag(
+        'list-targets',
+        help: 'List the platforms defined under cross.targets, then exit.',
+        negatable: false,
+      )
+      ..addMultiOption(
+        'backend',
+        help:
+            'Build only the named cross.backends entries. Repeatable; '
+            'defaults to every backend in the manifest.',
       )
       ..addFlag(
         'deb',
@@ -114,10 +134,38 @@ class CrossCommand extends Command<int> {
       _logger.err('${manifest.id} has no cross: block.');
       return ExitCode.usage.code;
     }
+    final targets = crossMap['targets'];
+    final hasTargets = targets is Map && targets.isNotEmpty;
+
+    // --list-targets: print the platforms this manifest defines, exit.
+    if (args['list-targets'] == true) {
+      final names = hasTargets ? targets.keys.join(', ') : '(none)';
+      _logger.info('Targets: $names  (plus the built-in: local)');
+      return ExitCode.success.code;
+    }
+
+    // Resolve the effective target. `local`/`host` is the native host build;
+    // it's the default when the manifest defines targets but none is chosen.
+    final targetArg = args['target'] as String?;
+    final effectiveTarget = targetArg ?? (hasTargets ? 'local' : null);
+    final isNative = effectiveTarget == 'local' || effectiveTarget == 'host';
+
+    final Map<dynamic, dynamic>? selected;
+    if (isNative) {
+      // Native uses the shared fields (backends / defines / package); the
+      // cross-only fields (image_url, toolchain, cpu_flags) don't apply.
+      selected = {
+        for (final e in crossMap.entries)
+          if (e.key != 'targets') e.key: e.value,
+      };
+    } else {
+      selected = _selectCrossMap(crossMap, effectiveTarget);
+    }
+    if (selected == null) return ExitCode.usage.code;
 
     final CrossTarget target;
     try {
-      target = CrossTarget.fromMap(Map<dynamic, dynamic>.from(crossMap));
+      target = CrossTarget.fromMap(selected);
       // fromMap throws ArgumentError on an unknown provider token.
       // ignore: avoid_catching_errors
     } on ArgumentError catch (e) {
@@ -125,22 +173,48 @@ class CrossCommand extends Command<int> {
       return ExitCode.usage.code;
     }
 
+    // Validate --backend against the manifest up front, before any download.
+    final selectedBackends = args['backend'] as List<String>;
+    final unknownBackends = selectedBackends.where(
+      (b) => !target.backends.containsKey(b),
+    );
+    if (unknownBackends.isNotEmpty) {
+      _logger.err(
+        'Unknown backend(s): ${unknownBackends.join(", ")}. '
+        'Available: ${target.backends.keys.join(", ")}',
+      );
+      return ExitCode.usage.code;
+    }
+
     final host = _host ?? HostInfo.detect();
     final workspace = Workspace.resolve(override: args['workspace'] as String?);
-    final provider = CrossProvider.forTarget(
-      target,
-      workspace: workspace,
-      host: host,
-    );
+    final provider = isNative
+        ? LocalCrossProvider(host)
+        : CrossProvider.forTarget(target, workspace: workspace, host: host);
 
     // --clean / --clean-all: remove working dirs and exit (no download).
     if (args['clean'] == true || args['clean-all'] == true) {
-      return _clean(provider, workspace, all: args['clean-all'] == true);
+      return _clean(
+        provider,
+        target,
+        workspace,
+        all: args['clean-all'] == true,
+      );
     }
 
     // --dry-run: report the plan without any download / mount / ssh side
     // effects, so every target validates on any host.
     if (args['dry-run'] == true) {
+      if (isNative) {
+        final be = target.backends.isEmpty
+            ? '(plain)'
+            : target.backends.keys.join(', ');
+        _logger
+          ..info(styleBold.wrap('Cross plan (local)'))
+          ..info('  native build  : ${host.machineArch} (host toolchain)')
+          ..info('  backends      : $be');
+        return ExitCode.success.code;
+      }
       await _plan(provider, target, host);
       return ExitCode.success.code;
     }
@@ -189,9 +263,52 @@ class CrossCommand extends Command<int> {
         inputPath,
         deb: args['deb'] == true,
         defaultName: manifest.id,
+        selectedBackends: selectedBackends,
       );
     }
     return ExitCode.success.code;
+  }
+
+  /// Resolve the effective cross map. When the manifest defines
+  /// `cross.targets`, merge the [targetName] entry over the shared fields
+  /// (minus `targets`). Logs and returns null on a usage error.
+  Map<dynamic, dynamic>? _selectCrossMap(
+    Map<dynamic, dynamic> crossMap,
+    String? targetName,
+  ) {
+    final targets = crossMap['targets'];
+    final hasTargets = targets is Map && targets.isNotEmpty;
+
+    if (!hasTargets) {
+      if (targetName != null) {
+        _logger.err('--target given but the manifest has no cross.targets.');
+        return null;
+      }
+      return Map<dynamic, dynamic>.from(crossMap);
+    }
+
+    if (targetName == null) {
+      _logger.err(
+        'Manifest defines targets (${targets.keys.join(", ")}); '
+        'pass --target <name>.',
+      );
+      return null;
+    }
+    final tdef = targets[targetName];
+    if (tdef is! Map) {
+      _logger.err(
+        'Unknown target "$targetName". '
+        'Available: ${targets.keys.join(", ")}',
+      );
+      return null;
+    }
+    // Shallow-merge shared fields (minus targets) then the target's overrides;
+    // a top-level image_url override folds into the sysroot block.
+    return {
+      for (final e in crossMap.entries)
+        if (e.key != 'targets') e.key: e.value,
+      ...tdef,
+    };
   }
 
   /// Configure + build the embedder under [profile], one build per
@@ -205,16 +322,29 @@ class CrossCommand extends Command<int> {
     String inputPath, {
     bool deb = false,
     String defaultName = 'app',
+    List<String> selectedBackends = const [],
   }) async {
     final source =
         FileSystemEntity.typeSync(inputPath) == FileSystemEntityType.file
         ? File(inputPath).parent
         : Directory(inputPath);
 
+    // A native `local` build: no sysroot, host toolchain, no augment staging.
+    final native = profile.providerName == 'local';
+
+    // --backend filters the matrix (validated in run()); merge shared
+    // cross.defines into each backend (a backend define wins on a clash).
+    final backends = {
+      for (final e in target.backends.entries)
+        if (selectedBackends.isEmpty || selectedBackends.contains(e.key))
+          e.key: {...target.defines, ...e.value},
+    };
+
     // Stage any augment libraries the sysroot doesn't already satisfy (e.g.
     // libdisplay-info >= 0.2.0) into the sysroot before configuring, so the
-    // embedder's pkg-config probes resolve them.
-    if (target.augment.isNotEmpty) {
+    // embedder's pkg-config probes resolve them. Native builds use the host's
+    // system libraries instead (install via the manifest deps / emb deps).
+    if (!native && target.augment.isNotEmpty) {
       final overlay = OverlayBuilder(workspace, profile);
       try {
         await overlay.build(
@@ -230,23 +360,27 @@ class CrossCommand extends Command<int> {
     }
 
     final buildRoot = workspace.ensurePlatformDir(
-      'cross-build-${target.triple ?? profile.targetTriple}',
+      'cross-build-${profile.targetTriple}-${buildKey(target)}',
     );
-    final builder = CrossBuilder(profile);
+    // Native keeps the host compiler env; cross neutralizes it.
+    final builder = CrossBuilder(profile, neutralizeHostEnv: !native);
 
-    final results = target.backends.isEmpty
+    final results = backends.isEmpty
         ? [
             await builder.build(
               sourceDir: source,
               buildDir: Directory('${buildRoot.path}/build'),
               generator: target.generator,
+              defines: target.defines,
+              cmakeArgs: target.cmakeArgs,
             ),
           ]
         : await builder.buildBackends(
             sourceDir: source,
             buildRoot: buildRoot,
             generator: target.generator,
-            backends: target.backends,
+            backends: backends,
+            cmakeArgs: target.cmakeArgs,
           );
 
     for (final r in results) {
@@ -271,28 +405,32 @@ class CrossCommand extends Command<int> {
     return ExitCode.success.code;
   }
 
-  /// Remove this target's cross working dirs and report freed space. `--clean`
-  /// keeps the expensive toolchain + sysroot (the `cross-<triple>` dir);
-  /// `--clean-all` ([all]) removes those plus the shared overlay sources too.
+  /// Remove the selected target's cross working dirs and report freed space.
+  /// `--clean` keeps the expensive toolchain + sysroot (the keyed
+  /// `cross-<triple>-<key>` dir); `--clean-all` ([all]) removes those plus the
+  /// shared overlay sources too.
   Future<int> _clean(
     CrossProvider provider,
+    CrossTarget target,
     Workspace workspace, {
     required bool all,
   }) async {
     final triple = provider.triple;
-    final targets = <Directory>[
-      workspace.platformDir('cross-build-$triple'),
+    final sk = sysrootKey(target);
+    final dirs = <Directory>[
+      workspace.platformDir('cross-build-$triple-${buildKey(target)}'),
       workspace.platformDir('overlay-$triple'),
       if (all) ...[
-        workspace.platformDir('cross-$triple'),
+        workspace.platformDir('cross-$triple-$sk'),
         workspace.platformDir('overlay-src'),
-        if (provider.name == 'yocto-sdk') workspace.platformDir('yocto-sdk'),
+        if (provider.name == 'yocto-sdk')
+          workspace.platformDir('yocto-sdk-$sk'),
       ],
     ];
 
     var freed = 0;
     var removed = 0;
-    for (final dir in targets) {
+    for (final dir in dirs) {
       if (!dir.existsSync()) continue;
       final bytes = _dirSize(dir);
       dir.deleteSync(recursive: true);
@@ -349,7 +487,7 @@ class CrossCommand extends Command<int> {
     String defaultName,
   ) async {
     final spec = target.package ?? const PackageSpec();
-    final arch = debianArch(target.triple ?? profile.targetTriple);
+    final arch = debianArch(profile.targetTriple);
     final baseName = spec.name ?? defaultName;
     final outDir = Directory(p.join(buildRoot.path, 'dist'));
     // The resolver's downloaded `.deb`s sit beside the sysroot, in `debs/`.

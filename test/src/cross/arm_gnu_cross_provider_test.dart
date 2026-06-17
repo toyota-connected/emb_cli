@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:emb_cli/src/cross/arm_gnu_cross_provider.dart';
+import 'package:emb_cli/src/cross/cross_keys.dart';
 import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/host/host_info.dart';
@@ -24,10 +25,20 @@ void main() {
   tearDown(() => tmp.deleteSync(recursive: true));
 
   /// Pre-stage the sysroot (with [codename]) and an extracted toolchain so
-  /// [resolve] short-circuits every download / mount / chroot step.
-  void prestage(String version, {String codename = 'bookworm'}) {
+  /// [resolve] short-circuits every download / mount / chroot step. The dir is
+  /// keyed by the target's sysroot inputs, matching the provider.
+  void prestage(
+    String version,
+    CrossTarget target, {
+    String codename = 'bookworm',
+  }) {
     final platform = Directory(
-      p.join(tmp.path, '.config', 'flutter_workspace', 'cross-$_triple'),
+      p.join(
+        tmp.path,
+        '.config',
+        'flutter_workspace',
+        'cross-$_triple-${sysrootKey(target)}',
+      ),
     );
     File(p.join(platform.path, 'sysroot', 'etc', 'os-release'))
       ..createSync(recursive: true)
@@ -56,12 +67,17 @@ void main() {
     // The post-extraction/post-dpkg-deb-x state: /lib is a real dir while the
     // real libs live under usr/lib/<multiarch>. resolve() must normalize it so
     // a configure that probes the sysroot (meson's find_library('m')) works.
-    prestage('12.3.rel1');
+    final t = CrossTarget.fromMap({
+      'provider': 'arm-gnu',
+      'toolchain_version': '12.3.rel1',
+      'image_url': 'https://example/x.img.xz',
+    });
+    prestage('12.3.rel1', t);
     final sr = p.join(
       tmp.path,
       '.config',
       'flutter_workspace',
-      'cross-$_triple',
+      'cross-$_triple-${sysrootKey(t)}',
       'sysroot',
     );
     File(p.join(sr, 'usr', 'lib', 'aarch64-linux-gnu', 'libc.so.6'))
@@ -71,13 +87,7 @@ void main() {
       ..createSync(recursive: true)
       ..writeAsStringSync('');
 
-    final r = await resolveTarget(
-      CrossTarget.fromMap({
-        'provider': 'arm-gnu',
-        'toolchain_version': '12.3.rel1',
-        'image_url': 'https://example/x.img.xz',
-      }),
-    );
+    final r = await resolveTarget(t);
 
     expect(r.ok, isTrue, reason: r.message);
     expect(FileSystemEntity.isLinkSync(p.join(sr, 'lib')), isTrue);
@@ -88,15 +98,14 @@ void main() {
   });
 
   test('pinned: resolves a pre-staged toolchain + sysroot', () async {
-    prestage('12.3.rel1');
-    final r = await resolveTarget(
-      CrossTarget.fromMap({
-        'provider': 'arm-gnu',
-        'toolchain_version': '12.3.rel1',
-        'image_url': 'https://example/x.img.xz',
-        'cpu_flags': ['-mcpu=cortex-a76'],
-      }),
-    );
+    final t = CrossTarget.fromMap({
+      'provider': 'arm-gnu',
+      'toolchain_version': '12.3.rel1',
+      'image_url': 'https://example/x.img.xz',
+      'cpu_flags': ['-mcpu=cortex-a76'],
+    });
+    prestage('12.3.rel1', t);
+    final r = await resolveTarget(t);
     expect(r.ok, isTrue, reason: r.message);
     final pf = r.profile!;
     expect(pf.cc, endsWith('$_triple-gcc'));
@@ -114,15 +123,14 @@ void main() {
 
   test('derive: reads the sysroot codename to pick the version', () async {
     // bookworm -> 12.3.rel1; pre-stage that toolchain.
-    prestage('12.3.rel1');
-    final r = await resolveTarget(
-      CrossTarget.fromMap({
-        'provider': 'arm-gnu',
-        'version_policy': 'derive',
-        'cpu_flags': ['-mcpu=cortex-a53'],
-        'sysroot': {'source': 'device', 'host': 'ubuntu@board'},
-      }),
-    );
+    final t = CrossTarget.fromMap({
+      'provider': 'arm-gnu',
+      'version_policy': 'derive',
+      'cpu_flags': ['-mcpu=cortex-a53'],
+      'sysroot': {'source': 'device', 'host': 'ubuntu@board'},
+    });
+    prestage('12.3.rel1', t);
+    final r = await resolveTarget(t);
     expect(r.ok, isTrue, reason: r.message);
     expect(r.profile!.cc, endsWith('$_triple-gcc'));
   });
