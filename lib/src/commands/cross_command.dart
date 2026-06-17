@@ -1,6 +1,9 @@
 import 'dart:io';
 
 import 'package:args/command_runner.dart';
+import 'package:emb_cli/src/aot/aot_builder.dart';
+import 'package:emb_cli/src/bundle/bundle_builder.dart';
+import 'package:emb_cli/src/bundle/bundle_pipeline.dart';
 import 'package:emb_cli/src/cross/cross_arch.dart';
 import 'package:emb_cli/src/cross/cross_builder.dart';
 import 'package:emb_cli/src/cross/cross_keys.dart';
@@ -10,6 +13,8 @@ import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/cross/deb_packager.dart';
 import 'package:emb_cli/src/cross/local_cross_provider.dart';
 import 'package:emb_cli/src/cross/overlay_builder.dart';
+import 'package:emb_cli/src/cross/runnable_bundle.dart';
+import 'package:emb_cli/src/engine/engine_artifacts.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
@@ -30,9 +35,15 @@ class CrossCommand extends Command<int> {
     required Logger logger,
     HostInfo? host,
     ManifestLoader loader = const ManifestLoader(),
+    AotBuilder Function(Workspace ws, HostInfo host)? aotFactory,
+    BundleBuilder Function(Workspace ws)? bundleFactory,
+    EngineArtifacts Function(Workspace ws)? engineFactory,
   }) : _logger = logger,
        _host = host,
-       _loader = loader {
+       _loader = loader,
+       _aotFactory = aotFactory ?? ((ws, h) => AotBuilder(ws, host: h)),
+       _bundleFactory = bundleFactory ?? BundleBuilder.new,
+       _engineFactory = engineFactory ?? EngineArtifacts.new {
     argParser
       ..addOption(
         'workspace',
@@ -96,12 +107,33 @@ class CrossCommand extends Command<int> {
             'Also remove the downloaded/extracted toolchain + sysroot (and '
             'apt/deb caches) for this target, then exit.',
         negatable: false,
+      )
+      ..addOption(
+        'app',
+        help:
+            'With --build: also build this Flutter app for the target and '
+            'assemble a runnable bundle (embedder + engine + assets + libapp).',
+      )
+      ..addOption(
+        'mode',
+        abbr: 'm',
+        allowed: ['debug', 'profile', 'release'],
+        defaultsTo: 'release',
+        help: 'Runtime mode for the --app bundle.',
+      )
+      ..addFlag(
+        'tar',
+        help: 'Also produce a .tar.gz of each runnable bundle.',
+        negatable: false,
       );
   }
 
   final Logger _logger;
   final HostInfo? _host;
   final ManifestLoader _loader;
+  final AotBuilder Function(Workspace ws, HostInfo host) _aotFactory;
+  final BundleBuilder Function(Workspace ws) _bundleFactory;
+  final EngineArtifacts Function(Workspace ws) _engineFactory;
 
   @override
   String get name => 'cross';
@@ -261,9 +293,13 @@ class CrossCommand extends Command<int> {
         target,
         workspace,
         inputPath,
+        host: host,
         deb: args['deb'] == true,
         defaultName: manifest.id,
         selectedBackends: selectedBackends,
+        appPath: args['app'] as String?,
+        mode: args['mode'] as String,
+        tar: args['tar'] == true,
       );
     }
     return ExitCode.success.code;
@@ -320,9 +356,13 @@ class CrossCommand extends Command<int> {
     CrossTarget target,
     Workspace workspace,
     String inputPath, {
+    required HostInfo host,
     bool deb = false,
     String defaultName = 'app',
     List<String> selectedBackends = const [],
+    String? appPath,
+    String mode = 'release',
+    bool tar = false,
   }) async {
     final source =
         FileSystemEntity.typeSync(inputPath) == FileSystemEntityType.file
@@ -392,15 +432,26 @@ class CrossCommand extends Command<int> {
       }
     }
     if (!results.every((r) => r.success)) return ExitCode.software.code;
+    final built = results.where((r) => r.success).toList();
 
-    if (deb) {
-      return _packageDebs(
+    // Assemble a runnable bundle (embedder + engine + assets + libapp).
+    if (appPath != null) {
+      final rc = await _runnable(
         profile,
         target,
         buildRoot,
-        results.where((r) => r.success).toList(),
-        defaultName,
+        built,
+        host: host,
+        workspace: workspace,
+        appPath: appPath,
+        mode: mode,
+        tar: tar,
       );
+      if (rc != ExitCode.success.code) return rc;
+    }
+
+    if (deb) {
+      return _packageDebs(profile, target, buildRoot, built, defaultName);
     }
     return ExitCode.success.code;
   }
@@ -475,6 +526,93 @@ class CrossCommand extends Command<int> {
       i++;
     }
     return '${n.toStringAsFixed(i == 0 || n >= 100 ? 0 : 1)}${units[i]}';
+  }
+
+  /// Build [appPath] for the target arch, then assemble a runnable bundle per
+  /// built backend — the embedder binary beside the engine + flutter_assets +
+  /// icudtl + libapp — under `<buildRoot>/runnable[-<backend>]`.
+  Future<int> _runnable(
+    CrossProfile profile,
+    CrossTarget target,
+    Directory buildRoot,
+    List<CrossBuildResult> built, {
+    required HostInfo host,
+    required Workspace workspace,
+    required String appPath,
+    required String mode,
+    required bool tar,
+  }) async {
+    final arch = EngineArtifacts.engineArch(archOfTriple(profile.targetTriple));
+
+    // Build the app bundle once (engine fetch + AOT + assemble).
+    final appBundle = Directory(
+      p.join(buildRoot.path, 'app-bundle-$mode-$arch'),
+    );
+    final progress = _logger.progress('Building app bundle ($mode/$arch)');
+    final res = await buildAndAssemble(
+      workspace: workspace,
+      aot: _aotFactory(workspace, host),
+      bundle: _bundleFactory(workspace),
+      engine: _engineFactory(workspace),
+      appPath: appPath,
+      arch: arch,
+      mode: mode,
+      outputDir: appBundle.path,
+      build: true,
+      onStep: progress.update,
+    );
+    if (!res.success) {
+      progress.fail(res.message ?? 'app bundle build failed');
+      return ExitCode.software.code;
+    }
+    progress.complete('App bundle ready → ${res.outputDir}');
+
+    final runnable = RunnableBundle();
+    for (final r in built) {
+      final binary = _artifactFor(r.buildDir, target.package?.bin);
+      if (binary == null) {
+        _logger.err(
+          '  ${r.backend ?? ""}: no embedder binary in ${r.buildDir} '
+          '(set cross.package.bin)',
+        );
+        return ExitCode.software.code;
+      }
+      final multi = built.length > 1 && r.backend != null;
+      final outDir = Directory(
+        p.join(buildRoot.path, multi ? 'runnable-${r.backend}' : 'runnable'),
+      );
+      if (outDir.existsSync()) outDir.deleteSync(recursive: true);
+      await _copyTree(appBundle, outDir);
+      try {
+        final bin = await runnable.install(binary, outDir);
+        _logger.info(
+          '  ${r.backend ?? ""}: runnable → ${outDir.path}  '
+          '(run: ./${p.basename(bin.path)} --b=.)',
+        );
+        if (tar) {
+          final archive = await runnable.tar(outDir);
+          _logger.info('  ${r.backend ?? ""}: ${archive.path}');
+        }
+      } on RunnableBundleException catch (e) {
+        _logger.err('  ${r.backend ?? ""}: ${e.message}');
+        return ExitCode.software.code;
+      }
+    }
+    return ExitCode.success.code;
+  }
+
+  /// Recursively copy the contents of [src] into [dst] (preserving symlinks +
+  /// mode), via `cp -a`.
+  Future<void> _copyTree(Directory src, Directory dst) async {
+    dst.createSync(recursive: true);
+    final r = await Process.run('cp', [
+      '-a',
+      '.',
+      dst.path,
+    ], workingDirectory: src.path);
+    if (r.exitCode != 0) {
+      throw RunnableBundleException('copy failed: ${r.stderr}');
+    }
   }
 
   /// Package each successfully-built backend binary into a `.deb` under
