@@ -11,6 +11,7 @@ import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_provider.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/cross/deb_packager.dart';
+import 'package:emb_cli/src/cross/deployer.dart';
 import 'package:emb_cli/src/cross/local_cross_provider.dart';
 import 'package:emb_cli/src/cross/overlay_builder.dart';
 import 'package:emb_cli/src/cross/runnable_bundle.dart';
@@ -124,6 +125,22 @@ class CrossCommand extends Command<int> {
       ..addFlag(
         'tar',
         help: 'Also produce a .tar.gz of each runnable bundle.',
+        negatable: false,
+      )
+      ..addOption(
+        'deploy',
+        help:
+            'With --app: rsync each runnable bundle to <user@host> over SSH '
+            '(SSH port/opts reused from cross.sysroot when device-sourced).',
+      )
+      ..addOption(
+        'deploy-dir',
+        defaultsTo: 'ivi-homescreen',
+        help: 'Remote destination dir for --deploy.',
+      )
+      ..addFlag(
+        'run',
+        help: 'After --deploy, run the bundle on the target over SSH.',
         negatable: false,
       );
   }
@@ -300,6 +317,9 @@ class CrossCommand extends Command<int> {
         appPath: args['app'] as String?,
         mode: args['mode'] as String,
         tar: args['tar'] == true,
+        deployHost: args['deploy'] as String?,
+        deployDir: args['deploy-dir'] as String,
+        run: args['run'] == true,
       );
     }
     return ExitCode.success.code;
@@ -363,6 +383,9 @@ class CrossCommand extends Command<int> {
     String? appPath,
     String mode = 'release',
     bool tar = false,
+    String? deployHost,
+    String deployDir = 'ivi-homescreen',
+    bool run = false,
   }) async {
     final source =
         FileSystemEntity.typeSync(inputPath) == FileSystemEntityType.file
@@ -435,6 +458,10 @@ class CrossCommand extends Command<int> {
     final built = results.where((r) => r.success).toList();
 
     // Assemble a runnable bundle (embedder + engine + assets + libapp).
+    if (deployHost != null && appPath == null) {
+      _logger.err('--deploy needs --app (no runnable bundle to send).');
+      return ExitCode.usage.code;
+    }
     if (appPath != null) {
       final rc = await _runnable(
         profile,
@@ -446,6 +473,9 @@ class CrossCommand extends Command<int> {
         appPath: appPath,
         mode: mode,
         tar: tar,
+        deployHost: deployHost,
+        deployDir: deployDir,
+        run: run,
       );
       if (rc != ExitCode.success.code) return rc;
     }
@@ -541,6 +571,9 @@ class CrossCommand extends Command<int> {
     required String appPath,
     required String mode,
     required bool tar,
+    String? deployHost,
+    String deployDir = 'ivi-homescreen',
+    bool run = false,
   }) async {
     final arch = EngineArtifacts.engineArch(archOfTriple(profile.targetTriple));
 
@@ -593,12 +626,74 @@ class CrossCommand extends Command<int> {
           final archive = await runnable.tar(outDir);
           _logger.info('  ${r.backend ?? ""}: ${archive.path}');
         }
+        if (deployHost != null) {
+          final dest = multi ? '$deployDir/${r.backend}' : deployDir;
+          final rc = await _deploy(
+            outDir,
+            binName: p.basename(bin.path),
+            host: deployHost,
+            destDir: dest,
+            spec: target.sysroot,
+            // Auto-run only makes sense for a single embedder.
+            run: run && built.length == 1,
+          );
+          if (rc != ExitCode.success.code) return rc;
+        }
       } on RunnableBundleException catch (e) {
         _logger.err('  ${r.backend ?? ""}: ${e.message}');
         return ExitCode.software.code;
       }
     }
     return ExitCode.success.code;
+  }
+
+  /// rsync [outDir] to [host]:[destDir] over SSH, then optionally run the
+  /// embedder there. SSH port/opts come from a device-sourced [spec].
+  Future<int> _deploy(
+    Directory outDir, {
+    required String binName,
+    required String host,
+    required String destDir,
+    required SysrootSpec? spec,
+    required bool run,
+  }) async {
+    final deployer = Deployer();
+    final device = spec?.source == SysrootProvenance.device;
+    final port = device ? spec!.sshPort : 22;
+    final opts = device ? spec!.sshOpts : null;
+
+    final progress = _logger.progress('Deploying → $host:$destDir');
+    final res = await deployer.push(
+      outDir,
+      host: host,
+      destDir: destDir,
+      port: port,
+      opts: opts,
+    );
+    if (!res.success) {
+      progress.fail(res.message ?? 'deploy failed');
+      return ExitCode.software.code;
+    }
+    progress.complete('Deployed → $host:$destDir');
+    final runCmd = './$binName --b=.';
+    if (!run) {
+      _logger.info('  run on target: ssh $host "cd $destDir && $runCmd"');
+      return ExitCode.success.code;
+    }
+    _logger.info('  running on $host …');
+    final argv = deployer.runArgv(
+      host,
+      destDir,
+      runCmd,
+      port: port,
+      opts: opts,
+    );
+    final proc = await Process.start(
+      argv.first,
+      argv.sublist(1),
+      mode: ProcessStartMode.inheritStdio,
+    );
+    return proc.exitCode;
   }
 
   /// Recursively copy the contents of [src] into [dst] (preserving symlinks +
