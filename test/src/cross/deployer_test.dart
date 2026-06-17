@@ -15,7 +15,10 @@ import 'package:test/test.dart';
   run,
   List<List<String>> calls,
 })
-recorder({bool Function(String exe)? failOn}) {
+recorder({
+  bool Function(String exe)? failOn,
+  bool Function(List<String> args)? exitNonZero,
+}) {
   final calls = <List<String>>[];
   Future<ProcessResult> run(
     String exe,
@@ -26,11 +29,17 @@ recorder({bool Function(String exe)? failOn}) {
     bool runInShell = false,
   }) async {
     calls.add([exe, ...args]);
-    return ProcessResult(0, (failOn?.call(exe) ?? false) ? 1 : 0, '', 'boom');
+    final fail =
+        (failOn?.call(exe) ?? false) || (exitNonZero?.call(args) ?? false);
+    return ProcessResult(0, fail ? 1 : 0, '', 'boom');
   }
 
   return (run: run, calls: calls);
 }
+
+/// A recorder whose remote `command -v rsync` probe says rsync is absent.
+bool _isRsyncProbe(List<String> args) =>
+    args.any((a) => a.contains('command -v rsync'));
 
 void main() {
   late Directory tmp;
@@ -49,11 +58,19 @@ void main() {
         opts: '-o StrictHostKeyChecking=no',
       );
       expect(r.success, isTrue);
+      expect(r.method, 'rsync');
 
-      final ssh = rec.calls.firstWhere((c) => c.first == 'ssh');
-      expect(ssh, containsAllInOrder(['ssh', '-p', '2222']));
-      expect(ssh, contains('pi@board'));
-      expect(ssh.last, contains("mkdir -p 'ivi-homescreen'"));
+      // Probes for remote rsync, then mkdirs the remote dir.
+      expect(
+        rec.calls.any((c) => c.first == 'ssh' && _isRsyncProbe(c)),
+        isTrue,
+      );
+      final mkdir = rec.calls.firstWhere(
+        (c) => c.first == 'ssh' && c.last.contains('mkdir -p'),
+      );
+      expect(mkdir, containsAllInOrder(['ssh', '-p', '2222']));
+      expect(mkdir, contains('pi@board'));
+      expect(mkdir.last, contains("mkdir -p 'ivi-homescreen'"));
 
       final rsync = rec.calls.firstWhere((c) => c.first == 'rsync');
       expect(rsync, containsAllInOrder(['-az', '--delete']));
@@ -81,6 +98,24 @@ void main() {
     ).push(tmp, host: 'pi@board', destDir: 'app');
     expect(r.success, isFalse);
     expect(r.message, contains('rsync'));
+  });
+
+  test('falls back to tar-over-ssh when the target has no rsync', () async {
+    // Probe (`command -v rsync`) returns non-zero → no remote rsync.
+    final rec = recorder(exitNonZero: _isRsyncProbe);
+    final r = await Deployer(
+      runProcess: rec.run,
+    ).push(tmp, host: 'pi@board', destDir: 'ivi-homescreen');
+    expect(r.success, isTrue);
+    expect(r.method, 'tar');
+    // No rsync invocation; a single sh -c pipeline (tar | ssh … tar -x).
+    expect(rec.calls.any((c) => c.first == 'rsync'), isFalse);
+    final sh = rec.calls.firstWhere((c) => c.first == 'sh');
+    expect(sh[1], '-c');
+    expect(sh[2], startsWith('tar -czf - -C'));
+    expect(sh[2], contains('| ssh pi@board'));
+    expect(sh[2], contains('mkdir -p "ivi-homescreen"'));
+    expect(sh[2], contains('tar -xzf - -C "ivi-homescreen"'));
   });
 
   test('runArgv builds the remote run command', () {

@@ -4,8 +4,12 @@ import 'package:emb_cli/src/cross/process_runner.dart';
 
 /// Outcome of a deploy push.
 class DeployResult {
-  const DeployResult({required this.success, this.message});
+  const DeployResult({required this.success, this.method, this.message});
   final bool success;
+
+  /// Transport used: `rsync` or `tar` (the fallback when the target has no
+  /// rsync). Null on failure before a method was chosen.
+  final String? method;
   final String? message;
 }
 
@@ -18,8 +22,10 @@ class Deployer {
 
   final ProcessRunner _run;
 
-  /// rsync `<localDir>/` → `<host>:<destDir>/` — archive, compress,
-  /// delete-extraneous. [host] is `user@host`; [port] / [opts] tune SSH.
+  /// Copy `<localDir>/` → `<host>:<destDir>/`. Uses rsync (archive, compress,
+  /// delete-extraneous) when the target has it; otherwise falls back to a
+  /// tar-over-SSH stream that needs only `tar` + a shell on the board. [host]
+  /// is `user@host`; [port] / [opts] tune SSH.
   Future<DeployResult> push(
     Directory localDir, {
     required String host,
@@ -27,6 +33,28 @@ class Deployer {
     int port = 22,
     String? opts,
   }) async {
+    if (await _hasRemoteRsync(host, port, opts)) {
+      return _pushRsync(localDir, host, destDir, port, opts);
+    }
+    return _pushTar(localDir, host, destDir, port, opts);
+  }
+
+  Future<bool> _hasRemoteRsync(String host, int port, String? opts) async {
+    final r = await _run('ssh', [
+      ..._sshArgs(port, opts),
+      host,
+      'command -v rsync >/dev/null 2>&1',
+    ]);
+    return r.exitCode == 0;
+  }
+
+  Future<DeployResult> _pushRsync(
+    Directory localDir,
+    String host,
+    String destDir,
+    int port,
+    String? opts,
+  ) async {
     // rsync won't create the remote parent dirs; do it first.
     final mk = await _run('ssh', [
       ..._sshArgs(port, opts),
@@ -46,7 +74,29 @@ class Deployer {
     ]);
     return DeployResult(
       success: r.exitCode == 0,
+      method: 'rsync',
       message: r.exitCode == 0 ? null : 'rsync: ${r.stderr}',
+    );
+  }
+
+  /// `tar -czf - -C <local> . | ssh <host> 'mkdir -p <dest> && tar -xzf - -C
+  /// <dest>'` — works on a board with no rsync (just tar + a shell).
+  Future<DeployResult> _pushTar(
+    Directory localDir,
+    String host,
+    String destDir,
+    int port,
+    String? opts,
+  ) async {
+    final ssh = ['ssh', ..._sshArgs(port, opts), host].join(' ');
+    final remote = 'mkdir -p "$destDir" && tar -xzf - -C "$destDir"';
+    final pipeline =
+        'tar -czf - -C ${_shQuote(localDir.path)} . | $ssh ${_shQuote(remote)}';
+    final r = await _run('sh', ['-c', pipeline]);
+    return DeployResult(
+      success: r.exitCode == 0,
+      method: 'tar',
+      message: r.exitCode == 0 ? null : 'tar over ssh: ${r.stderr}',
     );
   }
 
