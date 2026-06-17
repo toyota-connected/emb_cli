@@ -370,7 +370,7 @@ emb cross <package-dir|manifest.yaml> [options]
 | `--app <dir>` | — | With `--build`: also build this Flutter app for the target and assemble a **runnable bundle** (embedder + engine + flutter_assets + icudtl + libapp), runnable as `./homescreen --b=.`. |
 | `-m`, `--mode <mode>` | `release` | Runtime mode for the `--app` bundle (`debug`/`profile`/`release`). |
 | `--tar` | off | Also produce a `.tar.gz` of each runnable bundle. |
-| `--deploy <user@host>` | — | With `--app`: rsync each runnable bundle to the board over SSH (port/opts reused from `cross.sysroot` when device-sourced). |
+| `--deploy <user@host>` | — | With `--app`: send each runnable bundle to the board over SSH — rsync when the target has it, else a tar-over-SSH fallback (port/opts reused from `cross.sysroot` when device-sourced). |
 | `--deploy-dir <path>` | `ivi-homescreen` | Remote destination dir for `--deploy`. |
 | `--run` | off | After `--deploy`, run the bundle on the target over SSH (`./homescreen --b=.`). |
 | `--clean` | off | Remove this target's build + overlay dirs (keeps the toolchain + sysroot), then exit. |

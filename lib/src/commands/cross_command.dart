@@ -674,7 +674,7 @@ class CrossCommand extends Command<int> {
       progress.fail(res.message ?? 'deploy failed');
       return ExitCode.software.code;
     }
-    progress.complete('Deployed → $host:$destDir');
+    progress.complete('Deployed → $host:$destDir (via ${res.method})');
     final runCmd = './$binName --b=.';
     if (!run) {
       _logger.info('  run on target: ssh $host "cd $destDir && $runCmd"');
