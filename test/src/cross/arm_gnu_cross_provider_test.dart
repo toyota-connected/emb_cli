@@ -63,6 +63,40 @@ void main() {
     return r;
   }
 
+  test('resolve restores usr-merge symlinks after staging', () async {
+    // The post-extraction/post-dpkg-deb-x state: /lib is a real dir while the
+    // real libs live under usr/lib/<multiarch>. resolve() must normalize it so
+    // a configure that probes the sysroot (meson's find_library('m')) works.
+    final t = CrossTarget.fromMap({
+      'provider': 'arm-gnu',
+      'toolchain_version': '12.3.rel1',
+      'image_url': 'https://example/x.img.xz',
+    });
+    prestage('12.3.rel1', t);
+    final sr = p.join(
+      tmp.path,
+      '.config',
+      'flutter_workspace',
+      'cross-$_triple-${sysrootKey(t)}',
+      'sysroot',
+    );
+    File(p.join(sr, 'usr', 'lib', 'aarch64-linux-gnu', 'libc.so.6'))
+      ..createSync(recursive: true)
+      ..writeAsStringSync('');
+    File(p.join(sr, 'lib', 'systemd', 'x'))
+      ..createSync(recursive: true)
+      ..writeAsStringSync('');
+
+    final r = await resolveTarget(t);
+
+    expect(r.ok, isTrue, reason: r.message);
+    expect(FileSystemEntity.isLinkSync(p.join(sr, 'lib')), isTrue);
+    expect(
+      File(p.join(sr, 'lib', 'aarch64-linux-gnu', 'libc.so.6')).existsSync(),
+      isTrue,
+    );
+  });
+
   test('pinned: resolves a pre-staged toolchain + sysroot', () async {
     final t = CrossTarget.fromMap({
       'provider': 'arm-gnu',
