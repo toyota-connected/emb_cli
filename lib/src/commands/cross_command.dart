@@ -634,6 +634,7 @@ class CrossCommand extends Command<int> {
             host: deployHost,
             destDir: dest,
             spec: target.sysroot,
+            bundleArch: archOfTriple(profile.targetTriple),
             // Auto-run only makes sense for a single embedder.
             run: run && built.length == 1,
           );
@@ -655,12 +656,25 @@ class CrossCommand extends Command<int> {
     required String host,
     required String destDir,
     required SysrootSpec? spec,
+    required String bundleArch,
     required bool run,
   }) async {
     final deployer = Deployer();
     final device = spec?.source == SysrootProvenance.device;
     final port = device ? spec!.sshPort : 22;
     final opts = device ? spec!.sshOpts : null;
+
+    // Catch the common footgun: pushing a wrong-arch bundle (e.g. a native
+    // `--target local` build) to the board, which only fails at run time with
+    // a cryptic `Exec format error`.
+    final boardArch = await deployer.remoteArch(host, port: port, opts: opts);
+    if (boardArch != null && !archMatches(bundleArch, boardArch)) {
+      _logger.warn(
+        'bundle arch is $bundleArch but $host reports $boardArch — '
+        'the embedder will not run there. Re-build with a matching '
+        '--target (cross sysroot) for this board.',
+      );
+    }
 
     final progress = _logger.progress('Deploying → $host:$destDir');
     final res = await deployer.push(

@@ -118,6 +118,44 @@ void main() {
     expect(sh[2], contains('tar -xzf - -C "ivi-homescreen"'));
   });
 
+  test('remoteArch queries uname -m over the ssh transport', () async {
+    final calls = <List<String>>[];
+    Future<ProcessResult> run(
+      String exe,
+      List<String> args, {
+      String? workingDirectory,
+      Map<String, String>? environment,
+      bool includeParentEnvironment = true,
+      bool runInShell = false,
+    }) async {
+      calls.add([exe, ...args]);
+      return ProcessResult(0, 0, 'aarch64\n', '');
+    }
+
+    final arch = await Deployer(
+      runProcess: run,
+    ).remoteArch('pi@board', port: 2222);
+    expect(arch, 'aarch64');
+    final ssh = calls.single;
+    expect(ssh, containsAllInOrder(['ssh', '-p', '2222', 'pi@board']));
+    expect(ssh.last, 'uname -m');
+  });
+
+  test('remoteArch returns null when the host is unreachable', () async {
+    final rec = recorder(failOn: (exe) => exe == 'ssh');
+    final arch = await Deployer(runProcess: rec.run).remoteArch('pi@board');
+    expect(arch, isNull);
+  });
+
+  test('archMatches tolerates arch aliases but rejects real mismatches', () {
+    expect(archMatches('aarch64', 'aarch64'), isTrue);
+    expect(archMatches('arm64', 'aarch64'), isTrue);
+    expect(archMatches('x86_64', 'amd64'), isTrue);
+    expect(archMatches('armv7hf', 'armv7l'), isTrue);
+    expect(archMatches('x86_64', 'aarch64'), isFalse);
+    expect(archMatches('aarch64', 'x86_64'), isFalse);
+  });
+
   test('runArgv builds the remote run command', () {
     final argv = Deployer().runArgv(
       'pi@board',
