@@ -54,6 +54,13 @@ class EmbCliCommandRunner extends CompletionCommandRunner<int> {
   @override
   void printUsage() => _logger.info(usage);
 
+  // Don't write shell-completion files on every invocation. The auto-installer
+  // targets $XDG_CONFIG_HOME, which a workspace setup_env.sh can point into the
+  // build tree (a fragile, sometimes non-directory path) — failing noisily on
+  // an unrelated command. Users opt in with `emb install-completion-files`.
+  @override
+  bool get enableAutoInstall => false;
+
   final Logger _logger;
   final PubUpdater _pubUpdater;
 
