@@ -43,6 +43,12 @@ void main() {
       );
     });
 
+    test('does not auto-install shell completion', () {
+      // Auto-install writes to $XDG_CONFIG_HOME and can fail noisily on an
+      // unrelated command; users opt in explicitly instead.
+      expect(commandRunner.enableAutoInstall, isFalse);
+    });
+
     test('shows update message when newer version exists', () async {
       when(
         () => pubUpdater.getLatestVersion(any()),
