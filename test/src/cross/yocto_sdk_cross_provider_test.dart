@@ -34,6 +34,7 @@ export SDKTARGETSYSROOT="$tgt"
 export OECORE_NATIVE_SYSROOT="$nat"
 export OECORE_TARGET_ARCH="aarch64"
 export OECORE_TARGET_OS="linux"
+export OECORE_SDK_VERSION="4.0.10"
 export CC="aarch64-agl-linux-gcc -mcpu=cortex-a57 --sysroot=\$SDKTARGETSYSROOT"
 export CXX="aarch64-agl-linux-g++ -mcpu=cortex-a57 --sysroot=\$SDKTARGETSYSROOT"
 export AR="aarch64-agl-linux-ar"
@@ -73,6 +74,32 @@ export CMAKE_TOOLCHAIN_FILE="\$OECORE_NATIVE_SYSROOT/usr/share/cmake/OEToolchain
     // The full OE CC (with --sysroot) is preserved verbatim in the build env.
     expect(pf.buildEnv()['CC'], contains('--sysroot='));
     expect(pf.buildEnv()['SDKTARGETSYSROOT'], pf.targetSysroot);
+  });
+
+  test('captures a lock entry (sdk version, triple, keys)', () async {
+    final sdk = fixtureSdk();
+    final provider = YoctoSdkCrossProvider(
+      CrossTarget.fromMap({
+        'provider': 'yocto-sdk',
+        'sdk_path': sdk.path,
+        'triple': 'aarch64-agl-linux',
+      }),
+      workspace: Workspace(tmp),
+      host: _host,
+    );
+    final r = await provider.resolve();
+    provider.close();
+
+    expect(r.ok, isTrue, reason: r.message);
+    final lock = r.lockEntry!;
+    expect(lock.provider, 'yocto-sdk');
+    expect(lock.triple, 'aarch64-agl-linux');
+    // Pinned from OECORE_SDK_VERSION — verifiable without any download.
+    expect(lock.toolchainVersion, '4.0.10');
+    expect(lock.sysrootKey, isNotEmpty);
+    expect(lock.buildKey, isNotEmpty);
+    // A local sdk_path install fetches nothing → no artifact to sha.
+    expect(lock.artifacts, isEmpty);
   });
 
   test('resolves an explicit sdk_env_setup', () async {
