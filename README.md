@@ -215,17 +215,20 @@ emb sync --config ../configs -j 8
 
 ### `emb flutter`
 
-Install the Flutter SDK into `<workspace>/flutter`.
+Install the Flutter SDK into `<workspace>/flutter`, then emit
+`<workspace>/setup_env.sh` so `FLUTTER_WORKSPACE` (and the SDK's Flutter/Dart on
+`PATH`) match the workspace just provisioned — i.e. the `-w` target.
 
 | Option | Default | Description |
 |---|---|---|
-| `-w`, `--workspace <dir>` | resolution order | Workspace root. |
+| `-w`, `--workspace <dir>` | resolution order | Workspace root. Also becomes `FLUTTER_WORKSPACE` in the emitted `setup_env.sh`. |
 | `--flutter-version <ref>` | `globals.json` `flutter_version` | Version/tag/branch to check out. |
 | `-c`, `--config <dir>` | `configs` | Directory to read `globals.json` from. |
 | `--configure` | off | Run `flutter config` (desktop + custom devices) and `flutter doctor` after install. |
 
 ```sh
-emb flutter --flutter-version 3.44.2 --configure
+emb flutter -w /tmp/ws1 --flutter-version 3.44.2
+. /tmp/ws1/setup_env.sh                   # FLUTTER_WORKSPACE=/tmp/ws1
 ```
 
 ---
@@ -462,17 +465,25 @@ emb cross . --target rpi5 --build
 
 ### `emb env`
 
-Write `setup_env.sh` (`PATH` for Flutter/Dart, `FLUTTER_WORKSPACE`, `PUB_CACHE`,
-`XDG_CONFIG_HOME`, the engine version, …).
+(Re)generate or print `setup_env.sh` (`PATH` for Flutter/Dart,
+`FLUTTER_WORKSPACE`, `PUB_CACHE`, `XDG_CONFIG_HOME`, the engine version, …).
+
+`emb setup` and `emb flutter` already emit this file, so the standalone command
+is for what they don't cover: regenerating after the workspace has **moved**
+(the baked-in `FLUTTER_WORKSPACE` is absolute), previewing the env on stdout, or
+writing it to a custom path. It has no side effects beyond the one file — it
+never clones or installs, and warns if `<workspace>/flutter` is absent (the env
+would point at a missing SDK; run `emb flutter -w <root>` first).
 
 | Option | Default | Description |
 |---|---|---|
-| `-w`, `--workspace <dir>` | resolution order | Workspace root. |
+| `-w`, `--workspace <dir>` | resolution order | Workspace root (becomes `FLUTTER_WORKSPACE`). |
 | `-o`, `--output <path>` | `<workspace>/setup_env.sh` | Output file path. |
 | `--print` | off | Print to stdout instead of writing a file. |
 
 ```sh
-emb env                 # write <workspace>/setup_env.sh
+emb env                 # (re)write <workspace>/setup_env.sh
+emb env -w /tmp/ws1     # regenerate after moving the workspace
 emb env --print         # preview on stdout
 ```
 

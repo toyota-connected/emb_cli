@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:args/command_runner.dart';
+import 'package:emb_cli/src/env/env_script.dart';
 import 'package:emb_cli/src/flutter/flutter_sdk.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
@@ -103,6 +104,19 @@ class FlutterCommand extends Command<int> {
         return ExitCode.software.code;
       }
     }
+
+    // Emit setup_env.sh into the resolved workspace so FLUTTER_WORKSPACE (and
+    // the SDK's Flutter/Dart on PATH) match where the SDK was just installed —
+    // i.e. the -w target, not the cwd a later `emb env` would default to.
+    final envFile = File(p.join(workspace.root.path, 'setup_env.sh'))
+      ..writeAsStringSync(
+        generateSetupEnv(
+          workspace: workspace,
+          host: host,
+          engineVersion: result.engineCommit,
+        ),
+      );
+    _logger.info('Source the env: . ${p.relative(envFile.path)}');
     return ExitCode.success.code;
   }
 
