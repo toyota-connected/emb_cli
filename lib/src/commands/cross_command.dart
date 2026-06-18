@@ -18,7 +18,9 @@ import 'package:emb_cli/src/cross/overlay_builder.dart';
 import 'package:emb_cli/src/cross/runnable_bundle.dart';
 import 'package:emb_cli/src/engine/engine_artifacts.dart';
 import 'package:emb_cli/src/host/host_info.dart';
+import 'package:emb_cli/src/host/install_hint.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
+import 'package:emb_cli/src/pkg/host_provisioner.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
 import 'package:mason_logger/mason_logger.dart';
 import 'package:path/path.dart' as p;
@@ -279,6 +281,7 @@ class CrossCommand extends Command<int> {
       _logger.err(
         'Missing host tools for ${provider.name}: ${missing.join(", ")}',
       );
+      await _logInstallHint(host, missing);
       return ExitCode.unavailable.code;
     }
 
@@ -834,6 +837,7 @@ class CrossCommand extends Command<int> {
         '  preflight     : '
         '${missing.isEmpty ? "ok" : "MISSING ${missing.join(", ")}"}',
       );
+    if (missing.isNotEmpty) await _logInstallHint(host, missing);
     switch (target.provider) {
       case CrossProviderKind.armGnu:
         final tc = target.versionPolicy == ToolchainVersionPolicy.pinned
@@ -895,5 +899,42 @@ class CrossCommand extends Command<int> {
       if (r.exitCode != 0) missing.add(t);
     }
     return missing;
+  }
+
+  /// Log how to install the missing preflight [tools].
+  ///
+  /// Routes through the existing [HostProvisioner] first — it resolves real
+  /// package names from the running backend (PackageKit `WhatProvides`, brew,
+  /// …), so there is no second distro→package map to drift. Only when no
+  /// backend is reachable (no daemon / native bridge, or a platform backend
+  /// not compiled into this build) does it fall back to [staticInstallHint].
+  Future<void> _logInstallHint(HostInfo host, List<String> tools) async {
+    HostProvisioner? provisioner;
+    try {
+      provisioner = HostProvisioner.forHost(host);
+      // forHost throws UnsupportedError when the platform backend isn't
+      // compiled in (default macOS/Windows) — fall back to the static hint.
+      // ignore: avoid_catching_errors
+    } on UnsupportedError {
+      provisioner = null;
+    }
+    if (provisioner != null) {
+      try {
+        if (await provisioner.isAvailable()) {
+          final plan = await provisioner.simulate(tools.toSet());
+          final pkgs = [...plan.toInstall, ...plan.unresolved];
+          if (pkgs.isNotEmpty) {
+            _logger.info('Install via ${provisioner.name}: ${pkgs.join(", ")}');
+            return;
+          }
+        }
+      } on Exception {
+        // Any provisioner error → fall back to the static hint below.
+      } finally {
+        await provisioner.dispose();
+      }
+    }
+    final hint = staticInstallHint(host, tools);
+    if (hint != null) _logger.info('Install with: $hint');
   }
 }
