@@ -959,6 +959,9 @@ class CrossCommand extends Command<int> {
         _logger.info('${had ? "Updated" : "Wrote"} emb.lock ($target).');
         return true;
       case LockAction.verified:
+        // Confirm a real match; stay quiet when --no-verify skipped the check
+        // (reconcileLock also reports `verified` in that case).
+        if (verify) _logger.success('emb.lock verified ($target).');
         return true;
       case LockAction.drifted:
         _logger.err('emb.lock drift for "$target":');
