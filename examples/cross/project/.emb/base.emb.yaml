@@ -1,0 +1,34 @@
+# Shared base for every target under this .emb/ directory.
+#
+# `emb cross examples/cross/project --list-targets` unions the per-board files
+# below; each one deep-merges over this base, so values declared here (provider
+# defaults, defines, the sysroot dev-package floor, package metadata) apply
+# everywhere unless a board overrides them. The native `local` build uses this
+# block directly.
+id: ivi-homescreen
+type: app
+supported_archs: [arm64]
+supported_host_types: [ubuntu, fedora]
+
+cross:
+  provider: arm-gnu
+  toolchain_version: 12.3.rel1     # bookworm → gcc 12 / glibc 2.36
+  sysroot:
+    partition: 2
+    dev_packages:
+      - libdrm-dev
+      - libgbm-dev
+      - libinput-dev
+      - libegl-dev
+      - libgles2-mesa-dev
+      - libwayland-dev
+      - libxkbcommon-dev
+  defines:
+    DISABLE_PLUGINS: 'ON'
+  # Backends are board-specific (a board's set replaces the base's, it does not
+  # union), so they live in the per-board files, not here.
+  package:
+    name: ivi-homescreen
+    version: 1.0.0
+    bin: shell/homescreen
+    install_dir: /usr/bin

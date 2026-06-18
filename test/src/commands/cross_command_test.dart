@@ -150,6 +150,75 @@ void main() {
     );
   });
 
+  // A project whose manifests live under a `.emb/` directory: a shared base, a
+  // flat per-board file, and a family file grouping image-sharing variants.
+  Directory embProject(String name) {
+    final emb = Directory(p.join(tmp.path, name, '.emb'))
+      ..createSync(recursive: true);
+    File(p.join(emb.path, 'base.emb.yaml')).writeAsStringSync(
+      'id: ivi\ncross:\n  provider: arm-gnu\n'
+      '  toolchain_version: 12.3.rel1\n',
+    );
+    File(p.join(emb.path, 'imx93.emb.yaml')).writeAsStringSync(
+      'platform: {name: imx93-evk, description: NXP i.MX93}\n'
+      'cross:\n  image_url: https://x/imx93.img.xz\n',
+    );
+    File(p.join(emb.path, 'rpi.emb.yaml')).writeAsStringSync(
+      'platform: {name: raspberry-pi}\n'
+      'cross:\n  targets:\n'
+      '    rpi5: { image_url: https://x/raspios.img.xz, '
+      'cpu_flags: [-mcpu=cortex-a76] }\n'
+      '    rpi4: { image_url: https://x/raspios.img.xz, '
+      'cpu_flags: [-mcpu=cortex-a72] }\n',
+    );
+    return Directory(p.join(tmp.path, name));
+  }
+
+  test('.emb/ project lists the union of flat + family targets', () async {
+    final proj = embProject('p1');
+    expect(
+      await run(['cross', '--list-targets', proj.path]),
+      ExitCode.success.code,
+    );
+  });
+
+  test('.emb/ flat-file target inherits the shared base + plans', () async {
+    final proj = embProject('p2');
+    // imx93-evk only sets image_url; provider comes from base.emb.yaml.
+    expect(
+      await run(['cross', '--dry-run', '--target', 'imx93-evk', proj.path]),
+      ExitCode.success.code,
+    );
+  });
+
+  test('.emb/ family variant inherits the base provider + plans', () async {
+    final proj = embProject('p3');
+    expect(
+      await run(['cross', '--dry-run', '--target', 'rpi5', proj.path]),
+      ExitCode.success.code,
+    );
+  });
+
+  test('.emb/ with no --target defaults to the native local build', () async {
+    final proj = embProject('p4');
+    expect(await run(['cross', '--dry-run', proj.path]), ExitCode.success.code);
+  });
+
+  test('.emb/ duplicate target names across files is a usage error', () async {
+    final emb = Directory(p.join(tmp.path, 'dup', '.emb'))
+      ..createSync(recursive: true);
+    for (final f in ['a', 'b']) {
+      File(p.join(emb.path, '$f.emb.yaml')).writeAsStringSync(
+        'platform: {name: board}\n'
+        'cross: {provider: arm-gnu, toolchain_version: 12.3.rel1}\n',
+      );
+    }
+    expect(
+      await run(['cross', '--list-targets', p.join(tmp.path, 'dup')]),
+      ExitCode.usage.code,
+    );
+  });
+
   test(
     '--backend with an unknown name is a usage error (no download)',
     () async {
