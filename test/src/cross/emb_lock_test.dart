@@ -7,6 +7,7 @@ import 'package:test/test.dart';
 LockedTarget _armGnu({
   String version = '12.3.rel1',
   String? codename,
+  String? compilerVersion,
   String tcSha = 'tc-sha',
   String imgSha = 'img-sha',
   String sysrootKey = 'key1',
@@ -16,6 +17,7 @@ LockedTarget _armGnu({
   triple: 'aarch64-none-linux-gnu',
   toolchainVersion: version,
   codename: codename,
+  compilerVersion: compilerVersion,
   sysrootKey: sysrootKey,
   buildKey: buildKey,
   artifacts: [
@@ -107,6 +109,18 @@ void main() {
     test('a drifted derived toolchain version is reported', () {
       final drift = _armGnu().driftAgainst(_armGnu(version: '13.2.rel1'));
       expect(drift.single, contains('toolchain_version'));
+    });
+
+    test('a drifted compiler version is reported and round-trips', () {
+      final locked = _armGnu(compilerVersion: '12.3.0');
+      expect(
+        EmbLock.parse(
+          EmbLock().withTarget('t', locked).encode(),
+        ).targets['t']!.compilerVersion,
+        '12.3.0',
+      );
+      final drift = locked.driftAgainst(_armGnu(compilerVersion: '13.2.0'));
+      expect(drift.single, contains('compiler_version'));
     });
 
     test('changed input keys point at --update-lock', () {

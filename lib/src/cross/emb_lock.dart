@@ -70,6 +70,7 @@ class LockedTarget {
     required this.sysrootKey,
     required this.buildKey,
     this.toolchainVersion,
+    this.compilerVersion,
     this.codename,
     this.artifacts = const [],
   });
@@ -80,6 +81,7 @@ class LockedTarget {
     sysrootKey: (map['sysroot_key'] ?? '').toString(),
     buildKey: (map['build_key'] ?? '').toString(),
     toolchainVersion: map['toolchain_version']?.toString(),
+    compilerVersion: map['compiler_version']?.toString(),
     codename: map['codename']?.toString(),
     artifacts: (map['artifacts'] as List<dynamic>? ?? const [])
         .whereType<Map<dynamic, dynamic>>()
@@ -92,6 +94,11 @@ class LockedTarget {
   final String sysrootKey;
   final String buildKey;
   final String? toolchainVersion;
+
+  /// The cross compiler version (e.g. gcc `-dumpfullversion`), when probed.
+  /// Distinguishes toolchains that share a recipe/SDK version string but ship
+  /// a different gcc (e.g. two Yocto releases building the same recipe PV).
+  final String? compilerVersion;
   final String? codename;
   final List<LockedArtifact> artifacts;
 
@@ -122,6 +129,12 @@ class LockedTarget {
         'resolved ${resolved.toolchainVersion}',
       );
     }
+    if (resolved.compilerVersion != compilerVersion) {
+      problems.add(
+        'compiler_version: locked $compilerVersion, '
+        'resolved ${resolved.compilerVersion}',
+      );
+    }
     if (resolved.sysrootKey != sysrootKey || resolved.buildKey != buildKey) {
       problems.add(
         'inputs changed (manifest edited): re-run with --update-lock',
@@ -148,6 +161,7 @@ class LockedTarget {
     'provider': provider,
     'triple': triple,
     if (toolchainVersion != null) 'toolchain_version': toolchainVersion,
+    if (compilerVersion != null) 'compiler_version': compilerVersion,
     if (codename != null) 'codename': codename,
     'sysroot_key': sysrootKey,
     'build_key': buildKey,
@@ -236,6 +250,7 @@ class EmbLock {
     field('provider', t.provider);
     field('triple', t.triple);
     field('toolchain_version', t.toolchainVersion);
+    field('compiler_version', t.compilerVersion);
     field('codename', t.codename);
     field('sysroot_key', t.sysrootKey);
     field('build_key', t.buildKey);

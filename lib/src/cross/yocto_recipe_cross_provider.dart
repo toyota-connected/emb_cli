@@ -84,6 +84,7 @@ class YoctoRecipeCrossProvider implements CrossProvider {
     if (!gcc.existsSync()) {
       return CrossResolveResult.failed('cross gcc not found: ${gcc.path}');
     }
+    final compilerVersion = await _gccVersion(gcc);
     final egl = File(p.join(sysroot, 'usr', 'include', 'EGL', 'egl.h'));
     if (!egl.existsSync()) {
       return CrossResolveResult.failed(
@@ -141,6 +142,10 @@ class YoctoRecipeCrossProvider implements CrossProvider {
       // here, so there is no artifact to sha; this machine-independent version
       // catches an OE tree rebuilt to a newer recipe.
       toolchainVersion: p.basename(versionDir.path),
+      // The native gcc version distinguishes toolchains that share a recipe PV
+      // but ship a different compiler (e.g. two Yocto releases) — a stronger
+      // pin than the recipe version alone.
+      compilerVersion: compilerVersion,
       sysrootKey: sysrootKey(target),
       buildKey: buildKey(target),
     );
@@ -150,7 +155,46 @@ class YoctoRecipeCrossProvider implements CrossProvider {
   Directory? _newestChild(Directory parent) {
     final dirs =
         parent.listSync(followLinks: false).whereType<Directory>().toList()
-          ..sort((a, b) => p.basename(a.path).compareTo(p.basename(b.path)));
+          ..sort(
+            (a, b) => _compareVersions(p.basename(a.path), p.basename(b.path)),
+          );
     return dirs.isEmpty ? null : dirs.last;
+  }
+
+  /// Compare two OE version-dir names (e.g. `1.0-r0`, `2.1.0+gitAUTOINC+...`)
+  /// numerically, so `10.0` sorts after `9.0` (a plain string compare would
+  /// pick `9.0`). Compares the numeric runs component-wise, falling back to a
+  /// string compare when those are equal.
+  static int _compareVersions(String a, String b) {
+    final na = _numericParts(a);
+    final nb = _numericParts(b);
+    for (var i = 0; i < na.length && i < nb.length; i++) {
+      final c = na[i].compareTo(nb[i]);
+      if (c != 0) return c;
+    }
+    final byCount = na.length.compareTo(nb.length);
+    return byCount != 0 ? byCount : a.compareTo(b);
+  }
+
+  static List<int> _numericParts(String s) => RegExp(
+    r'\d+',
+  ).allMatches(s).map((m) => int.tryParse(m.group(0)!) ?? 0).toList();
+
+  /// The cross compiler's version via `-dumpfullversion` (falling back to
+  /// `-dumpversion`), or null if the probe fails — a version probe must never
+  /// fail resolution.
+  Future<String?> _gccVersion(File gcc) async {
+    for (final flag in const ['-dumpfullversion', '-dumpversion']) {
+      try {
+        final r = await Process.run(gcc.path, [flag]);
+        if (r.exitCode == 0) {
+          final out = (r.stdout as String).trim();
+          if (out.isNotEmpty) return out;
+        }
+      } on ProcessException {
+        // Not runnable (e.g. a stub) — fall through to null.
+      }
+    }
+    return null;
   }
 }
