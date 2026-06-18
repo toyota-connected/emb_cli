@@ -1,9 +1,12 @@
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:emb_cli/src/cross/cross_keys.dart';
 import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_provider.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
+import 'package:emb_cli/src/cross/emb_lock.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
 import 'package:path/path.dart' as p;
@@ -35,6 +38,11 @@ class YoctoSdkCrossProvider implements CrossProvider {
   final HostInfo host;
   final HttpClient _http;
 
+  /// Artifacts this resolve (re)materialized, recorded for `emb.lock` — the
+  /// downloaded installer when sdk_url is used. A local sdk_path install
+  /// fetches nothing, so this stays empty (the SDK version still pins it).
+  final List<LockedArtifact> _artifacts = [];
+
   @override
   String get name => 'yocto-sdk';
 
@@ -56,6 +64,7 @@ class YoctoSdkCrossProvider implements CrossProvider {
   static const _nativeSysroot = 'OECORE_NATIVE_SYSROOT';
   static const _targetArch = 'OECORE_TARGET_ARCH';
   static const _targetOs = 'OECORE_TARGET_OS';
+  static const _sdkVersion = 'OECORE_SDK_VERSION';
 
   @override
   Future<CrossResolveResult> resolve() async {
@@ -121,7 +130,17 @@ class YoctoSdkCrossProvider implements CrossProvider {
       // SDK's cmake/meson/ninja wrappers ahead of any host copies.
       extraEnv: env,
     );
-    return CrossResolveResult.ok(profile);
+    final lockEntry = LockedTarget(
+      provider: name,
+      triple: triple,
+      // The OE SDK version — pins a local sdk_path install (no artifact to
+      // sha), and catches a version change under an unchanged sdk_url too.
+      toolchainVersion: env[_sdkVersion],
+      sysrootKey: sysrootKey(target),
+      buildKey: buildKey(target),
+      artifacts: _artifacts,
+    );
+    return CrossResolveResult.ok(profile, lockEntry: lockEntry);
   }
 
   /// Resolve the `environment-setup-*` script from whichever SDK location is
@@ -181,6 +200,15 @@ class YoctoSdkCrossProvider implements CrossProvider {
     if (!installer.existsSync()) {
       if (!await _download(url, installer)) return null;
     }
+    // Reached only when env-setup wasn't found above (a real (re)install), so
+    // this records the installer's sha exactly when it is materialized.
+    _artifacts.add(
+      LockedArtifact(
+        kind: ArtifactKind.sdk,
+        url: url,
+        sha256: await _sha256OfFile(installer),
+      ),
+    );
     await Process.run('chmod', ['+x', installer.path]);
 
     // -y: non-interactive; -d: target dir. The installer relocates the SDK's
@@ -193,6 +221,20 @@ class YoctoSdkCrossProvider implements CrossProvider {
     ]);
     if (run.exitCode != 0) return null;
     return prefix;
+  }
+
+  /// Streaming sha256 of [f] — chunked so a large installer is never held in
+  /// memory. Used to pin the fetched SDK installer in `emb.lock`.
+  Future<String> _sha256OfFile(File f) async {
+    late Digest digest;
+    final input = sha256.startChunkedConversion(
+      ChunkedConversionSink<Digest>.withCallback((ds) => digest = ds.single),
+    );
+    await for (final chunk in f.openRead()) {
+      input.add(chunk);
+    }
+    input.close();
+    return digest.toString();
   }
 
   Future<bool> _download(String url, File dest) async {
