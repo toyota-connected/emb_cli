@@ -171,6 +171,14 @@ class CrossCommand extends Command<int> {
             '(for OE SDKs that pin an old one, e.g. AGL cmake 3.16.5). Also '
             'set via cross.host_build_tools.',
         negatable: false,
+      )
+      ..addFlag(
+        'install-deps',
+        help:
+            "Install the provider's missing preflight host tools via the host "
+            'package backend (PackageKit/brew) instead of erroring. Opt-in; '
+            'needs privileges.',
+        negatable: false,
       );
   }
 
@@ -301,11 +309,17 @@ class CrossCommand extends Command<int> {
     // Provider-declared preflight (tar/xz/rsync for arm-gnu, etc.).
     final missing = await _missingTools(provider.preflightTools);
     if (missing.isNotEmpty) {
-      _logger.err(
-        'Missing host tools for ${provider.name}: ${missing.join(", ")}',
-      );
-      await _logInstallHint(host, missing);
-      return ExitCode.unavailable.code;
+      if (args['install-deps'] == true) {
+        if (!await _installPreflight(host, provider.name, missing)) {
+          return ExitCode.unavailable.code;
+        }
+      } else {
+        _logger.err(
+          'Missing host tools for ${provider.name}: ${missing.join(", ")}',
+        );
+        await _logInstallHint(host, missing);
+        return ExitCode.unavailable.code;
+      }
     }
 
     final progress = _logger.progress(
@@ -996,6 +1010,62 @@ class CrossCommand extends Command<int> {
       if (r.exitCode != 0) missing.add(t);
     }
     return missing;
+  }
+
+  /// Install the missing preflight [tools] via [HostProvisioner] (opt-in, with
+  /// `--install-deps`). Returns true only when the tools are present after.
+  /// Falls back to the manual hint when no backend is reachable.
+  Future<bool> _installPreflight(
+    HostInfo host,
+    String providerName,
+    List<String> tools,
+  ) async {
+    HostProvisioner? provisioner;
+    try {
+      provisioner = HostProvisioner.forHost(host);
+      // ignore: avoid_catching_errors
+    } on UnsupportedError {
+      provisioner = null;
+    }
+    if (provisioner == null || !await provisioner.isAvailable()) {
+      await provisioner?.dispose();
+      _logger.err(
+        'Cannot auto-install host tools (no package backend). Install '
+        'manually:',
+      );
+      await _logInstallHint(host, tools);
+      return false;
+    }
+
+    final progress = _logger.progress(
+      'Installing host tools for $providerName: ${tools.join(", ")}',
+    );
+    try {
+      final result = await provisioner.install(
+        tools.toSet(),
+        onProgress: (p) => progress.update(p.label),
+      );
+      if (!result.success) {
+        progress.fail(
+          result.message ?? 'install failed: ${result.failed.join(", ")}',
+        );
+        return false;
+      }
+      progress.complete('Installed: ${result.installed.join(", ")}');
+    } on Exception catch (e) {
+      progress.fail('install failed: $e');
+      return false;
+    } finally {
+      await provisioner.dispose();
+    }
+
+    // The backend reported success; confirm the binaries are actually on PATH.
+    final stillMissing = await _missingTools(tools);
+    if (stillMissing.isNotEmpty) {
+      _logger.err('Still missing after install: ${stillMissing.join(", ")}');
+      return false;
+    }
+    return true;
   }
 
   /// Log how to install the missing preflight [tools].
