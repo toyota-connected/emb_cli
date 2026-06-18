@@ -29,7 +29,8 @@ deps → repos → Flutter SDK → engine → AOT → ivi-homescreen bundle
 
 ## Requirements
 
-- **Dart SDK ≥ 3.10.1** (to run/build the `emb` tool itself).
+- **Dart SDK ≥ 3.10.1** to run/build `emb` — or none preinstalled: `bootstrap.sh`
+  fetches a pinned SDK (see [Install](#install)).
 - **Linux** for host **dependency install** (PackageKit — dnf/apt/zypper). The
   macOS (Homebrew) and Windows (WinGet) backends are stubbed in this build; all
   other commands are cross-platform.
@@ -39,6 +40,16 @@ deps → repos → Flutter SDK → engine → AOT → ivi-homescreen bundle
 ---
 
 ## Install
+
+Quickest path — **no preinstalled Dart or Flutter needed**. `bootstrap.sh`
+fetches a pinned Dart SDK and activates `emb`; `--shellenv` prints the exports
+to put both on your `PATH` for the current shell:
+
+```sh
+git clone https://github.com/toyota-connected/emb_cli.git && cd emb_cli && eval "$(./bootstrap.sh --shellenv)" && emb --version
+```
+
+If you already have the Dart SDK, install from the checkout instead:
 
 ```sh
 # From the package root:
@@ -59,6 +70,42 @@ dart run bin/emb.dart <command>     # from the package root
 > (`libpackagekit_nc.so`). `emb` locates it automatically — from the package's
 > own build, or from the `package:hooks` build-hook output under
 > `.dart_tool/`. Override with `PK_NC_LIB=/path/to/libpackagekit_nc.so`.
+
+---
+
+## Build ivi-homescreen locally
+
+The native C/C++ embedder builds on **this host** — no Flutter, no cross
+toolchain, just host dev libraries (EGL, GLES, Wayland, DRM/GBM, libinput,
+xkbcommon, …; the [`example/ivi-homescreen`](example/ivi-homescreen/emb.yaml)
+manifest declares the set per distro, and
+[`examples/cross/`](examples/cross/) lists the full per-backend deps). It uses
+the built-in **`local`** target (host compiler + system libraries).
+
+```sh
+# 1. Install host build deps (PackageKit on Linux, brew on macOS).
+emb deps --packages example --yes            # or --dry-run to preview
+
+# 2. Build the embedder natively. `emb cross <file>` uses the file's parent as
+#    the CMake source, so drop the backend-matrix manifest next to the source.
+git clone https://github.com/toyota-connected/ivi-homescreen.git
+cp examples/cross/all-backends.emb.yaml ivi-homescreen/
+emb cross ivi-homescreen/all-backends.emb.yaml --target local --build
+#   one backend only:  --backend wayland-egl
+```
+
+Each backend lands at `build-<backend>/shell/homescreen`. Validated on Fedora —
+all six backends build to distinct host (x86-64) ELF binaries:
+
+| backend | | backend | |
+|---|---|---|---|
+| `wayland-egl` | ✅ | `drm-kms-vulkan` | ✅ |
+| `wayland-vulkan` | ✅ | `software` | ✅ |
+| `drm-kms-egl` | ✅ | `headless-egl` | ✅ |
+
+(Vulkan backends additionally need the Vulkan loader/headers; DRM backends need
+libdisplay-info ≥ 0.2.0, libseat, libxcursor.) Cross-compile the same backends
+for a device with `--target <board>` — see [`examples/cross/`](examples/cross/).
 
 ---
 
