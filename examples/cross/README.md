@@ -118,6 +118,61 @@ In all three the script is sourced in a clean shell and the env read back, so
 `CC`/`CXX`/`CFLAGS`/`SDKTARGETSYSROOT`/`OECORE_NATIVE_SYSROOT`/
 `CMAKE_TOOLCHAIN_FILE` flow through verbatim.
 
+## Building ivi-homescreen for AGL
+
+[`agl_sdk_url.emb.yaml`](agl_sdk_url.emb.yaml) is a complete, buildable AGL
+manifest (validated end-to-end against AGL **Marlin 13.0.3**, producing an
+`aarch64-agl-linux` `homescreen` ELF). Its `cross:` block:
+
+```yaml
+cross:
+  provider: yocto-sdk
+  triple: aarch64-agl-linux           # AGL distro triple; do not omit
+  sdk_url: https://archive.automotivelinux.org/marlin/13.0.3/raspberrypi4/deploy/sdk/poky-agl-glibc-x86_64-agl-demo-platform-crosssdk-aarch64-raspberrypi4-64-toolchain-13.0.3.sh
+  host_build_tools: true              # AGL pins cmake 3.16.5 (< the 3.20 floor)
+  defines:
+    DISABLE_PLUGINS: 'ON'
+  backends:
+    wayland-egl:                      # AGL is Wayland (agl-compositor)
+      BUILD_BACKEND_WAYLAND_EGL: 'ON'
+      BUILD_BACKEND_WAYLAND_VULKAN: 'OFF'
+      ENABLE_AGL_SHELL_CLIENT: 'ON'   # agl-compositor shell protocol client
+  package: { name: ivi-homescreen, version: 13.0.3, bin: shell/homescreen }
+```
+
+`emb cross <file> --build` uses the manifest **file's parent** as the CMake
+source, so copy the manifest next to the ivi-homescreen checkout, then build:
+
+```sh
+cp agl_sdk_url.emb.yaml <path>/ivi-homescreen/agl.emb.yaml
+# Downloads + installs the SDK (~690 MB), then configures + builds.
+emb cross <path>/ivi-homescreen/agl.emb.yaml --build --host-tools
+# → cross-build-aarch64-agl-linux-<hash>/build-wayland-egl/shell/homescreen
+#   (an aarch64 ELF linking libEGL/libGLESv2/libwayland-egl, agl-shell client in)
+```
+
+Three AGL specifics make this work:
+
+- **`triple: aarch64-agl-linux`** — AGL's own distro triple. Omit it and the OE
+  env only yields `aarch64-linux`.
+- **`ENABLE_AGL_SHELL_CLIENT: 'ON'`** — compiles the agl-compositor shell
+  protocol client into the `wayland-egl` backend (AGL is Wayland, not DRM/KMS).
+- **`host_build_tools: true`** (or `--host-tools`) — AGL SDKs pin an old
+  `nativesdk` cmake (3.16.5), and the OE env-setup prepends the SDK's `bin` to
+  `PATH`, so its cmake wins. ivi-homescreen needs cmake >= 3.20. This runs the
+  **host's** cmake (or meson) with the SDK's OE env + toolchain file unchanged.
+  Drop it for an SDK whose cmake is new enough.
+
+The first build writes [`emb.lock`](../../README.md#reproducible-builds-emblock)
+pinning the resolved `OECORE_SDK_VERSION` + the installer's sha256; later builds
+verify it (re-run with `--update-lock` after intentionally changing the SDK).
+
+> The AGL `sdk_url` here is a live **archive** URL. AGL moves old releases from
+> `download.automotivelinux.org` to `archive.automotivelinux.org` (the historic
+> jellyfish `download` URL now 404s), and the newest releases (trout/unagi) may
+> not publish a prebuilt crosssdk — Marlin does. Confirm the URL for your
+> release before building.
+
 ## Run the test
 
 ```sh
