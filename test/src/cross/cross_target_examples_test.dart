@@ -128,7 +128,7 @@ void main() {
       expect(t.augment.single.pkg, 'libdisplay-info');
     });
 
-    test('AGL SDK LOCAL — sdk_path, agl-linux triple, no url', () {
+    test('AGL SDK LOCAL — buildable wayland-egl + agl-shell', () {
       final t = _loadCross('agl_sdk_local.emb.yaml');
       expect(t.provider, CrossProviderKind.yoctoSdk);
       expect(t.sdkPath, '/opt/agl-sdk/13.0.0-aarch64');
@@ -136,6 +136,12 @@ void main() {
       expect(t.sdkEnvSetup, isNull);
       expect(t.triple, 'aarch64-agl-linux');
       expect(t.augment, isEmpty);
+      // Buildable, like agl_sdk_url: host cmake + wayland-egl + agl-shell.
+      expect(t.hostTools, isTrue);
+      expect(t.backends.keys, ['wayland-egl']);
+      expect(t.backends['wayland-egl']!['BUILD_BACKEND_WAYLAND_EGL'], 'ON');
+      expect(t.backends['wayland-egl']!['ENABLE_AGL_SHELL_CLIENT'], 'ON');
+      expect(t.package?.bin, 'shell/homescreen');
     });
 
     test('AGL SDK URL — buildable wayland-egl + agl-shell via host cmake', () {
