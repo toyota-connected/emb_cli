@@ -75,6 +75,26 @@ void main() {
     expect(pf.cFlags, contains('-march=armv8-a+crc+crypto'));
   });
 
+  test('captures a lock entry pinning the located recipe version', () async {
+    final build = fixtureBuild();
+    final r = await YoctoRecipeCrossProvider(
+      makeTarget(build.path),
+      workspace: Workspace(tmp),
+      host: _host,
+    ).resolve();
+
+    expect(r.ok, isTrue, reason: r.message);
+    final lock = r.lockEntry!;
+    expect(lock.provider, 'yocto-recipe');
+    expect(lock.triple, 'aarch64-poky-linux');
+    // The newest recipe workdir version — drifts if the OE tree is rebuilt.
+    expect(lock.toolchainVersion, '1.0');
+    expect(lock.sysrootKey, isNotEmpty);
+    expect(lock.buildKey, isNotEmpty);
+    // Nothing is fetched, so there is no artifact to sha.
+    expect(lock.artifacts, isEmpty);
+  });
+
   test('unavailable without yocto_build / machine_tuple', () async {
     final r = await YoctoRecipeCrossProvider(
       CrossTarget.fromMap({'provider': 'yocto-recipe'}),

@@ -4,6 +4,7 @@ import 'package:emb_cli/src/cross/cross_keys.dart';
 import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_provider.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
+import 'package:emb_cli/src/cross/emb_lock.dart';
 import 'package:emb_cli/src/cross/toolchain_emitter.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
@@ -133,7 +134,17 @@ class YoctoRecipeCrossProvider implements CrossProvider {
       cmakeToolchainFile: cmakeTc,
       mesonCrossFile: mesonCross,
     );
-    return CrossResolveResult.ok(profile);
+    final lockEntry = LockedTarget(
+      provider: name,
+      triple: triple,
+      // The located recipe workdir version (e.g. "1.0-r0"). Nothing is fetched
+      // here, so there is no artifact to sha; this machine-independent version
+      // catches an OE tree rebuilt to a newer recipe.
+      toolchainVersion: p.basename(versionDir.path),
+      sysrootKey: sysrootKey(target),
+      buildKey: buildKey(target),
+    );
+    return CrossResolveResult.ok(profile, lockEntry: lockEntry);
   }
 
   Directory? _newestChild(Directory parent) {
