@@ -1,0 +1,45 @@
+# A self-describing package manifest. `emb build .` builds its arch x mode
+# matrix; `emb deps --packages <parent-dir>` installs the host build deps below.
+# See ../README.md and the top-level README "Host dependencies (deps:)".
+id: ivi-homescreen
+type: app
+supported_archs: [arm64, x86_64]
+supported_host_types: [fedora, ubuntu, darwin]
+
+build:
+  app_path: .
+  archs: [arm64, x86_64]
+  modes: [release]
+  output: bundles
+
+# Host build dependencies, keyed by OS then (on Linux) distro id. A list
+# directly under an OS applies to any distro on that OS. `emb deps` coalesces
+# these across all discovered packages, filters to what's missing on the host,
+# and installs the union in one PackageKit (Linux) / brew (macOS) transaction.
+deps:
+  linux:
+    fedora:
+      - pkg-config
+      - mesa-libEGL-devel
+      - mesa-libGLES-devel
+      - libdrm-devel
+      - mesa-libgbm-devel
+      - libinput-devel
+      - libxkbcommon-devel
+      - wayland-devel
+      - wayland-protocols-devel
+      - systemd-devel
+    ubuntu:
+      - pkg-config
+      - libegl-dev
+      - libgles2-mesa-dev
+      - libdrm-dev
+      - libgbm-dev
+      - libinput-dev
+      - libxkbcommon-dev
+      - libwayland-dev
+      - wayland-protocols
+      - libudev-dev
+  macos:
+    - pkg-config
+    - wayland

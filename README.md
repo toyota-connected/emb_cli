@@ -342,6 +342,35 @@ deps:                      # optional host packages, by OS / distro
   windows: [Kitware.CMake]
 ```
 
+#### Host dependencies (`deps:`)
+
+The `deps:` block declares host build packages, keyed by **OS**, then optionally
+by **distro id** on Linux:
+
+- A **list** directly under an OS (`macos: [...]`, `windows: [...]`, or
+  `linux: [...]`) applies to **any** distro on that OS.
+- A **map** under `linux` (`fedora: [...]`, `ubuntu: [...]`, …) selects by the
+  host's distro id (from `/etc/os-release`, what `emb doctor` prints).
+
+`emb deps` coalesces these across every selected manifest, filters to what's
+**missing** on the current host, and installs the union in one transaction
+(PackageKit on Linux, brew on macOS). Resolution is by package *name*, mapped to
+the backend's real package via `WhatProvides`, so e.g. `pkg-config` resolves
+even where the package is `pkgconf`.
+
+A complete worked manifest (ivi-homescreen graphics deps for fedora/ubuntu/macOS)
+is in [`example/ivi-homescreen/emb.yaml`](example/ivi-homescreen/emb.yaml).
+Inspect the resolved/missing plan for your host without installing:
+
+```sh
+emb deps --packages example --dry-run
+```
+
+> Legacy `configs/*.json` declare deps differently — as inline
+> `sudo … install` strings under `runtime.pre-requisites[arch][distro][version]`
+> — from which `emb` extracts the package names. Both schemas normalize to the
+> same per-host rule set.
+
 ---
 
 ### `emb cross`

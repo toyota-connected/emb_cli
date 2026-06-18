@@ -196,4 +196,45 @@ emb:
       );
     });
   });
+
+  group('example/ivi-homescreen deps', () {
+    final dir = Directory(p.join('example', 'ivi-homescreen'));
+    const ubuntu = HostInfo(
+      os: HostOs.linux,
+      machineArch: 'x86_64',
+      archAliases: {'x86_64', 'x64', 'amd64'},
+      hostType: 'ubuntu',
+      versionId: '24.04',
+    );
+    const macos = HostInfo(
+      os: HostOs.macos,
+      machineArch: 'arm64',
+      archAliases: {'arm64'},
+      hostType: 'darwin',
+      versionId: '14',
+    );
+
+    test('the committed example manifest loads', () {
+      expect(dir.existsSync(), isTrue, reason: 'missing ${dir.path}');
+      final m = loader.loadPackageDir(dir);
+      expect(m, isNotNull);
+      expect(m!.id, 'ivi-homescreen');
+    });
+
+    test('deps resolve to the right packages per host', () {
+      final m = loader.loadPackageDir(dir)!;
+
+      final onFedora = m.deps.resolve(fedora);
+      expect(onFedora, containsAll(['pkg-config', 'mesa-libEGL-devel']));
+      expect(onFedora, isNot(contains('libegl-dev'))); // ubuntu-only name
+
+      final onUbuntu = m.deps.resolve(ubuntu);
+      expect(onUbuntu, containsAll(['pkg-config', 'libegl-dev']));
+      expect(onUbuntu, isNot(contains('mesa-libEGL-devel'))); // fedora-only
+
+      final onMac = m.deps.resolve(macos);
+      expect(onMac, containsAll(['pkg-config', 'wayland']));
+      expect(onMac, isNot(contains('libdrm-devel'))); // linux-only
+    });
+  });
 }
