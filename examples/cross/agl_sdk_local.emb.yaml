@@ -1,14 +1,15 @@
-# ivi-homescreen via an Automotive Grade Linux (AGL) SDK INSTALLED locally.
+# Build ivi-homescreen for AGL from a locally INSTALLED SDK (sdk_path).
+#
+# Sibling of agl_sdk_url.emb.yaml (downloaded SDK): identical backends /
+# host_build_tools, just an installed SDK root instead of a URL. See README.md
+# -> "Building ivi-homescreen for AGL".
 #
 # AGL is its own Yocto-based distro: the triple is aarch64-agl-linux (NOT
 # poky-linux), the env script is environment-setup-aarch64-agl-linux, and the
 # installer's default target dir is /opt/agl-sdk/<version>-<machine>.
-# UCB 13 "Magic Marlin" is the AGL release that integrated Toyota's embedded
-# Flutter solution, so it is the on-point version for ivi-homescreen.
-#
-# AGL codename <-> UCB version (swap per release):
-#   icefish=9  jellyfish=10  koi=11  lamprey=12  marlin=13
-#   needlefish=14  octopus=15  pike=16  trout(2025)  unagi(latest, 2026)
+# UCB 13 "Marlin" is the AGL release that integrated Toyota's embedded Flutter
+# solution. codename <-> UCB: jellyfish=10, koi=11, lamprey=12, marlin=13,
+# needlefish=14.
 id: ivi-homescreen
 type: app
 supported_archs: [arm64]
@@ -22,11 +23,25 @@ build:
 
 cross:
   provider: yocto-sdk
-  # Installed AGL SDK root (holds environment-setup-aarch64-agl-linux).
-  # Produced by: ./poky-agl-glibc-x86_64-agl-demo-platform-crosssdk-aarch64-toolchain-13.0.0.sh
+  triple: aarch64-agl-linux               # AGL distro triple; do not omit
+  # Installed AGL SDK root (holds environment-setup-aarch64-agl-linux), produced
+  # by the populate_sdk installer (operator-set path).
   sdk_path: /opt/agl-sdk/13.0.0-aarch64
-  # Optional explicit env-setup (else globbed under sdk_path):
   # sdk_env_setup: /opt/agl-sdk/13.0.0-aarch64/environment-setup-aarch64-agl-linux
-  triple: aarch64-agl-linux               # AGL distro triple; do not omit (the
-                                          # OE env derives only aarch64-linux)
+  host_build_tools: true                  # AGL pins cmake 3.16.5 (< the 3.20 floor)
+  defines:
+    DISABLE_PLUGINS: 'ON'
+  backends:
+    wayland-egl:                          # AGL is Wayland (agl-compositor)
+      BUILD_BACKEND_WAYLAND_EGL: 'ON'
+      BUILD_BACKEND_WAYLAND_VULKAN: 'OFF'
+      ENABLE_AGL_SHELL_CLIENT: 'ON'       # agl-compositor shell protocol client
   augment: []                             # AGL target sysroot is complete
+  package:
+    name: ivi-homescreen
+    version: 13.0.0
+    maintainer: "Joel Winarske <joel.winarske@gmail.com>"
+    description: "IVI Flutter Shell (wayland-egl, AGL shell), cross-built by emb"
+    section: utils
+    bin: shell/homescreen
+    install_dir: /usr/bin

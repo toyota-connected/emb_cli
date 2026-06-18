@@ -122,7 +122,9 @@ In all three the script is sourced in a clean shell and the env read back, so
 
 [`agl_sdk_url.emb.yaml`](agl_sdk_url.emb.yaml) is a complete, buildable AGL
 manifest (validated end-to-end against AGL **Marlin 13.0.3**, producing an
-`aarch64-agl-linux` `homescreen` ELF). Its `cross:` block:
+`aarch64-agl-linux` `homescreen` ELF).
+[`agl_sdk_local.emb.yaml`](agl_sdk_local.emb.yaml) is the same recipe against an
+already-installed SDK (`sdk_path` instead of `sdk_url`). Its `cross:` block:
 
 ```yaml
 cross:
