@@ -13,6 +13,7 @@ import 'package:emb_cli/src/cross/cross_provider.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/cross/deb_packager.dart';
 import 'package:emb_cli/src/cross/deployer.dart';
+import 'package:emb_cli/src/cross/emb_lock.dart';
 import 'package:emb_cli/src/cross/local_cross_provider.dart';
 import 'package:emb_cli/src/cross/overlay_builder.dart';
 import 'package:emb_cli/src/cross/runnable_bundle.dart';
@@ -147,6 +148,20 @@ class CrossCommand extends Command<int> {
       ..addFlag(
         'run',
         help: 'After --deploy, run the bundle on the target over SSH.',
+        negatable: false,
+      )
+      ..addFlag(
+        'update-lock',
+        help:
+            "Regenerate this target's emb.lock entry from the resolved "
+            'toolchain/sysroot (accepts intentional URL/version changes).',
+        negatable: false,
+      )
+      ..addFlag(
+        'no-verify',
+        help:
+            'Skip emb.lock verification for this resolve (do not fail on a '
+            'drifted artifact sha or toolchain version).',
         negatable: false,
       );
   }
@@ -298,6 +313,24 @@ class CrossCommand extends Command<int> {
     final profile = result.profile!;
     progress.complete('Resolved ${provider.name}');
     _report(profile);
+
+    // Reconcile emb.lock: pin the resolved toolchain/sysroot, or fail on drift
+    // from a moved URL / changed derived-version. Only providers that capture
+    // resolved facts populate lockEntry (arm-gnu today).
+    if (result.lockEntry case final resolved?) {
+      final projectRoot = FileSystemEntity.isDirectorySync(inputPath)
+          ? inputPath
+          : p.dirname(inputPath);
+      if (!_syncLock(
+        projectRoot: projectRoot,
+        target: effectiveTarget,
+        resolved: resolved,
+        updateLock: args['update-lock'] == true,
+        verify: args['no-verify'] != true,
+      )) {
+        return ExitCode.software.code;
+      }
+    }
 
     if (args['prepare'] == true && target.augment.isNotEmpty) {
       final overlay = OverlayBuilder(workspace, profile);
@@ -889,6 +922,53 @@ class CrossCommand extends Command<int> {
         '  backends      : ${target.backends.keys.join(", ")} '
         '(${target.generator.name})',
       );
+    }
+  }
+
+  /// Reconcile `<projectRoot>/emb.lock` with the freshly [resolved] facts.
+  ///
+  /// Auto-creates the entry when absent (first resolve, pub-style), verifies
+  /// and fails on drift when present, or rewrites it under [updateLock].
+  /// Returns false only on a verification failure (the caller then exits).
+  bool _syncLock({
+    required String projectRoot,
+    required String target,
+    required LockedTarget resolved,
+    required bool updateLock,
+    required bool verify,
+  }) {
+    final lockFile = File(p.join(projectRoot, 'emb.lock'));
+    final EmbLock? existing;
+    try {
+      existing = EmbLock.load(lockFile);
+    } on FormatException catch (e) {
+      _logger.err('emb.lock is malformed: ${e.message}');
+      return false;
+    }
+    final had = existing?.targets[target] != null;
+    final outcome = reconcileLock(
+      existing: existing,
+      target: target,
+      resolved: resolved,
+      updateLock: updateLock,
+      verify: verify,
+    );
+    switch (outcome.action) {
+      case LockAction.wrote:
+        outcome.lock!.save(lockFile);
+        _logger.info('${had ? "Updated" : "Wrote"} emb.lock ($target).');
+        return true;
+      case LockAction.verified:
+        return true;
+      case LockAction.drifted:
+        _logger.err('emb.lock drift for "$target":');
+        for (final problem in outcome.problems) {
+          _logger.err('  - $problem');
+        }
+        _logger.err(
+          'Re-run with --update-lock to accept, or --no-verify to skip.',
+        );
+        return false;
     }
   }
 

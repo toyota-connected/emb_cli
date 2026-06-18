@@ -1,4 +1,5 @@
 import 'package:emb_cli/src/cross/cross_provider.dart' show CrossProvider;
+import 'package:emb_cli/src/cross/emb_lock.dart' show LockedTarget;
 
 /// Build-system files a [CrossProfile] can carry (or have emitted for it).
 enum CrossGenerator {
@@ -169,26 +170,38 @@ enum CrossResolveStatus {
 
 /// Result of resolving a cross environment.
 class CrossResolveResult {
-  const CrossResolveResult({required this.status, this.profile, this.message});
+  const CrossResolveResult({
+    required this.status,
+    this.profile,
+    this.message,
+    this.lockEntry,
+  });
 
-  /// Convenience constructor for the success case.
-  const CrossResolveResult.ok(CrossProfile this.profile)
+  /// Convenience constructor for the success case. [lockEntry] carries the
+  /// resolved facts (chosen version, fetched-artifact shas, …) for `emb.lock`;
+  /// providers that don't yet capture them leave it null.
+  const CrossResolveResult.ok(CrossProfile this.profile, {this.lockEntry})
     : status = CrossResolveStatus.resolved,
       message = null;
 
   /// Convenience constructor for [CrossResolveStatus.unavailable].
   const CrossResolveResult.unavailable(String this.message)
     : status = CrossResolveStatus.unavailable,
-      profile = null;
+      profile = null,
+      lockEntry = null;
 
   /// Convenience constructor for [CrossResolveStatus.failed].
   const CrossResolveResult.failed(String this.message)
     : status = CrossResolveStatus.failed,
-      profile = null;
+      profile = null,
+      lockEntry = null;
 
   final CrossResolveStatus status;
   final CrossProfile? profile;
   final String? message;
+
+  /// The resolved facts to pin in `emb.lock`, when the provider captured them.
+  final LockedTarget? lockEntry;
 
   bool get ok => status == CrossResolveStatus.resolved;
 }

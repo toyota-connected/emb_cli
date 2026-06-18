@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
@@ -8,6 +9,7 @@ import 'package:emb_cli/src/cross/cross_keys.dart';
 import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_provider.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
+import 'package:emb_cli/src/cross/emb_lock.dart';
 import 'package:emb_cli/src/cross/sysroot_extract.dart';
 import 'package:emb_cli/src/cross/toolchain_emitter.dart';
 import 'package:emb_cli/src/host/host_info.dart';
@@ -42,6 +44,11 @@ class ArmGnuCrossProvider implements CrossProvider {
   final HostInfo host;
   final ToolchainEmitter _emitter;
   final HttpClient _http;
+
+  /// Artifacts this resolve actually (re)materialized, recorded for `emb.lock`.
+  /// Only populated on the paths that fetch/decompress — a fully cached resolve
+  /// records nothing, so the lock keeps its prior shas (drift skips them).
+  final List<LockedArtifact> _artifacts = [];
 
   @override
   String get name => 'arm-gnu';
@@ -173,7 +180,16 @@ class ArmGnuCrossProvider implements CrossProvider {
       ),
       cmakeToolchainFile: cmakeTc,
     );
-    return CrossResolveResult.ok(profile);
+    final lockEntry = LockedTarget(
+      provider: name,
+      triple: triple,
+      toolchainVersion: version,
+      codename: codename, // null when the version is pinned, not derived
+      sysrootKey: sysrootKey(target),
+      buildKey: buildKey(target),
+      artifacts: _artifacts,
+    );
+    return CrossResolveResult.ok(profile, lockEntry: lockEntry);
   }
 
   /// Close the HTTP client.
@@ -205,6 +221,15 @@ class ArmGnuCrossProvider implements CrossProvider {
     if (!tarball.existsSync()) {
       if (!await _download(url, tarball)) return null;
     }
+    // Reached only on a cache miss (the extracted gcc check above returns
+    // early otherwise), so this records a fresh sha exactly when re-fetched.
+    _artifacts.add(
+      LockedArtifact(
+        kind: ArtifactKind.toolchain,
+        url: url,
+        sha256: await _sha256OfFile(tarball),
+      ),
+    );
 
     extracted.parent.createSync(recursive: true);
     // --strip-components=1: the tarball nests everything under <dirName>/.
@@ -384,6 +409,13 @@ class ArmGnuCrossProvider implements CrossProvider {
         return CrossResolveResult.failed('image download failed: $imageUrl');
       }
     }
+    _artifacts.add(
+      LockedArtifact(
+        kind: ArtifactKind.image,
+        url: imageUrl,
+        sha256: await _sha256OfFile(imgXz),
+      ),
+    );
     final img = File(imgXz.path.replaceFirst(RegExp(r'\.xz$'), ''));
     if (!img.existsSync()) {
       final un = await Process.run('xz', ['-dk', imgXz.path]);
@@ -511,6 +543,8 @@ class ArmGnuCrossProvider implements CrossProvider {
         'device sysroot needs cross.sysroot.host (user@host)',
       );
     }
+    // A live device can't be content-pinned; record provenance only.
+    _artifacts.add(LockedArtifact(kind: ArtifactKind.device, host: host));
     sysrootDir.createSync(recursive: true);
 
     final sshBase = [
@@ -652,10 +686,19 @@ class ArmGnuCrossProvider implements CrossProvider {
     }
   }
 
-  // Retained for the sha-pinned download path (parity with EngineArtifacts).
-  // ignore: unused_element
-  String _sha256OfFile(File f) =>
-      sha256.convert(f.readAsBytesSync()).toString();
+  /// Streaming sha256 of [f] — chunked so a multi-GB image is never held in
+  /// memory. Used to pin fetched artifacts in `emb.lock`.
+  Future<String> _sha256OfFile(File f) async {
+    late Digest digest;
+    final input = sha256.startChunkedConversion(
+      ChunkedConversionSink<Digest>.withCallback((ds) => digest = ds.single),
+    );
+    await for (final chunk in f.openRead()) {
+      input.add(chunk);
+    }
+    input.close();
+    return digest.toString();
+  }
 }
 
 /// Rewrite absolute multiarch symlinks under [dir] (e.g. `libc.so → /lib/
