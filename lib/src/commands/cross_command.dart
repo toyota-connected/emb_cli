@@ -924,9 +924,7 @@ class CrossCommand extends Command<int> {
           final plan = await provisioner.simulate(tools.toSet());
           final pkgs = [...plan.toInstall, ...plan.unresolved];
           if (pkgs.isNotEmpty) {
-            _logger.info(
-              'Install via ${provisioner.name}: ${pkgs.join(", ")}',
-            );
+            _logger.info('Install via ${provisioner.name}: ${pkgs.join(", ")}');
             return;
           }
         }

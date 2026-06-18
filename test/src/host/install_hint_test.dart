@@ -63,10 +63,7 @@ void main() {
         staticInstallHint(_linux('opensuse-tumbleweed'), ['tar']),
         'sudo zypper install -y tar',
       );
-      expect(
-        staticInstallHint(_linux('alpine'), ['xz']),
-        'sudo apk add xz',
-      );
+      expect(staticInstallHint(_linux('alpine'), ['xz']), 'sudo apk add xz');
     });
 
     test('macOS → brew', () {
