@@ -73,6 +73,47 @@ void main() {
       expect(git.calls, contains(equals(['checkout', 'main'])));
     });
 
+    test('creates a missing base directory before cloning', () async {
+      // `emb flutter -w /tmp/wksp` clones into a fresh root that doesn't
+      // exist yet; sync must create it so `git clone`'s cwd is valid.
+      final base = Directory(p.join(tmp.path, 'does', 'not', 'exist'));
+      expect(base.existsSync(), isFalse);
+      final git = _FakeGit();
+      const repo = GitRepo(uri: 'https://x/y/foo.git', branch: 'main');
+      final result = await repo.sync(base, runner: git.run);
+
+      expect(result.success, isTrue);
+      expect(base.existsSync(), isTrue);
+      expect(git.calls.first.first, 'clone');
+    });
+
+    test('fails gracefully when the base path cannot be created', () async {
+      // A file sits where the base directory needs to be, so the OS-agnostic
+      // mkdir -p (createSync) throws — must surface as a failed RepoResult.
+      final blocker = File(p.join(tmp.path, 'blocker'))..writeAsStringSync('x');
+      final base = Directory(p.join(blocker.path, 'sub'));
+      final git = _FakeGit();
+      const repo = GitRepo(uri: 'https://x/y/foo.git');
+      final result = await repo.sync(base, runner: git.run);
+
+      expect(result.success, isFalse);
+      expect(result.message, contains('workspace path unusable'));
+      expect(git.calls, isEmpty); // never reached the clone
+    });
+
+    test('reports failure (no crash) when git is not runnable', () async {
+      // Process.run throws ProcessException when git is absent — must surface
+      // as a failed RepoResult, not an unhandled exception.
+      Future<ProcessResult> brokenGit(
+        List<String> args, {
+        required String workingDirectory,
+      }) async => throw const ProcessException('git', ['clone']);
+      const repo = GitRepo(uri: 'https://x/y/foo.git');
+      final result = await repo.sync(tmp, runner: brokenGit);
+      expect(result.success, isFalse);
+      expect(result.message, contains('git could not be run'));
+    });
+
     test('updates in place when .git exists', () async {
       // Pre-create <tmp>/foo/.git so the update path is taken.
       Directory(p.join(tmp.path, 'foo', '.git')).createSync(recursive: true);

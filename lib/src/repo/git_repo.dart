@@ -65,6 +65,10 @@ class GitRepo {
     final dotGit = Directory(p.join(gitFolder, '.git'));
 
     try {
+      // `git clone` runs with cwd = base, so the base must exist first. emb
+      // sync clones into <root>/app (ensured by the caller); emb flutter clones
+      // straight into <root>, which may not exist yet for a fresh -w path.
+      baseFolder.createSync(recursive: true);
       if (dotGit.existsSync()) {
         await _run(runner, ['reset', '--hard'], gitFolder);
         await _run(runner, ['fetch', '--all'], gitFolder);
@@ -117,6 +121,22 @@ class GitRepo {
         uri: uri,
         success: false,
         message: e.message,
+      );
+    } on ProcessException catch (e) {
+      // git not installed / not on PATH (vs. a non-zero git exit, which
+      // surfaces as a _GitException). Report it instead of crashing.
+      return RepoResult(
+        folderName: folderName,
+        uri: uri,
+        success: false,
+        message: 'git could not be run: ${e.message}',
+      );
+    } on FileSystemException catch (e) {
+      return RepoResult(
+        folderName: folderName,
+        uri: uri,
+        success: false,
+        message: 'workspace path unusable: ${e.message}',
       );
     }
   }

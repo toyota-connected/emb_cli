@@ -14,6 +14,9 @@ else goes to stderr.
     # Fetch Dart AND install emb from this checkout, in one OS-agnostic step:
     python3 tool/bootstrap_dart.py --activate .
 
+    # Install emb AND put Dart + emb on PATH for this shell, in one step:
+    eval "$(python3 tool/bootstrap_dart.py --activate . --shellenv)"
+
     # Pin a version for reproducible CI:
     python3 tool/bootstrap_dart.py --version 3.10.1
 
@@ -157,6 +160,13 @@ def ensure_sdk(args, version, sdk_root, dart):
     log("installed: " + sdk_root)
 
 
+def pub_bin_dir():
+    """Where `dart pub global activate` installs executable shims."""
+    pub = os.environ.get("PUB_CACHE")
+    return (os.path.join(pub, "bin") if pub
+            else os.path.join(os.path.expanduser("~"), ".pub-cache", "bin"))
+
+
 def activate(dart, bin_dir, pkg_dir):
     env = dict(os.environ)
     env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
@@ -168,10 +178,8 @@ def activate(dart, bin_dir, pkg_dir):
     )
     if code != 0:
         sys.exit("`dart pub global activate` failed (%d)" % code)
-    pub_bin = env.get("PUB_CACHE")
-    pub_bin = (os.path.join(pub_bin, "bin") if pub_bin
-               else os.path.join(os.path.expanduser("~"), ".pub-cache", "bin"))
-    log("done. Ensure these are on PATH:\n  %s\n  %s" % (bin_dir, pub_bin))
+    log("done. Ensure these are on PATH:\n  %s\n  %s"
+        % (bin_dir, pub_bin_dir()))
 
 
 def main():
@@ -196,6 +204,10 @@ def main():
                          "--source path PKG_DIR` (e.g. '.' for emb).")
     ap.add_argument("--force", action="store_true",
                     help="Re-download even if cached.")
+    ap.add_argument("--shellenv", action="store_true",
+                    help="Emit an eval-able `export PATH=...` (Dart bin + "
+                         "pub-cache bin) on stdout instead of just the bin "
+                         "dir. Use as: eval \"$(... --shellenv)\".")
     args = ap.parse_args()
 
     version = resolve_version(args.channel, args.version)
@@ -207,7 +219,13 @@ def main():
     ensure_sdk(args, version, sdk_root, dart)
     if args.activate:
         activate(dart, bin_dir, args.activate)
-    print(bin_dir)
+    if args.shellenv:
+        # POSIX shell form for `eval`; literal $PATH expands in the user's
+        # shell. Dart bin first so this SDK wins until a Flutter SDK (sourced
+        # from setup_env.sh) is prepended ahead of it.
+        print('export PATH="%s:%s:$PATH"' % (bin_dir, pub_bin_dir()))
+    else:
+        print(bin_dir)
     return 0
 
 
