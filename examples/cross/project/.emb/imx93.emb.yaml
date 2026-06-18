@@ -1,0 +1,20 @@
+# A flat per-board file: one target that diverges enough from the base to want
+# its own file (different provider, triple, and backend).
+#
+# It overrides the base provider (yocto-recipe instead of arm-gnu) and backend
+# (drm-kms-egl), but still inherits the base defines and package metadata via
+# the deep merge. Contributes a single target named by platform.name.
+platform:
+  name: imx93-evk
+  description: NXP i.MX93 EVK (drm-kms-egl)
+
+cross:
+  provider: yocto-recipe
+  triple: aarch64-poky-linux
+  yocto_build: /path/to/oe/build      # the OE build tree for this board
+  machine_tuple: armv8a-poky-linux
+  recipe: ivi-homescreen
+  backends:
+    drm-kms-egl:
+      BUILD_BACKEND_DRM_KMS_EGL: 'ON'
+      BUILD_BACKEND_WAYLAND_EGL: 'OFF'

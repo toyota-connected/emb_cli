@@ -1,0 +1,18 @@
+# A family file: several Raspberry Pi boards that share one raspios sysroot.
+#
+# These only differ by -mcpu, so they share the base provider/toolchain and a
+# single extracted sysroot (working dirs are content-hash-keyed). Each
+# cross.targets key becomes a selectable target, grouped under platform.name.
+platform:
+  name: raspberry-pi
+  description: Raspberry Pi family (raspios bookworm, wayland-egl)
+
+cross:
+  image_url: https://downloads.raspberrypi.com/raspios_lite_arm64/root.img.xz
+  backends:
+    wayland-egl:
+      BUILD_BACKEND_WAYLAND_EGL: 'ON'
+  targets:
+    rpi5: { cpu_flags: [-mcpu=cortex-a76] }
+    rpi4: { cpu_flags: [-mcpu=cortex-a72] }
+    rpi-zero-2w: { cpu_flags: [-mcpu=cortex-a53] }

@@ -352,19 +352,20 @@ This is the C/C++ toolchain + sysroot path — distinct from the Dart AOT cross
 used by `emb build` / `emb bundle`. Three providers: `arm-gnu` (a downloaded ARM
 GNU toolchain plus a sysroot unpacked from a distro image or rsync'd from a
 device), `yocto-recipe` (a located OE `recipe-sysroot`), and `yocto-sdk` (a
-`populate_sdk` install). The input is a **positional** package dir (with
-`emb.yaml`) or an explicit manifest file.
+`populate_sdk` install). The input is a **positional** project dir (with a
+`.emb/` manifest directory or a top-level `emb.yaml`) or an explicit manifest
+file.
 
 ```
-emb cross <package-dir|manifest.yaml> [options]
+emb cross <project-dir|manifest.yaml> [options]
 ```
 
 | Option | Default | Description |
 |---|---|---|
-| `<package-dir\|manifest>` | **mandatory (positional)** | Dir with `emb.yaml`, or a manifest file. |
+| `<project-dir\|manifest>` | **mandatory (positional)** | Project dir (a `.emb/` directory, else `emb.yaml`), or a manifest file. |
 | `-w`, `--workspace <dir>` | resolution order | Workspace root. |
-| `-t`, `--target <name>` | `local` if `cross.targets` defined | Select a platform from `cross.targets` (e.g. `rpi5`, `radxa-zero3`), or `local`/`host` for a native build on this machine. When the manifest defines `cross.targets`, omitting `--target` defaults to `local`. |
-| `--list-targets` | off | List the platforms defined under `cross.targets` (plus the built-in `local`), then exit. |
+| `-t`, `--target <name>` | flat manifest's target, else `local` | Select a target (e.g. `rpi5`, `imx93-evk`): a `cross.targets` entry or a per-board `.emb/` file. `local`/`host` is a native build on this machine. With multiple targets, omitting `--target` defaults to `local`. |
+| `--list-targets` | off | List the targets this project defines — `cross.targets` entries and `.emb/` files, grouped by family — plus the built-in `local`, then exit. |
 | `--dry-run` | off | Report the resolution plan (provider, toolchain, sysroot, preflight, augment, backends) with no download / mount / ssh. |
 | `--prepare` | off | After resolving, build the `augment` libraries into the overlay. |
 | `--build` | off | Configure + build the embedder under the resolved profile, one build per `cross.backends` entry. |
@@ -448,6 +449,49 @@ folds into `sysroot`). Working dirs are content-hash-keyed, so boards that share
 a sysroot (rpi4/rpi5/zero-2w — same image, only `-mcpu` differs) **extract it
 once**, while a different image (radxa) gets its own. A manifest with no
 `cross.targets` behaves exactly as before (one implicit target).
+
+#### A `.emb/` directory of per-board manifests
+
+When the boards diverge enough that one file gets unwieldy (e.g. a Yocto board
+with its own provider, recipe, and augment list next to a Raspberry Pi family),
+put a **`.emb/` directory** at the project root instead. `emb cross <project>`
+prefers `<project>/.emb/` over a top-level `emb.yaml`:
+
+```text
+my-app/
+  .emb/
+    base.emb.yaml          # shared: provider defaults, defines, package, sysroot deps
+    raspberry-pi.emb.yaml  # a family file: cross.targets → rpi4, rpi5, rpi-zero-2w
+    imx93.emb.yaml         # a flat per-board file: platform.name → imx93-evk
+```
+
+Each file declares a `platform:` block, and the selectable target list is the
+**union across every file**:
+
+```yaml
+# imx93.emb.yaml
+platform:
+  name: imx93-evk                 # the --target value
+  description: NXP i.MX93 EVK (drm-kms-egl)
+cross:
+  provider: yocto-recipe          # overrides base.emb.yaml's provider
+  triple: aarch64-poky-linux
+  backends: { drm-kms-egl: { BUILD_BACKEND_DRM_KMS_EGL: 'ON' } }
+```
+
+```sh
+emb cross my-app --list-targets        # imx93-evk, rpi4, rpi5 [raspberry-pi], … + local
+emb cross my-app --target imx93-evk --build
+emb cross my-app --target rpi5 --build --deb
+```
+
+Resolution merges three layers: `.emb/base.emb.yaml` (a **deep** merge — nested
+maps like `cross.sysroot` combine, so base defaults survive what a board omits),
+then the board file's `cross:`, then a `cross.targets[variant]` shallow override.
+A flat file contributes one target (named by `platform.name`); a family file
+contributes one per `cross.targets` key, grouped under its `platform.name`.
+Duplicate target names across files are an error. Native `local` uses
+`base.emb.yaml`'s shared block.
 
 There's always a built-in **`local`** target (alias `host`): a native build on
 this machine — no cross toolchain or sysroot, host compiler + system libraries

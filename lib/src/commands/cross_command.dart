@@ -8,6 +8,7 @@ import 'package:emb_cli/src/cross/cross_arch.dart';
 import 'package:emb_cli/src/cross/cross_builder.dart';
 import 'package:emb_cli/src/cross/cross_keys.dart';
 import 'package:emb_cli/src/cross/cross_profile.dart';
+import 'package:emb_cli/src/cross/cross_project.dart';
 import 'package:emb_cli/src/cross/cross_provider.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/cross/deb_packager.dart';
@@ -41,7 +42,7 @@ class CrossCommand extends Command<int> {
     EngineArtifacts Function(Workspace ws)? engineFactory,
   }) : _logger = logger,
        _host = host,
-       _loader = loader,
+       _project = CrossProjectResolver(loader),
        _aotFactory = aotFactory ?? ((ws, h) => AotBuilder(ws, host: h)),
        _bundleFactory = bundleFactory ?? BundleBuilder.new,
        _engineFactory = engineFactory ?? EngineArtifacts.new {
@@ -74,12 +75,15 @@ class CrossCommand extends Command<int> {
         'target',
         abbr: 't',
         help:
-            'Select a platform from cross.targets (e.g. rpi5, radxa-zero3). '
-            'Its fields override the shared cross: block.',
+            'Select a target (e.g. rpi5, imx93-evk): a cross.targets entry, or '
+            'a per-board file under the project .emb/ directory. Omit it for '
+            'the native local build.',
       )
       ..addFlag(
         'list-targets',
-        help: 'List the platforms defined under cross.targets, then exit.',
+        help:
+            'List the targets this project defines (cross.targets entries and '
+            '.emb/ files), then exit.',
         negatable: false,
       )
       ..addMultiOption(
@@ -147,7 +151,7 @@ class CrossCommand extends Command<int> {
 
   final Logger _logger;
   final HostInfo? _host;
-  final ManifestLoader _loader;
+  final CrossProjectResolver _project;
   final AotBuilder Function(Workspace ws, HostInfo host) _aotFactory;
   final BundleBuilder Function(Workspace ws) _bundleFactory;
   final EngineArtifacts Function(Workspace ws) _engineFactory;
@@ -167,50 +171,51 @@ class CrossCommand extends Command<int> {
       return ExitCode.usage.code;
     }
 
-    // Accept either a package directory (with emb.yaml) or an explicit manifest
-    // file (e.g. examples/cross/pi5.emb.yaml).
+    // Accept a project directory (with a `.emb/` manifest home or a top-level
+    // emb.yaml), a package directory, or an explicit manifest file (e.g.
+    // examples/cross/pi5.emb.yaml).
     final inputPath = args.rest.first;
-    final manifest =
-        FileSystemEntity.typeSync(inputPath) == FileSystemEntityType.file
-        ? _loader.loadManifestFile(File(inputPath))
-        : _loader.loadPackageDir(Directory(inputPath));
-    if (manifest == null) {
-      _logger.err('No emb manifest at $inputPath.');
+    final CrossProject project;
+    try {
+      final resolved = _project.resolve(inputPath);
+      if (resolved == null) {
+        _logger.err('No emb manifest at $inputPath.');
+        return ExitCode.usage.code;
+      }
+      project = resolved;
+    } on CrossProjectException catch (e) {
+      _logger.err(e.message);
       return ExitCode.usage.code;
     }
-    final crossMap = manifest.raw['cross'];
-    if (crossMap is! Map) {
-      _logger.err('${manifest.id} has no cross: block.');
-      return ExitCode.usage.code;
-    }
-    final targets = crossMap['targets'];
-    final hasTargets = targets is Map && targets.isNotEmpty;
 
-    // --list-targets: print the platforms this manifest defines, exit.
+    // --list-targets: print the targets this project defines, then exit.
     if (args['list-targets'] == true) {
-      final names = hasTargets ? targets.keys.join(', ') : '(none)';
-      _logger.info('Targets: $names  (plus the built-in: local)');
+      _listTargets(project);
       return ExitCode.success.code;
     }
 
     // Resolve the effective target. `local`/`host` is the native host build;
-    // it's the default when the manifest defines targets but none is chosen.
+    // it is the default when selection is required but no --target is given.
     final targetArg = args['target'] as String?;
-    final effectiveTarget = targetArg ?? (hasTargets ? 'local' : null);
+    final effectiveTarget = targetArg ?? project.defaultTarget ?? 'local';
     final isNative = effectiveTarget == 'local' || effectiveTarget == 'host';
 
-    final Map<dynamic, dynamic>? selected;
+    final Map<dynamic, dynamic> selected;
     if (isNative) {
       // Native uses the shared fields (backends / defines / package); the
       // cross-only fields (image_url, toolchain, cpu_flags) don't apply.
-      selected = {
-        for (final e in crossMap.entries)
-          if (e.key != 'targets') e.key: e.value,
-      };
+      selected = project.nativeCross;
     } else {
-      selected = _selectCrossMap(crossMap, effectiveTarget);
+      final ref = project[effectiveTarget];
+      if (ref == null) {
+        _logger.err(
+          'Unknown target "$effectiveTarget". '
+          'Available: ${project.targets.keys.join(", ")}',
+        );
+        return ExitCode.usage.code;
+      }
+      selected = ref.cross;
     }
-    if (selected == null) return ExitCode.usage.code;
 
     final CrossTarget target;
     try {
@@ -312,7 +317,7 @@ class CrossCommand extends Command<int> {
         inputPath,
         host: host,
         deb: args['deb'] == true,
-        defaultName: manifest.id,
+        defaultName: project.id,
         selectedBackends: selectedBackends,
         appPath: args['app'] as String?,
         mode: args['mode'] as String,
@@ -325,46 +330,34 @@ class CrossCommand extends Command<int> {
     return ExitCode.success.code;
   }
 
-  /// Resolve the effective cross map. When the manifest defines
-  /// `cross.targets`, merge the [targetName] entry over the shared fields
-  /// (minus `targets`). Logs and returns null on a usage error.
-  Map<dynamic, dynamic>? _selectCrossMap(
-    Map<dynamic, dynamic> crossMap,
-    String? targetName,
-  ) {
-    final targets = crossMap['targets'];
-    final hasTargets = targets is Map && targets.isNotEmpty;
-
-    if (!hasTargets) {
-      if (targetName != null) {
-        _logger.err('--target given but the manifest has no cross.targets.');
-        return null;
-      }
-      return Map<dynamic, dynamic>.from(crossMap);
+  /// Print the project's selectable targets (grouped by their family file when
+  /// they came from a `cross.targets` block), plus the built-in native build.
+  void _listTargets(CrossProject project) {
+    if (project.targets.isEmpty) {
+      _logger.info('Targets: (none)  (plus the built-in: local)');
+      return;
     }
-
-    if (targetName == null) {
-      _logger.err(
-        'Manifest defines targets (${targets.keys.join(", ")}); '
-        'pass --target <name>.',
+    _logger.info(styleBold.wrap('Targets'));
+    for (final ref in project.targets.values) {
+      final cross = ref.cross;
+      final provider = (cross['provider'] ?? '?').toString();
+      final arch = ref.arch ?? '?';
+      final backends = cross['backends'];
+      final be = backends is Map && backends.isNotEmpty
+          ? backends.keys.join(',')
+          : '(plain)';
+      final group = ref.family != null ? '  [${ref.family}]' : '';
+      final desc = ref.platform['description'];
+      _logger.info(
+        '  ${ref.name.padRight(16)} ${arch.padRight(8)} '
+        '${provider.padRight(13)} $be$group'
+        '${desc != null ? '  — $desc' : ''}',
       );
-      return null;
     }
-    final tdef = targets[targetName];
-    if (tdef is! Map) {
-      _logger.err(
-        'Unknown target "$targetName". '
-        'Available: ${targets.keys.join(", ")}',
-      );
-      return null;
-    }
-    // Shallow-merge shared fields (minus targets) then the target's overrides;
-    // a top-level image_url override folds into the sysroot block.
-    return {
-      for (final e in crossMap.entries)
-        if (e.key != 'targets') e.key: e.value,
-      ...tdef,
-    };
+    _logger.info(
+      '  ${'local'.padRight(16)} ${'host'.padRight(8)} '
+      '(native build)',
+    );
   }
 
   /// Configure + build the embedder under [profile], one build per
