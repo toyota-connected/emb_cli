@@ -379,6 +379,8 @@ emb cross <project-dir|manifest.yaml> [options]
 | `--run` | off | After `--deploy`, run the bundle on the target over SSH (`./homescreen --b=.`). |
 | `--clean` | off | Remove this target's build + overlay dirs (keeps the toolchain + sysroot), then exit. |
 | `--clean-all` | off | Also remove the downloaded / extracted toolchain + sysroot and the apt / deb caches, then exit. |
+| `--update-lock` | off | Regenerate this target's `emb.lock` entry from the resolved toolchain/sysroot (accepts an intentional URL / version change). See [Reproducible builds](#reproducible-builds-emblock). |
+| `--no-verify` | off | Skip `emb.lock` verification for this resolve (don't fail on a drifted artifact sha or version). |
 
 ```sh
 emb cross ./app/ivi-homescreen --dry-run      # plan only, no side effects
@@ -504,6 +506,42 @@ emb cross . --build            # native local build (default with cross.targets)
 emb cross . --target local     # …the same, explicit (or --target host)
 emb cross . --target rpi5 --build
 ```
+
+#### Reproducible builds (`emb.lock`)
+
+A cross resolve pins what it actually used to **`emb.lock`** at the project root,
+keyed by target — so a moved or changed URL fails loudly instead of silently
+building against different bytes. It is written for real resolves only;
+`--dry-run` never touches it.
+
+On the **first** resolve of a target, `emb.lock` is created automatically
+(pub-style). On **later** resolves the toolchain/sysroot is re-verified against
+it and the build **fails on drift**; `--update-lock` accepts the change (and
+rewrites the entry), `--no-verify` skips the check for one run. Commit `emb.lock`
+so CI and teammates resolve the same inputs.
+
+What each provider pins:
+
+| Provider | Pinned facts |
+|---|---|
+| `arm-gnu` | sha256 of the toolchain tarball and the distro image (byte-exact); a device-sourced sysroot records provenance only — a live host can't be content-pinned. |
+| `yocto-sdk` | `OECORE_SDK_VERSION`, plus the sha256 of the `populate_sdk` installer when fetched from `sdk_url`. |
+| `yocto-recipe` | the located recipe version + the native gcc version (it downloads nothing, so there is no artifact to sha). |
+
+Drift is reported for: a changed artifact sha (moved URL), a changed resolved /
+derived version, or edited manifest inputs (the content-addressed
+`sysroot_key` / `build_key`). An artifact not re-fetched on a warm cache is
+skipped, so verification fires exactly when bytes are re-materialized.
+
+```sh
+emb cross . --target rpi5 --build                 # first run → writes emb.lock
+emb cross . --target rpi5 --build                 # later → verifies, fails on drift
+emb cross . --target rpi5 --build --update-lock    # accept an intentional change
+```
+
+> Note: `emb.lock` lives at the project root keyed by target name, so loosely
+> co-located single-file manifests that share one directory would collide on the
+> `default` target. One project = one directory is the intended layout.
 
 ---
 
