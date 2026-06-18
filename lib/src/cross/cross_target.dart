@@ -250,6 +250,7 @@ class CrossTarget {
     this.package,
     this.defines = const {},
     this.cmakeArgs = const [],
+    this.hostTools = false,
   });
 
   factory CrossTarget.fromMap(Map<dynamic, dynamic> map) {
@@ -288,6 +289,8 @@ class CrossTarget {
           : null,
       defines: _parseDefines(map['defines']),
       cmakeArgs: _stringList(map['cmake_args']),
+      hostTools:
+          (map['host_build_tools'] ?? map['host_cmake'] ?? false) == true,
     );
   }
 
@@ -364,6 +367,14 @@ class CrossTarget {
   /// Raw extra arguments passed verbatim to the CMake configure command (e.g.
   /// `[-Wno-dev, --fresh]`). CMake-only; ignored for Meson projects.
   final List<String> cmakeArgs;
+
+  /// Use the **host's** build tool — `cmake` for a CMake project, `meson` for a
+  /// Meson one — resolved from the host `PATH`, instead of the one on the
+  /// SDK/profile build env. Some OE SDKs pin an old `nativesdk-cmake`/`-meson`
+  /// (e.g. AGL ships cmake 3.16.5) below what a project requires; the host tool
+  /// runs with the same OE env + toolchain/cross file, just a newer binary.
+  /// (Manifest key `host_build_tools`; `host_cmake` is accepted as an alias.)
+  final bool hostTools;
 
   /// Parse the `backends:` block (backend name → `{define: value}` map).
   static Map<String, Map<String, String>> _parseBackends(Object? value) {
