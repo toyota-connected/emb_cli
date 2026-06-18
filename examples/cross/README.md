@@ -192,16 +192,14 @@ concerns (the `DepRule` shape), not toolchain identity, so they live outside
 
 ## Surfacing `cross:` on the manifest
 
-`EmbManifest.fromMap` doesn't read `cross:` yet. One field wires it in:
+`EmbManifest.fromMap` reads the `cross:` block into a typed
+`EmbManifest.cross` (`CrossTarget?`), so a package's own `emb.yaml` can
+self-describe its cross toolchain/sysroot. It's null when there's no `cross:`
+block or it has no resolvable provider, and parsing never throws — a malformed
+`cross:` won't break unrelated commands (`deps`/`sync`/`doctor`). For a
+multi-target block (`cross.targets`) it's the shared base; `CrossProjectResolver`
+does per-target merging.
 
-```dart
-// in EmbManifest
-final CrossTarget? cross;
-
-// in fromMap(...)
-cross: map['cross'] is Map
-    ? CrossTarget.fromMap(map['cross'] as Map<dynamic, dynamic>)
-    : null,
-```
-
-Until then, the test reads `cross:` directly from the YAML.
+The example test above parses each `cross:` block directly with
+`CrossTarget.fromMap` to assert per-field; consumers should prefer
+`EmbManifest.cross`.

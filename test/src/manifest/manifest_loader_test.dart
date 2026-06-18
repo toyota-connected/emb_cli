@@ -152,4 +152,48 @@ emb:
       expect(loadOf(1), isTrue);
     });
   });
+
+  group('cross: block', () {
+    test('a well-formed cross: block parses into EmbManifest.cross', () {
+      final m = EmbManifest.fromMap(<String, dynamic>{
+        'id': 'ivi-homescreen',
+        'cross': {
+          'provider': 'yocto-sdk',
+          'triple': 'aarch64-agl-linux',
+          'host_build_tools': true,
+        },
+      });
+      expect(m.cross, isNotNull);
+      expect(m.cross!.provider.token, 'yocto-sdk');
+      expect(m.cross!.triple, 'aarch64-agl-linux');
+      expect(m.cross!.hostTools, isTrue);
+    });
+
+    test('a multi-target block exposes the shared base (provider)', () {
+      final m = EmbManifest.fromMap(<String, dynamic>{
+        'id': 'rpi',
+        'cross': {
+          'provider': 'arm-gnu',
+          'targets': {
+            'rpi5': {'image_url': 'https://example/x.img.xz'},
+          },
+        },
+      });
+      expect(m.cross?.provider.token, 'arm-gnu');
+    });
+
+    test('no cross: block → null', () {
+      expect(EmbManifest.fromMap(<String, dynamic>{'id': 'x'}).cross, isNull);
+    });
+
+    test('a malformed cross: (no provider) → null, does not throw', () {
+      expect(
+        EmbManifest.fromMap(<String, dynamic>{
+          'id': 'x',
+          'cross': {'triple': 'aarch64-agl-linux'},
+        }).cross,
+        isNull,
+      );
+    });
+  });
 }
