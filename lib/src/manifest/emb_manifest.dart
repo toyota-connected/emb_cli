@@ -1,3 +1,4 @@
+import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/manifest/build_config.dart';
 import 'package:emb_cli/src/manifest/host_deps.dart';
 import 'package:emb_cli/src/manifest/source_repo.dart';
@@ -22,6 +23,7 @@ class EmbManifest {
     required this.src,
     required this.deps,
     this.build,
+    this.cross,
     this.flutterVersion,
     this.sourcePath,
     this.raw = const {},
@@ -53,6 +55,7 @@ class EmbManifest {
       build: map['build'] is Map
           ? BuildConfig.fromMap(map['build'] as Map<dynamic, dynamic>)
           : null,
+      cross: _parseCross(map),
       flutterVersion: map['flutter_version'] as String?,
       sourcePath: sourcePath,
       raw: map,
@@ -87,6 +90,13 @@ class EmbManifest {
   /// Build configuration (`build:`), when this package is buildable.
   final BuildConfig? build;
 
+  /// Parsed `cross:` block, when present and well-formed — so a package's own
+  /// `emb.yaml` can self-describe its cross toolchain/sysroot. For a
+  /// multi-target block (`cross.targets`) this is the shared base (provider +
+  /// shared fields); per-target merging is done by `CrossProjectResolver`.
+  /// Null when there is no `cross:` block, or it has no resolvable provider.
+  final CrossTarget? cross;
+
   /// Pinned Flutter version, when declared.
   final String? flutterVersion;
 
@@ -96,6 +106,22 @@ class EmbManifest {
   /// The raw parsed map, retained for later build phases (post_cmds,
   /// gclient_config, qemu/docker/remote platform blocks).
   final Map<String, dynamic> raw;
+
+  /// Parse the `cross:` block into a [CrossTarget], or null when absent or
+  /// without a resolvable provider (e.g. a `cross.targets` block whose provider
+  /// lives only under a target). Never throws — a malformed `cross:` must not
+  /// break the manifest load for unrelated commands (deps, sync, doctor, …).
+  static CrossTarget? _parseCross(Map<String, dynamic> map) {
+    final block = map['cross'];
+    if (block is! Map) return null;
+    try {
+      return CrossTarget.fromMap(Map<dynamic, dynamic>.from(block));
+      // fromMap throws ArgumentError on a missing/unknown provider token.
+      // ignore: avoid_catching_errors
+    } on ArgumentError {
+      return null;
+    }
+  }
 
   static HostDeps _parseDeps(Map<String, dynamic> map) {
     // New structured schema takes precedence when present.
