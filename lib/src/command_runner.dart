@@ -47,6 +47,7 @@ class EmbCliCommandRunner extends CompletionCommandRunner<int> {
     addCommand(BundleCommand(logger: _logger));
     addCommand(BuildCommand(logger: _logger));
     addCommand(CrossCommand(logger: _logger));
+    addCommand(MatrixCommand(logger: _logger));
     addCommand(EnvCommand(logger: _logger));
     addCommand(UpdateCommand(logger: _logger, pubUpdater: _pubUpdater));
   }

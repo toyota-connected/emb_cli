@@ -1,0 +1,127 @@
+name: cross
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/cross.yaml"
+      - "lib/src/cross/**"
+      - "lib/src/commands/cross_command.dart"
+      - "lib/src/commands/matrix_command.dart"
+      - "examples/cross/**"
+      - "pubspec.yaml"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/cross.yaml"
+      - "lib/src/cross/**"
+      - "lib/src/commands/cross_command.dart"
+      - "lib/src/commands/matrix_command.dart"
+      - "examples/cross/**"
+      - "pubspec.yaml"
+  workflow_dispatch:
+    inputs:
+      build:
+        description: "Also run real cross builds (L2 — network + privileges)."
+        type: boolean
+        default: false
+
+jobs:
+  # ── Stage 1: render the matrix from the example manifests ────────────────
+  # Side-effect free (parse only): one cell per (manifest × target × supported
+  # host). Hosts without a GitHub runner (fedora) ride an ubuntu-latest host in
+  # a container image — the matrix carries that as `container`.
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: "stable"
+      - run: dart pub get
+      - name: 🧮 Render cross matrix
+        id: gen
+        run: |
+          dart run emb_cli:emb matrix examples/cross -o matrix.json
+          echo "matrix=$(cat matrix.json)" >> "$GITHUB_OUTPUT"
+      - name: 📋 Show matrix
+        run: cat matrix.json
+
+  # ── Stage 2: validate every cell (the PR gate) ──────────────────────────
+  # `--dry-run` resolves the plan with no download / mount / ssh, so each board
+  # validates on every host it declares — ubuntu directly, fedora in a
+  # container. This promotes the doc's L0/L1 surface from "parses" to "the real
+  # CLI plans this board end-to-end on this host".
+  validate:
+    needs: plan
+    runs-on: ${{ matrix.runs_on }}
+    container: ${{ matrix.container || '' }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      # The fedora container is minimal: give setup-dart its extract tools and
+      # the packagekit_dart build hook a `git`/`cmake` so it fails *cleanly*
+      # (no C++ compiler installed → configure exits non-zero, the hook no-ops)
+      # rather than throwing on a missing executable. The dry-run itself never
+      # touches PackageKit.
+      - name: 🧱 Bootstrap container
+        if: ${{ matrix.container != '' }}
+        run: dnf -y install git tar xz unzip findutils which cmake ninja-build
+      - uses: actions/checkout@v5
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: "stable"
+      - run: dart pub get
+      - name: 🔎 Plan ${{ matrix.id }} / ${{ matrix.target }} on ${{ matrix.host }} (${{ matrix.provider }})
+        run: dart run emb_cli:emb cross ${{ matrix.args }} --dry-run
+
+  # ── Stage 3 (opt-in): real cross build ──────────────────────────────────
+  # Manual only (workflow_dispatch + build=true). Per docs/cross_integration.md
+  # §13, full builds are L2: they need network and host privileges (image
+  # loop-mount, qemu-static apt chroot, SDK install). The `yocto-recipe` /
+  # device-rsync providers additionally need state no hosted runner has — point
+  # `runs-on` at a self-hosted runner for those, or filter them out of the set.
+  build:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.build }}
+    needs: plan
+    runs-on: ${{ matrix.runs_on }}
+    container: ${{ matrix.container || '' }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      FLUTTER_WORKSPACE: ${{ github.workspace }}/.ws
+    steps:
+      - name: 🧱 Bootstrap container
+        if: ${{ matrix.container != '' }}
+        run: dnf -y install git tar xz unzip findutils which cmake ninja-build
+      - uses: actions/checkout@v5
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: "stable"
+      - run: dart pub get
+      # The toolchain + sysroot extraction is the expensive, content-addressed
+      # artifact — keyed on the cell's sysroot_key so cpu-only variants of one
+      # board (rpi4/rpi5 on one image) restore the same cache.
+      - name: ♻️ Restore toolchain + sysroot
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ws/.config/flutter_workspace
+          key: cross-${{ matrix.provider }}-${{ matrix.sysroot_key }}
+      - name: 🧰 Install preflight tools (apt)
+        if: ${{ matrix.container == '' && matrix.preflight != '' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.preflight }} qemu-user-static binfmt-support
+      - name: 🧰 Install preflight tools (dnf)
+        if: ${{ matrix.container != '' && matrix.preflight != '' }}
+        run: dnf -y install ${{ matrix.preflight }} qemu-user-static
+      - name: 🏗️ Build ${{ matrix.id }} / ${{ matrix.target }} on ${{ matrix.host }} (${{ matrix.provider }})
+        run: dart run emb_cli:emb cross ${{ matrix.args }} --build
