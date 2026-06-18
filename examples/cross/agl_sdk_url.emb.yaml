@@ -1,13 +1,24 @@
-# ivi-homescreen via an Automotive Grade Linux (AGL) SDK DOWNLOADED from a URL.
+# Build ivi-homescreen for Automotive Grade Linux (AGL) from a DOWNLOADED SDK.
 #
-# YoctoSdkCrossProvider downloads the AGL self-extracting installer and runs it
+# YoctoSdkCrossProvider downloads the AGL self-extracting installer, runs it
 # non-interactively (`sh <installer> -y -d <workspace-prefix>`), then globs +
-# sources environment-setup-aarch64-agl-linux. AGL SDKs are published under
-# https://download.automotivelinux.org/AGL/release/<codename>/<version>/<machine>/deploy/sdk/
+# sources environment-setup-aarch64-agl-linux. AGL is its own Yocto distro, so
+# set triple: aarch64-agl-linux explicitly (the OE env only derives
+# aarch64-linux).
 #
-# This pins UCB 10 "Jellyfish" for an aarch64 Raspberry Pi 4 machine to show
-# the version axis distinct from the Marlin local example. Confirm the exact
-# machine dir / artifact for your release at download.automotivelinux.org.
+# VALIDATED END-TO-END against this SDK: `emb cross <src> --build --host-tools`
+# produced an aarch64-agl ELF `homescreen` (wayland-egl backend with the
+# agl-shell client). See README.md -> "Building ivi-homescreen for AGL".
+#
+# host_build_tools: AGL SDKs pin an old nativesdk cmake (3.16.5), below
+# ivi-homescreen's floor (>= 3.20); host_build_tools runs the host's cmake with
+# the SDK's OE env + toolchain file. Drop it on an SDK whose cmake is new enough.
+#
+# SDK URLs (confirm the codename/version/machine for your release):
+#   live:     https://download.automotivelinux.org/AGL/release/<codename>/...  (recent: trout, unagi)
+#   archived: https://archive.automotivelinux.org/<codename>/...               (marlin, needlefish, ...)
+# Newer releases may not publish a prebuilt crosssdk; Marlin (UCB 13) does.
+# codename <-> UCB: jellyfish=10, koi=11, lamprey=12, marlin=13, needlefish=14
 id: ivi-homescreen
 type: app
 supported_archs: [arm64]
@@ -21,6 +32,21 @@ build:
 
 cross:
   provider: yocto-sdk
-  sdk_url: https://download.automotivelinux.org/AGL/release/jellyfish/10.93.1/raspberrypi4/deploy/sdk/poky-agl-glibc-x86_64-agl-demo-platform-crosssdk-aarch64-raspberrypi4-64-toolchain-10.93.1.sh
-  triple: aarch64-agl-linux
-  augment: []
+  triple: aarch64-agl-linux           # AGL distro triple; do not omit
+  sdk_url: https://archive.automotivelinux.org/marlin/13.0.3/raspberrypi4/deploy/sdk/poky-agl-glibc-x86_64-agl-demo-platform-crosssdk-aarch64-raspberrypi4-64-toolchain-13.0.3.sh
+  host_build_tools: true              # AGL pins cmake 3.16.5 (< the 3.20 floor)
+  defines:
+    DISABLE_PLUGINS: 'ON'
+  backends:
+    wayland-egl:                      # AGL is Wayland (agl-compositor)
+      BUILD_BACKEND_WAYLAND_EGL: 'ON'
+      BUILD_BACKEND_WAYLAND_VULKAN: 'OFF'
+      ENABLE_AGL_SHELL_CLIENT: 'ON'   # agl-compositor shell protocol client
+  package:
+    name: ivi-homescreen
+    version: 13.0.3
+    maintainer: "Joel Winarske <joel.winarske@gmail.com>"
+    description: "IVI Flutter Shell (wayland-egl, AGL shell), cross-built by emb"
+    section: utils
+    bin: shell/homescreen
+    install_dir: /usr/bin

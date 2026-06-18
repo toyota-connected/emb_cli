@@ -138,19 +138,26 @@ void main() {
       expect(t.augment, isEmpty);
     });
 
-    test('AGL SDK URL — download.automotivelinux.org installer, no path', () {
+    test('AGL SDK URL — buildable wayland-egl + agl-shell via host cmake', () {
       final t = _loadCross('agl_sdk_url.emb.yaml');
       expect(t.provider, CrossProviderKind.yoctoSdk);
       expect(t.sdkPath, isNull);
-      expect(t.sdkUrl, startsWith('https://download.automotivelinux.org/AGL/'));
+      expect(t.sdkUrl, startsWith('https://archive.automotivelinux.org/'));
       expect(
         t.sdkUrl,
         endsWith(
           'poky-agl-glibc-x86_64-agl-demo-platform-crosssdk-'
-          'aarch64-raspberrypi4-64-toolchain-10.93.1.sh',
+          'aarch64-raspberrypi4-64-toolchain-13.0.3.sh',
         ),
       );
       expect(t.triple, 'aarch64-agl-linux');
+      // AGL pins an old cmake → host build tools.
+      expect(t.hostTools, isTrue);
+      // Wayland backend with the agl-compositor shell client.
+      expect(t.backends.keys, ['wayland-egl']);
+      expect(t.backends['wayland-egl']!['BUILD_BACKEND_WAYLAND_EGL'], 'ON');
+      expect(t.backends['wayland-egl']!['ENABLE_AGL_SHELL_CLIENT'], 'ON');
+      expect(t.package?.bin, 'shell/homescreen');
     });
 
     test('unknown provider token throws ArgumentError', () {
