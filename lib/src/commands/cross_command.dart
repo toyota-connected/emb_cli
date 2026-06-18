@@ -163,6 +163,14 @@ class CrossCommand extends Command<int> {
             'Skip emb.lock verification for this resolve (do not fail on a '
             'drifted artifact sha or toolchain version).',
         negatable: false,
+      )
+      ..addFlag(
+        'host-tools',
+        help:
+            "With --build: use the host's cmake/meson instead of the SDK's "
+            '(for OE SDKs that pin an old one, e.g. AGL cmake 3.16.5). Also '
+            'set via cross.host_build_tools.',
+        negatable: false,
       );
   }
 
@@ -361,6 +369,7 @@ class CrossCommand extends Command<int> {
         deployHost: args['deploy'] as String?,
         deployDir: args['deploy-dir'] as String,
         run: args['run'] == true,
+        hostTools: target.hostTools || args['host-tools'] == true,
       );
     }
     return ExitCode.success.code;
@@ -415,6 +424,7 @@ class CrossCommand extends Command<int> {
     String? deployHost,
     String deployDir = 'ivi-homescreen',
     bool run = false,
+    bool hostTools = false,
   }) async {
     final source =
         FileSystemEntity.typeSync(inputPath) == FileSystemEntityType.file
@@ -455,7 +465,11 @@ class CrossCommand extends Command<int> {
       'cross-build-${profile.targetTriple}-${buildKey(target)}',
     );
     // Native keeps the host compiler env; cross neutralizes it.
-    final builder = CrossBuilder(profile, neutralizeHostEnv: !native);
+    final builder = CrossBuilder(
+      profile,
+      neutralizeHostEnv: !native,
+      hostTools: hostTools,
+    );
 
     final results = backends.isEmpty
         ? [

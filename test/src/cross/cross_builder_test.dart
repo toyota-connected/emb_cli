@@ -106,6 +106,74 @@ void main() {
     },
   );
 
+  // A fake host-tool resolver so the tests don't depend on the runner's tools.
+  String? fakeHostTool(String tool) => '/opt/host/$tool';
+
+  test('hostTools: cmake is invoked by the resolved host path', () async {
+    final rec = recorder();
+    final r =
+        await CrossBuilder(
+          _profile,
+          runProcess: rec.run,
+          hostTools: true,
+          resolveHostTool: fakeHostTool,
+        ).build(
+          sourceDir: dir('src'),
+          buildDir: dir('b'),
+          generator: CrossGenerator.cmake,
+        );
+    expect(r.success, isTrue);
+    final cfg = rec.calls.firstWhere((c) => c.contains('-S'));
+    // Not the bare 'cmake' (which the OE PATH would shadow) — the resolved host
+    // path, so the SDK's old cmake is bypassed. Same exe builds too.
+    expect(cfg.first, '/opt/host/cmake');
+    expect(
+      rec.calls.any(
+        (c) => c.first == '/opt/host/cmake' && c.contains('--build'),
+      ),
+      isTrue,
+    );
+    // The toolchain file + OE env still flow through.
+    expect(cfg, contains('-DCMAKE_TOOLCHAIN_FILE=/tc.cmake'));
+    expect(rec.envs.first!['CC'], 'aarch64-none-linux-gnu-gcc');
+  });
+
+  test('hostTools: meson setup is invoked by the resolved host path', () async {
+    final rec = recorder();
+    final r =
+        await CrossBuilder(
+          _profile,
+          runProcess: rec.run,
+          hostTools: true,
+          resolveHostTool: fakeHostTool,
+        ).build(
+          sourceDir: dir('src'),
+          buildDir: dir('b'),
+          generator: CrossGenerator.meson,
+        );
+    expect(r.success, isTrue);
+    final setup = rec.calls.firstWhere((c) => c.contains('setup'));
+    expect(setup.first, '/opt/host/meson');
+    expect(setup, containsAll(['--cross-file', '/c.cross']));
+  });
+
+  test('hostTools: a missing host tool fails with a clear message', () async {
+    final rec = recorder();
+    final r =
+        await CrossBuilder(
+          _profile,
+          runProcess: rec.run,
+          hostTools: true,
+          resolveHostTool: (_) => null,
+        ).build(
+          sourceDir: dir('src'),
+          buildDir: dir('b'),
+          generator: CrossGenerator.cmake,
+        );
+    expect(r.success, isFalse);
+    expect(r.message, contains('no cmake found on the host PATH'));
+  });
+
   test('a failed configure short-circuits the build', () async {
     final rec = recorder(failOn: (exe, args) => exe == 'cmake');
     final r = await CrossBuilder(_profile, runProcess: rec.run).build(

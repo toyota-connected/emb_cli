@@ -283,5 +283,27 @@ void main() {
       expect(t.backends.keys, ['wayland-egl', 'drm-kms-egl']);
       expect(t.backends['wayland-egl'], {'BUILD_BACKEND_WAYLAND_EGL': 'ON'});
     });
+
+    test('host_build_tools (and host_cmake alias) parse to hostTools', () {
+      expect(
+        CrossTarget.fromMap(const {'provider': 'yocto-sdk'}).hostTools,
+        isFalse,
+      );
+      expect(
+        CrossTarget.fromMap(const {
+          'provider': 'yocto-sdk',
+          'host_build_tools': true,
+        }).hostTools,
+        isTrue,
+      );
+      // Backward-compatible alias.
+      expect(
+        CrossTarget.fromMap(const {
+          'provider': 'yocto-sdk',
+          'host_cmake': true,
+        }).hostTools,
+        isTrue,
+      );
+    });
   });
 }

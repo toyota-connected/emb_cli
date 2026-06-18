@@ -36,11 +36,26 @@ class CrossBuilder {
     this.profile, {
     ProcessRunner runProcess = defaultProcessRunner,
     bool neutralizeHostEnv = true,
+    bool hostTools = false,
+    String? Function(String tool)? resolveHostTool,
   }) : _run = runProcess,
-       _neutralize = neutralizeHostEnv;
+       _neutralize = neutralizeHostEnv,
+       _hostTools = hostTools,
+       _resolveHostTool = resolveHostTool ?? _hostToolOnPath;
 
   final CrossProfile profile;
   final ProcessRunner _run;
+
+  /// When true, run the host's build tool (`cmake`/`meson`, resolved from the
+  /// host `PATH`) rather than whichever the profile's build env resolves — some
+  /// OE SDKs pin an old `nativesdk-cmake`/`-meson` below a project's required
+  /// minimum. The OE env + toolchain/cross file are still applied; only the
+  /// configure-tool binary changes.
+  final bool _hostTools;
+
+  /// Resolves a host build tool (`cmake`/`meson`) to an absolute path, or null
+  /// if absent. Injectable so tests don't depend on the runner's real tools.
+  final String? Function(String tool) _resolveHostTool;
 
   /// Whether to blank the host *compiler selection* (`CC`/`CXX`/`CPP`) before
   /// applying the profile env. True for cross builds (the compiler comes from
@@ -121,6 +136,19 @@ class CrossBuilder {
     ...profile.buildEnv(),
   };
 
+  /// Default [_resolveHostTool]: the first [tool] on the *host* `PATH`
+  /// (`Platform.environment`), or null if none.
+  static String? _hostToolOnPath(String tool) {
+    final path = Platform.environment['PATH'];
+    if (path == null) return null;
+    for (final dir in path.split(Platform.isWindows ? ';' : ':')) {
+      if (dir.isEmpty) continue;
+      final exe = File(p.join(dir, tool));
+      if (exe.existsSync()) return exe.path;
+    }
+    return null;
+  }
+
   Future<CrossBuildResult> _cmake(
     Directory src,
     Directory build,
@@ -129,7 +157,25 @@ class CrossBuilder {
     String buildType,
   ) async {
     final tc = profile.cmakeToolchainFile;
-    final configure = await _run('cmake', [
+    // Some OE SDKs pin an old nativesdk-cmake on the build env's PATH; host-
+    // tools selects the host's newer binary by absolute path (the process exe
+    // is resolved via the passed env's PATH, so a bare 'cmake' would still hit
+    // the SDK's).
+    final String cmakeExe;
+    if (_hostTools) {
+      final host = _resolveHostTool('cmake');
+      if (host == null) {
+        return CrossBuildResult(
+          success: false,
+          buildDir: build.path,
+          message: 'host_build_tools set but no cmake found on the host PATH',
+        );
+      }
+      cmakeExe = host;
+    } else {
+      cmakeExe = 'cmake';
+    }
+    final configure = await _run(cmakeExe, [
       '-S',
       src.path,
       '-B',
@@ -146,7 +192,7 @@ class CrossBuilder {
         message: 'cmake configure failed: ${configure.stderr}',
       );
     }
-    final compile = await _run('cmake', [
+    final compile = await _run(cmakeExe, [
       '--build',
       build.path,
       '--parallel',
@@ -167,7 +213,22 @@ class CrossBuilder {
     String buildType,
   ) async {
     final cross = profile.mesonCrossFile;
-    final setup = await _run('meson', [
+    // Same rationale as _cmake: bypass an SDK's pinned-old meson when asked.
+    final String mesonExe;
+    if (_hostTools) {
+      final host = _resolveHostTool('meson');
+      if (host == null) {
+        return CrossBuildResult(
+          success: false,
+          buildDir: build.path,
+          message: 'host_build_tools set but no meson found on the host PATH',
+        );
+      }
+      mesonExe = host;
+    } else {
+      mesonExe = 'meson';
+    }
+    final setup = await _run(mesonExe, [
       'setup',
       build.path,
       src.path,
