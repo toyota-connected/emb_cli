@@ -27,6 +27,7 @@
     "CFLAGS",
     "crosssdk",
     "icefish",
+    "opencontainers",
     "libdisplay",
     "libdrm",
     "libegl",

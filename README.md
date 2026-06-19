@@ -462,6 +462,7 @@ emb cross <project-dir|manifest.yaml> [options]
 | `--no-verify` | off | Skip `emb.lock` verification for this resolve (don't fail on a drifted artifact sha or version). |
 | `--host-tools` | off | With `--build`: use the host's `cmake`/`meson` instead of the SDK's, for OE SDKs that pin an old one (e.g. AGL ships cmake 3.16.5). The OE env + toolchain/cross file are unchanged. Also set via `cross.host_build_tools`. |
 | `--install-deps` | off | Install the provider's missing preflight host tools via the host package backend (PackageKit/brew) instead of erroring. Opt-in; needs privileges. Falls back to printing the manual install command when no backend is reachable. |
+| `--dockerfile` | off | Resolve, then emit a `Dockerfile` + `.dockerignore` (into the platform dir) that bake the toolchain + sysroot into an OCI image so CI pulls instead of resolving. arm-gnu only; does not build. See [Toolchain images](#toolchain-images). |
 
 ```sh
 emb cross ./app/ivi-homescreen --dry-run      # plan only, no side effects
@@ -623,6 +624,50 @@ emb cross . --target rpi5 --build --update-lock    # accept an intentional chang
 > Note: `emb.lock` lives at the project root keyed by target name, so loosely
 > co-located single-file manifests that share one directory would collide on the
 > `default` target. One project = one directory is the intended layout.
+
+#### Toolchain images
+
+Downloading + extracting an arm-gnu toolchain and sysroot is the slow part of a
+cold build. `--dockerfile` resolves the target, then emits a `Dockerfile` +
+`.dockerignore` into the platform dir that bake the toolchain + sysroot into an
+OCI image (with the host build tools — cmake, ninja, wayland-scanner, …) — so CI
+pulls a ready toolchain instead of re-resolving:
+
+```sh
+emb cross . --target rpi5 --dockerfile
+# Wrote …/cross-aarch64-none-linux-gnu-<key>/Dockerfile
+# Build:  docker build -t emb-cross-aarch64-none-linux-gnu:<key> …/cross-…-<key>
+docker build -t emb-cross-aarch64-none-linux-gnu:<key> <that dir>
+```
+
+The image bakes them at a fixed workspace (`/emb`) under the same
+`cross-<triple>-<key>` path emb computes, so consuming it needs **no special
+flag** — a build in the image resolves as a cache hit:
+
+```yaml
+# CI: run the cross build against the prebuilt image
+container: emb-cross-aarch64-none-linux-gnu:<key>
+# → emb cross <manifest> --target rpi5 --build -w /emb   (skips download/extract)
+```
+
+To run the same build locally (no CI), mount your project, pub cache, and Dart
+SDK into the image — only the toolchain + sysroot are baked, emb itself is not:
+
+```sh
+docker run --rm \
+  --security-opt label=disable \    # Fedora/SELinux only; omit elsewhere
+  -v "$PROJECT:$PROJECT" -v "$PUB_CACHE:$PUB_CACHE" -v "$DART_SDK:$DART_SDK:ro" \
+  -e "PATH=$DART_SDK/bin:$PATH" -e "PUB_CACHE=$PUB_CACHE" -w "$PROJECT" \
+  emb-cross-aarch64-none-linux-gnu:<key> \
+  emb cross "$PROJECT" --target rpi5 --build --backend wayland-egl -w /emb
+```
+
+The `<key>` (the `sysroot_key`) must match the manifest; change the manifest and
+you rebuild the image. Always (re)build the image from the **current** emitter —
+it bakes the host build tools the embedder needs (cmake, ninja, meson,
+`wayland-scanner`, git/curl); an older image is missing them. `augment`
+libraries aren't baked — `--build` rebuilds them into the cached sysroot at
+consume time (cheap). arm-gnu only for now.
 
 ---
 
