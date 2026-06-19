@@ -13,6 +13,7 @@ import 'package:emb_cli/src/cross/cross_provider.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/cross/deb_packager.dart';
 import 'package:emb_cli/src/cross/deployer.dart';
+import 'package:emb_cli/src/cross/dockerfile_emitter.dart';
 import 'package:emb_cli/src/cross/emb_lock.dart';
 import 'package:emb_cli/src/cross/local_cross_provider.dart';
 import 'package:emb_cli/src/cross/overlay_builder.dart';
@@ -178,6 +179,14 @@ class CrossCommand extends Command<int> {
             "Install the provider's missing preflight host tools via the host "
             'package backend (PackageKit/brew) instead of erroring. Opt-in; '
             'needs privileges.',
+        negatable: false,
+      )
+      ..addFlag(
+        'dockerfile',
+        help:
+            'Resolve, then emit a Dockerfile (+ .dockerignore) that bakes the '
+            'toolchain + sysroot into an OCI image so CI pulls instead of '
+            'resolving (arm-gnu). Does not build; ignores --build.',
         negatable: false,
       );
   }
@@ -352,6 +361,13 @@ class CrossCommand extends Command<int> {
       )) {
         return ExitCode.software.code;
       }
+    }
+
+    // --dockerfile: emit an OCI build for the resolved toolchain+sysroot, then
+    // stop (don't build). arm-gnu only — its platform dir holds toolchain/ +
+    // sysroot/; the Yocto providers don't lay out a self-contained dir to bake.
+    if (args['dockerfile'] == true) {
+      return _emitDockerfile(profile, target);
     }
 
     if (args['prepare'] == true && target.augment.isNotEmpty) {
@@ -951,6 +967,43 @@ class CrossCommand extends Command<int> {
         '(${target.generator.name})',
       );
     }
+  }
+
+  /// Emit a Dockerfile + .dockerignore that bake the resolved arm-gnu toolchain
+  /// + sysroot into an OCI image (build context = the platform dir). Other
+  /// providers don't lay out a self-contained dir to bake.
+  int _emitDockerfile(CrossProfile profile, CrossTarget target) {
+    if (profile.providerName != 'arm-gnu') {
+      _logger.err(
+        '--dockerfile supports the arm-gnu provider only '
+        '(got ${profile.providerName}).',
+      );
+      return ExitCode.usage.code;
+    }
+    // The platform dir is the sysroot's parent (cross-<triple>-<key>/), holding
+    // toolchain/ + sysroot/ — the build context.
+    final ctx = Directory(p.dirname(profile.targetSysroot));
+    final key = sysrootKey(target);
+    File(p.join(ctx.path, 'Dockerfile')).writeAsStringSync(
+      ToolchainImage.dockerfile(
+        triple: profile.targetTriple,
+        sysrootKey: key,
+        toolchainVersion: target.toolchainVersion,
+      ),
+    );
+    File(
+      p.join(ctx.path, '.dockerignore'),
+    ).writeAsStringSync(ToolchainImage.dockerignore());
+
+    final tag = 'emb-cross-${profile.targetTriple}:$key';
+    _logger
+      ..info('Wrote ${p.join(ctx.path, "Dockerfile")}')
+      ..info('Build:  docker build -t $tag ${ctx.path}')
+      ..info(
+        'Use:    container: $tag  →  emb cross <manifest> --target '
+        '<name> --build -w ${ToolchainImage.workspace}',
+      );
+    return ExitCode.success.code;
   }
 
   /// Reconcile `<projectRoot>/emb.lock` with the freshly [resolved] facts.
