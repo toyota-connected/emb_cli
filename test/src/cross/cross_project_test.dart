@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:emb_cli/src/cross/cross_project.dart';
+import 'package:emb_cli/src/manifest/manifest_loader.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
@@ -69,7 +70,7 @@ cross:
   backends:
     wayland-egl: {BUILD_BACKEND_WAYLAND_EGL: 'ON'}
 ''');
-      final project = const CrossProjectResolver().resolve(f.path)!;
+      final project = CrossProjectResolver().resolve(f.path)!;
       expect(project.targets.keys, ['pi5']);
       final ref = project.targets['pi5']!;
       expect(ref.cross['provider'], 'arm-gnu');
@@ -91,7 +92,7 @@ cross:
     rpi4: {cpu_flags: -mcpu=cortex-a72}
     rpi5: {cpu_flags: -mcpu=cortex-a76}
 ''');
-      final project = const CrossProjectResolver().resolve(f.path)!;
+      final project = CrossProjectResolver().resolve(f.path)!;
       expect(project.targets.keys, ['rpi4', 'rpi5']);
       final rpi5 = project.targets['rpi5']!;
       expect(rpi5.cross['provider'], 'arm-gnu'); // shared field
@@ -125,9 +126,7 @@ cross:
     rpi4: {cpu_flags: -mcpu=cortex-a72}
     rpi5: {cpu_flags: -mcpu=cortex-a76}
 ''');
-      final project = const CrossProjectResolver().resolve(
-        p.join(tmp.path, 'proj'),
-      )!;
+      final project = CrossProjectResolver().resolve(p.join(tmp.path, 'proj'))!;
       // imx93 (flat) + rpi4/rpi5 (family) — sorted by file: imx93 then rpi.
       expect(project.targets.keys, ['imx93-evk', 'rpi4', 'rpi5']);
 
@@ -164,9 +163,7 @@ cross:
   triple: aarch64-poky-linux
   backends: {drm-kms-egl: {BUILD_BACKEND_DRM_KMS_EGL: 'ON'}}
 ''');
-      final project = const CrossProjectResolver().resolve(
-        p.join(tmp.path, 'proj'),
-      )!;
+      final project = CrossProjectResolver().resolve(p.join(tmp.path, 'proj'))!;
       final imx = project.targets['imx93-evk']!;
       // Only the board's backend — not the inherited wayland-egl default.
       expect((imx.cross['backends'] as Map).keys, ['drm-kms-egl']);
@@ -180,7 +177,7 @@ supported_archs: [arm64]
 platform: {name: pi5}
 cross: {provider: arm-gnu, image_url: https://x/y.img.xz}
 ''');
-      final ref = const CrossProjectResolver().resolve(f.path)!.targets['pi5']!;
+      final ref = CrossProjectResolver().resolve(f.path)!.targets['pi5']!;
       expect(ref.arch, 'arm64');
     });
 
@@ -194,7 +191,7 @@ platform: {name: board}
 cross: {provider: yocto-recipe, triple: aarch64-poky-linux}
 ''');
       expect(
-        () => const CrossProjectResolver().resolve(p.join(tmp.path, 'proj')),
+        () => CrossProjectResolver().resolve(p.join(tmp.path, 'proj')),
         throwsA(isA<CrossProjectException>()),
       );
     });
@@ -208,13 +205,122 @@ cross:
     local: {cpu_flags: -mcpu=native}
 ''');
       expect(
-        () => const CrossProjectResolver().resolve(f.path),
+        () => CrossProjectResolver().resolve(f.path),
         throwsA(isA<CrossProjectException>()),
       );
     });
 
     test('resolve returns null when no manifest is present', () {
-      expect(const CrossProjectResolver().resolve(tmp.path), isNull);
+      expect(CrossProjectResolver().resolve(tmp.path), isNull);
+    });
+  });
+
+  group('CrossProjectResolver extends (board layer)', () {
+    late Directory tmp;
+    late Directory boards;
+    setUp(() {
+      tmp = Directory.systemTemp.createTempSync('emb_ext_');
+      boards = Directory(p.join(tmp.path, 'boards'))..createSync();
+      File(p.join(boards.path, 'raspberry-pi.emb.yaml')).writeAsStringSync('''
+id: raspberry-pi
+type: board
+cross:
+  provider: arm-gnu
+  triple: aarch64-none-linux-gnu
+  sysroot:
+    partition: 2
+    dev_packages: [libegl-dev, libwayland-dev, libdrm-dev]
+  targets:
+    rpi5-bookworm:
+      toolchain_version: 12.3.rel1
+      image_url: https://example/bookworm.img.xz
+      cpu_flags: [-mcpu=cortex-a76]
+    rpi5-trixie:
+      toolchain_version: 15.2.rel1
+      image_url: https://example/trixie.img.xz
+      cpu_flags: [-mcpu=cortex-a76]
+''');
+    });
+    tearDown(() => tmp.deleteSync(recursive: true));
+
+    CrossProject resolveProject(String body) {
+      final f = File(p.join(tmp.path, 'proj.emb.yaml'))
+        ..writeAsStringSync(body);
+      return CrossProjectResolver(
+        const ManifestLoader(),
+        boards,
+      ).resolve(f.path)!;
+    }
+
+    test('inherits the board hardware and overlays project backends', () {
+      final project = resolveProject('''
+id: ivi-homescreen
+cross:
+  targets:
+    rpi5-bookworm:
+      extends: rpi5-bookworm
+      backends:
+        drm-kms-vulkan: {BUILD_BACKEND_DRM_KMS_VULKAN: 'ON'}
+''');
+      final cross = project.targets['rpi5-bookworm']!.cross;
+      // Hardware from the board:
+      expect(cross['provider'], 'arm-gnu');
+      expect(cross['triple'], 'aarch64-none-linux-gnu');
+      expect(cross['toolchain_version'], '12.3.rel1');
+      expect(cross['cpu_flags'], ['-mcpu=cortex-a76']);
+      // Project layer present, and the `extends` key is consumed.
+      expect((cross['backends'] as Map).keys, ['drm-kms-vulkan']);
+      expect(cross.containsKey('extends'), isFalse);
+    });
+
+    test('dev_packages union (board base + project additions, deduped)', () {
+      final project = resolveProject('''
+id: ivi-homescreen
+cross:
+  targets:
+    rpi5-trixie:
+      extends: rpi5-trixie
+      sysroot:
+        dev_packages: [libwayland-dev, libgstreamer1.0-dev, libsecret-1-dev]
+''');
+      final sysroot = project.targets['rpi5-trixie']!.cross['sysroot'] as Map;
+      expect(sysroot['partition'], 2); // from the board
+      // base [egl, wayland, drm] ∪ project [wayland(dup), gst, secret]
+      expect(sysroot['dev_packages'], [
+        'libegl-dev',
+        'libwayland-dev',
+        'libdrm-dev',
+        'libgstreamer1.0-dev',
+        'libsecret-1-dev',
+      ]);
+    });
+
+    test('backends replace (not union) across the layer', () {
+      final project = resolveProject('''
+id: ivi-homescreen
+cross:
+  targets:
+    rpi5-bookworm:
+      extends: rpi5-bookworm
+      backends:
+        software: {BUILD_BACKEND_SOFTWARE: 'ON'}
+''');
+      // The board has no backends; the project's set stands alone.
+      final backends =
+          project.targets['rpi5-bookworm']!.cross['backends'] as Map;
+      expect(backends.keys, ['software']);
+    });
+
+    test('unknown board name throws', () {
+      expect(
+        () => resolveProject('''
+id: ivi-homescreen
+cross:
+  targets:
+    x: {extends: no-such-board}
+'''),
+        throwsA(isA<CrossProjectException>()),
+      );
     });
   });
 }

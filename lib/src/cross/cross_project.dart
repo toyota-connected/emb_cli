@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:emb_cli/src/cross/cross_arch.dart';
@@ -83,9 +84,20 @@ class CrossProject {
 /// Resolves a project directory, an explicit manifest file, or a bare `.emb/`
 /// directory into a [CrossProject].
 class CrossProjectResolver {
-  const CrossProjectResolver([this._loader = const ManifestLoader()]);
+  CrossProjectResolver([
+    this._loader = const ManifestLoader(),
+    this._boardsDirOverride,
+  ]);
 
   final ManifestLoader _loader;
+
+  /// Where emb's shipped board library lives. Null = auto-discover (env
+  /// `EMB_BOARDS_DIR`, then the `boards/` dir of the emb_cli package). Tests
+  /// point this at a fixture.
+  final Directory? _boardsDirOverride;
+
+  /// Lazily-loaded board registry: board name -> its hardware `cross:` map.
+  Map<String, Map<String, dynamic>>? _boards;
 
   /// The base file searched for inside a `.emb/` directory.
   static const baseFileName = 'base.emb.yaml';
@@ -164,7 +176,7 @@ class CrossProjectResolver {
       final cross = _crossOf(merged);
       // A board's backend set is a complete statement, not an addition: when
       // the board declares cross.backends, it replaces the base's rather than
-      // unioning with it (a drm-kms board shouldn't inherit a wayland default).
+      // merging with it (a drm-kms board shouldn't inherit a wayland default).
       final boardCross = fm['cross'];
       if (boardCross is Map && boardCross['backends'] is Map) {
         cross['backends'] = boardCross['backends'];
@@ -218,12 +230,13 @@ class CrossProjectResolver {
     final targets = cross['targets'];
     if (targets is! Map || targets.isEmpty) {
       _checkName(fallbackName, sourcePath);
+      final resolved = _applyExtends(shared, sourcePath);
       return {
         fallbackName: CrossTargetRef(
           name: fallbackName,
-          cross: shared,
+          cross: resolved,
           platform: platform,
-          arch: _archOf(shared, supportedArchs),
+          arch: _archOf(resolved, supportedArchs),
           sourcePath: sourcePath,
         ),
       };
@@ -235,7 +248,7 @@ class CrossProjectResolver {
       final override = entry.value is Map
           ? Map<String, dynamic>.from(entry.value as Map)
           : const <String, dynamic>{};
-      final merged = {...shared, ...override};
+      final merged = _applyExtends({...shared, ...override}, sourcePath);
       out[name] = CrossTargetRef(
         name: name,
         cross: merged,
@@ -293,6 +306,136 @@ class CrossProjectResolver {
     for (final e in cross.entries)
       if (e.key != 'targets') e.key: e.value,
   };
+
+  /// Resolve a `cross.extends: <board>` reference: deep-merge [cross] (the
+  /// project/app layer) over the named base board (emb's hardware layer),
+  /// recursing for chains. No-op when there is no `extends`.
+  Map<String, dynamic> _applyExtends(
+    Map<String, dynamic> cross,
+    String? sourcePath, [
+    Set<String> seen = const {},
+  ]) {
+    final ext = cross['extends'];
+    if (ext == null) return cross;
+    final baseName = ext.toString();
+    if (seen.contains(baseName)) {
+      throw CrossProjectException(
+        'extends: cycle through "$baseName" (in ${sourcePath ?? "manifest"}).',
+      );
+    }
+    final registry = _boardRegistry();
+    final base = registry[baseName];
+    if (base == null) {
+      final known = registry.keys.isEmpty ? 'none' : registry.keys.join(', ');
+      throw CrossProjectException(
+        'extends: unknown board "$baseName" (in ${sourcePath ?? "manifest"}). '
+        'Known boards: $known.',
+      );
+    }
+    final resolvedBase = _applyExtends(base, sourcePath, {...seen, baseName});
+    final derived = {...cross}..remove('extends');
+    return _mergeCross(resolvedBase, derived);
+  }
+
+  /// Merge the [over] (derived) layer onto [base], with the cross-layer rules:
+  /// nested maps deep-merge; `backends` is a complete statement (replace);
+  /// `sysroot.dev_packages` accumulate (union, order-preserving).
+  Map<String, dynamic> _mergeCross(
+    Map<String, dynamic> base,
+    Map<String, dynamic> over,
+  ) {
+    final merged = deepMerge(base, over);
+    if (over['backends'] is Map) merged['backends'] = over['backends'];
+    final baseSys = base['sysroot'];
+    final overSys = over['sysroot'];
+    if (baseSys is Map &&
+        overSys is Map &&
+        baseSys['dev_packages'] is List &&
+        overSys['dev_packages'] is List) {
+      final union = <String>[
+        for (final e in baseSys['dev_packages'] as List) e.toString(),
+      ];
+      for (final e in overSys['dev_packages'] as List) {
+        if (!union.contains(e.toString())) union.add(e.toString());
+      }
+      (merged['sysroot'] as Map)['dev_packages'] = union;
+    }
+    return merged;
+  }
+
+  /// Board name -> hardware `cross:` map, loaded once from the board library.
+  Map<String, Map<String, dynamic>> _boardRegistry() {
+    if (_boards case final cached?) return cached;
+    final out = <String, Map<String, dynamic>>{};
+    final dir = _boardsDir();
+    if (dir != null && dir.existsSync()) {
+      for (final f in dir.listSync().whereType<File>().where(
+        (f) => f.path.endsWith('.emb.yaml'),
+      )) {
+        final m = _loader.loadManifestFile(f)?.raw;
+        if (m == null) continue;
+        final cross = _crossOf(m);
+        final shared = _withoutTargets(cross);
+        final targets = cross['targets'];
+        if (targets is Map && targets.isNotEmpty) {
+          for (final e in targets.entries) {
+            final override = e.value is Map
+                ? Map<String, dynamic>.from(e.value as Map)
+                : const <String, dynamic>{};
+            out[e.key.toString()] = {...shared, ...override};
+          }
+        } else {
+          final name =
+              (m['id'] as String?) ?? p.basename(f.path).split('.').first;
+          out[name] = shared;
+        }
+      }
+    }
+    return _boards = out;
+  }
+
+  /// The board-library directory: an explicit override, then `EMB_BOARDS_DIR`,
+  /// then the `boards/` dir of the emb_cli package (via its package_config),
+  /// then a walk up from the running script.
+  Directory? _boardsDir() {
+    if (_boardsDirOverride != null) return _boardsDirOverride;
+    final env = Platform.environment['EMB_BOARDS_DIR'];
+    if (env != null && env.isNotEmpty) return Directory(env);
+    return _discoverBoardsDir();
+  }
+
+  Directory? _discoverBoardsDir() {
+    final pc = Platform.packageConfig;
+    if (pc != null) {
+      try {
+        final pcUri = pc.startsWith('file:') ? Uri.parse(pc) : Uri.file(pc);
+        final pcFile = File.fromUri(pcUri);
+        if (pcFile.existsSync()) {
+          final json =
+              jsonDecode(pcFile.readAsStringSync()) as Map<String, dynamic>;
+          for (final pkg in (json['packages'] as List? ?? const [])) {
+            if (pkg is Map && pkg['name'] == 'emb_cli') {
+              var root = (pkg['rootUri'] ?? '').toString();
+              if (!root.endsWith('/')) root = '$root/';
+              final dir = Directory.fromUri(
+                pcUri.resolve(root).resolve('boards/'),
+              );
+              if (dir.existsSync()) return dir;
+            }
+          }
+        }
+      } on Object {
+        // fall through to the script-relative walk
+      }
+    }
+    var dir = File.fromUri(Platform.script).parent;
+    for (var i = 0; i < 6; i++) {
+      final boards = Directory(p.join(dir.path, 'boards'));
+      if (boards.existsSync()) return boards;
+      dir = dir.parent;
+    }
+    return null;
+  }
 }
 
 /// Recursively merge [over] onto [base]: nested maps merge key-by-key; lists

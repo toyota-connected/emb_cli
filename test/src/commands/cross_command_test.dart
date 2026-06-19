@@ -313,7 +313,14 @@ void main() {
 
   test('--dry-run plans every target of the multi-platform example', () async {
     final example = p.join('examples', 'cross', 'raspberry-pi-family.emb.yaml');
-    for (final t in ['rpi5', 'rpi4', 'rpi-zero-2w', 'radxa-zero3']) {
+    for (final t in [
+      'rpi5-bookworm',
+      'rpi5-trixie',
+      'rpi4-bookworm',
+      'rpi4-trixie',
+      'rpi-zero-2w-bookworm',
+      'rpi-zero-2w-trixie',
+    ]) {
       final code = await run(['cross', '--dry-run', '--target', t, example]);
       expect(code, ExitCode.success.code, reason: '$t dry-run failed');
     }

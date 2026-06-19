@@ -1,0 +1,88 @@
+# emb board library — Raspberry Pi family (hardware/OS layer only).
+#
+# This file ships WITH emb and is the base layer projects `extends`. It carries
+# only what is true for ANY project targeting these boards: the toolchain, the
+# PiOS sysroot image, the rootfs partition, the CPU tuning, and the base GUI/
+# input/Vulkan stack. Projects (and apps) layer their backends, plugins,
+# augment libraries, and extra packages on top:
+#
+#   # <project>/.emb/<board>.emb.yaml
+#   cross:
+#     targets:
+#       rpi5-bookworm:
+#         extends: rpi5-bookworm        # <- this board (hardware)
+#         backends: { ... }             # project layer
+#         augment:  [ ... ]
+#         sysroot: { dev_packages: [ ... ] }   # merged onto the base stack
+#
+# Resolution merges base (here) <- project <- app. cpu_flags and backends are a
+# complete statement (replace); dev_packages accumulate (union).
+#
+# OS variant -> toolchain + sysroot image:
+#   bookworm -> gcc 12 / glibc 2.36, raspios-bookworm
+#   trixie   -> gcc 15 / glibc 2.41, raspios-trixie
+# Board -> only -mcpu (a76 / a72 / a53). All boards on one OS share a sysroot.
+id: raspberry-pi
+type: board
+supported_archs: [arm64]
+supported_host_types: [ubuntu, fedora]
+
+cross:
+  provider: arm-gnu
+  version_policy: pinned
+  triple: aarch64-none-linux-gnu
+
+  # Base GUI/input/Vulkan/Wayland stack any PiOS embedder links against. The
+  # display-server, DRM/KMS, seat/input, and Vulkan loader libs are board/OS
+  # facts; project-specific deps (gstreamer, camera, secret, libdisplay-info)
+  # are merged in at the project layer.
+  sysroot: &sysroot_base
+    partition: 2                  # raspios rootfs is the Linux (type 83) p2
+    dev_packages:
+      - libegl-dev
+      - libgles2-mesa-dev
+      - libwayland-dev
+      - wayland-protocols
+      - libxkbcommon-dev
+      - libudev-dev
+      - libdrm-dev
+      - libgbm-dev
+      - libinput-dev
+      - libseat-dev
+      - libxcursor-dev
+      - libvulkan-dev
+      - mesa-vulkan-drivers
+      - libglib2.0-dev
+      - libsystemd-dev
+      - zlib1g-dev
+
+  targets:
+    # -- Raspberry Pi 5 (Cortex-A76) --------------------------------------
+    rpi5-bookworm:
+      toolchain_version: &tc_bookworm 12.3.rel1
+      image_url: &img_bookworm https://downloads.raspberrypi.com/raspios_oldstable_lite_arm64/images/raspios_oldstable_lite_arm64-2026-04-14/2026-04-13-raspios-bookworm-arm64-lite.img.xz
+      cpu_flags: &cpu_rpi5 [-mcpu=cortex-a76]
+    rpi5-trixie:
+      toolchain_version: &tc_trixie 15.2.rel1
+      image_url: &img_trixie https://downloads.raspberrypi.com/raspios_lite_arm64/images/raspios_lite_arm64-2026-04-21/2026-04-21-raspios-trixie-arm64-lite.img.xz
+      cpu_flags: *cpu_rpi5
+
+    # -- Raspberry Pi 4 (Cortex-A72) --------------------------------------
+    rpi4-bookworm:
+      toolchain_version: *tc_bookworm
+      image_url: *img_bookworm
+      cpu_flags: &cpu_rpi4 [-mcpu=cortex-a72]
+    rpi4-trixie:
+      toolchain_version: *tc_trixie
+      image_url: *img_trixie
+      cpu_flags: *cpu_rpi4
+
+    # -- Raspberry Pi Zero 2 W (Cortex-A53) -------------------------------
+    rpi-zero-2w-bookworm:
+      toolchain_version: *tc_bookworm
+      image_url: *img_bookworm
+      cpu_flags: &cpu_zero2w [-mcpu=cortex-a53]
+    rpi-zero-2w-trixie:
+      toolchain_version: *tc_trixie
+      image_url: *img_trixie
+      cpu_flags: *cpu_zero2w
