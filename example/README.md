@@ -26,6 +26,8 @@ Host
 Package backend
   selected:  packagekit
 ✓ packagekit is available
+✓ 3 updates available
+  bash, curl, mesa-libEGL, …
 ```
 
 ## 2. Provision a workspace

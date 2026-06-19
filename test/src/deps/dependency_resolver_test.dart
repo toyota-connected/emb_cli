@@ -17,6 +17,9 @@ class _FakeProvisioner implements HostProvisioner {
   Future<bool> isAvailable() async => true;
 
   @override
+  Future<List<String>?> availableUpdates() async => null;
+
+  @override
   Future<Set<String>> missing(Set<String> names) async =>
       names.difference(installed);
 

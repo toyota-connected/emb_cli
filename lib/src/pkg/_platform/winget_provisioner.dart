@@ -35,6 +35,9 @@ class WingetProvisioner implements HostProvisioner {
   }
 
   @override
+  Future<List<String>?> availableUpdates() async => null; // not reported here
+
+  @override
   Future<Set<String>> missing(Set<String> names) async {
     if (names.isEmpty) return {};
     final client = await _connect();

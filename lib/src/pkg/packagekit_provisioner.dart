@@ -39,6 +39,16 @@ class PackageKitProvisioner implements HostProvisioner {
   }
 
   @override
+  Future<List<String>?> availableUpdates() async {
+    final client = await _connect();
+    // `GetUpdates` reflects the last cache refresh (we don't refresh here, to
+    // keep doctor read-only/fast). Distinct names, sorted for stable output.
+    final pkgs = await _collectPackages(client.getUpdates());
+    final names = {for (final p in pkgs) p.id.name}.toList()..sort();
+    return names;
+  }
+
+  @override
   Future<Set<String>> missing(Set<String> names) async {
     if (names.isEmpty) return {};
     final client = await _connect();

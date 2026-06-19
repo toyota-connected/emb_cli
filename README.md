@@ -176,8 +176,11 @@ each entry.
 
 ### `emb doctor`
 
-Report host detection (os / arch / distro) and package-manager backend
-availability. No options. Exit code is non-zero if the backend is unavailable.
+Report host detection (os / arch / distro), package-manager backend
+availability, and — when the backend can report it (PackageKit) — the count of
+available package updates (from the backend's last cache refresh; `doctor` is
+read-only and doesn't refresh). No options. Exit code is non-zero if the backend
+is unavailable; the update check never fails the command.
 
 ```sh
 emb doctor

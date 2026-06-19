@@ -54,11 +54,31 @@ class DoctorCommand extends Command<int> {
     final progress = _logger.progress('Checking ${provisioner.name}');
     try {
       final available = await provisioner.isAvailable();
-      if (available) {
-        progress.complete('${provisioner.name} is available');
-      } else {
+      if (!available) {
         progress.fail('${provisioner.name} is not available');
         return ExitCode.unavailable.code;
+      }
+      progress.complete('${provisioner.name} is available');
+
+      // Available updates — best-effort and read-only (reflects the backend's
+      // last cache refresh; never fails the command).
+      final updateCheck = _logger.progress('Checking for available updates');
+      try {
+        final updates = await provisioner.availableUpdates();
+        if (updates == null) {
+          updateCheck.complete(
+            'update check not supported by ${provisioner.name}',
+          );
+        } else if (updates.isEmpty) {
+          updateCheck.complete('up to date');
+        } else {
+          final n = updates.length;
+          updateCheck.complete('$n update${n == 1 ? "" : "s"} available');
+          final preview = updates.take(6).join(', ');
+          _logger.info('  $preview${n > 6 ? ", …" : ""}');
+        }
+      } on Object {
+        updateCheck.fail('update check failed');
       }
     } finally {
       await provisioner.dispose();

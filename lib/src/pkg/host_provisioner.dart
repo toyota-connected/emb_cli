@@ -40,6 +40,11 @@ abstract class HostProvisioner {
   /// Whether the backend daemon/CLI is reachable on this host.
   Future<bool> isAvailable();
 
+  /// Package names with an available update, per the backend's last cache
+  /// refresh; null when the backend can't report it (return null rather than
+  /// guessing), and an empty list means "up to date".
+  Future<List<String>?> availableUpdates();
+
   /// Return the subset of [names] that is NOT currently installed. This is the
   /// "filter" primitive used by the coalesce/filter stage.
   Future<Set<String>> missing(Set<String> names);
