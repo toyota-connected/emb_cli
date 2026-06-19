@@ -35,6 +35,7 @@ String sysrootKey(CrossTarget t) => contentHash([
     'dev:${s.deviceHost ?? ''}:${s.sshPort}',
     'part:${s.partition}',
     'pkgs:${(s.devPackages.toList()..sort()).join(",")}',
+    'links:${_kv(s.symlinks)}',
   ],
   for (final a in t.augment)
     'aug:${a.pkg}:${a.minVersion}:${a.url}:${a.build.name}:${a.staticLink}',

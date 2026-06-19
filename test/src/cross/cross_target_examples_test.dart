@@ -90,7 +90,7 @@ void main() {
       expect(t.augment, hasLength(1));
     });
 
-    test('radxa_zero3 — arm-gnu, pinned bookworm, cortex-a55, image', () {
+    test('radxa_zero3 — arm-gnu, p3 rootfs, drm symlink, 3 backends', () {
       final t = _loadCross('radxa_zero3.emb.yaml');
       expect(t.provider, CrossProviderKind.armGnu);
       expect(t.versionPolicy, ToolchainVersionPolicy.pinned);
@@ -98,7 +98,17 @@ void main() {
       expect(t.sysroot?.source, SysrootProvenance.image);
       expect(t.imageUrl, contains('radxa-zero3'));
       expect(t.cpuFlags, ['-mcpu=cortex-a55']);
-      expect(t.augment, hasLength(2));
+      expect(
+        t.augment,
+        hasLength(1),
+      ); // libdisplay-info (vulkan-headers dropped)
+      // Image quirks: rootfs on p3, and a drm->libdrm sysroot symlink because
+      // radxa's linux-libc-dev omits /usr/include/drm/.
+      expect(t.sysroot?.partition, 3);
+      expect(t.sysroot?.devPackages, contains('linux-libc-dev'));
+      expect(t.sysroot?.symlinks, {'usr/include/drm': 'libdrm'});
+      // The three backends supported on the board.
+      expect(t.backends.keys, ['wayland-egl', 'drm-kms-egl', 'software']);
     });
 
     test('beagleplay — arm-gnu, pinned trixie, cortex-a53, no augment', () {

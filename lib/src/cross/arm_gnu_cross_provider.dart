@@ -287,6 +287,10 @@ class ArmGnuCrossProvider implements CrossProvider {
       if (err != null) return err;
     }
 
+    // Declared in-sysroot symlinks (e.g. drm -> libdrm for images whose kernel
+    // headers omit the drm UAPI). After dev staging so targets exist.
+    _applySysrootSymlinks(sysrootDir, spec);
+
     // Restore Debian's usr-merge symlinks (/lib -> usr/lib, …) *after* all
     // staging. debugfs mangles them on extraction, and `dpkg-deb -x` of the
     // `-dev` set re-materializes them as real dirs — either leaves libc.so's
@@ -294,6 +298,21 @@ class ArmGnuCrossProvider implements CrossProvider {
     // configure that probes the sysroot (e.g. meson's `find_library('m')`).
     normalizeUsrMerge(sysrootDir);
     return null;
+  }
+
+  /// Create the `cross.sysroot.symlinks` (`<link>: <target>`) inside the
+  /// sysroot. The target is used verbatim (a sibling-relative target survives a
+  /// relocated sysroot); a link whose path already exists is left untouched.
+  void _applySysrootSymlinks(Directory sysrootDir, SysrootSpec spec) {
+    for (final entry in spec.symlinks.entries) {
+      final linkPath = p.join(sysrootDir.path, entry.key);
+      if (FileSystemEntity.typeSync(linkPath, followLinks: false) !=
+          FileSystemEntityType.notFound) {
+        continue; // a real dir/file or prior link already there
+      }
+      Directory(p.dirname(linkPath)).createSync(recursive: true);
+      Link(linkPath).createSync(entry.value);
+    }
   }
 
   /// Resolve `cross.sysroot.dev_packages` (package *names*) to their dependency
