@@ -47,21 +47,32 @@ class AptIndex {
     other.provides.forEach((k, v) => provides.putIfAbsent(k, () => v));
   }
 
-  /// Resolve [roots] to the closure of real [AptPackage]s to install, skipping
-  /// names in [satisfied] (already in the sysroot) and unknown/essential names
-  /// not in the index.
+  /// Resolve [roots] to the closure of real [AptPackage]s to install. Explicit
+  /// roots are always included; their transitive deps skip names in [satisfied]
+  /// (already in the sysroot) and unknown/essential names not in the index.
   List<AptPackage> closure(
     Iterable<String> roots, {
     Set<String> satisfied = const {},
   }) {
     final out = <String, AptPackage>{};
-    final stack = [...roots];
+    final stack = <String>[];
+
+    // Explicit roots are always staged, even when dpkg-status marks them
+    // installed: a device image often records a package installed yet strips
+    // its files (e.g. a KDE image keeping `linux-libc-dev` in the status DB but
+    // dropping `/usr/include/drm/*`), which a cross sysroot still needs. Their
+    // transitive deps below keep the already-installed prune.
+    for (final raw in roots) {
+      final pkg = _lookup(raw);
+      if (pkg == null || out.containsKey(pkg.name)) continue;
+      out[pkg.name] = pkg;
+      stack.addAll(pkg.depends);
+    }
+
     while (stack.isNotEmpty) {
       final raw = stack.removeLast();
       if (satisfied.contains(raw) || out.containsKey(raw)) continue;
-      final pkg =
-          packages[raw] ??
-          (provides[raw] != null ? packages[provides[raw]] : null);
+      final pkg = _lookup(raw);
       if (pkg == null) continue; // unknown / base / essential → assume present
       if (satisfied.contains(pkg.name) || out.containsKey(pkg.name)) continue;
       out[pkg.name] = pkg;
@@ -69,6 +80,11 @@ class AptIndex {
     }
     return out.values.toList();
   }
+
+  /// Resolve a dependency token to a real package: directly, or via a virtual
+  /// `Provides`.
+  AptPackage? _lookup(String raw) =>
+      packages[raw] ?? (provides[raw] != null ? packages[provides[raw]] : null);
 }
 
 /// Parse a Debian `Packages` index whose `.deb`s live under [repoBase].

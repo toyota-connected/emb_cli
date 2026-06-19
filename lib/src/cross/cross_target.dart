@@ -177,6 +177,7 @@ class SysrootSpec {
     this.sshOpts,
     this.partition = 2,
     this.devPackages = const [],
+    this.symlinks = const {},
   });
 
   factory SysrootSpec.fromMap(Map<dynamic, dynamic> map) => SysrootSpec(
@@ -191,6 +192,9 @@ class SysrootSpec {
     devPackages: (map['dev_packages'] as List<dynamic>? ?? const [])
         .map((e) => e.toString())
         .toList(),
+    symlinks: (map['symlinks'] as Map<dynamic, dynamic>? ?? const {}).map(
+      (k, v) => MapEntry(k.toString(), v.toString()),
+    ),
   );
 
   final SysrootProvenance source;
@@ -218,6 +222,15 @@ class SysrootSpec {
   /// no root. List only the top-level packages (e.g. `libdrm-dev`,
   /// `libegl-dev`); deps are pulled in automatically.
   final List<String> devPackages;
+
+  /// Symlinks to create inside the sysroot after staging, as
+  /// `<link-path-in-sysroot>: <target>` (the target is used verbatim, so a
+  /// sibling-relative target stays valid under a relocated sysroot). For an
+  /// image whose packages omit a header tree another package ships elsewhere —
+  /// e.g. `usr/include/drm: libdrm` points `<drm/*.h>` at libdrm-dev's
+  /// `usr/include/libdrm/` when the kernel `linux-libc-dev` lacks `drm/`.
+  /// Skipped when something already exists at the link path.
+  final Map<String, String> symlinks;
 }
 
 /// The parsed `cross:` block of a target manifest.

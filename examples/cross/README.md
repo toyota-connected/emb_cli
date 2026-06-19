@@ -4,17 +4,18 @@ One manifest per `ivi-homescreen/scripts/build_*.sh`, plus both Yocto-SDK
 locations. Each exercises the `cross:` block parsed by `CrossTarget.fromMap`
 (`lib/src/cross/cross_target.dart`).
 
-`pi5.emb.yaml` is **validated end-to-end** (`--build` + `--deb` produce an
-aarch64 binary and an installable `.deb`) and carries the full
-`sysroot.dev_packages` / `backends` / `package` config. The rest are **parse /
-plan validated** (`--dry-run`); their values are lifted verbatim from the
-scripts.
+`pi5.emb.yaml` and `radxa_zero3.emb.yaml` are **validated end-to-end** (`--build`
++ `--deb` produce aarch64 binaries and installable `.deb`s) and carry the full
+`sysroot.dev_packages` / `backends` / `package` config; radxa builds all three
+of its board-supported backends (wayland-egl, drm-kms-egl, software). The rest
+are **parse / plan validated** (`--dry-run`); their values are lifted verbatim
+from the scripts.
 
 | manifest | script | provider | toolchain / sysroot | tuning | augment |
 |---|---|---|---|---|---|
 | `pi5.emb.yaml` ✅ | `build_pi.sh --target pi5` | `arm-gnu` | pinned 12.3.rel1 / raspios bookworm **image** | `-mcpu=cortex-a76` | libdisplay-info |
 | `unoq.emb.yaml` | `build_unoq.sh` | `arm-gnu` | **derive** / **device rsync** | `-mcpu=cortex-a53` | libdisplay-info |
-| `radxa_zero3.emb.yaml` | `build_radxa_zero3.sh` | `arm-gnu` | pinned 12.3.rel1 / radxa bookworm **image** | `-mcpu=cortex-a55` | libdisplay-info + vulkan-headers |
+| `radxa_zero3.emb.yaml` ✅ | `build_radxa_zero3.sh` | `arm-gnu` | pinned 12.3.rel1 / radxa bookworm **image** (rootfs p3) | `-mcpu=cortex-a55` | libdisplay-info |
 | `beagleplay.emb.yaml` | `build_beagleplay.sh` (k3) | `arm-gnu` | pinned 15.2.rel1 / beagleplay trixie **image** | `-mcpu=cortex-a53` | none (trixie new enough) |
 | `nitrogen8mm.emb.yaml` | `build_nitrogen8mm.sh` | `yocto-recipe` | located weston recipe-sysroot | OE `-march` | libdisplay-info |
 | `agl_sdk_local.emb.yaml` | (AGL SDK, installed) | `yocto-sdk` | `sdk_path` → `environment-setup-aarch64-agl-linux` | from `CFLAGS` | none |
@@ -91,6 +92,18 @@ The `cross.sysroot` block selects how the sysroot is acquired:
   mirrors via `--rsync-path='sudo rsync'` when available. This is what makes
   the unoq **derive** policy work: the synced rootfs is what
   `_detectCodename` reads to pick the toolchain version.
+
+Two more `cross.sysroot` knobs handle image quirks (see `radxa_zero3.emb.yaml`):
+
+- `partition: <n>` — the 1-based rootfs partition in the image (default 2;
+  radxa's is **3** — p2 there is a 300M boot partition).
+- `symlinks: {<link-in-sysroot>: <target>}` — create symlinks after staging.
+  `dev_packages` are always staged even if dpkg-status marks them installed (a
+  device image can record a package installed yet strip its files); when the
+  needed tree still isn't shipped under the expected name, a symlink bridges it.
+  radxa's vendor `linux-libc-dev` omits `/usr/include/drm/`, so
+  `usr/include/drm: libdrm` points `<drm/*.h>` at libdrm-dev's copies, letting
+  the drm-kms-egl backend build.
 
 ## Yocto SDK location (yocto-sdk) — Automotive Grade Linux
 

@@ -65,8 +65,24 @@ void main() {
         .map((p) => p.name)
         .toList();
     expect(got, containsAll(['libdrm-dev', 'libdrm2']));
-    expect(got, isNot(contains('libc6'))); // pruned (already installed)
+    expect(
+      got,
+      isNot(contains('libc6')),
+    ); // pruned (already installed, transitive)
     expect(got, isNot(contains('libc6-dev')));
+  });
+
+  test('an explicit root is staged even if already installed', () {
+    final installed = parseInstalled(_status); // libc6, libc6-dev
+    // libc6 as an explicit root is staged despite dpkg marking it installed
+    // (device images strip files of "installed" packages); as a transitive dep
+    // it is still pruned (the test above).
+    final got = index
+        .closure(['libdrm-dev', 'libc6'], satisfied: installed)
+        .map((p) => p.name)
+        .toList();
+    expect(got, contains('libc6')); // explicit root → staged
+    expect(got, contains('libdrm-dev'));
   });
 
   test('merge keeps the first writer (repo priority)', () {

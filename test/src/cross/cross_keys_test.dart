@@ -54,5 +54,19 @@ void main() {
       expect(sysrootKey(withBackend), sysrootKey(rpi5));
       expect(buildKey(withBackend), isNot(buildKey(rpi5)));
     });
+
+    test('sysroot symlinks change the sysrootKey', () {
+      final withLink = _t(const {
+        'provider': 'arm-gnu',
+        'toolchain_version': '12.3.rel1',
+        'image_url': 'https://example/raspios.img.xz',
+        'cpu_flags': ['-mcpu=cortex-a76'],
+        'sysroot': {
+          'symlinks': {'usr/include/drm': 'libdrm'},
+        },
+      });
+      // Same toolchain/image, but the sysroot content differs.
+      expect(sysrootKey(withLink), isNot(sysrootKey(rpi5)));
+    });
   });
 }

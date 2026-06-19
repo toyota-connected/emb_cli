@@ -1,5 +1,14 @@
-# ivi-homescreen on Radxa Zero 3W — mirrors scripts/build_radxa_zero3.sh
-# Engine SHA pin (EngineArtifacts): 13e658725ddaa270601426d1485636157e38c34c
+# ivi-homescreen on Radxa Zero 3W (RK3566) — arm-gnu + radxa bookworm-KDE image.
+#
+# VALIDATED END-TO-END: `emb cross . --build --deb` produced aarch64 `homescreen`
+# ELFs + `.deb`s for all three backends supported on this board — wayland-egl,
+# drm-kms-egl, software.
+#
+# Two image-specific quirks are handled in the sysroot block below:
+#  - the rootfs is the 7.2G GPT partition 3 (p2 is a 300M boot partition), and
+#  - radxa's vendor `linux-libc-dev` omits `/usr/include/drm/`, so the
+#    drm-kms-egl backend gets `<drm/*.h>` via a sysroot symlink to libdrm-dev's
+#    identical kernel-uapi copies.
 id: ivi-homescreen
 type: app
 supported_archs: [arm64]
@@ -15,17 +24,52 @@ cross:
   provider: arm-gnu
   triple: aarch64-none-linux-gnu
   version_policy: pinned
-  toolchain_version: 12.3.rel1            # bookworm KDE image → gcc 12 / glibc 2.36
+  toolchain_version: 12.3.rel1            # bookworm → gcc 12 / glibc 2.36
   image_url: https://github.com/radxa-build/radxa-zero3/releases/download/rsdk-b1/radxa-zero3_bookworm_kde_b1.output_512.img.xz
   cpu_flags: [-mcpu=cortex-a55]           # RK3566 (Cortex-A55)
+  sysroot:
+    partition: 3                          # rootfs is the 7.2G p3 (p2 is boot)
+    dev_packages:
+      - linux-libc-dev                    # kernel UAPI linux/ headers (libinput/evdev)
+      - libdrm-dev
+      - libgbm-dev
+      - libinput-dev
+      - libxcursor-dev
+      - libseat-dev
+      - libegl-dev
+      - libgles2-mesa-dev
+      - libwayland-dev
+      - libxkbcommon-dev
+      - libudev-dev
+      - libsystemd-dev
+      - libglib2.0-dev
+      - wayland-protocols
+      - zlib1g-dev
+    symlinks:
+      # radxa's vendor linux-libc-dev omits /usr/include/drm/; point <drm/*.h>
+      # at libdrm-dev's identical kernel-uapi copies under usr/include/libdrm/.
+      usr/include/drm: libdrm
   augment:
-    - pkg: libdisplay-info
-      min: "0.2.0"
-      url: https://gitlab.freedesktop.org/emersion/libdisplay-info/-/archive/0.2.0/libdisplay-info-0.2.0.tar.gz
-      build: meson
-      static: true
-    - pkg: vulkan-headers
-      min: "1.4.309"
-      url: https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/vulkan-sdk-1.4.309.0.tar.gz
-      build: cmake
-      static: false
+    - { pkg: libdisplay-info, min: "0.2.0", url: https://gitlab.freedesktop.org/emersion/libdisplay-info/-/archive/0.2.0/libdisplay-info-0.2.0.tar.gz, build: meson, static: true }
+  defines:
+    DISABLE_PLUGINS: 'ON'
+  backends:
+    wayland-egl:
+      BUILD_BACKEND_WAYLAND_EGL: 'ON'
+      BUILD_BACKEND_WAYLAND_VULKAN: 'OFF'
+    drm-kms-egl:
+      BUILD_BACKEND_DRM_KMS_EGL: 'ON'
+      BUILD_BACKEND_WAYLAND_EGL: 'OFF'
+      BUILD_BACKEND_WAYLAND_VULKAN: 'OFF'
+    software:
+      BUILD_BACKEND_SOFTWARE: 'ON'
+      BUILD_BACKEND_WAYLAND_EGL: 'OFF'
+      BUILD_BACKEND_WAYLAND_VULKAN: 'OFF'
+  package:
+    name: ivi-homescreen
+    version: 1.0.0
+    maintainer: "Joel Winarske <joel.winarske@gmail.com>"
+    description: "IVI Flutter Shell, Radxa Zero 3W (RK3566), cross-built by emb"
+    section: utils
+    bin: shell/homescreen
+    install_dir: /usr/bin
