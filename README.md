@@ -669,6 +669,12 @@ it bakes the host build tools the embedder needs (cmake, ninja, meson,
 libraries aren't baked — `--build` rebuilds them into the cached sysroot at
 consume time (cheap). arm-gnu only for now.
 
+The baked sysroot is slimmed to a cross-build sysroot via `.dockerignore`: the
+device rootfs's runtime data, bundled apps, docs, kernel/firmware, and target
+executables are dropped, keeping headers, libraries, pkgconfig/cmake metadata,
+and the wayland protocol XMLs. (For the radxa zero3 image this took the sysroot
+from 7.4 GB to 4.7 GB — image ~6 GB — with all three backends still building.)
+
 ---
 
 ### `emb env`

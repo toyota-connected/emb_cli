@@ -62,12 +62,50 @@ LABEL org.opencontainers.image.title="emb cross toolchain: $triple" \\
 ''';
   }
 
-  /// `.dockerignore` keeping the build context to just `toolchain/` + `sysroot/`
-  /// (excludes `downloads/` images/tarballs, `debs/`, the apt cache, etc.).
-  static String dockerignore() => '''
-# Keep the image lean — only the toolchain + sysroot are needed.
+  /// Device-rootfs subtrees pruned from the baked sysroot. These are never used
+  /// when cross-compiling on the build host, so dropping them slims the image
+  /// without affecting builds: runtime data/docs, bundled apps, kernel/firmware,
+  /// and target executables. Headers, libraries (`usr/lib/<triple>`),
+  /// pkgconfig/cmake metadata, and the wayland protocol XMLs are all kept.
+  static const sysrootPrune = <String>[
+    'boot',
+    'var',
+    'usr/src', // kernel/build sources (linux-libc-dev headers live in include/)
+    'usr/games',
+    'usr/bin', // target executables — cross builds invoke host tools only
+    'usr/sbin',
+    'usr/lib/firmware',
+    'usr/lib/modules',
+    'usr/lib/chromium',
+    'usr/lib/firefox-esr',
+    'usr/lib/u-boot',
+    'usr/lib/linux-image-*',
+    'usr/share/locale',
+    'usr/share/doc',
+    'usr/share/man',
+    'usr/share/info',
+    'usr/share/fonts',
+    'usr/share/icons',
+    'usr/share/themes',
+    'usr/share/sounds',
+    'usr/share/help',
+    'usr/share/wallpapers',
+    'usr/share/backgrounds',
+  ];
+
+  /// `.dockerignore` keeping the build context to just `toolchain/` + a slimmed
+  /// `sysroot/` (excludes `downloads/` images/tarballs, `debs/`, the apt cache,
+  /// and the device-rootfs bloat listed in [sysrootPrune]).
+  static String dockerignore() {
+    final prune = sysrootPrune.map((p) => 'sysroot/$p').join('\n');
+    return '''
+# Keep the image lean — only the toolchain + a cross-build sysroot are needed.
 *
 !toolchain
 !sysroot
+# Slim the baked sysroot: drop device-rootfs data/apps/kernel/firmware and
+# target executables; keep headers, libraries, pkgconfig/cmake, wayland XMLs.
+$prune
 ''';
+  }
 }

@@ -45,4 +45,19 @@ void main() {
     expect(di, contains('!toolchain'));
     expect(di, contains('!sysroot'));
   });
+
+  test('dockerignore slims the sysroot but keeps build-essential trees', () {
+    final di = ToolchainImage.dockerignore();
+    // Drops device-rootfs bloat (data, apps, kernel/firmware, target bins).
+    expect(di, contains('sysroot/usr/share/locale'));
+    expect(di, contains('sysroot/usr/share/doc'));
+    expect(di, contains('sysroot/usr/lib/firmware'));
+    expect(di, contains('sysroot/usr/bin'));
+    expect(di, contains('sysroot/boot'));
+    // Never prunes headers, libraries, or pkgconfig/cmake/wayland metadata.
+    expect(di, isNot(contains('sysroot/usr/include')));
+    expect(di, isNot(contains('sysroot/usr/lib/aarch64')));
+    expect(di, isNot(contains('sysroot/usr/share/pkgconfig')));
+    expect(di, isNot(contains('sysroot/usr/share/wayland')));
+  });
 }
