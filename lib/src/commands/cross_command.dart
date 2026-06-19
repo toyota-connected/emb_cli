@@ -211,8 +211,9 @@ class CrossCommand extends Command<int> {
       ..addMultiOption(
         'tag',
         help:
-            'With --publish: tag(s) to push (default: the resolved '
-            'sysroot_key). Repeatable to also push a moving alias.',
+            'With --publish: extra alias tag(s) to push alongside the '
+            'immutable sysroot_key (which is always pushed and is the '
+            'skip-on-exists target). Repeatable, e.g. --tag bookworm.',
       )
       ..addFlag(
         'force',
@@ -1117,8 +1118,10 @@ class CrossCommand extends Command<int> {
       tool: tool,
       contextDir: ctx.path,
       imagePrefix: imagePrefix,
-      // Default the primary tag to the content-addressed sysroot key.
-      tags: tags.isEmpty ? [key] : tags,
+      // Always publish (and skip-check) the immutable content-addressed key as
+      // the primary tag, so a changed manifest is never masked by a moving
+      // alias; --tag values are pushed as additional aliases on top.
+      tags: [key, ...tags.where((t) => t != key)],
       push: push,
     );
 
