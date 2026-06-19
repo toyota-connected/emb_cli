@@ -28,6 +28,7 @@
     "crosssdk",
     "icefish",
     "opencontainers",
+    "skopeo",
     "libdisplay",
     "libdrm",
     "libegl",

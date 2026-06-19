@@ -52,6 +52,16 @@ void main() {
     expect(await run(['cross', pkg.path]), ExitCode.usage.code);
   });
 
+  test('--publish without --image fails fast before any resolve', () async {
+    final pkg = pkgWith(
+      'pub',
+      'id: pub\ntype: app\ncross:\n  provider: arm-gnu\n'
+          '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n',
+    );
+    // No --image, so it must error without downloading anything.
+    expect(await run(['cross', pkg.path, '--publish']), ExitCode.usage.code);
+  });
+
   test('--dry-run reports the backends matrix', () async {
     final pkg = pkgWith(
       'be',

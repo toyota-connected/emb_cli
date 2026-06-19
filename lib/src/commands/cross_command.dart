@@ -15,8 +15,10 @@ import 'package:emb_cli/src/cross/deb_packager.dart';
 import 'package:emb_cli/src/cross/deployer.dart';
 import 'package:emb_cli/src/cross/dockerfile_emitter.dart';
 import 'package:emb_cli/src/cross/emb_lock.dart';
+import 'package:emb_cli/src/cross/image_publisher.dart';
 import 'package:emb_cli/src/cross/local_cross_provider.dart';
 import 'package:emb_cli/src/cross/overlay_builder.dart';
+import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/cross/runnable_bundle.dart';
 import 'package:emb_cli/src/engine/engine_artifacts.dart';
 import 'package:emb_cli/src/host/host_info.dart';
@@ -44,12 +46,14 @@ class CrossCommand extends Command<int> {
     AotBuilder Function(Workspace ws, HostInfo host)? aotFactory,
     BundleBuilder Function(Workspace ws)? bundleFactory,
     EngineArtifacts Function(Workspace ws)? engineFactory,
+    ProcessRunner processRunner = defaultProcessRunner,
   }) : _logger = logger,
        _host = host,
        _project = CrossProjectResolver(loader),
        _aotFactory = aotFactory ?? ((ws, h) => AotBuilder(ws, host: h)),
        _bundleFactory = bundleFactory ?? BundleBuilder.new,
-       _engineFactory = engineFactory ?? EngineArtifacts.new {
+       _engineFactory = engineFactory ?? EngineArtifacts.new,
+       _runProcess = processRunner {
     argParser
       ..addOption(
         'workspace',
@@ -188,6 +192,47 @@ class CrossCommand extends Command<int> {
             'toolchain + sysroot into an OCI image so CI pulls instead of '
             'resolving (arm-gnu). Does not build; ignores --build.',
         negatable: false,
+      )
+      ..addFlag(
+        'publish',
+        help:
+            'Resolve, emit, build, and push the toolchain image to a registry '
+            '(arm-gnu); skips the build if the tag already exists. Implies the '
+            '--dockerfile emit; requires --image. Auth via prior docker login.',
+        negatable: false,
+      )
+      ..addOption(
+        'image',
+        help:
+            'With --publish: image reference base <host>[/<path>]/<name> (the '
+            'tag is appended). Registry-agnostic. e.g. '
+            'ghcr.io/<org>/emb-cross-<triple>.',
+      )
+      ..addMultiOption(
+        'tag',
+        help:
+            'With --publish: tag(s) to push (default: the resolved '
+            'sysroot_key). Repeatable to also push a moving alias.',
+      )
+      ..addFlag(
+        'force',
+        help:
+            'With --publish: build and push even if the tag already exists in '
+            'the registry (default: skip).',
+        negatable: false,
+      )
+      ..addFlag(
+        'push',
+        defaultsTo: true,
+        help:
+            'With --publish: push after building. Use --no-push to build the '
+            'image locally only.',
+      )
+      ..addOption(
+        'container-tool',
+        help:
+            'With --publish: container CLI to invoke (default: auto-detect '
+            'docker, then podman).',
       );
   }
 
@@ -197,6 +242,7 @@ class CrossCommand extends Command<int> {
   final AotBuilder Function(Workspace ws, HostInfo host) _aotFactory;
   final BundleBuilder Function(Workspace ws) _bundleFactory;
   final EngineArtifacts Function(Workspace ws) _engineFactory;
+  final ProcessRunner _runProcess;
 
   @override
   String get name => 'cross';
@@ -279,6 +325,14 @@ class CrossCommand extends Command<int> {
         'Unknown backend(s): ${unknownBackends.join(", ")}. '
         'Available: ${target.backends.keys.join(", ")}',
       );
+      return ExitCode.usage.code;
+    }
+
+    // --publish needs a registry target up front (before any download).
+    final publishImage = args['image'] as String?;
+    if (args['publish'] == true &&
+        (publishImage == null || publishImage.isEmpty)) {
+      _logger.err('--publish requires --image <host>[/<path>]/<name>.');
       return ExitCode.usage.code;
     }
 
@@ -368,6 +422,19 @@ class CrossCommand extends Command<int> {
     // sysroot/; the Yocto providers don't lay out a self-contained dir to bake.
     if (args['dockerfile'] == true) {
       return _emitDockerfile(profile, target);
+    }
+
+    // --publish: emit, then build + push the toolchain image to a registry.
+    if (args['publish'] == true) {
+      return _publishImage(
+        profile,
+        target,
+        image: args['image'] as String?,
+        tags: args['tag'] as List<String>,
+        force: args['force'] == true,
+        push: args['push'] == true,
+        toolOverride: args['container-tool'] as String?,
+      );
     }
 
     if (args['prepare'] == true && target.augment.isNotEmpty) {
@@ -973,15 +1040,38 @@ class CrossCommand extends Command<int> {
   /// + sysroot into an OCI image (build context = the platform dir). Other
   /// providers don't lay out a self-contained dir to bake.
   int _emitDockerfile(CrossProfile profile, CrossTarget target) {
-    if (profile.providerName != 'arm-gnu') {
-      _logger.err(
-        '--dockerfile supports the arm-gnu provider only '
-        '(got ${profile.providerName}).',
+    if (!_canBakeImage(profile)) return ExitCode.usage.code;
+    final (ctx, key) = _writeImageBuildContext(profile, target);
+
+    final tag = 'emb-cross-${profile.targetTriple}:$key';
+    _logger
+      ..info('Wrote ${p.join(ctx.path, "Dockerfile")}')
+      ..info('Build:  docker build -t $tag ${ctx.path}')
+      ..info(
+        'Use:    container: $tag  →  emb cross <manifest> --target '
+        '<name> --build -w ${ToolchainImage.workspace}',
       );
-      return ExitCode.usage.code;
-    }
-    // The platform dir is the sysroot's parent (cross-<triple>-<key>/), holding
-    // toolchain/ + sysroot/ — the build context.
+    return ExitCode.success.code;
+  }
+
+  /// Guard: only arm-gnu lays out a self-contained platform dir (toolchain/ +
+  /// sysroot/) that can be baked into an image.
+  bool _canBakeImage(CrossProfile profile) {
+    if (profile.providerName == 'arm-gnu') return true;
+    _logger.err(
+      'Toolchain images support the arm-gnu provider only '
+      '(got ${profile.providerName}).',
+    );
+    return false;
+  }
+
+  /// Write `Dockerfile` + `.dockerignore` into the platform dir (the build
+  /// context, sysroot's parent `cross-<triple>-<key>/`) and return it with the
+  /// resolved sysroot key.
+  (Directory, String) _writeImageBuildContext(
+    CrossProfile profile,
+    CrossTarget target,
+  ) {
     final ctx = Directory(p.dirname(profile.targetSysroot));
     final key = sysrootKey(target);
     File(p.join(ctx.path, 'Dockerfile')).writeAsStringSync(
@@ -994,16 +1084,118 @@ class CrossCommand extends Command<int> {
     File(
       p.join(ctx.path, '.dockerignore'),
     ).writeAsStringSync(ToolchainImage.dockerignore());
+    return (ctx, key);
+  }
 
-    final tag = 'emb-cross-${profile.targetTriple}:$key';
+  /// Emit, then build + push the toolchain image to a registry. Registry-
+  /// agnostic: the [image] prefix is free-form, auth is left to a prior
+  /// `<tool> login`, and the existence probe is a plain `manifest inspect`.
+  Future<int> _publishImage(
+    CrossProfile profile,
+    CrossTarget target, {
+    required String? image,
+    required List<String> tags,
+    required bool force,
+    required bool push,
+    required String? toolOverride,
+  }) async {
+    if (!_canBakeImage(profile)) return ExitCode.usage.code;
+    // --image presence is validated early in run(), before resolve.
+    final imagePrefix = image!;
+
+    final tool = await _resolveContainerTool(toolOverride);
+    if (tool == null) {
+      _logger.err(
+        'No container tool found (looked for docker, podman). '
+        'Install one or pass --container-tool.',
+      );
+      return ExitCode.unavailable.code;
+    }
+
+    final (ctx, key) = _writeImageBuildContext(profile, target);
+    final plan = ImagePublishPlan(
+      tool: tool,
+      contextDir: ctx.path,
+      imagePrefix: imagePrefix,
+      // Default the primary tag to the content-addressed sysroot key.
+      tags: tags.isEmpty ? [key] : tags,
+      push: push,
+    );
+
+    // Skip when the content-addressed image is already published (unless forced
+    // or push is disabled — a local-only build always runs).
+    if (!force && push) {
+      final skopeo = await _hasExecutable('skopeo');
+      if (await _refExists(plan, skopeoAvailable: skopeo)) {
+        _logger.info('${plan.primaryRef} already published — skipping.');
+        return ExitCode.success.code;
+      }
+    }
+
+    if (!await _runStep('build', plan.build())) return ExitCode.software.code;
+    for (final cmd in plan.pushes()) {
+      if (!await _runStep('push', cmd)) return ExitCode.software.code;
+    }
+
     _logger
-      ..info('Wrote ${p.join(ctx.path, "Dockerfile")}')
-      ..info('Build:  docker build -t $tag ${ctx.path}')
+      ..info(push ? 'Published ${plan.refs().join(", ")}' : 'Built (no push)')
       ..info(
-        'Use:    container: $tag  →  emb cross <manifest> --target '
-        '<name> --build -w ${ToolchainImage.workspace}',
+        'Use:    container: ${plan.primaryRef}  →  emb cross <manifest> '
+        '--target <name> --build -w ${ToolchainImage.workspace}',
       );
     return ExitCode.success.code;
+  }
+
+  /// First of [override], `docker`, `podman` that responds to `--version`.
+  Future<String?> _resolveContainerTool(String? override) async {
+    for (final tool in [if (override != null) override, 'docker', 'podman']) {
+      if (await _hasExecutable(tool)) return tool;
+    }
+    return null;
+  }
+
+  /// Whether [exe] is on PATH (responds to `--version`).
+  Future<bool> _hasExecutable(String exe) async {
+    try {
+      final r = await _runProcess(exe, ['--version']);
+      return r.exitCode == 0;
+    } on ProcessException {
+      return false;
+    }
+  }
+
+  /// Whether the plan's primary ref already exists in the registry (the probe
+  /// exits 0).
+  Future<bool> _refExists(
+    ImagePublishPlan plan, {
+    required bool skopeoAvailable,
+  }) async {
+    final probe = plan.existsProbe(skopeoAvailable: skopeoAvailable);
+    try {
+      final r = await _runProcess(probe.exe, probe.args);
+      return r.exitCode == 0;
+    } on ProcessException {
+      return false;
+    }
+  }
+
+  /// Run one publish step, streaming nothing but surfacing stderr on failure.
+  Future<bool> _runStep(String label, ContainerCmd cmd) async {
+    _logger.info('\$ $cmd');
+    final ProcessResult r;
+    try {
+      r = await _runProcess(cmd.exe, cmd.args);
+    } on ProcessException catch (e) {
+      _logger.err('$label failed: ${e.message}');
+      return false;
+    }
+    if (r.exitCode != 0) {
+      final err = (r.stderr as String?)?.trim() ?? '';
+      final detail = err.isEmpty ? '' : ': $err';
+      _logger.err('$label failed (exit ${r.exitCode})$detail');
+      return false;
+    }
+    return true;
   }
 
   /// Reconcile `<projectRoot>/emb.lock` with the freshly [resolved] facts.
