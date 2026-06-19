@@ -19,6 +19,9 @@ class BrewProvisioner implements HostProvisioner {
   @override
   Future<bool> isAvailable() => _brew.isInstalled();
 
+  @override
+  Future<List<String>?> availableUpdates() async => null; // not reported here
+
   Future<Set<String>> _installedNames() async =>
       _installedCache ??= (await _brew.listNames()).toSet();
 
