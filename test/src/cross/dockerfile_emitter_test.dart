@@ -23,6 +23,7 @@ void main() {
       expect(df, contains('ninja-build'));
       expect(df, contains('meson')); // builds augment libs (libdisplay-info)
       expect(df, contains('build-essential')); // native cc for meson configure
+      expect(df, contains('hwdata')); // libdisplay-info build reads pnp.ids
       expect(df, contains('libwayland-bin')); // wayland-scanner for wayland-egl
       expect(df, contains('FROM ${ToolchainImage.defaultFrom}'));
       expect(df, contains('emb.triple="aarch64-none-linux-gnu"'));
