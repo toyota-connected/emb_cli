@@ -1,3 +1,7 @@
+import 'dart:convert';
+
+import 'package:crypto/crypto.dart';
+
 /// Emits a Dockerfile (+ `.dockerignore`) that bakes a resolved **arm-gnu**
 /// cross toolchain + sysroot into an OCI image, so CI pulls a ready toolchain
 /// instead of re-downloading and extracting it every run.
@@ -109,4 +113,38 @@ LABEL org.opencontainers.image.title="emb cross toolchain: $triple" \\
 $prune
 ''';
   }
+
+  /// Content-addressed image tag `<sysrootKey>-<toolset hash>`, where the
+  /// toolset hash covers [dockerfileContent] + [dockerignoreContent]. A
+  /// toolset/emitter change (new base image, apt list, prune list) yields a new
+  /// tag even when [sysrootKey] is unchanged, so a publish re-builds instead of
+  /// skipping and serving a stale image.
+  static String tagFor(
+    String sysrootKey,
+    String dockerfileContent,
+    String dockerignoreContent,
+  ) {
+    final hash = sha256
+        .convert(utf8.encode('$dockerfileContent\n$dockerignoreContent'))
+        .toString()
+        .substring(0, 12);
+    return '$sysrootKey-$hash';
+  }
+
+  /// [tagFor] computed from this image's own emitted Dockerfile + dockerignore.
+  static String imageTag({
+    required String triple,
+    required String sysrootKey,
+    String? toolchainVersion,
+    String fromImage = defaultFrom,
+  }) => tagFor(
+    sysrootKey,
+    dockerfile(
+      triple: triple,
+      sysrootKey: sysrootKey,
+      toolchainVersion: toolchainVersion,
+      fromImage: fromImage,
+    ),
+    dockerignore(),
+  );
 }

@@ -40,6 +40,31 @@ void main() {
     });
   });
 
+  group('ToolchainImage.imageTag', () {
+    test('is <sysrootKey>-<12 hex toolset hash>', () {
+      final tag = ToolchainImage.imageTag(
+        triple: 'aarch64-none-linux-gnu',
+        sysrootKey: '809d8bb7bb71',
+        toolchainVersion: '12.3.rel1',
+      );
+      expect(tag, matches(RegExp(r'^809d8bb7bb71-[0-9a-f]{12}$')));
+    });
+
+    test('stable for same inputs; a toolset change rekeys, prefix kept', () {
+      String tag({String from = ToolchainImage.defaultFrom}) =>
+          ToolchainImage.imageTag(
+            triple: 't',
+            sysrootKey: 'KEY',
+            fromImage: from,
+          );
+      expect(tag(), tag()); // deterministic
+      // A different baked toolset (base image) -> different suffix, same key.
+      expect(tag(from: 'ubuntu:24.04'), isNot(tag()));
+      expect(tag().startsWith('KEY-'), isTrue);
+      expect(tag(from: 'ubuntu:24.04').startsWith('KEY-'), isTrue);
+    });
+  });
+
   test('dockerignore keeps only toolchain + sysroot in the context', () {
     final di = ToolchainImage.dockerignore();
     expect(di, contains('*'));
