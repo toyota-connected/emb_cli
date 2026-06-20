@@ -322,5 +322,96 @@ cross:
         throwsA(isA<CrossProjectException>()),
       );
     });
+
+    test('app extends a project target which extends a board (3 layers)', () {
+      // project: tmp/proj/.emb/rpi.emb.yaml — extends the board, adds backends.
+      Directory(p.join(tmp.path, 'proj', '.emb')).createSync(recursive: true);
+      File(p.join(tmp.path, 'proj', '.emb', 'rpi.emb.yaml')).writeAsStringSync(
+        '''
+id: ivi-homescreen
+cross:
+  targets:
+    rpi5-bookworm:
+      extends: rpi5-bookworm
+      backends:
+        drm-kms-egl: {BUILD_BACKEND_DRM_KMS_EGL: 'ON'}
+      sysroot:
+        dev_packages: [libproject-dev]
+''',
+      );
+      // app: a flat manifest extending the project target, adding plugins.
+      final app = File(p.join(tmp.path, 'app.emb.yaml'))
+        ..writeAsStringSync('''
+id: myapp
+cross:
+  targets:
+    rpi5-bookworm:
+      extends: 'proj#rpi5-bookworm'
+      defines: {DISABLE_PLUGINS: 'OFF'}
+      sysroot:
+        dev_packages: [libapp-dev]
+''');
+      final project = CrossProjectResolver(
+        const ManifestLoader(),
+        boards,
+      ).resolve(app.path)!;
+      final cross = project.targets['rpi5-bookworm']!.cross;
+      // hardware from the board layer:
+      expect(cross['toolchain_version'], '12.3.rel1');
+      expect(cross['cpu_flags'], ['-mcpu=cortex-a76']);
+      // backends from the project layer:
+      expect((cross['backends'] as Map).keys, ['drm-kms-egl']);
+      // plugin defines from the app layer:
+      expect((cross['defines'] as Map)['DISABLE_PLUGINS'], 'OFF');
+      // dev_packages union across all three layers:
+      expect(
+        (cross['sysroot'] as Map)['dev_packages'],
+        containsAll(['libegl-dev', 'libproject-dev', 'libapp-dev']),
+      );
+      expect(cross.containsKey('extends'), isFalse);
+    });
+
+    test('extends an unknown project target throws', () {
+      Directory(p.join(tmp.path, 'proj', '.emb')).createSync(recursive: true);
+      File(p.join(tmp.path, 'proj', '.emb', 'rpi.emb.yaml')).writeAsStringSync(
+        '''
+id: ivi-homescreen
+cross:
+  targets:
+    rpi5-bookworm: {extends: rpi5-bookworm}
+''',
+      );
+      final app = File(p.join(tmp.path, 'app.emb.yaml'))
+        ..writeAsStringSync('''
+id: myapp
+cross:
+  targets:
+    x: {extends: 'proj#no-such-target'}
+''');
+      expect(
+        () => CrossProjectResolver(
+          const ManifestLoader(),
+          boards,
+        ).resolve(app.path),
+        throwsA(isA<CrossProjectException>()),
+      );
+    });
+
+    test('extends a missing project dir throws', () {
+      final app = File(p.join(tmp.path, 'app.emb.yaml'))
+        ..writeAsStringSync('''
+id: myapp
+cross:
+  targets:
+    x: {extends: 'no-such-proj#rpi5-bookworm'}
+''');
+      expect(
+        () => CrossProjectResolver(
+          const ManifestLoader(),
+          boards,
+        ).resolve(app.path),
+        throwsA(isA<CrossProjectException>()),
+      );
+    });
   });
 }
