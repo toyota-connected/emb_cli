@@ -43,13 +43,14 @@ class ToolchainImage {
 #   container: <tag>
 #   emb cross <manifest> --target <name> --build -w $workspace
 FROM $fromImage
-# Build tooling: cmake/ninja/meson/make/pkg-config + the embedder's host codegen
+# Build tooling: cmake/ninja/meson/pkg-config + the embedder's host codegen
 # (wayland-scanner via libwayland-bin; git/curl for the engine-header fetch).
-# meson builds `augment` libraries (e.g. libdisplay-info) into the sysroot.
+# build-essential gives meson a native (build-machine) compiler — required to
+# configure even a cross build when rebuilding `augment` libs (libdisplay-info).
 RUN apt-get update \\
  && apt-get install -y --no-install-recommends \\
-      cmake ninja-build meson make pkg-config tar xz-utils rsync ca-certificates \\
-      libwayland-bin git curl \\
+      cmake ninja-build meson build-essential pkg-config \\
+      tar xz-utils rsync ca-certificates libwayland-bin git curl \\
  && rm -rf /var/lib/apt/lists/*
 ENV FLUTTER_WORKSPACE=$workspace
 COPY toolchain $dir/toolchain

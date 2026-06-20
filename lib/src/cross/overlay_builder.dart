@@ -212,7 +212,12 @@ class OverlayBuilder {
   /// actionable rather than a bare "failed to build into overlay".
   void _check(AugmentLib lib, String step, ProcessResult r) {
     if (r.exitCode == 0) return;
-    final detail = '${r.stderr}'.trim();
+    // meson/cmake write diagnostics to stdout as often as stderr, so surface
+    // both — otherwise a "meson setup failed (exit 1)" is undebuggable.
+    final detail = [
+      '${r.stderr}',
+      '${r.stdout}',
+    ].map((s) => s.trim()).where((s) => s.isNotEmpty).join('\n');
     throw OverlayBuildException(
       '${lib.pkg}: $step failed (exit ${r.exitCode})'
       '${detail.isEmpty ? '' : '\n$detail'}',
