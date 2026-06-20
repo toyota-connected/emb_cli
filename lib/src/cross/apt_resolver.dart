@@ -114,29 +114,80 @@ AptIndex parsePackagesIndex(String text, {required String repoBase}) {
 }
 
 /// Compressed `Packages`-index URLs for [arch], parsed from a sysroot's apt
-/// sources (the one-line `deb [opts] <uri> <suite> <comp>...` format). One URL
-/// per (source, component). `deb-src`, comments, and blanks are skipped.
+/// sources. Handles both the classic one-line `deb` format and the deb822
+/// `Types:/URIs:/Suites:/Components:` stanzas used by trixie/raspios. One URL
+/// per (source, component); `deb-src`, disabled entries, comments, and blanks
+/// are skipped.
 List<String> aptIndexUrls(String sourcesText, String arch) {
   final urls = <String>[];
-  for (final line in sourcesText.split('\n')) {
-    final t = line.trim();
-    if (!t.startsWith('deb ')) continue;
-    var toks = t.substring(4).trim().split(RegExp(r'\s+'));
-    if (toks.isNotEmpty && toks.first.startsWith('[')) {
-      var i = 0;
-      while (i < toks.length && !toks[i].endsWith(']')) {
-        i++;
+  // Process blank-line-separated stanzas so deb822 entries (multi-line) don't
+  // bleed into one-line parsing. _readAptSources separates files with a blank
+  // line, so a one-line sources.list and a deb822 *.sources never mix.
+  for (final stanza in sourcesText.split(RegExp(r'\n[ \t]*\n'))) {
+    if (RegExp(r'^[ \t]*Types[ \t]*:', multiLine: true).hasMatch(stanza)) {
+      urls.addAll(_deb822IndexUrls(stanza, arch));
+    } else {
+      for (final line in stanza.split('\n')) {
+        urls.addAll(_oneLineIndexUrls(line, arch));
       }
-      toks = i + 1 < toks.length ? toks.sublist(i + 1) : const [];
-    }
-    if (toks.length < 3) continue;
-    final uri = toks[0];
-    final suite = toks[1];
-    for (final comp in toks.sublist(2)) {
-      urls.add('$uri/dists/$suite/$comp/binary-$arch/Packages.xz');
     }
   }
   return urls;
+}
+
+/// One classic `deb [opts] <uri> <suite> <comp...>` line -> binary index URLs.
+List<String> _oneLineIndexUrls(String line, String arch) {
+  final t = line.trim();
+  if (!t.startsWith('deb ')) return const [];
+  var toks = t.substring(4).trim().split(RegExp(r'\s+'));
+  if (toks.isNotEmpty && toks.first.startsWith('[')) {
+    var i = 0;
+    while (i < toks.length && !toks[i].endsWith(']')) {
+      i++;
+    }
+    toks = i + 1 < toks.length ? toks.sublist(i + 1) : const [];
+  }
+  if (toks.length < 3) return const [];
+  final uri = toks[0];
+  final suite = toks[1];
+  return [
+    for (final comp in toks.sublist(2))
+      '$uri/dists/$suite/$comp/binary-$arch/Packages.xz',
+  ];
+}
+
+/// A deb822 stanza (`Types:`/`URIs:`/`Suites:`/`Components:`, as used by
+/// trixie/raspios) -> binary index URLs for each URI x Suite x Component.
+List<String> _deb822IndexUrls(String stanza, String arch) {
+  final fields = <String, String>{};
+  String? key;
+  for (final line in stanza.split('\n')) {
+    final m = RegExp(
+      r'^([A-Za-z][A-Za-z-]*)[ \t]*:[ \t]*(.*)$',
+    ).firstMatch(line);
+    if (m != null) {
+      key = m.group(1);
+      fields[key!] = (m.group(2) ?? '').trim();
+    } else if (key != null && (line.startsWith(' ') || line.startsWith('\t'))) {
+      fields[key] = '${fields[key]} ${line.trim()}'.trim();
+    }
+  }
+  List<String> values(String k) => (fields[k] ?? '')
+      .split(RegExp(r'\s+'))
+      .where((s) => s.isNotEmpty)
+      .toList();
+  if (!values('Types').contains('deb')) return const [];
+  if ((fields['Enabled'] ?? 'yes').toLowerCase() == 'no') return const [];
+  final out = <String>[];
+  for (final uri in values('URIs')) {
+    final base = uri.replaceFirst(RegExp(r'/+$'), '');
+    for (final suite in values('Suites')) {
+      for (final comp in values('Components')) {
+        out.add('$base/dists/$suite/$comp/binary-$arch/Packages.xz');
+      }
+    }
+  }
+  return out;
 }
 
 /// Names already installed in a sysroot's `/var/lib/dpkg/status` (plus what

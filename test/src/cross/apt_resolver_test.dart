@@ -114,5 +114,51 @@ deb-src http://deb.debian.org/debian bookworm main
         'http://archive.raspberrypi.com/debian/dists/bookworm/main/binary-arm64/Packages.xz',
       ]);
     });
+
+    test('parses deb822 stanzas (trixie/raspios .sources)', () {
+      // URIs has a trailing slash (raspi.sources); Suites + Components are
+      // space-separated multi-value; deb-src and a disabled stanza are skipped.
+      const deb822 = '''
+Types: deb deb-src
+URIs: http://deb.debian.org/debian
+Suites: trixie trixie-updates
+Components: main contrib
+
+Types: deb
+URIs: http://archive.raspberrypi.com/debian/
+Suites: trixie
+Components: main
+
+Types: deb
+URIs: http://disabled.example/debian
+Suites: trixie
+Components: main
+Enabled: no
+''';
+      expect(aptIndexUrls(deb822, 'arm64'), [
+        'http://deb.debian.org/debian/dists/trixie/main/binary-arm64/Packages.xz',
+        'http://deb.debian.org/debian/dists/trixie/contrib/binary-arm64/Packages.xz',
+        'http://deb.debian.org/debian/dists/trixie-updates/main/binary-arm64/Packages.xz',
+        'http://deb.debian.org/debian/dists/trixie-updates/contrib/binary-arm64/Packages.xz',
+        // trailing slash on URIs is normalized (no //dists)
+        'http://archive.raspberrypi.com/debian/dists/trixie/main/binary-arm64/Packages.xz',
+      ]);
+    });
+
+    test('one-line and deb822 files mix without bleeding', () {
+      // Mimics _readAptSources: files separated by a blank line.
+      const mixed = '''
+deb http://deb.debian.org/debian bookworm main
+
+Types: deb
+URIs: http://archive.raspberrypi.com/debian
+Suites: trixie
+Components: main
+''';
+      expect(aptIndexUrls(mixed, 'arm64'), [
+        'http://deb.debian.org/debian/dists/bookworm/main/binary-arm64/Packages.xz',
+        'http://archive.raspberrypi.com/debian/dists/trixie/main/binary-arm64/Packages.xz',
+      ]);
+    });
   });
 }
