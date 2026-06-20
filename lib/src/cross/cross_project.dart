@@ -99,6 +99,10 @@ class CrossProjectResolver {
   /// Lazily-loaded board registry: board name -> its hardware `cross:` map.
   Map<String, Map<String, dynamic>>? _boards;
 
+  /// Project dirs currently being resolved through a cross-project `extends`,
+  /// to break `app -> project -> app` reference cycles.
+  final Set<String> _resolvingProjects = {};
+
   /// The base file searched for inside a `.emb/` directory.
   static const baseFileName = 'base.emb.yaml';
 
@@ -307,9 +311,15 @@ class CrossProjectResolver {
       if (e.key != 'targets') e.key: e.value,
   };
 
-  /// Resolve a `cross.extends: <board>` reference: deep-merge [cross] (the
-  /// project/app layer) over the named base board (emb's hardware layer),
-  /// recursing for chains. No-op when there is no `extends`.
+  /// Resolve a `cross.extends` reference: deep-merge [cross] (the derived
+  /// project/app layer) over the resolved base it names. Two forms:
+  ///   - `<board>`        — a target in emb's shipped board library (hardware).
+  ///   - `<dir>#<target>` — a target in another emb project at <dir> (the
+  ///                         project layer; e.g. an app extending an
+  ///                         ivi-homescreen target). <dir> is relative to the
+  ///                         extending manifest's project root.
+  /// Chains resolve recursively (app -> project -> board). No-op without
+  /// `extends`.
   Map<String, dynamic> _applyExtends(
     Map<String, dynamic> cross,
     String? sourcePath, [
@@ -317,24 +327,80 @@ class CrossProjectResolver {
   ]) {
     final ext = cross['extends'];
     if (ext == null) return cross;
-    final baseName = ext.toString();
-    if (seen.contains(baseName)) {
+    final ref = ext.toString();
+    if (seen.contains(ref)) {
       throw CrossProjectException(
-        'extends: cycle through "$baseName" (in ${sourcePath ?? "manifest"}).',
+        'extends: cycle through "$ref" (in ${sourcePath ?? "manifest"}).',
       );
     }
+    final base = ref.contains('#')
+        ? _projectExtendsBase(ref, sourcePath)
+        : _boardExtendsBase(ref, sourcePath, seen);
+    final derived = {...cross}..remove('extends');
+    return _mergeCross(base, derived);
+  }
+
+  /// The resolved `cross:` of a board named [name] from the shipped board
+  /// library, with its own `extends` chain applied.
+  Map<String, dynamic> _boardExtendsBase(
+    String name,
+    String? sourcePath,
+    Set<String> seen,
+  ) {
     final registry = _boardRegistry();
-    final base = registry[baseName];
+    final base = registry[name];
     if (base == null) {
       final known = registry.keys.isEmpty ? 'none' : registry.keys.join(', ');
       throw CrossProjectException(
-        'extends: unknown board "$baseName" (in ${sourcePath ?? "manifest"}). '
+        'extends: unknown board "$name" (in ${sourcePath ?? "manifest"}). '
         'Known boards: $known.',
       );
     }
-    final resolvedBase = _applyExtends(base, sourcePath, {...seen, baseName});
-    final derived = {...cross}..remove('extends');
-    return _mergeCross(resolvedBase, derived);
+    return _applyExtends(base, sourcePath, {...seen, name});
+  }
+
+  /// The resolved `cross:` of `<dir>#<target>` — a target from another emb
+  /// project at <dir> (relative to the extending manifest's project root). That
+  /// project's own `extends` chain is applied by [resolve].
+  Map<String, dynamic> _projectExtendsBase(String ref, String? sourcePath) {
+    final i = ref.lastIndexOf('#');
+    final dirRef = ref.substring(0, i);
+    final name = ref.substring(i + 1);
+    final root = _projectRootOf(sourcePath);
+    final dir = p.normalize(p.join(root, dirRef));
+    final abs = p.absolute(dir);
+    if (!_resolvingProjects.add(abs)) {
+      throw CrossProjectException(
+        'extends: project reference cycle at "$dir".',
+      );
+    }
+    try {
+      final project = resolve(dir);
+      if (project == null) {
+        throw CrossProjectException(
+          'extends: no emb project at "$dir" (from "$ref").',
+        );
+      }
+      final target = project.targets[name];
+      if (target == null) {
+        throw CrossProjectException(
+          'extends: project "$dir" has no target "$name" (from "$ref"). '
+          'Available: ${project.targets.keys.join(", ")}.',
+        );
+      }
+      return target.cross;
+    } finally {
+      _resolvingProjects.remove(abs);
+    }
+  }
+
+  /// The project root for a manifest at [sourcePath]: the `.emb/` parent in
+  /// `.emb/` mode, else the manifest file's own directory. Cross-project
+  /// `extends` paths are resolved relative to this.
+  String _projectRootOf(String? sourcePath) {
+    if (sourcePath == null) return '.';
+    final dir = p.dirname(sourcePath);
+    return p.basename(dir) == '.emb' ? p.dirname(dir) : dir;
   }
 
   /// Merge the [over] (derived) layer onto [base], with the cross-layer rules:
