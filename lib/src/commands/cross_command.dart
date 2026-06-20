@@ -370,6 +370,23 @@ class CrossCommand extends Command<int> {
       return ExitCode.success.code;
     }
 
+    // --publish fast path: the image tag is content-addressed by the manifest
+    // (sysroot key + toolset), so check skip-on-exists BEFORE the resolve. When
+    // the image is already published there is no need to download/extract the
+    // toolchain + sysroot at all.
+    if (args['publish'] == true &&
+        args['force'] != true &&
+        args['push'] != false &&
+        provider.name == 'arm-gnu') {
+      if (await _publishedAlready(
+        target,
+        image: publishImage!,
+        toolOverride: args['container-tool'] as String?,
+      )) {
+        return ExitCode.success.code;
+      }
+    }
+
     // Provider-declared preflight (tar/xz/rsync for arm-gnu, etc.).
     final missing = await _missingTools(provider.preflightTools);
     if (missing.isNotEmpty) {
@@ -1146,15 +1163,8 @@ class CrossCommand extends Command<int> {
       push: push,
     );
 
-    // Skip when the content-addressed image is already published (unless forced
-    // or push is disabled — a local-only build always runs).
-    if (!force && push) {
-      final skopeo = await _hasExecutable('skopeo');
-      if (await _refExists(plan, skopeoAvailable: skopeo)) {
-        _logger.info('${plan.primaryRef} already published — skipping.');
-        return ExitCode.success.code;
-      }
-    }
+    // skip-on-exists is handled before the resolve (see _publishedAlready); by
+    // the time we are here the image is absent (or --force/--no-push), so build.
 
     if (!await _runStep('build', plan.build())) return ExitCode.software.code;
     for (final cmd in plan.pushes()) {
@@ -1186,6 +1196,38 @@ class CrossCommand extends Command<int> {
     } on ProcessException {
       return false;
     }
+  }
+
+  /// Whether the content-addressed toolchain image for [target] is already
+  /// published — computed from the manifest alone (sysroot key + toolset hash),
+  /// so `--publish` can skip the toolchain/sysroot resolve entirely. The tag
+  /// matches the one [_writeImageBuildContext] would emit post-resolve.
+  Future<bool> _publishedAlready(
+    CrossTarget target, {
+    required String image,
+    required String? toolOverride,
+  }) async {
+    final tool = await _resolveContainerTool(toolOverride);
+    if (tool == null) return false; // the full path reports the tool error
+    final imageTag = ToolchainImage.imageTag(
+      triple: target.targetTriple ?? '',
+      sysrootKey: sysrootKey(target),
+      toolchainVersion: target.toolchainVersion,
+    );
+    final plan = ImagePublishPlan(
+      tool: tool,
+      contextDir: '', // unused for the existence probe
+      imagePrefix: image,
+      tags: [imageTag],
+    );
+    if (await _refExists(
+      plan,
+      skopeoAvailable: await _hasExecutable('skopeo'),
+    )) {
+      _logger.info('${plan.primaryRef} already published — skipping resolve.');
+      return true;
+    }
+    return false;
   }
 
   /// Whether the plan's primary ref already exists in the registry (the probe
