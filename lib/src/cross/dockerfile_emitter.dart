@@ -50,10 +50,11 @@ FROM $fromImage
 # Build tooling: cmake/ninja/meson/pkg-config + the embedder's host codegen
 # (wayland-scanner via libwayland-bin; git/curl for the engine-header fetch).
 # build-essential gives meson a native (build-machine) compiler — required to
-# configure even a cross build when rebuilding `augment` libs (libdisplay-info).
+# configure even a cross build when rebuilding `augment` libs (libdisplay-info,
+# which also reads hwdata's /usr/share/hwdata/pnp.ids at build time).
 RUN apt-get update \\
  && apt-get install -y --no-install-recommends \\
-      cmake ninja-build meson build-essential pkg-config \\
+      cmake ninja-build meson build-essential pkg-config hwdata \\
       tar xz-utils rsync ca-certificates libwayland-bin git curl \\
  && rm -rf /var/lib/apt/lists/*
 ENV FLUTTER_WORKSPACE=$workspace
