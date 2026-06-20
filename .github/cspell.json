@@ -38,6 +38,7 @@
     "libglib",
     "libgstreamer",
     "libinput",
+    "libnl",
     "libpipewire",
     "libsecret",
     "libsystemd",

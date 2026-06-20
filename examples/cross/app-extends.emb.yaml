@@ -1,0 +1,25 @@
+# App layer demo — a Flutter app that builds on a project (board → project → app).
+#
+# `extends: <ref>#<target>` pulls in raspberry-pi-family.emb.yaml's rpi5-bookworm
+# target — which itself `extends` the rpi5-bookworm board — then overlays only
+# what is app-specific. Here that's one extra plugin -dev package, merged onto
+# the project + board sysroot stack; a real app would typically also set its own
+# plugin config (DISABLE_PLUGINS / PLUGINS_DIR). Hardware (toolchain, image, cpu)
+# comes from the board; backends/augment from the project.
+#
+#   emb cross app-extends.emb.yaml --target rpi5-bookworm --dry-run
+#
+# In a real layout the app and the project live in separate repos checked out
+# side by side, so the ref is a directory, e.g.:
+#   extends: '../ivi-homescreen#rpi5-bookworm'
+id: my-flutter-app
+type: app
+supported_archs: [arm64]
+supported_host_types: [ubuntu, fedora]
+
+cross:
+  targets:
+    rpi5-bookworm:
+      extends: 'raspberry-pi-family.emb.yaml#rpi5-bookworm'
+      sysroot:
+        dev_packages: [libnl-3-dev]   # an app plugin dep, added to the stack
