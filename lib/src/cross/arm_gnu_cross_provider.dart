@@ -377,18 +377,29 @@ class ArmGnuCrossProvider implements CrossProvider {
     return null;
   }
 
-  /// Concatenate the sysroot's `/etc/apt/sources.list` and
-  /// `sources.list.d/*.list` for [aptIndexUrls].
+  /// Concatenate the sysroot's `/etc/apt/sources.list`, the one-line
+  /// `sources.list.d/*.list`, and the deb822 `sources.list.d/*.sources`
+  /// (trixie/raspios) for [aptIndexUrls]. Files are separated by a blank line
+  /// so one-line and deb822 stanzas never merge.
   String _readAptSources(Directory sysrootDir) {
     final buf = StringBuffer();
-    final main = File(p.join(sysrootDir.path, 'etc', 'apt', 'sources.list'));
-    if (main.existsSync()) buf.writeln(main.readAsStringSync());
+    void add(File f) {
+      if (f.existsSync()) {
+        buf
+          ..writeln(f.readAsStringSync())
+          ..writeln();
+      }
+    }
+
+    add(File(p.join(sysrootDir.path, 'etc', 'apt', 'sources.list')));
     final dir = Directory(
       p.join(sysrootDir.path, 'etc', 'apt', 'sources.list.d'),
     );
     if (dir.existsSync()) {
-      for (final f in dir.listSync().whereType<File>()) {
-        if (f.path.endsWith('.list')) buf.writeln(f.readAsStringSync());
+      final files = dir.listSync().whereType<File>().toList()
+        ..sort((a, b) => a.path.compareTo(b.path));
+      for (final f in files) {
+        if (f.path.endsWith('.list') || f.path.endsWith('.sources')) add(f);
       }
     }
     return buf.toString();
