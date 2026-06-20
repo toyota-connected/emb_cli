@@ -1042,9 +1042,9 @@ class CrossCommand extends Command<int> {
   /// providers don't lay out a self-contained dir to bake.
   int _emitDockerfile(CrossProfile profile, CrossTarget target) {
     if (!_canBakeImage(profile)) return ExitCode.usage.code;
-    final (ctx, key) = _writeImageBuildContext(profile, target);
+    final (ctx, imageTag) = _writeImageBuildContext(profile, target);
 
-    final tag = 'emb-cross-${profile.targetTriple}:$key';
+    final tag = 'emb-cross-${profile.targetTriple}:$imageTag';
     _logger
       ..info('Wrote ${p.join(ctx.path, "Dockerfile")}')
       ..info('Build:  docker build -t $tag ${ctx.path}')
@@ -1075,17 +1075,20 @@ class CrossCommand extends Command<int> {
   ) {
     final ctx = Directory(p.dirname(profile.targetSysroot));
     final key = sysrootKey(target);
-    File(p.join(ctx.path, 'Dockerfile')).writeAsStringSync(
-      ToolchainImage.dockerfile(
-        triple: profile.targetTriple,
-        sysrootKey: key,
-        toolchainVersion: target.toolchainVersion,
-      ),
+    final dockerfile = ToolchainImage.dockerfile(
+      triple: profile.targetTriple,
+      sysrootKey: key,
+      toolchainVersion: target.toolchainVersion,
     );
-    File(
-      p.join(ctx.path, '.dockerignore'),
-    ).writeAsStringSync(ToolchainImage.dockerignore());
-    return (ctx, key);
+    final dockerignore = ToolchainImage.dockerignore();
+    File(p.join(ctx.path, 'Dockerfile')).writeAsStringSync(dockerfile);
+    File(p.join(ctx.path, '.dockerignore')).writeAsStringSync(dockerignore);
+    // Content-address the image tag by the sysroot AND the baked toolset, so an
+    // emitter/toolset change yields a new tag (publish re-builds instead of
+    // serving a stale image). The baked paths stay keyed by sysrootKey, so a
+    // consume build still hits cache.
+    final imageTag = ToolchainImage.tagFor(key, dockerfile, dockerignore);
+    return (ctx, imageTag);
   }
 
   /// Emit, then build + push the toolchain image to a registry. Registry-
@@ -1113,15 +1116,16 @@ class CrossCommand extends Command<int> {
       return ExitCode.unavailable.code;
     }
 
-    final (ctx, key) = _writeImageBuildContext(profile, target);
+    final (ctx, imageTag) = _writeImageBuildContext(profile, target);
     final plan = ImagePublishPlan(
       tool: tool,
       contextDir: ctx.path,
       imagePrefix: imagePrefix,
-      // Always publish (and skip-check) the immutable content-addressed key as
-      // the primary tag, so a changed manifest is never masked by a moving
-      // alias; --tag values are pushed as additional aliases on top.
-      tags: [key, ...tags.where((t) => t != key)],
+      // Always publish (and skip-check) the content-addressed image tag
+      // (sysroot + toolset) as the primary tag, so a changed manifest or
+      // toolset is never masked by a moving alias; --tag values are pushed as
+      // additional aliases on top.
+      tags: [imageTag, ...tags.where((t) => t != imageTag)],
       push: push,
     );
 
