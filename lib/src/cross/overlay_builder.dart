@@ -225,14 +225,33 @@ class OverlayBuilder {
   }
 
   Future<void> _download(String url, File dest) async {
-    final req = await _http.getUrl(Uri.parse(url));
-    req.followRedirects = true;
-    final resp = await req.close();
-    if (resp.statusCode != 200) {
-      await resp.drain<void>();
-      throw OverlayBuildException('download failed ($url): ${resp.statusCode}');
+    // Retry transient failures (5xx / 429 / network) with backoff — a CI run
+    // fetches augment sources on every job, so a single upstream hiccup (e.g.
+    // a gitlab 500) shouldn't fail the build. 4xx and the like fail fast.
+    const maxAttempts = 4;
+    for (var attempt = 1; ; attempt++) {
+      try {
+        final req = await _http.getUrl(Uri.parse(url));
+        req.followRedirects = true;
+        final resp = await req.close();
+        if (resp.statusCode == 200) {
+          await resp.pipe(dest.openWrite());
+          return;
+        }
+        await resp.drain<void>();
+        final transient = resp.statusCode >= 500 || resp.statusCode == 429;
+        if (!transient || attempt == maxAttempts) {
+          throw OverlayBuildException(
+            'download failed ($url): ${resp.statusCode}',
+          );
+        }
+      } on IOException catch (e) {
+        if (attempt == maxAttempts) {
+          throw OverlayBuildException('download failed ($url): $e');
+        }
+      }
+      await Future<void>.delayed(Duration(seconds: attempt * 2));
     }
-    await resp.pipe(dest.openWrite());
   }
 
   /// Close the underlying HTTP client.
