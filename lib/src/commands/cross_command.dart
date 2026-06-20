@@ -545,6 +545,7 @@ class CrossCommand extends Command<int> {
     // embedder's pkg-config probes resolve them. Native builds use the host's
     // system libraries instead (install via the manifest deps / emb deps).
     if (!native && target.augment.isNotEmpty) {
+      final sw = Stopwatch()..start();
       final overlay = OverlayBuilder(workspace, profile);
       try {
         await overlay.build(
@@ -557,6 +558,10 @@ class CrossCommand extends Command<int> {
       } finally {
         overlay.close();
       }
+      _logger.info(
+        '  augment       : ${target.augment.map((a) => a.pkg).join(", ")} '
+        'staged (${_secs(sw)})',
+      );
     }
 
     final buildRoot = workspace.ensurePlatformDir(
@@ -569,6 +574,7 @@ class CrossCommand extends Command<int> {
       hostTools: hostTools,
     );
 
+    final buildSw = Stopwatch()..start();
     final results = backends.isEmpty
         ? [
             await builder.build(
@@ -586,6 +592,7 @@ class CrossCommand extends Command<int> {
             backends: backends,
             cmakeArgs: target.cmakeArgs,
           );
+    buildSw.stop();
 
     for (final r in results) {
       final tag = r.backend != null ? '${r.backend}: ' : '';
@@ -594,6 +601,12 @@ class CrossCommand extends Command<int> {
       } else {
         _logger.err('  $tag${r.message ?? "build failed"}');
       }
+    }
+    final okCount = results.where((r) => r.success).length;
+    if (okCount > 0) {
+      _logger.info(
+        '  build         : $okCount backend(s) in ${_secs(buildSw)}',
+      );
     }
     if (!results.every((r) => r.success)) return ExitCode.software.code;
     final built = results.where((r) => r.success).toList();
@@ -1036,6 +1049,10 @@ class CrossCommand extends Command<int> {
       );
     }
   }
+
+  /// A stopwatch rendered as `X.Ys`, for the per-phase build timings.
+  static String _secs(Stopwatch sw) =>
+      '${(sw.elapsedMilliseconds / 1000).toStringAsFixed(1)}s';
 
   /// Emit a Dockerfile + .dockerignore that bake the resolved arm-gnu toolchain
   /// + sysroot into an OCI image (build context = the platform dir). Other
