@@ -326,6 +326,21 @@ void main() {
     }
   });
 
+  test(
+    '--dry-run plans the app-extends example (app → project → board)',
+    () async {
+      final app = p.join('examples', 'cross', 'app-extends.emb.yaml');
+      final code = await run([
+        'cross',
+        '--dry-run',
+        '--target',
+        'rpi5-bookworm',
+        app,
+      ]);
+      expect(code, ExitCode.success.code);
+    },
+  );
+
   // Every shipped example must parse -> dispatch -> plan with no side effects:
   // this validates all of the listed use cases hermetically.
   test('--dry-run plans every example manifest', () async {

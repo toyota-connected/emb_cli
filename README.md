@@ -589,6 +589,54 @@ emb cross . --target local     # …the same, explicit (or --target host)
 emb cross . --target rpi5 --build
 ```
 
+#### Layered manifests: `extends` (board → project → app)
+
+emb ships a **board library** — hardware/OS definitions for known boards under
+its own `boards/` directory (e.g. `rpi5-bookworm`: triple, toolchain version,
+sysroot image, partition, cpu tuning, the base GUI stack). A manifest pulls one
+in with `cross.extends` so a project never re-spells hardware facts:
+
+```yaml
+# ivi-homescreen/.emb/raspberry-pi.emb.yaml — the PROJECT layer
+cross:
+  targets:
+    rpi5-bookworm:
+      extends: rpi5-bookworm          # ← emb board (hardware/OS)
+      backends: { drm-kms-egl: { BUILD_BACKEND_DRM_KMS_EGL: 'ON' } }
+      augment:  [ { pkg: libdisplay-info, min: "0.2.0", build: meson } ]
+      sysroot:  { dev_packages: [ libgstreamer1.0-dev ] }   # added to the board's
+```
+
+`extends` takes two forms:
+
+| Form | Resolves to |
+|---|---|
+| `<board>` | a target in emb's board library (the **hardware** layer) |
+| `<dir>#<target>` | a target in another emb project at `<dir>` (the **project** layer) |
+
+The second form lets an **app** build on a project (e.g. ivi-homescreen) and add
+only what is app-specific — typically **plugin configuration**, which depends on
+the plugins the app ships, not on the embedder or the board:
+
+```yaml
+# my-flutter-app/.emb/app.emb.yaml — the APP layer
+#   (ivi-homescreen checked out alongside the app)
+cross:
+  targets:
+    rpi5-bookworm:
+      extends: '../ivi-homescreen#rpi5-bookworm'   # ← project target (→ board)
+      defines: { DISABLE_PLUGINS: 'OFF', PLUGINS_DIR: '../ivi-homescreen-plugins/plugins' }
+      sysroot: { dev_packages: [ libnl-3-dev ] }
+```
+
+The chain collapses **app ⊕ project ⊕ board** with the same merge rules at every
+layer: nested maps deep-merge; `cpu_flags` and `backends` **replace** (each is a
+complete statement); `sysroot.dev_packages` **union** (each layer adds to the
+stack below it). `<dir>` is resolved relative to the extending manifest's project
+root (the `.emb/` parent, else the file's directory); cross-project reference
+cycles are rejected. The board library location can be overridden with
+`EMB_BOARDS_DIR` (it otherwise ships with emb).
+
 #### Reproducible builds (`emb.lock`)
 
 A cross resolve pins what it actually used to **`emb.lock`** at the project root,
