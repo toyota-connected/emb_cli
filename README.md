@@ -15,8 +15,9 @@ The whole flow is a handful of commands:
 deps → repos → Flutter SDK → engine → AOT → ivi-homescreen bundle
 ```
 
-- **Host dependency install** in one transaction (PackageKit on Linux), with
-  `WhatProvides` resolution so `pkg-config`, `libjpeg-devel`, etc. just work.
+- **Host dependency install** in one transaction (PackageKit on Linux, Homebrew
+  on macOS, WinGet on Windows), with `WhatProvides` resolution so `pkg-config`,
+  `libjpeg-devel`, etc. just work.
 - **Prebuilt Flutter engine** fetched from
   [meta-flutter/flutter-engine](https://github.com/meta-flutter/flutter-engine)
   releases (auto, keyed by the SDK's engine commit).
@@ -30,26 +31,43 @@ deps → repos → Flutter SDK → engine → AOT → ivi-homescreen bundle
 ## Requirements
 
 - **Dart SDK ≥ 3.10.1** to run/build `emb` — or none preinstalled: `bootstrap.sh`
-  fetches a pinned SDK (see [Install](#install)).
-- **Linux** for host **dependency install** (PackageKit — dnf/apt/zypper). The
-  macOS (Homebrew) and Windows (WinGet) backends are stubbed in this build; all
-  other commands are cross-platform.
-- `git`, `tar`, `curl` on `PATH`.
+  (Linux/macOS) or `bootstrap.ps1` (Windows) fetches a pinned SDK (see
+  [Install](#install)).
+- **Python 3.6+** for the bootstrap script.
+- **Linux**: PackageKit for host dependency install (dnf/apt/zypper).
+- **macOS**: Homebrew for host dependency install.
+- **Windows**: WinGet for host dependency install (Windows 10 1809+).
+- `git` on `PATH`.
 - Cross-compiling to a device arch is supported **from an x86_64 host**.
 
 ---
 
 ## Install
 
-Quickest path — **no preinstalled Dart or Flutter needed**. `bootstrap.sh`
-fetches a pinned Dart SDK and activates `emb`; `--shellenv` prints the exports
-to put both on your `PATH` for the current shell:
+Quickest path — **no preinstalled Dart or Flutter needed**. The bootstrap script
+fetches a pinned Dart SDK and activates `emb`; `--shellenv` prints the
+shell-specific PATH update for the current session.
+
+### Linux / macOS
 
 ```sh
-git clone https://github.com/toyota-connected/emb_cli.git && cd emb_cli && eval "$(./bootstrap.sh --shellenv)" && emb --version
+git clone https://github.com/toyota-connected/emb_cli.git && cd emb_cli
+eval "$(./bootstrap.sh --shellenv)"
+emb --version
 ```
 
-If you already have the Dart SDK, install from the checkout instead:
+### Windows (PowerShell)
+
+```powershell
+git clone https://github.com/toyota-connected/emb_cli.git; cd emb_cli
+Invoke-Expression (.\bootstrap.ps1 --shellenv)
+emb --version
+```
+
+A `bootstrap.cmd` wrapper is also provided for CMD users (does not support
+`--shellenv`; manually add the printed bin directories to `PATH`).
+
+### From an existing Dart SDK
 
 ```sh
 # From the package root:
@@ -814,10 +832,8 @@ dart analyze
 dart test
 ```
 
-The macOS/Windows package backends live in `lib/src/pkg/_platform/` and are
-excluded from the default (Linux) build — see that folder's `README.md`. Dart
-has no OS-conditional dependencies, so they're wired in only on per-OS builds
-that add `brew_dart` / `winget_dart`.
+All three host-package backends (PackageKit, Homebrew, WinGet) are compiled into
+every build. Each package's native build hook no-ops on unsupported platforms.
 
 [license_badge]: https://img.shields.io/badge/license-Apache%202.0-blue.svg
 [license_link]: https://opensource.org/licenses/Apache-2.0
