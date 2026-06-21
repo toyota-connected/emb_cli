@@ -152,7 +152,9 @@ class CrossCommand extends Command<int> {
       )
       ..addFlag(
         'run',
-        help: 'After --deploy, run the bundle on the target over SSH.',
+        help:
+            'Run the assembled bundle: on this host for --target local, or on '
+            'the --deploy target over SSH.',
         negatable: false,
       )
       ..addFlag(
@@ -747,6 +749,9 @@ class CrossCommand extends Command<int> {
     bool run = false,
   }) async {
     final arch = EngineArtifacts.engineArch(archOfTriple(profile.targetTriple));
+    // A native (`--target local`) build is host-runnable, so `--run` without
+    // `--deploy` launches it here; a cross-build is not.
+    final native = profile.providerName == 'local';
 
     // Build the app bundle once (engine fetch + AOT + assemble).
     final appBundle = Directory(
@@ -810,6 +815,20 @@ class CrossCommand extends Command<int> {
             run: run && built.length == 1,
           );
           if (rc != ExitCode.success.code) return rc;
+        } else if (run && built.length == 1) {
+          // No --deploy: launch the freshly-built embedder against the app
+          // bundle on this host. Only a native (--target local) build is
+          // host-runnable; a cross-build would hit `Exec format error`.
+          if (native) {
+            final rc = await _runLocal(binary, appBundle);
+            if (rc != ExitCode.success.code) return rc;
+          } else {
+            _logger.warn(
+              '  --run without --deploy only runs a native (--target local) '
+              'build; skipping this ${archOfTriple(profile.targetTriple)} '
+              'cross-build.',
+            );
+          }
         }
       } on RunnableBundleException catch (e) {
         _logger.err('  ${r.backend ?? ""}: ${e.message}');
@@ -873,6 +892,20 @@ class CrossCommand extends Command<int> {
       port: port,
       opts: opts,
     );
+    final proc = await Process.start(
+      argv.first,
+      argv.sublist(1),
+      mode: ProcessStartMode.inheritStdio,
+    );
+    return proc.exitCode;
+  }
+
+  /// Launch the native [embedder] against [bundle] on this host
+  /// (`<embedder> -b <bundle>`), inheriting stdio. Used by `--run` for a
+  /// `--target local` build, where there is no deploy step.
+  Future<int> _runLocal(File embedder, Directory bundle) async {
+    final argv = [embedder.path, '-b', bundle.path];
+    _logger.info('  running ${argv.join(' ')} …');
     final proc = await Process.start(
       argv.first,
       argv.sublist(1),
@@ -963,6 +996,9 @@ class CrossCommand extends Command<int> {
     }
     for (final e in Directory(buildDir).listSync(recursive: true)) {
       if (e is! File) continue;
+      // Skip CMake's internal compiler-probe binaries (CMakeFiles/**): they are
+      // ELF executables too and would otherwise shadow the real embedder.
+      if (p.split(e.path).contains('CMakeFiles')) continue;
       final stat = e.statSync();
       // Executable bit + ELF magic.
       if (stat.mode & 0x49 == 0) continue;
