@@ -160,7 +160,7 @@ void main() {
     final argv = Deployer().runArgv(
       'pi@board',
       'ivi-homescreen',
-      './homescreen --b=.',
+      './homescreen -b .',
       port: 2222,
     );
     expect(argv, [
@@ -168,7 +168,7 @@ void main() {
       '-p',
       '2222',
       'pi@board',
-      "cd 'ivi-homescreen' && ./homescreen --b=.",
+      "cd 'ivi-homescreen' && ./homescreen -b .",
     ]);
   });
 }

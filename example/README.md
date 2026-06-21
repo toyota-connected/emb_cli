@@ -58,7 +58,7 @@ The bundle directory (`data/flutter_assets`, `data/icudtl.dat`,
 ivi-homescreen runs:
 
 ```sh
-ivi-homescreen --b=<workspace>/bundle/my_app-release-arm64
+ivi-homescreen -b <workspace>/bundle/my_app-release-arm64
 ```
 
 ## 4. Self-describing packages

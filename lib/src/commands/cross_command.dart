@@ -791,7 +791,7 @@ class CrossCommand extends Command<int> {
         final bin = await runnable.install(binary, outDir);
         _logger.info(
           '  ${r.backend ?? ""}: runnable → ${outDir.path}  '
-          '(run: ./${p.basename(bin.path)} --b=.)',
+          '(run: ./${p.basename(bin.path)} -b .)',
         );
         if (tar) {
           final archive = await runnable.tar(outDir);
@@ -860,7 +860,7 @@ class CrossCommand extends Command<int> {
       return ExitCode.software.code;
     }
     progress.complete('Deployed → $host:$destDir (via ${res.method})');
-    final runCmd = './$binName --b=.';
+    final runCmd = './$binName -b .';
     if (!run) {
       _logger.info('  run on target: ssh $host "cd $destDir && $runCmd"');
       return ExitCode.success.code;

@@ -125,7 +125,7 @@ emb setup --config ../configs --yes
 emb bundle --app-path ./app/my_app --arch arm64 --build
 
 # 4. Run it on the target
-#    ivi-homescreen --b=<workspace>/bundle/my_app-release-arm64
+#    ivi-homescreen -b <workspace>/bundle/my_app-release-arm64
 ```
 
 `emb setup` runs every phase; you can also run them individually
@@ -450,12 +450,12 @@ emb cross <project-dir|manifest.yaml> [options]
 | `--build` | off | Configure + build the embedder under the resolved profile, one build per `cross.backends` entry. |
 | `--backend <name>` | all | Build only the named `cross.backends` entries. Repeatable. |
 | `--deb` | off | With `--build`: package each backend binary into a root-free `.deb` (Depends auto-derived from the binary's needed libraries). |
-| `--app <dir>` | — | With `--build`: also build this Flutter app for the target and assemble a **runnable bundle** (embedder + engine + flutter_assets + icudtl + libapp), runnable as `./homescreen --b=.`. |
+| `--app <dir>` | — | With `--build`: also build this Flutter app for the target and assemble a **runnable bundle** (embedder + engine + flutter_assets + icudtl + libapp), runnable as `./homescreen -b .`. |
 | `-m`, `--mode <mode>` | `release` | Runtime mode for the `--app` bundle (`debug`/`profile`/`release`). |
 | `--tar` | off | Also produce a `.tar.gz` of each runnable bundle. |
 | `--deploy <user@host>` | — | With `--app`: send each runnable bundle to the board over SSH — rsync when the target has it, else a tar-over-SSH fallback (port/opts reused from `cross.sysroot` when device-sourced). |
 | `--deploy-dir <path>` | `ivi-homescreen` | Remote destination dir for `--deploy`. |
-| `--run` | off | After `--deploy`, run the bundle on the target over SSH (`./homescreen --b=.`). |
+| `--run` | off | After `--deploy`, run the bundle on the target over SSH (`./homescreen -b .`). |
 | `--clean` | off | Remove this target's build + overlay dirs (keeps the toolchain + sysroot), then exit. |
 | `--clean-all` | off | Also remove the downloaded / extracted toolchain + sysroot and the apt / deb caches, then exit. |
 | `--update-lock` | off | Regenerate this target's `emb.lock` entry from the resolved toolchain/sysroot (accepts an intentional URL / version change). See [Reproducible builds](#reproducible-builds-emblock). |

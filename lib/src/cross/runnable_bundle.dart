@@ -15,7 +15,7 @@ import 'package:path/path.dart' as p;
 ///   lib/libflutter_engine.so         # target-arch engine
 /// ```
 ///
-/// Run on the target as `./homescreen --b=<dir>`. The `data/` + `lib/` halves
+/// Run on the target as `./homescreen -b <dir>`. The `data/` + `lib/` halves
 /// come from the bundle pipeline; this just drops the embedder in beside them.
 class RunnableBundle {
   RunnableBundle({ProcessRunner runProcess = defaultProcessRunner})
