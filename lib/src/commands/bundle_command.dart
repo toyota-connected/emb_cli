@@ -117,7 +117,7 @@ class BundleCommand extends Command<int> {
     }
 
     progress.complete('Bundle assembled: ${result.outputDir}');
-    _logger.info('Run with: ivi-homescreen --b=${result.outputDir}');
+    _logger.info('Run with: ivi-homescreen -b ${result.outputDir}');
     return ExitCode.success.code;
   }
 }
