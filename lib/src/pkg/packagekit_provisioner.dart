@@ -26,7 +26,21 @@ class PackageKitProvisioner implements HostProvisioner {
   @override
   String get name => 'packagekit';
 
-  Future<PkClient> _connect() async => _client ??= await PkClient.connect();
+  /// Connect to the PackageKit daemon, caching the client.
+  ///
+  /// Right after boot (notably under WSL) the system bus / on-demand
+  /// activation can be momentarily not-ready, surfacing as a
+  /// [PkServiceUnavailableException] that fails near-instantly (no daemon spawn
+  /// is even attempted). Give it a single retry after a short delay so a
+  /// startup race doesn't make the backend look permanently unavailable.
+  Future<PkClient> _connect() async {
+    try {
+      return _client ??= await PkClient.connect();
+    } on PkServiceUnavailableException {
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      return _client ??= await PkClient.connect();
+    }
+  }
 
   @override
   Future<bool> isAvailable() async {
