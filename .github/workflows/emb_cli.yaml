@@ -62,3 +62,38 @@ jobs:
 
       - name: 🔎 Verify version
         run: dart run test --run-skipped -t version-verify
+
+  # macOS / Windows native coverage. The reusable `build` job above runs the
+  # Linux (PackageKit) path; this matrix exercises the macOS (brew_dart) and
+  # Windows (winget_dart) host-provisioner backends on their own OS — the
+  # packages now resolve everywhere, their native build hooks run here, and the
+  # backend-selection + install-hint tests assert the per-OS wiring.
+  host-backends:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    name: host-backends (${{ matrix.os }})
+    steps:
+      - name: 📚 Git Checkout
+        uses: actions/checkout@v7
+
+      - name: 🎯 Setup Dart
+        uses: dart-lang/setup-dart@v1
+        with:
+          sdk: "stable"
+
+      - name: 📦 Install Dependencies
+        run: dart pub get
+
+      # Analyze + test on the native OS: resolves brew_dart/winget_dart, runs
+      # their build hooks (winget_dart's compiles the COM bridge on Windows and
+      # degrades gracefully when unavailable), and exercises the backend
+      # selection + install-hint tests. Formatting is gated OS-independently by
+      # the Linux `build` job, so it is not repeated here.
+      - name: 🕵️ Analyze
+        run: dart analyze --fatal-infos --fatal-warnings lib test
+
+      - name: 🧪 Run Tests
+        run: dart test
