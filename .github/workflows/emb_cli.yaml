@@ -63,16 +63,20 @@ jobs:
       - name: 🔎 Verify version
         run: dart run test --run-skipped -t version-verify
 
-  # macOS / Windows native coverage. The reusable `build` job above runs the
-  # Linux (PackageKit) path; this matrix exercises the macOS (brew_dart) and
-  # Windows (winget_dart) host-provisioner backends on their own OS — the
-  # packages now resolve everywhere, their native build hooks run here, and the
-  # backend-selection + install-hint tests assert the per-OS wiring.
+  # Per-OS host-provisioner coverage. The reusable `build` job above is the
+  # canonical Linux unit/analyze run; this matrix additionally exercises the
+  # macOS (brew_dart) and Windows (winget_dart) backends on their own OS and
+  # runs the published single-line install end to end on every OS.
+  #
+  # Windows is pinned to windows-2022: winget_dart's build hook targets the
+  # "Visual Studio 17 2022" generator, which windows-latest (now a VS 2026
+  # image) does not provide. This matches winget_dart's own CI and lets the
+  # native COM bridge actually compile instead of degrading.
   host-backends:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest, windows-2022]
     runs-on: ${{ matrix.os }}
     name: host-backends (${{ matrix.os }})
     steps:
@@ -84,13 +88,20 @@ jobs:
         with:
           sdk: "stable"
 
+      # packagekit_dart's native build hook (run by `dart test` / the activate
+      # below) needs libsystemd + a C toolchain on Linux.
+      - name: 🔧 Install native build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libsystemd-dev cmake ninja-build
+
       - name: 📦 Install Dependencies
         run: dart pub get
 
       # Analyze on the native OS: resolves brew_dart/winget_dart and runs their
-      # build hooks (winget_dart compiles the COM bridge on Windows and degrades
-      # gracefully when unavailable). Formatting is gated OS-independently by the
-      # Linux `build` job, so it is not repeated here.
+      # build hooks (on windows-2022 winget_dart compiles the COM bridge).
+      # Formatting is gated OS-independently by the `build` job, not repeated.
       - name: 🕵️ Analyze
         run: dart analyze --fatal-infos --fatal-warnings lib test
 
@@ -101,11 +112,12 @@ jobs:
       - name: 🧪 Run Tests
         run: dart test test/src/host test/src/pkg
 
-      # Exercise the published single-line install on each native OS: fetch a
-      # cached Dart SDK, `pub global activate` emb from this checkout (running
-      # the brew_dart/winget_dart native hooks), put it on PATH, and run it.
-      - name: 🚀 Single-line install (macOS)
-        if: runner.os == 'macOS'
+      # Exercise the published single-line install on each OS: fetch a cached
+      # Dart SDK, `pub global activate` emb from this checkout (running the
+      # packagekit_dart/brew_dart/winget_dart native hooks), put it on PATH,
+      # and run it.
+      - name: 🚀 Single-line install (Unix)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           eval "$(./bootstrap.sh --shellenv)"
