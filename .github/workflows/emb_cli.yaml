@@ -87,13 +87,33 @@ jobs:
       - name: 📦 Install Dependencies
         run: dart pub get
 
-      # Analyze + test on the native OS: resolves brew_dart/winget_dart, runs
-      # their build hooks (winget_dart's compiles the COM bridge on Windows and
-      # degrades gracefully when unavailable), and exercises the backend
-      # selection + install-hint tests. Formatting is gated OS-independently by
-      # the Linux `build` job, so it is not repeated here.
+      # Analyze on the native OS: resolves brew_dart/winget_dart and runs their
+      # build hooks (winget_dart compiles the COM bridge on Windows and degrades
+      # gracefully when unavailable). Formatting is gated OS-independently by the
+      # Linux `build` job, so it is not repeated here.
       - name: 🕵️ Analyze
         run: dart analyze --fatal-infos --fatal-warnings lib test
 
+      # Host-OS surface only: backend selection + install hints + host info. The
+      # rest of the suite is Linux-centric cross-compile tooling (dpkg-deb,
+      # debugfs, ELF/usr-merge symlinks, gen_snapshot) covered by the `build`
+      # job; it is not meant to run off Linux.
       - name: 🧪 Run Tests
-        run: dart test
+        run: dart test test/src/host test/src/pkg
+
+      # Exercise the published single-line install on each native OS: fetch a
+      # cached Dart SDK, `pub global activate` emb from this checkout (running
+      # the brew_dart/winget_dart native hooks), put it on PATH, and run it.
+      - name: 🚀 Single-line install (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          eval "$(./bootstrap.sh --shellenv)"
+          emb --version
+
+      - name: 🚀 Single-line install (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Invoke-Expression (.\bootstrap.ps1 --shellenv)
+          emb --version

@@ -7,7 +7,7 @@
 # Or emit an eval-able export of both Dart + the emb shim dir in one step:
 #   eval "$(./bootstrap.sh --shellenv)"
 #
-# Windows: run `python tool\bootstrap_dart.py --activate .` instead.
+# Windows: run `Invoke-Expression (.\bootstrap.ps1 --shellenv)` instead.
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 exec python3 "$root/tool/bootstrap_dart.py" --activate "$root" "$@"
