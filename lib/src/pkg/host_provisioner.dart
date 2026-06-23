@@ -1,4 +1,6 @@
 import 'package:emb_cli/src/host/host_info.dart';
+import 'package:emb_cli/src/pkg/_platform/brew_provisioner.dart';
+import 'package:emb_cli/src/pkg/_platform/winget_provisioner.dart';
 import 'package:emb_cli/src/pkg/packagekit_provisioner.dart';
 import 'package:emb_cli/src/pkg/provision_models.dart';
 
@@ -18,22 +20,16 @@ abstract class HostProvisioner {
 
   /// Select the provisioner for [host].
   ///
-  /// Only the Linux (PackageKit) backend is compiled into the default build.
-  /// The macOS (Homebrew) and Windows (WinGet) backends live in
-  /// `lib/src/pkg/_platform/` and are wired in per-OS builds that add the
-  /// corresponding dependency — see that folder's README. Selecting an
-  /// uncompiled backend throws [UnsupportedError].
+  /// Returns the platform-appropriate backend: PackageKit on Linux, Homebrew
+  /// on macOS, WinGet on Windows.
   static HostProvisioner forHost(HostInfo host) {
     switch (host.os) {
       case HostOs.linux:
         return PackageKitProvisioner();
       case HostOs.macos:
+        return BrewProvisioner();
       case HostOs.windows:
-        throw UnsupportedError(
-          'The ${host.os.configToken} package backend is not compiled into '
-          'this build. Build emb on ${host.os.name} with the platform backend '
-          'enabled (see lib/src/pkg/_platform/README.md).',
-        );
+        return WingetProvisioner();
     }
   }
 

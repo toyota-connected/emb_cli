@@ -11,16 +11,20 @@ environment:
 
 dependencies:
   args: ^2.5.0
+  # macOS (Homebrew) host-provisioner backend. The three backends
+  # (packagekit_dart/brew_dart/winget_dart) are all compiled into every build;
+  # each one's native build hook no-ops off its own OS, and forHost() only
+  # instantiates the matching backend at runtime. See lib/src/pkg/_platform/.
+  brew_dart: ^0.3.0
   cli_completion: ^0.5.0
   crypto: ^3.0.0
   mason_logger: ">=0.2.16 <0.4.0"
-  # Linux backend only. The macOS (brew_dart) and Windows (winget_dart)
-  # backends live in lib/src/pkg/_platform/ and are wired in per-OS builds —
-  # Dart has no OS-conditional dependencies, so depending on them here would
-  # force them to compile on every platform. See lib/src/pkg/_platform/README.
+  # Linux (PackageKit) host-provisioner backend.
   packagekit_dart: ^0.3.2
   path: ^1.9.0
   pub_updater: ">=0.4.0 <0.6.0"
+  # Windows (WinGet) host-provisioner backend.
+  winget_dart: ^0.3.1
   yaml: ^3.1.0
 
 dev_dependencies:

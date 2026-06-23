@@ -127,6 +127,20 @@ class CrossProjectResolver {
     return _single(m.raw, fallback: m.id, sourcePath: m.sourcePath);
   }
 
+  /// Resolve the `extends` chain of a single, already intra-file-merged
+  /// `cross:` [block] (the shared fields ⊕ one target's override, with no
+  /// `targets` key), returning the map ready for `CrossTarget.fromMap`. A
+  /// no-op when the block has no `extends`. [sourcePath] is the manifest the
+  /// block came from, used to resolve a relative `<dir>#<target>` reference and
+  /// the project root.
+  ///
+  /// Lets callers that enumerate targets themselves (e.g. `emb matrix`) apply
+  /// the same board-library / cross-project resolution the full [resolve] does.
+  Map<String, dynamic> resolveExtends(
+    Map<String, dynamic> block,
+    String? sourcePath,
+  ) => _applyExtends(block, sourcePath);
+
   /// A single manifest (explicit file or back-compat package dir): its
   /// `cross.targets` (or the one flat target).
   CrossProject _single(

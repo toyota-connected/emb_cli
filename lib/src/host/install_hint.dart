@@ -28,7 +28,8 @@ enum _Manager {
   zypper('sudo zypper install -y'),
   pacman('sudo pacman -S --needed'),
   apk('sudo apk add'),
-  brew('brew install');
+  brew('brew install'),
+  winget('winget install');
 
   const _Manager(this.prefix);
 
@@ -57,7 +58,7 @@ _Manager? _managerFor(HostInfo host) {
     case HostOs.macos:
       return _Manager.brew;
     case HostOs.windows:
-      return null; // no single convention worth emitting
+      return _Manager.winget;
     case HostOs.linux:
       return switch (host.hostType) {
         'ubuntu' ||

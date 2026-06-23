@@ -160,14 +160,23 @@ def ensure_sdk(args, version, sdk_root, dart):
     log("installed: " + sdk_root)
 
 
-def pub_bin_dir():
-    """Where `dart pub global activate` installs executable shims."""
+def pub_bin_dir(os_name):
+    """Where `dart pub global activate` installs executable shims.
+
+    Honors $PUB_CACHE; otherwise Windows uses %LOCALAPPDATA%\\Pub\\Cache\\bin
+    (the SDK's default there) and Unix uses ~/.pub-cache/bin.
+    """
     pub = os.environ.get("PUB_CACHE")
-    return (os.path.join(pub, "bin") if pub
-            else os.path.join(os.path.expanduser("~"), ".pub-cache", "bin"))
+    if pub:
+        return os.path.join(pub, "bin")
+    if os_name == "windows":
+        local = os.environ.get("LOCALAPPDATA") or os.path.join(
+            os.path.expanduser("~"), "AppData", "Local")
+        return os.path.join(local, "Pub", "Cache", "bin")
+    return os.path.join(os.path.expanduser("~"), ".pub-cache", "bin")
 
 
-def activate(dart, bin_dir, pkg_dir):
+def activate(dart, bin_dir, pkg_dir, os_name):
     env = dict(os.environ)
     env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
     log("activating from " + os.path.abspath(pkg_dir))
@@ -179,7 +188,7 @@ def activate(dart, bin_dir, pkg_dir):
     if code != 0:
         sys.exit("`dart pub global activate` failed (%d)" % code)
     log("done. Ensure these are on PATH:\n  %s\n  %s"
-        % (bin_dir, pub_bin_dir()))
+        % (bin_dir, pub_bin_dir(os_name)))
 
 
 def main():
@@ -218,12 +227,18 @@ def main():
 
     ensure_sdk(args, version, sdk_root, dart)
     if args.activate:
-        activate(dart, bin_dir, args.activate)
+        activate(dart, bin_dir, args.activate, args.os)
     if args.shellenv:
-        # POSIX shell form for `eval`; literal $PATH expands in the user's
-        # shell. Dart bin first so this SDK wins until a Flutter SDK (sourced
-        # from setup_env.sh) is prepended ahead of it.
-        print('export PATH="%s:%s:$PATH"' % (bin_dir, pub_bin_dir()))
+        # Prepend Dart bin + pub-cache bin to PATH. Dart bin first so this SDK
+        # wins until a Flutter SDK (sourced from setup_env.sh) is prepended
+        # ahead of it. Windows emits PowerShell (`Invoke-Expression`); Unix
+        # emits POSIX shell (`eval`). The literal env reference expands in the
+        # caller's shell, not here.
+        paths = os.pathsep.join([bin_dir, pub_bin_dir(args.os)])
+        if args.os == "windows":
+            print('$env:PATH = "%s%s$env:PATH"' % (paths, os.pathsep))
+        else:
+            print('export PATH="%s:$PATH"' % paths)
     else:
         print(bin_dir)
     return 0

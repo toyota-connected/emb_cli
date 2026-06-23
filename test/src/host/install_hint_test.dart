@@ -73,6 +73,13 @@ void main() {
       );
     });
 
+    test('Windows → winget', () {
+      expect(
+        staticInstallHint(_windows, ['tar', 'rsync']),
+        'winget install tar rsync',
+      );
+    });
+
     test('deduplicates collapsed package names', () {
       // Two distinct tools, but only the package set is emitted (here both keep
       // their own name, so just assert order + no dupes for a repeated tool).
@@ -82,10 +89,9 @@ void main() {
       );
     });
 
-    test('unknown linux distro and windows → null (caller omits the line)', () {
+    test('unknown linux distro → null (caller omits the line)', () {
       expect(staticInstallHint(_linux('void'), ['tar']), isNull);
       expect(staticInstallHint(_linux(''), ['tar']), isNull);
-      expect(staticInstallHint(_windows, ['tar']), isNull);
     });
   });
 }

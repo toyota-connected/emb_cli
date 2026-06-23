@@ -30,6 +30,13 @@ jobs:
       # Port baseline (~46%). The I/O-heavy command/engine/aot/packagekit paths
       # aren't unit-tested yet; raise this as coverage is added.
       min_coverage: 45
+      # packagekit_dart's native build hook (run by `dart test`) builds the
+      # vendored sdbus-cpp, which needs libsystemd's sd-bus + a C toolchain.
+      # Without these the hook degrades silently; install them so the Linux
+      # backend actually compiles.
+      setup: |
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq libsystemd-dev cmake ninja-build
 
   spell-check:
     uses: VeryGoodOpenSource/very_good_workflows/.github/workflows/spell_check.yml@v1
@@ -51,9 +58,81 @@ jobs:
         with:
           sdk: "stable"
 
+      - name: 🔧 Install native build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libsystemd-dev cmake ninja-build
+
       - name: 📦 Install Dependencies
         run: |
           dart pub get
 
       - name: 🔎 Verify version
         run: dart run test --run-skipped -t version-verify
+
+  # Per-OS host-provisioner coverage. The reusable `build` job above is the
+  # canonical Linux unit/analyze run; this matrix additionally exercises the
+  # macOS (brew_dart) and Windows (winget_dart) backends on their own OS and
+  # runs the published single-line install end to end on every OS.
+  #
+  # Windows is pinned to windows-2022: winget_dart's build hook targets the
+  # "Visual Studio 17 2022" generator, which windows-latest (now a VS 2026
+  # image) does not provide. This matches winget_dart's own CI and lets the
+  # native COM bridge actually compile instead of degrading.
+  host-backends:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-2022]
+    runs-on: ${{ matrix.os }}
+    name: host-backends (${{ matrix.os }})
+    steps:
+      - name: 📚 Git Checkout
+        uses: actions/checkout@v7
+
+      - name: 🎯 Setup Dart
+        uses: dart-lang/setup-dart@v1
+        with:
+          sdk: "stable"
+
+      # packagekit_dart's native build hook (run by `dart test` / the activate
+      # below) needs libsystemd + a C toolchain on Linux.
+      - name: 🔧 Install native build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libsystemd-dev cmake ninja-build
+
+      - name: 📦 Install Dependencies
+        run: dart pub get
+
+      # Analyze on the native OS: resolves brew_dart/winget_dart and runs their
+      # build hooks (on windows-2022 winget_dart compiles the COM bridge).
+      # Formatting is gated OS-independently by the `build` job, not repeated.
+      - name: 🕵️ Analyze
+        run: dart analyze --fatal-infos --fatal-warnings lib test
+
+      # Host-OS surface only: backend selection + install hints + host info. The
+      # rest of the suite is Linux-centric cross-compile tooling (dpkg-deb,
+      # debugfs, ELF/usr-merge symlinks, gen_snapshot) covered by the `build`
+      # job; it is not meant to run off Linux.
+      - name: 🧪 Run Tests
+        run: dart test test/src/host test/src/pkg
+
+      # Exercise the published single-line install on each OS: fetch a cached
+      # Dart SDK, `pub global activate` emb from this checkout (running the
+      # packagekit_dart/brew_dart/winget_dart native hooks), put it on PATH,
+      # and run it.
+      - name: 🚀 Single-line install (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          eval "$(./bootstrap.sh --shellenv)"
+          emb --version
+
+      - name: 🚀 Single-line install (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Invoke-Expression (.\bootstrap.ps1 --shellenv)
+          emb --version

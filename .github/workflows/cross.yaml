@@ -44,6 +44,13 @@ jobs:
       - uses: dart-lang/setup-dart@v1
         with:
           sdk: "stable"
+      # `dart run` triggers packagekit_dart's native build hook (vendored
+      # sdbus-cpp), which needs libsystemd's sd-bus + a C/C++ toolchain. We
+      # control this runner, so install them rather than let the hook degrade.
+      - name: 🔧 Install native build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libsystemd-dev cmake ninja-build
       - run: dart pub get
       - name: 🧮 Render cross matrix
         id: gen
@@ -67,13 +74,21 @@ jobs:
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       # The fedora container is minimal: give setup-dart its extract tools and
-      # the packagekit_dart build hook a `git`/`cmake` so it fails *cleanly*
-      # (no C++ compiler installed → configure exits non-zero, the hook no-ops)
-      # rather than throwing on a missing executable. The dry-run itself never
-      # touches PackageKit.
-      - name: 🧱 Bootstrap container
+      # packagekit_dart's native build hook (vendored sdbus-cpp) a full C/C++
+      # toolchain + sd-bus headers so it builds cleanly. The dry-run itself
+      # never touches PackageKit, but we control this environment, so the hook
+      # should compile rather than degrade.
+      - name: 🧱 Bootstrap container (fedora)
         if: ${{ matrix.container != '' }}
-        run: dnf -y install git tar xz unzip findutils which cmake ninja-build
+        run: >
+          dnf -y install git tar xz unzip findutils which
+          gcc gcc-c++ cmake ninja-build systemd-devel pkgconf-pkg-config
+      # Same for the ubuntu host cells (gcc/g++ are preinstalled there).
+      - name: 🔧 Install native build dependencies (host)
+        if: ${{ matrix.container == '' }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libsystemd-dev cmake ninja-build
       - uses: actions/checkout@v7
       - uses: dart-lang/setup-dart@v1
         with:
@@ -99,9 +114,16 @@ jobs:
     env:
       FLUTTER_WORKSPACE: ${{ github.workspace }}/.ws
     steps:
-      - name: 🧱 Bootstrap container
+      - name: 🧱 Bootstrap container (fedora)
         if: ${{ matrix.container != '' }}
-        run: dnf -y install git tar xz unzip findutils which cmake ninja-build
+        run: >
+          dnf -y install git tar xz unzip findutils which
+          gcc gcc-c++ cmake ninja-build systemd-devel pkgconf-pkg-config
+      - name: 🔧 Install native build dependencies (host)
+        if: ${{ matrix.container == '' }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libsystemd-dev cmake ninja-build
       - uses: actions/checkout@v7
       - uses: dart-lang/setup-dart@v1
         with:

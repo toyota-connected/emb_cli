@@ -3,7 +3,9 @@ import 'dart:io';
 
 import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/commands/matrix_command.dart';
+import 'package:emb_cli/src/cross/cross_project.dart';
 import 'package:emb_cli/src/host/host_info.dart';
+import 'package:emb_cli/src/manifest/manifest_loader.dart';
 import 'package:mason_logger/mason_logger.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
@@ -137,4 +139,59 @@ void main() {
     final include = await render([f.path]);
     expect(include, isEmpty);
   });
+
+  test(
+    'a target that extends a board resolves instead of being skipped',
+    () async {
+      // A board library: the hardware (provider/triple) lives here, not in the
+      // app manifest, which only `extends` it.
+      final boards = Directory(p.join(tmp.path, 'boards'))..createSync();
+      File(p.join(boards.path, 'raspberry-pi.emb.yaml')).writeAsStringSync('''
+id: raspberry-pi
+type: board
+cross:
+  provider: arm-gnu
+  triple: aarch64-none-linux-gnu
+  targets:
+    rpi5-bookworm:
+      toolchain_version: 12.3.rel1
+      image_url: https://example.com/bookworm.img.xz
+      cpu_flags: [-mcpu=cortex-a76]
+''');
+      final f = write('family.emb.yaml', '''
+id: ivi-homescreen
+type: app
+supported_host_types: [ubuntu]
+cross:
+  targets:
+    rpi5-bookworm:
+      extends: rpi5-bookworm
+''');
+
+      final runner = CommandRunner<int>('emb', 'test')
+        ..addCommand(
+          MatrixCommand(
+            logger: Logger(),
+            host: _host,
+            resolver: CrossProjectResolver(const ManifestLoader(), boards),
+          ),
+        );
+      final outFile = p.join(tmp.path, 'matrix.json');
+      expect(
+        await runner.run(['matrix', f.path, '-o', outFile]),
+        ExitCode.success.code,
+      );
+      final include =
+          (jsonDecode(File(outFile).readAsStringSync()) as Map)['include']
+              as List;
+
+      expect(include, hasLength(1));
+      final cell = include.single as Map<String, dynamic>;
+      // Hardware came from the extended board, not the app manifest.
+      expect(cell['target'], 'rpi5-bookworm');
+      expect(cell['provider'], 'arm-gnu');
+      expect(cell['triple'], 'aarch64-none-linux-gnu');
+      expect(cell['args'], '${f.path} --target rpi5-bookworm');
+    },
+  );
 }

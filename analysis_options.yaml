@@ -1,10 +1,4 @@
 include: package:very_good_analysis/analysis_options.6.0.0.yaml
-analyzer:
-  exclude:
-    # Per-OS provisioner backends compiled only on macOS/Windows builds, where
-    # brew_dart / winget_dart are added as dependencies. Excluded here so the
-    # default (Linux) build does not require those packages to resolve.
-    - lib/src/pkg/_platform/**
 linter:
   rules:
     public_member_api_docs: false
