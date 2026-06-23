@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/cross/cross_keys.dart';
+import 'package:emb_cli/src/cross/cross_project.dart';
 import 'package:emb_cli/src/cross/cross_provider.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/host/host_info.dart';
@@ -32,9 +33,11 @@ class MatrixCommand extends Command<int> {
     required Logger logger,
     HostInfo? host,
     ManifestLoader loader = const ManifestLoader(),
+    CrossProjectResolver? resolver,
   }) : _logger = logger,
        _host = host,
-       _loader = loader {
+       _loader = loader,
+       _resolver = resolver ?? CrossProjectResolver(loader) {
     argParser
       ..addMultiOption(
         'host',
@@ -60,6 +63,7 @@ class MatrixCommand extends Command<int> {
   final Logger _logger;
   final HostInfo? _host;
   final ManifestLoader _loader;
+  final CrossProjectResolver _resolver;
 
   @override
   String get name => 'matrix';
@@ -107,10 +111,21 @@ class MatrixCommand extends Command<int> {
         if (targetFilter != null && entry.name != targetFilter) continue;
         final CrossTarget target;
         try {
-          target = CrossTarget.fromMap(entry.merged);
-          // fromMap throws ArgumentError on an unknown/missing provider token.
+          // Resolve the target's `extends` chain (board library / cross-project)
+          // first, so a target whose provider comes from a board — like the
+          // rpi family — yields a real cell instead of being skipped.
+          final resolved = _resolver.resolveExtends(
+            Map<String, dynamic>.from(entry.merged),
+            file.path,
+          );
+          target = CrossTarget.fromMap(resolved);
+          // fromMap throws ArgumentError on an unknown/missing provider token;
+          // extends resolution throws CrossProjectException (bad board/ref).
           // ignore: avoid_catching_errors
         } on ArgumentError catch (e) {
+          _logger.warn('skip ${file.path}#${entry.name}: ${e.message}');
+          continue;
+        } on CrossProjectException catch (e) {
           _logger.warn('skip ${file.path}#${entry.name}: ${e.message}');
           continue;
         }
