@@ -193,18 +193,39 @@ class OverlayBuilder {
       if (tc != null) '-DCMAKE_TOOLCHAIN_FILE=$tc',
       '-DCMAKE_INSTALL_PREFIX=/usr',
       '-DCMAKE_BUILD_TYPE=Release',
+      // Honor the augment's `static` flag for libraries that defer to
+      // BUILD_SHARED_LIBS (no explicit STATIC/SHARED on add_library).
+      '-DBUILD_SHARED_LIBS=${lib.staticLink ? 'OFF' : 'ON'}',
+      // Package-specific cache entries (e.g. BLEND2D_STATIC / BLEND2D_NO_JIT).
+      for (final e in lib.defines.entries) '-D${e.key}=${e.value}',
     ], environment: profile.buildEnv());
     _check(lib, 'cmake configure', configure);
-    // Header-only (e.g. Vulkan-Headers) installs with no build step.
+    // Build before install. A no-op for header-only libs (e.g. Vulkan-Headers,
+    // which expose no compiled targets), but required for compiled libs (e.g.
+    // shadertoy-cxx): without it `cmake --install` has no built artifacts to
+    // place and the install rule for a library target fails.
+    _check(
+      lib,
+      'cmake build',
+      await _run('cmake', [
+        '--build',
+        bld.path,
+        '--parallel',
+      ], environment: profile.buildEnv()),
+    );
+    // Stage via DESTDIR rather than `--install --prefix`: the configured
+    // CMAKE_INSTALL_PREFIX (/usr) controls where files land and what gets baked
+    // into configs/rpaths, while DESTDIR redirects the actual writes under the
+    // overlay. DESTDIR prefixes every path (absolute install() rules included),
+    // so the build never touches the host /usr and needs no sudo.
     _check(
       lib,
       'cmake install',
-      await _run('cmake', [
-        '--install',
-        bld.path,
-        '--prefix',
-        p.join(overlay.path, 'usr'),
-      ], environment: profile.buildEnv()),
+      await _run(
+        'cmake',
+        ['--install', bld.path],
+        environment: {...profile.buildEnv(), 'DESTDIR': overlay.path},
+      ),
     );
   }
 

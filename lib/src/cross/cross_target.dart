@@ -63,6 +63,7 @@ class AugmentLib {
     required this.url,
     this.build = CrossGenerator.meson,
     this.staticLink = true,
+    this.defines = const {},
   });
 
   factory AugmentLib.fromMap(Map<dynamic, dynamic> map) => AugmentLib(
@@ -71,6 +72,11 @@ class AugmentLib {
     url: (map['url'] ?? '').toString(),
     build: CrossGenerator.fromToken((map['build'] ?? 'meson').toString()),
     staticLink: (map['static'] ?? true) as bool,
+    defines:
+        (map['defines'] as Map?)?.map(
+          (k, v) => MapEntry(k.toString(), v.toString()),
+        ) ??
+        const <String, String>{},
   );
 
   /// pkg-config module name to probe (and the package to build).
@@ -89,6 +95,10 @@ class AugmentLib {
   /// Whether to install only the static archive (so the on-target binary
   /// needs no extra shared object).
   final bool staticLink;
+
+  /// Extra `-D<key>=<value>` cache entries passed to the package's CMake
+  /// configure (e.g. `BLEND2D_STATIC=ON`). Ignored by meson builds.
+  final Map<String, String> defines;
 }
 
 /// The `package:` block of a cross manifest — how `emb cross --deb` turns a
