@@ -96,8 +96,9 @@ class AugmentLib {
   /// needs no extra shared object).
   final bool staticLink;
 
-  /// Extra `-D<key>=<value>` cache entries passed to the package's CMake
-  /// configure (e.g. `BLEND2D_STATIC=ON`). Ignored by meson builds.
+  /// Extra `-D<key>=<value>` options passed to the package's configure step:
+  /// CMake cache entries (e.g. `BLEND2D_STATIC=ON`) or, for meson packages,
+  /// project options (e.g. `some_feature=enabled`) — both use `-Dkey=value`.
   final Map<String, String> defines;
 }
 

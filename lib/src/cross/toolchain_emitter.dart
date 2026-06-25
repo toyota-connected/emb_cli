@@ -87,6 +87,12 @@ cpp = '$crossBin/$triple-g++'
 ar = '$crossBin/$triple-ar'
 strip = '$crossBin/$triple-strip'
 pkg-config = 'pkg-config'
+# Run target binaries built during the cross build (codegen tools used in
+# custom_target/run_target, and `meson test`) under qemu-user. Without this
+# meson aborts at setup ("exe wrapper ... needed") for any project that
+# executes a freshly-built target executable — e.g. a code generator. `-L`
+# points qemu at the sysroot so it finds the target ld-linux + shared libs.
+exe_wrapper = ['qemu-$cpuFamily-static', '-L', '$sysroot']
 
 [host_machine]
 system = 'linux'
