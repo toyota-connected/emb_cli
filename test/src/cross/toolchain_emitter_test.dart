@@ -42,6 +42,12 @@ void main() {
     expect(text, contains('cpu_family = '));
     expect(text, contains('--sysroot=/sr'));
     expect(text, contains("'-march=armv8-a+crc+crypto'"));
+    // Target binaries built during the cross run (codegen tools, `meson test`)
+    // execute under qemu-user against the sysroot.
+    expect(
+      text,
+      contains("exe_wrapper = ['qemu-aarch64-static', '-L', '/sr']"),
+    );
   });
 
   test('derives system processor / cpu_family from the triple (riscv64)', () {

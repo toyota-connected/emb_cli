@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
+import 'package:emb_cli/src/cross/toolchain_emitter.dart';
 import 'package:path/path.dart' as p;
 
 /// Outcome of a single cross configure+build.
@@ -212,7 +213,22 @@ class CrossBuilder {
     Map<String, String> defines,
     String buildType,
   ) async {
-    final cross = profile.mesonCrossFile;
+    // Some providers (e.g. arm-gnu) supply only a CMake toolchain file, which
+    // leaves mesonCrossFile null. Without a cross file meson silently does a
+    // *native* build with the host compiler (sysroot -L/-I leak in via cFlags,
+    // giving confusing "file in wrong format" link errors), so emit one from
+    // the profile. Guarded by _neutralize so the native `local` build stays
+    // host-native.
+    var cross = profile.mesonCrossFile;
+    if ((cross == null || cross.isEmpty) && _neutralize) {
+      cross = const ToolchainEmitter().emitMeson(
+        outDir: build.parent,
+        triple: profile.targetTriple,
+        crossBin: p.dirname(profile.cc),
+        sysroot: profile.targetSysroot,
+        cpuFlags: profile.cFlags,
+      );
+    }
     // Same rationale as _cmake: bypass an SDK's pinned-old meson when asked.
     final String mesonExe;
     if (_hostTools) {

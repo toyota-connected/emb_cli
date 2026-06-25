@@ -167,6 +167,10 @@ class OverlayBuilder {
       'release',
       '--default-library',
       if (lib.staticLink) 'static' else 'shared',
+      // Package-specific project options, mirroring the CMake path's cache
+      // entries (e.g. `-Dsome_feature=enabled`). Meson uses the same
+      // `-Dkey=value` syntax for project options.
+      for (final e in lib.defines.entries) '-D${e.key}=${e.value}',
     ], environment: profile.buildEnv());
     _check(lib, 'meson setup', setup);
     _check(lib, 'ninja', await _run('ninja', ['-C', bld.path]));
