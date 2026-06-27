@@ -292,7 +292,27 @@ void main() {
         'package': {'name': 'app', 'bin': 'app'},
       });
       expect(t.package!.files, isEmpty);
+      expect(t.package!.scripts, isEmpty);
       expect(t.package!.flatpak, isNull);
+    });
+
+    test('parses package.scripts: (deb maintainer scripts)', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'image_url': 'https://example/x.img.xz',
+        'package': {
+          'name': 'app',
+          'bin': 'app',
+          'scripts': {
+            'postinst': 'debian/postinst.sh',
+            'prerm': 'debian/prerm.sh',
+          },
+        },
+      });
+      expect(t.package!.scripts, {
+        'postinst': 'debian/postinst.sh',
+        'prerm': 'debian/prerm.sh',
+      });
     });
 
     test('flatpak app_id accepts the id: alias', () {

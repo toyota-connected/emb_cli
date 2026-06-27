@@ -129,6 +129,7 @@ class PackageSpec {
     this.depends = const [],
     this.autoDepends = true,
     this.files = const {},
+    this.scripts = const {},
     this.flatpak,
   });
 
@@ -146,6 +147,9 @@ class PackageSpec {
         .toList(),
     autoDepends: (map['auto_depends'] ?? true) as bool,
     files: (map['files'] as Map<dynamic, dynamic>? ?? const {}).map(
+      (k, v) => MapEntry(k.toString(), v.toString()),
+    ),
+    scripts: (map['scripts'] as Map<dynamic, dynamic>? ?? const {}).map(
       (k, v) => MapEntry(k.toString(), v.toString()),
     ),
     flatpak: map['flatpak'] is Map
@@ -185,6 +189,13 @@ class PackageSpec {
   /// `.flatpak`. Lets a manifest ship config, icons, udev rules, etc. alongside
   /// the binary.
   final Map<String, String> files;
+
+  /// Debian maintainer scripts, as `<name>: <host script>`, where name is one
+  /// of `preinst`, `postinst`, `prerm`, `postrm`. Sources resolve relative to
+  /// the manifest directory and are staged into the `.deb`'s `DEBIAN/` control
+  /// area (0755), run by dpkg at the matching install/remove phase. `.deb`
+  /// only — flatpak has no host-side post-install hook.
+  final Map<String, String> scripts;
 
   /// Flatpak-specific manifest fields (app id, runtime, sandbox perms). Only
   /// consulted by `--flatpak`; `--deb` ignores it.

@@ -84,6 +84,15 @@ cross:
     #   assets/app.toml: /etc/ivi-homescreen/app.toml
     #   assets/99-input.rules: /lib/udev/rules.d/99-input.rules
 
+    # Debian maintainer scripts, <name>: <source relative to this manifest>.
+    # Name must be one of preinst/postinst/prerm/postrm; each is staged into
+    # the .deb's DEBIAN/ control area (0755) and run by dpkg at that phase
+    # (e.g. postinst → udevadm reload / ldconfig). .deb only — flatpak has no
+    # host-side post-install hook.
+    # scripts:
+    #   postinst: debian/postinst.sh
+    #   prerm: debian/prerm.sh
+
     # `emb cross . --build --app <dir> --flatpak` → dist/<app_id>_<branch>_<arch>
     # .flatpak. Bundles the whole runnable app (embedder + assets + engine) via
     # flatpak-builder, so it needs --app plus flatpak-builder + the runtime on

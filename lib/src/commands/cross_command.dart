@@ -998,6 +998,11 @@ class CrossCommand extends Command<int> {
       for (final e in spec.files.entries)
         p.join(manifestDir.path, e.key): e.value,
     };
+    // Maintainer scripts (preinst/postinst/prerm/postrm) → DEBIAN/<name>.
+    final maintainerScripts = {
+      for (final e in spec.scripts.entries)
+        e.key: p.join(manifestDir.path, e.value),
+    };
     final packager = DebPackager(readelf: _readelfFor(profile));
 
     for (final r in built) {
@@ -1031,6 +1036,7 @@ class CrossCommand extends Command<int> {
           sysroot: Directory(profile.targetSysroot),
           debDirs: debDirs,
           extraFiles: extraFiles,
+          maintainerScripts: maintainerScripts,
         );
         _logger.info('  ${r.backend ?? ""}: packaged → ${out.path}');
       } on DebPackageException catch (e) {
