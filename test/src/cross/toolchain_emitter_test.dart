@@ -42,12 +42,11 @@ void main() {
     expect(text, contains('cpu_family = '));
     expect(text, contains('--sysroot=/sr'));
     expect(text, contains("'-march=armv8-a+crc+crypto'"));
-    // Target binaries built during the cross run (codegen tools, `meson test`)
-    // execute under qemu-user against the sysroot.
-    expect(
-      text,
-      contains("exe_wrapper = ['qemu-aarch64-static', '-L', '/sr']"),
-    );
+    // No exe_wrapper directive: emb cross builds never execute freshly-built
+    // target binaries during the build, so the cross file must not pull in a
+    // qemu-user emulator (an explanatory comment may still mention it).
+    expect(text, isNot(contains('exe_wrapper =')));
+    expect(text, isNot(contains('qemu-aarch64-static')));
   });
 
   test('derives system processor / cpu_family from the triple (riscv64)', () {
