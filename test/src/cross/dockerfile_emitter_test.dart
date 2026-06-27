@@ -39,6 +39,19 @@ void main() {
       );
       expect(u, contains('FROM ubuntu:24.04'));
     });
+
+    test('host_dev_packages: added to the apt install when given', () {
+      // Absent by default (no manifest host_dev_packages).
+      expect(df, isNot(contains('libpugixml-dev')));
+      final withDev = ToolchainImage.dockerfile(
+        triple: 't',
+        sysrootKey: 'k',
+        hostDevPackages: ['libpugixml-dev'],
+      );
+      expect(withDev, contains('libpugixml-dev'));
+      // Still part of the single apt-get install (ends with the cache cleanup).
+      expect(withDev, contains('rm -rf /var/lib/apt/lists/*'));
+    });
   });
 
   group('ToolchainImage.imageTag', () {
@@ -63,6 +76,16 @@ void main() {
       expect(tag(from: 'ubuntu:24.04'), isNot(tag()));
       expect(tag().startsWith('KEY-'), isTrue);
       expect(tag(from: 'ubuntu:24.04').startsWith('KEY-'), isTrue);
+    });
+
+    test('host_dev_packages rekey the tag (so the image rebuilds)', () {
+      String tag(List<String> dev) => ToolchainImage.imageTag(
+        triple: 't',
+        sysrootKey: 'KEY',
+        hostDevPackages: dev,
+      );
+      expect(tag(const []), isNot(tag(['libpugixml-dev'])));
+      expect(tag(['libpugixml-dev']).startsWith('KEY-'), isTrue);
     });
   });
 

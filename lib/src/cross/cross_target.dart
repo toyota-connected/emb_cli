@@ -285,6 +285,7 @@ class CrossTarget {
     this.defines = const {},
     this.cmakeArgs = const [],
     this.hostTools = false,
+    this.hostDevPackages = const [],
   });
 
   factory CrossTarget.fromMap(Map<dynamic, dynamic> map) {
@@ -325,6 +326,7 @@ class CrossTarget {
       cmakeArgs: _stringList(map['cmake_args']),
       hostTools:
           (map['host_build_tools'] ?? map['host_cmake'] ?? false) == true,
+      hostDevPackages: _stringList(map['host_dev_packages']),
     );
   }
 
@@ -409,6 +411,14 @@ class CrossTarget {
   /// runs with the same OE env + toolchain/cross file, just a newer binary.
   /// (Manifest key `host_build_tools`; `host_cmake` is accepted as an alias.)
   final bool hostTools;
+
+  /// Host (build-machine) `-dev` package names to install into the cross build
+  /// environment — the host-side parallel of `sysroot.dev_packages`. Needed
+  /// when a `host: true` augment (a build-machine codegen tool) has host build
+  /// deps, e.g. `libpugixml-dev` for the host wayland-cxx-scanner. Baked into
+  /// the cross image by the Dockerfile emit so the build host can compile the
+  /// host tool. (Manifest key `host_dev_packages`.)
+  final List<String> hostDevPackages;
 
   /// Parse the `backends:` block (backend name → `{define: value}` map).
   static Map<String, Map<String, String>> _parseBackends(Object? value) {
