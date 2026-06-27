@@ -354,5 +354,19 @@ void main() {
         isFalse,
       );
     });
+
+    test('host_dev_packages parse (defaults to empty)', () {
+      expect(
+        CrossTarget.fromMap(const {'provider': 'arm-gnu'}).hostDevPackages,
+        isEmpty,
+      );
+      expect(
+        CrossTarget.fromMap(const {
+          'provider': 'arm-gnu',
+          'host_dev_packages': ['libpugixml-dev'],
+        }).hostDevPackages,
+        ['libpugixml-dev'],
+      );
+    });
   });
 }

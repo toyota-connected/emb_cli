@@ -1154,6 +1154,7 @@ class CrossCommand extends Command<int> {
       triple: profile.targetTriple,
       sysrootKey: key,
       toolchainVersion: target.toolchainVersion,
+      hostDevPackages: target.hostDevPackages,
     );
     final dockerignore = ToolchainImage.dockerignore();
     File(p.join(ctx.path, 'Dockerfile')).writeAsStringSync(dockerfile);
@@ -1254,6 +1255,7 @@ class CrossCommand extends Command<int> {
       triple: target.targetTriple ?? '',
       sysrootKey: sysrootKey(target),
       toolchainVersion: target.toolchainVersion,
+      hostDevPackages: target.hostDevPackages,
     );
     final plan = ImagePublishPlan(
       tool: tool,
