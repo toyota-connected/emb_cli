@@ -13,6 +13,10 @@ void main() {
   // the generated control file before the staging dir is removed.
   String? capturedControl;
   String? builtTo;
+  // DEBIAN/ maintainer scripts captured from the staging dir before --build
+  // removes it, plus the paths chmod was asked to make executable.
+  Map<String, String>? capturedScripts;
+  final chmodded = <String>[];
   Future<ProcessResult> fakeRun(
     String exe,
     List<String> args, {
@@ -28,7 +32,10 @@ void main() {
  0x0000000000000001 (NEEDED) Shared library: [libgbm.so.1]
 ''', '');
     }
-    if (exe == 'chmod') return ProcessResult(0, 0, '', '');
+    if (exe == 'chmod') {
+      chmodded.add(args.last);
+      return ProcessResult(0, 0, '', '');
+    }
     if (exe == 'dpkg-deb') {
       if (args.first == '-c') {
         return ProcessResult(0, 0, '''
@@ -42,6 +49,11 @@ lrwxrwxrwx root/root 0 2024-01-01 ./usr/lib/aarch64-linux-gnu/libgbm.so.1 -> lib
         capturedControl = File(
           p.join(stage, 'DEBIAN', 'control'),
         ).readAsStringSync();
+        capturedScripts = {
+          for (final name in DebPackager.maintainerScriptNames)
+            if (File(p.join(stage, 'DEBIAN', name)).existsSync())
+              name: File(p.join(stage, 'DEBIAN', name)).readAsStringSync(),
+        };
         builtTo = args.last;
         File(args.last).writeAsStringSync('deb');
         return ProcessResult(0, 0, '', '');
@@ -135,6 +147,59 @@ lrwxrwxrwx root/root 0 2024-01-01 ./usr/lib/aarch64-linux-gnu/libgbm.so.1 -> lib
           description: 'd',
         ),
         outDir: Directory(p.join(tmp.path, 'dist')),
+      ),
+      throwsA(isA<DebPackageException>()),
+    );
+  });
+
+  test('stages maintainer scripts into DEBIAN/ as executables', () async {
+    final postinst = File(p.join(tmp.path, 'postinst.sh'))
+      ..writeAsStringSync('#!/bin/sh\nudevadm control --reload\n');
+    final prerm = File(p.join(tmp.path, 'prerm.sh'))
+      ..writeAsStringSync('#!/bin/sh\nsystemctl stop app\n');
+
+    final packager = DebPackager(readelf: '/x/readelf', runProcess: fakeRun);
+    await packager.build(
+      binary: fakeBinary(),
+      installPath: '/usr/bin/homescreen',
+      meta: const DebMetadata(
+        name: 'app',
+        version: '1',
+        architecture: 'arm64',
+        maintainer: 'm <m@x>',
+        description: 'd',
+        autoDepends: false,
+      ),
+      outDir: Directory(p.join(tmp.path, 'dist')),
+      maintainerScripts: {'postinst': postinst.path, 'prerm': prerm.path},
+    );
+
+    // Both scripts land under DEBIAN/ with their content; the others are absent.
+    expect(capturedScripts!.keys, containsAll(['postinst', 'prerm']));
+    expect(capturedScripts!['postinst'], contains('udevadm control --reload'));
+    expect(capturedScripts!.containsKey('postrm'), isFalse);
+    // Each staged script was chmod 0755'd.
+    expect(chmodded.any((p) => p.endsWith('DEBIAN/postinst')), isTrue);
+    expect(chmodded.any((p) => p.endsWith('DEBIAN/prerm')), isTrue);
+  });
+
+  test('rejects an unknown maintainer script name', () async {
+    final s = File(p.join(tmp.path, 's.sh'))..writeAsStringSync('#!/bin/sh\n');
+    final packager = DebPackager(readelf: '/x/readelf', runProcess: fakeRun);
+    expect(
+      () => packager.build(
+        binary: fakeBinary(),
+        installPath: '/usr/bin/homescreen',
+        meta: const DebMetadata(
+          name: 'app',
+          version: '1',
+          architecture: 'arm64',
+          maintainer: 'm <m@x>',
+          description: 'd',
+          autoDepends: false,
+        ),
+        outDir: Directory(p.join(tmp.path, 'dist')),
+        maintainerScripts: {'postinstall': s.path},
       ),
       throwsA(isA<DebPackageException>()),
     );

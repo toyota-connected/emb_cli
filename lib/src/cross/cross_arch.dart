@@ -33,3 +33,14 @@ String debianArch(String triple) => switch (archOfTriple(triple)) {
   'x86_64' || 'amd64' => 'amd64',
   final a => a,
 };
+
+/// The flatpak architecture name for a triple (`aarch64-*` → `aarch64`,
+/// `arm-*` → `arm`), used for `flatpak-builder --arch` / `build-bundle --arch`
+/// and to pick the matching `org.freedesktop.Platform` runtime.
+String flatpakArch(String triple) => switch (archOfTriple(triple)) {
+  'aarch64' || 'arm64' => 'aarch64',
+  'arm' || 'armv7' || 'armv7l' || 'armhf' => 'arm',
+  'riscv64' => 'riscv64',
+  'x86_64' || 'amd64' => 'x86_64',
+  final a => a,
+};

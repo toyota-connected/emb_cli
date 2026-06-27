@@ -66,6 +66,12 @@ emb cross . --build
 #    auto-derived from the binary's DT_NEEDED. Output: cross-build-<triple>/dist.
 emb cross . --build --deb
 
+# 3b. Build + assemble the runnable app, then package it as a single-file
+#     .flatpak (embedder + assets + engine) via flatpak-builder. Needs --app and
+#     a cross.package.flatpak.app_id, plus flatpak-builder + the runtime on the
+#     host. Output: cross-build-<triple>/dist/<app_id>_<branch>_<arch>.flatpak.
+emb cross . --build --app ../my_flutter_app --flatpak
+
 # 4. Reclaim disk. --clean drops the build + overlay dirs (keeps the multi-GB
 #    toolchain + sysroot); --clean-all also removes the downloaded/extracted
 #    toolchain + sysroot and the apt/deb caches.
@@ -78,7 +84,7 @@ What lands where, under `<workspace>/.config/flutter_workspace/`:
 - `cross-<triple>/` — downloaded + extracted toolchain, the assembled sysroot,
   and the resolver's `debs/` + apt cache.
 - `cross-build-<triple>/build-<backend>/` — one CMake/Meson build tree per
-  backend; `cross-build-<triple>/dist/` — the generated `.deb`(s).
+  backend; `cross-build-<triple>/dist/` — the generated `.deb`(s)/`.flatpak`(s).
 - `overlay-<triple>/`, `overlay-src/` — augment build prefix + sources.
 
 ## Sysroot provenance (arm-gnu)

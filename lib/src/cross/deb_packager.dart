@@ -59,9 +59,21 @@ class DebPackager {
   final String readelf;
   final ProcessRunner _run;
 
+  /// The dpkg maintainer-script names, in the order dpkg runs them across an
+  /// install/upgrade/remove cycle. Any subset may be passed to `build`.
+  static const maintainerScriptNames = [
+    'preinst',
+    'postinst',
+    'prerm',
+    'postrm',
+  ];
+
   /// Package [binary] to `<outDir>/<name>_<version>_<arch>.deb`, installing it
   /// at the absolute [installPath] on the target. [sysroot] and [debDirs] feed
-  /// the package-ownership lookup for auto `Depends`.
+  /// the package-ownership lookup for auto `Depends`. [extraFiles] maps host
+  /// source paths to absolute target paths shipped alongside the binary.
+  /// [maintainerScripts] maps a maintainer-script name (`preinst`, `postinst`,
+  /// `prerm`, `postrm`) to the host script file staged into `DEBIAN/` (0755).
   Future<File> build({
     required File binary,
     required String installPath,
@@ -69,12 +81,27 @@ class DebPackager {
     required Directory outDir,
     Directory? sysroot,
     List<Directory> debDirs = const [],
+    Map<String, String> extraFiles = const {},
+    Map<String, String> maintainerScripts = const {},
   }) async {
     if (!binary.existsSync()) {
       throw DebPackageException('binary not found: ${binary.path}');
     }
     if (!p.isAbsolute(installPath)) {
       throw DebPackageException('install path must be absolute: $installPath');
+    }
+    for (final dest in extraFiles.values) {
+      if (!p.isAbsolute(dest)) {
+        throw DebPackageException('extra file dest must be absolute: $dest');
+      }
+    }
+    for (final name in maintainerScripts.keys) {
+      if (!maintainerScriptNames.contains(name)) {
+        throw DebPackageException(
+          'unknown maintainer script "$name" '
+          '(expected one of: ${maintainerScriptNames.join(", ")})',
+        );
+      }
     }
 
     final depends = {...meta.dependsExtra};
@@ -92,9 +119,34 @@ class DebPackager {
     binary.copySync(dest.path);
     await _run('chmod', ['0755', dest.path]);
 
+    // Stage any extra files at their absolute target paths inside the root.
+    for (final entry in extraFiles.entries) {
+      final src = File(entry.key);
+      if (!src.existsSync()) {
+        throw DebPackageException('extra file not found: ${entry.key}');
+      }
+      final to = File(p.join(stage.path, entry.value.substring(1)))
+        ..parent.createSync(recursive: true);
+      src.copySync(to.path);
+    }
+
     File(p.join(stage.path, 'DEBIAN', 'control'))
       ..parent.createSync(recursive: true)
       ..writeAsStringSync(_control(meta, deps));
+
+    // Stage maintainer scripts into DEBIAN/ as executables; dpkg runs them at
+    // the matching phase (preinst/postinst on install, prerm/postrm on remove).
+    for (final entry in maintainerScripts.entries) {
+      final src = File(entry.value);
+      if (!src.existsSync()) {
+        throw DebPackageException(
+          'maintainer script not found: ${entry.value}',
+        );
+      }
+      final to = File(p.join(stage.path, 'DEBIAN', entry.key));
+      src.copySync(to.path);
+      await _run('chmod', ['0755', to.path]);
+    }
 
     final out = File(
       p.join(

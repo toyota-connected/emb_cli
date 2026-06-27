@@ -112,9 +112,10 @@ class AugmentLib {
   final bool host;
 }
 
-/// The `package:` block of a cross manifest — how `emb cross --deb` turns a
-/// built binary into a `.deb`. All fields are optional; the command fills in
-/// sensible defaults (name from the manifest id, arch from the triple).
+/// The `package:` block of a cross manifest — how `emb cross --deb`/`--flatpak`
+/// turns a built binary (or assembled bundle) into a distributable package. All
+/// fields are optional; the command fills in sensible defaults (name from the
+/// manifest id, arch from the triple).
 class PackageSpec {
   const PackageSpec({
     this.name,
@@ -127,6 +128,9 @@ class PackageSpec {
     this.installDir = '/usr/bin',
     this.depends = const [],
     this.autoDepends = true,
+    this.files = const {},
+    this.scripts = const {},
+    this.flatpak,
   });
 
   factory PackageSpec.fromMap(Map<dynamic, dynamic> map) => PackageSpec(
@@ -142,6 +146,17 @@ class PackageSpec {
         .map((e) => e.toString())
         .toList(),
     autoDepends: (map['auto_depends'] ?? true) as bool,
+    files: (map['files'] as Map<dynamic, dynamic>? ?? const {}).map(
+      (k, v) => MapEntry(k.toString(), v.toString()),
+    ),
+    scripts: (map['scripts'] as Map<dynamic, dynamic>? ?? const {}).map(
+      (k, v) => MapEntry(k.toString(), v.toString()),
+    ),
+    flatpak: map['flatpak'] is Map
+        ? FlatpakPackageSpec.fromMap(
+            Map<dynamic, dynamic>.from(map['flatpak'] as Map),
+          )
+        : null,
   );
 
   /// Package name; defaults to the manifest id when unset.
@@ -166,6 +181,73 @@ class PackageSpec {
 
   /// Derive `Depends` from the binary's `DT_NEEDED` libraries.
   final bool autoDepends;
+
+  /// Extra files to include in the package, as `<host source>: <destination>`.
+  /// The source is resolved relative to the manifest directory; the
+  /// destination is an absolute target path for a `.deb` (e.g.
+  /// `/etc/app/config.toml`) or a path under the `/app` prefix for a
+  /// `.flatpak`. Lets a manifest ship config, icons, udev rules, etc. alongside
+  /// the binary.
+  final Map<String, String> files;
+
+  /// Debian maintainer scripts, as `<name>: <host script>`, where name is one
+  /// of `preinst`, `postinst`, `prerm`, `postrm`. Sources resolve relative to
+  /// the manifest directory and are staged into the `.deb`'s `DEBIAN/` control
+  /// area (0755), run by dpkg at the matching install/remove phase. `.deb`
+  /// only — flatpak has no host-side post-install hook.
+  final Map<String, String> scripts;
+
+  /// Flatpak-specific manifest fields (app id, runtime, sandbox perms). Only
+  /// consulted by `--flatpak`; `--deb` ignores it.
+  final FlatpakPackageSpec? flatpak;
+}
+
+/// The `package.flatpak:` sub-block — the flatpak manifest knobs `--flatpak`
+/// needs beyond the shared [PackageSpec] fields.
+class FlatpakPackageSpec {
+  const FlatpakPackageSpec({
+    this.appId,
+    this.branch = 'stable',
+    this.runtime = 'org.freedesktop.Platform',
+    this.runtimeVersion = '23.08',
+    this.sdk = 'org.freedesktop.Sdk',
+    this.finishArgs = const [],
+    this.icon,
+    this.categories = const ['Utility'],
+  });
+
+  factory FlatpakPackageSpec.fromMap(Map<dynamic, dynamic> map) =>
+      FlatpakPackageSpec(
+        appId: (map['app_id'] ?? map['id'])?.toString(),
+        branch: (map['branch'] ?? 'stable').toString(),
+        runtime: (map['runtime'] ?? 'org.freedesktop.Platform').toString(),
+        runtimeVersion: (map['runtime_version'] ?? '23.08').toString(),
+        sdk: (map['sdk'] ?? 'org.freedesktop.Sdk').toString(),
+        finishArgs: (map['finish_args'] as List<dynamic>? ?? const [])
+            .map((e) => e.toString())
+            .toList(),
+        icon: map['icon']?.toString(),
+        categories: (map['categories'] as List<dynamic>? ?? const ['Utility'])
+            .map((e) => e.toString())
+            .toList(),
+      );
+
+  /// Reverse-DNS app id, e.g. `com.toyota.ivi.Homescreen`. Required to build a
+  /// flatpak; the command errors if it is unset.
+  final String? appId;
+  final String branch;
+  final String runtime;
+  final String runtimeVersion;
+  final String sdk;
+
+  /// Sandbox `finish-args`; empty falls back to the packager's Wayland default.
+  final List<String> finishArgs;
+
+  /// Icon path relative to the manifest directory (PNG/SVG). Optional.
+  final String? icon;
+
+  /// `.desktop` `Categories`.
+  final List<String> categories;
 }
 
 /// Where an `arm-gnu` target's sysroot comes from.

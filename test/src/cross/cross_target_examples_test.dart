@@ -248,6 +248,83 @@ void main() {
       expect(t.package!.autoDepends, isTrue); // default
     });
 
+    test('parses package.files: and the flatpak: sub-block', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'image_url': 'https://example/x.img.xz',
+        'package': {
+          'name': 'ivi-homescreen',
+          'bin': 'shell/homescreen',
+          'files': {
+            'assets/app.toml': '/etc/ivi/app.toml',
+            'assets/99-input.rules': '/lib/udev/rules.d/99-input.rules',
+          },
+          'flatpak': {
+            'app_id': 'com.toyota.ivi.Homescreen',
+            'runtime_version': '23.08',
+            'finish_args': ['--socket=wayland', '--device=dri'],
+            'icon': 'assets/icon.png',
+            'categories': ['Utility', 'AudioVideo'],
+          },
+        },
+      });
+      // Shared files map (used by both --deb and --flatpak).
+      expect(t.package!.files, {
+        'assets/app.toml': '/etc/ivi/app.toml',
+        'assets/99-input.rules': '/lib/udev/rules.d/99-input.rules',
+      });
+      // Flatpak sub-block.
+      final fp = t.package!.flatpak;
+      expect(fp, isNotNull);
+      expect(fp!.appId, 'com.toyota.ivi.Homescreen');
+      expect(fp.runtimeVersion, '23.08');
+      expect(fp.runtime, 'org.freedesktop.Platform'); // default
+      expect(fp.branch, 'stable'); // default
+      expect(fp.finishArgs, ['--socket=wayland', '--device=dri']);
+      expect(fp.icon, 'assets/icon.png');
+      expect(fp.categories, ['Utility', 'AudioVideo']);
+    });
+
+    test('package.files defaults to empty and flatpak to null', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'image_url': 'https://example/x.img.xz',
+        'package': {'name': 'app', 'bin': 'app'},
+      });
+      expect(t.package!.files, isEmpty);
+      expect(t.package!.scripts, isEmpty);
+      expect(t.package!.flatpak, isNull);
+    });
+
+    test('parses package.scripts: (deb maintainer scripts)', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'image_url': 'https://example/x.img.xz',
+        'package': {
+          'name': 'app',
+          'bin': 'app',
+          'scripts': {
+            'postinst': 'debian/postinst.sh',
+            'prerm': 'debian/prerm.sh',
+          },
+        },
+      });
+      expect(t.package!.scripts, {
+        'postinst': 'debian/postinst.sh',
+        'prerm': 'debian/prerm.sh',
+      });
+    });
+
+    test('flatpak app_id accepts the id: alias', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'package': {
+          'flatpak': {'id': 'com.example.App'},
+        },
+      });
+      expect(t.package!.flatpak!.appId, 'com.example.App');
+    });
+
     test('parses shared defines: and raw cmake_args:', () {
       final t = CrossTarget.fromMap(const {
         'provider': 'arm-gnu',
