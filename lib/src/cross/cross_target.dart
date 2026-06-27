@@ -64,6 +64,7 @@ class AugmentLib {
     this.build = CrossGenerator.meson,
     this.staticLink = true,
     this.defines = const {},
+    this.host = false,
   });
 
   factory AugmentLib.fromMap(Map<dynamic, dynamic> map) => AugmentLib(
@@ -77,6 +78,7 @@ class AugmentLib {
           (k, v) => MapEntry(k.toString(), v.toString()),
         ) ??
         const <String, String>{},
+    host: (map['host'] ?? false) as bool,
   );
 
   /// pkg-config module name to probe (and the package to build).
@@ -100,6 +102,14 @@ class AugmentLib {
   /// CMake cache entries (e.g. `BLEND2D_STATIC=ON`) or, for meson packages,
   /// project options (e.g. `some_feature=enabled`) — both use `-Dkey=value`.
   final Map<String, String> defines;
+
+  /// When true, build this package with the **host** toolchain and install its
+  /// executable(s) onto the cross build's PATH, rather than cross-compiling a
+  /// library into the sysroot. For codegen/build tools that run on the build
+  /// machine during the target build (e.g. a `wayland-cxx-scanner` resolved via
+  /// CMake `find_program`). `static` / `min` / pkg-config probing do not apply;
+  /// only `build: cmake` is supported for host tools.
+  final bool host;
 }
 
 /// The `package:` block of a cross manifest — how `emb cross --deb` turns a

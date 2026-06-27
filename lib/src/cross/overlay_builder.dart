@@ -16,12 +16,17 @@ class OverlayPaths {
     required this.includeDirs,
     required this.libDirs,
     required this.pkgConfigDirs,
+    this.binDirs = const [],
   });
 
   final String prefix;
   final List<String> includeDirs;
   final List<String> libDirs;
   final List<String> pkgConfigDirs;
+
+  /// Host-tool bin dirs (from `host: true` augments) to prepend to the cross
+  /// build's PATH so its `find_program` resolves a build-machine binary.
+  final List<String> binDirs;
 
   /// pkg-config env that searches the overlay first, then the sysroot.
   Map<String, String> pkgConfigEnv(CrossProfile profile) {
@@ -76,17 +81,18 @@ class OverlayBuilder {
         stageInto ??
         workspace.ensurePlatformDir('overlay-${profile.targetTriple}');
     final usr = p.join(overlay.path, 'usr');
-    final paths = OverlayPaths(
-      prefix: overlay.path,
-      includeDirs: [p.join(usr, 'include')],
-      libDirs: [p.join(usr, 'lib')],
-      pkgConfigDirs: [
-        p.join(usr, 'lib', 'pkgconfig'),
-        p.join(usr, 'share', 'pkgconfig'),
-      ],
-    );
+    final binDirs = <String>[];
 
     for (final lib in libs) {
+      // Host tools (e.g. a code generator the cross build runs via
+      // find_program) are built with the host toolchain and exposed on PATH,
+      // not cross-compiled into the sysroot. They have no pkg-config presence,
+      // so skip the sysroot satisfied check.
+      if (lib.host) {
+        final hostBin = await _buildCMakeHost(lib);
+        if (!binDirs.contains(hostBin)) binDirs.add(hostBin);
+        continue;
+      }
       if (await _satisfied(lib)) continue;
       switch (lib.build) {
         case CrossGenerator.meson:
@@ -95,7 +101,16 @@ class OverlayBuilder {
           await _buildCMake(lib, overlay);
       }
     }
-    return paths;
+    return OverlayPaths(
+      prefix: overlay.path,
+      includeDirs: [p.join(usr, 'include')],
+      libDirs: [p.join(usr, 'lib')],
+      pkgConfigDirs: [
+        p.join(usr, 'lib', 'pkgconfig'),
+        p.join(usr, 'share', 'pkgconfig'),
+      ],
+      binDirs: binDirs,
+    );
   }
 
   /// A fresh build dir for [src] — wiped first so a re-run never reuses a stale
@@ -231,6 +246,50 @@ class OverlayBuilder {
         environment: {...profile.buildEnv(), 'DESTDIR': overlay.path},
       ),
     );
+  }
+
+  /// Build a `host: true` augment with the **host** toolchain and install its
+  /// executables under a shared `host-tools` prefix; returns the `bin` dir to
+  /// prepend to the cross build's PATH. Deliberately passes no cross toolchain
+  /// file and no `profile.buildEnv()` — the tool must run on the build machine,
+  /// so it uses the host compiler and the inherited host environment.
+  Future<String> _buildCMakeHost(AugmentLib lib) async {
+    if (lib.build != CrossGenerator.cmake) {
+      throw OverlayBuildException(
+        '${lib.pkg}: host: true currently supports build: cmake only',
+      );
+    }
+    final src = await _fetchSource(lib);
+    final bld = _freshBuildDir(src);
+    final hostTools = workspace.ensurePlatformDir('host-tools');
+    _check(
+      lib,
+      'cmake configure (host)',
+      await _run('cmake', [
+        '-S',
+        src.path,
+        '-B',
+        bld.path,
+        '-DCMAKE_INSTALL_PREFIX=/usr',
+        '-DCMAKE_BUILD_TYPE=Release',
+        for (final e in lib.defines.entries) '-D${e.key}=${e.value}',
+      ]),
+    );
+    _check(
+      lib,
+      'cmake build (host)',
+      await _run('cmake', ['--build', bld.path, '--parallel']),
+    );
+    _check(
+      lib,
+      'cmake install (host)',
+      await _run(
+        'cmake',
+        ['--install', bld.path],
+        environment: {'DESTDIR': hostTools.path},
+      ),
+    );
+    return p.join(hostTools.path, 'usr', 'bin');
   }
 
   /// Throw with the failing [step]'s stderr so an overlay failure is

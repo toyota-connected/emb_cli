@@ -87,6 +87,25 @@ void main() {
         });
   });
 
+  test('hostToolBins: prepended to the build PATH', () async {
+    final rec = recorder();
+    final r =
+        await CrossBuilder(
+          _profile,
+          runProcess: rec.run,
+          hostToolBins: ['/emb/host-tools/usr/bin'],
+        ).build(
+          sourceDir: dir('src'),
+          buildDir: dir('b'),
+          generator: CrossGenerator.cmake,
+        );
+    expect(r.success, isTrue);
+    // The cross build's find_program searches the host PATH, so a host-augment
+    // bin dir must lead it on every step.
+    final env = rec.envs.first!;
+    expect(env['PATH'], startsWith('/emb/host-tools/usr/bin:'));
+  });
+
   test(
     'meson: sets up with the cross file + options, then runs ninja',
     () async {
