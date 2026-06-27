@@ -15,6 +15,7 @@ import 'package:emb_cli/src/cross/deb_packager.dart';
 import 'package:emb_cli/src/cross/deployer.dart';
 import 'package:emb_cli/src/cross/dockerfile_emitter.dart';
 import 'package:emb_cli/src/cross/emb_lock.dart';
+import 'package:emb_cli/src/cross/flatpak_packager.dart';
 import 'package:emb_cli/src/cross/image_publisher.dart';
 import 'package:emb_cli/src/cross/local_cross_provider.dart';
 import 'package:emb_cli/src/cross/overlay_builder.dart';
@@ -105,6 +106,14 @@ class CrossCommand extends Command<int> {
         help:
             'After building, package each backend binary into a .deb '
             '(root-free; Depends derived from the binary + sysroot).',
+        negatable: false,
+      )
+      ..addFlag(
+        'flatpak',
+        help:
+            'After building, package each runnable bundle into a single-file '
+            '.flatpak via flatpak-builder. Requires --app and a '
+            'cross.package.flatpak.app_id; needs flatpak-builder + runtime.',
         negatable: false,
       )
       ..addFlag(
@@ -471,6 +480,10 @@ class CrossCommand extends Command<int> {
     }
 
     if (args['build'] == true) {
+      if (args['flatpak'] == true && args['app'] == null) {
+        _logger.err('--flatpak needs --app (a flatpak bundles the whole app).');
+        return ExitCode.usage.code;
+      }
       return _build(
         profile,
         target,
@@ -478,6 +491,7 @@ class CrossCommand extends Command<int> {
         inputPath,
         host: host,
         deb: args['deb'] == true,
+        flatpak: args['flatpak'] == true,
         defaultName: project.id,
         selectedBackends: selectedBackends,
         appPath: args['app'] as String?,
@@ -533,6 +547,7 @@ class CrossCommand extends Command<int> {
     String inputPath, {
     required HostInfo host,
     bool deb = false,
+    bool flatpak = false,
     String defaultName = 'app',
     List<String> selectedBackends = const [],
     String? appPath,
@@ -654,12 +669,22 @@ class CrossCommand extends Command<int> {
         deployHost: deployHost,
         deployDir: deployDir,
         run: run,
+        flatpak: flatpak,
+        defaultName: defaultName,
+        manifestDir: source,
       );
       if (rc != ExitCode.success.code) return rc;
     }
 
     if (deb) {
-      return _packageDebs(profile, target, buildRoot, built, defaultName);
+      return _packageDebs(
+        profile,
+        target,
+        buildRoot,
+        built,
+        defaultName,
+        source,
+      );
     }
     return ExitCode.success.code;
   }
@@ -749,9 +774,12 @@ class CrossCommand extends Command<int> {
     required String appPath,
     required String mode,
     required bool tar,
+    required Directory manifestDir,
     String? deployHost,
     String deployDir = 'ivi-homescreen',
     bool run = false,
+    bool flatpak = false,
+    String defaultName = 'app',
   }) async {
     final arch = EngineArtifacts.engineArch(archOfTriple(profile.targetTriple));
     // A native (`--target local`) build is host-runnable, so `--run` without
@@ -806,6 +834,20 @@ class CrossCommand extends Command<int> {
         if (tar) {
           final archive = await runnable.tar(outDir);
           _logger.info('  ${r.backend ?? ""}: ${archive.path}');
+        }
+        if (flatpak) {
+          final rc = await _packageFlatpak(
+            profile,
+            target,
+            buildRoot,
+            outDir,
+            embedder: p.basename(bin.path),
+            backend: r.backend,
+            multi: multi,
+            defaultName: defaultName,
+            manifestDir: manifestDir,
+          );
+          if (rc != ExitCode.success.code) return rc;
         }
         if (deployHost != null) {
           final dest = multi ? '$deployDir/${r.backend}' : deployDir;
@@ -941,6 +983,7 @@ class CrossCommand extends Command<int> {
     Directory buildRoot,
     List<CrossBuildResult> built,
     String defaultName,
+    Directory manifestDir,
   ) async {
     final spec = target.package ?? const PackageSpec();
     final arch = debianArch(profile.targetTriple);
@@ -950,6 +993,11 @@ class CrossCommand extends Command<int> {
     final debDirs = [
       Directory(p.join(p.dirname(profile.targetSysroot), 'debs')),
     ];
+    // Extra files resolved against the manifest dir → absolute target paths.
+    final extraFiles = {
+      for (final e in spec.files.entries)
+        p.join(manifestDir.path, e.key): e.value,
+    };
     final packager = DebPackager(readelf: _readelfFor(profile));
 
     for (final r in built) {
@@ -982,6 +1030,7 @@ class CrossCommand extends Command<int> {
           outDir: outDir,
           sysroot: Directory(profile.targetSysroot),
           debDirs: debDirs,
+          extraFiles: extraFiles,
         );
         _logger.info('  ${r.backend ?? ""}: packaged → ${out.path}');
       } on DebPackageException catch (e) {
@@ -990,6 +1039,75 @@ class CrossCommand extends Command<int> {
       }
     }
     return ExitCode.success.code;
+  }
+
+  /// Package an assembled runnable [bundleDir] into a single-file `.flatpak`
+  /// under `<buildRoot>/dist`, via flatpak-builder. The app id comes from
+  /// `cross.package.flatpak.app_id` (required); sandbox perms, runtime, and the
+  /// shared `files:` map come from the same `package:` block.
+  Future<int> _packageFlatpak(
+    CrossProfile profile,
+    CrossTarget target,
+    Directory buildRoot,
+    Directory bundleDir, {
+    required String embedder,
+    required String? backend,
+    required bool multi,
+    required String defaultName,
+    required Directory manifestDir,
+  }) async {
+    final tag = backend != null ? '$backend: ' : '';
+    final spec = target.package ?? const PackageSpec();
+    final fp = spec.flatpak;
+    if (fp?.appId == null) {
+      _logger.err(
+        '  $tag--flatpak needs cross.package.flatpak.app_id '
+        '(reverse-DNS, e.g. com.example.App).',
+      );
+      return ExitCode.usage.code;
+    }
+    // Distinct app ids per backend so multi-backend bundles do not collide.
+    final baseId = fp!.appId!;
+    final appId = multi ? '$baseId.$backend' : baseId;
+    final fpArch = flatpakArch(profile.targetTriple);
+    final iconRel = fp.icon;
+    final icon = iconRel != null
+        ? File(p.join(manifestDir.path, iconRel))
+        : null;
+    final extraFiles = {
+      for (final e in spec.files.entries)
+        p.join(manifestDir.path, e.key): e.value,
+    };
+    final meta = FlatpakMetadata(
+      appId: appId,
+      command: embedder,
+      branch: fp.branch,
+      runtime: fp.runtime,
+      runtimeVersion: fp.runtimeVersion,
+      sdk: fp.sdk,
+      arch: fpArch,
+      finishArgs: fp.finishArgs.isNotEmpty
+          ? fp.finishArgs
+          : FlatpakMetadata.defaultFinishArgs,
+      appName: spec.name ?? defaultName,
+      icon: icon,
+      categories: fp.categories,
+    );
+    final outDir = Directory(p.join(buildRoot.path, 'dist'));
+    final progress = _logger.progress('${tag}Packaging flatpak ($appId)');
+    try {
+      final out = await FlatpakPackager().build(
+        bundleDir: bundleDir,
+        meta: meta,
+        outDir: outDir,
+        extraFiles: extraFiles,
+      );
+      progress.complete('${tag}flatpak → ${out.path}');
+      return ExitCode.success.code;
+    } on FlatpakPackageException catch (e) {
+      progress.fail('$tag${e.message}');
+      return ExitCode.software.code;
+    }
   }
 
   /// The binary to package: [bin] resolved under [buildDir], else the first ELF

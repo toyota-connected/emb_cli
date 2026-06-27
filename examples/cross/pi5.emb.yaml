@@ -75,3 +75,29 @@ cross:
     section: utils
     bin: shell/homescreen                  # relative to each backend build dir
     install_dir: /usr/bin
+
+    # Extra files to ship in the package, as <source>: <dest>. The source is
+    # relative to this manifest's directory; the dest is an absolute target
+    # path for a .deb, or a path under the /app prefix for a .flatpak. Shared
+    # by both packagers.
+    # files:
+    #   assets/app.toml: /etc/ivi-homescreen/app.toml
+    #   assets/99-input.rules: /lib/udev/rules.d/99-input.rules
+
+    # `emb cross . --build --app <dir> --flatpak` → dist/<app_id>_<branch>_<arch>
+    # .flatpak. Bundles the whole runnable app (embedder + assets + engine) via
+    # flatpak-builder, so it needs --app plus flatpak-builder + the runtime on
+    # the build host. Only app_id is required.
+    flatpak:
+      app_id: com.toyota.ivi.Homescreen    # reverse-DNS; also the /app prefix
+      branch: stable
+      runtime: org.freedesktop.Platform
+      runtime_version: '23.08'
+      sdk: org.freedesktop.Sdk
+      # icon: assets/icon.png              # relative to this manifest
+      finish_args:                         # sandbox permissions
+        - --share=ipc
+        - --socket=wayland
+        - --device=dri
+        - --socket=pulseaudio
+      categories: [Utility]

@@ -61,7 +61,8 @@ class DebPackager {
 
   /// Package [binary] to `<outDir>/<name>_<version>_<arch>.deb`, installing it
   /// at the absolute [installPath] on the target. [sysroot] and [debDirs] feed
-  /// the package-ownership lookup for auto `Depends`.
+  /// the package-ownership lookup for auto `Depends`. [extraFiles] maps host
+  /// source paths to absolute target paths shipped alongside the binary.
   Future<File> build({
     required File binary,
     required String installPath,
@@ -69,12 +70,18 @@ class DebPackager {
     required Directory outDir,
     Directory? sysroot,
     List<Directory> debDirs = const [],
+    Map<String, String> extraFiles = const {},
   }) async {
     if (!binary.existsSync()) {
       throw DebPackageException('binary not found: ${binary.path}');
     }
     if (!p.isAbsolute(installPath)) {
       throw DebPackageException('install path must be absolute: $installPath');
+    }
+    for (final dest in extraFiles.values) {
+      if (!p.isAbsolute(dest)) {
+        throw DebPackageException('extra file dest must be absolute: $dest');
+      }
     }
 
     final depends = {...meta.dependsExtra};
@@ -91,6 +98,17 @@ class DebPackager {
       ..parent.createSync(recursive: true);
     binary.copySync(dest.path);
     await _run('chmod', ['0755', dest.path]);
+
+    // Stage any extra files at their absolute target paths inside the root.
+    for (final entry in extraFiles.entries) {
+      final src = File(entry.key);
+      if (!src.existsSync()) {
+        throw DebPackageException('extra file not found: ${entry.key}');
+      }
+      final to = File(p.join(stage.path, entry.value.substring(1)))
+        ..parent.createSync(recursive: true);
+      src.copySync(to.path);
+    }
 
     File(p.join(stage.path, 'DEBIAN', 'control'))
       ..parent.createSync(recursive: true)
