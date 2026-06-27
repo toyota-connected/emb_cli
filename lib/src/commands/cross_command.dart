@@ -563,14 +563,18 @@ class CrossCommand extends Command<int> {
     // libdisplay-info >= 0.2.0) into the sysroot before configuring, so the
     // embedder's pkg-config probes resolve them. Native builds use the host's
     // system libraries instead (install via the manifest deps / emb deps).
+    // Bin dirs of any `host: true` augments, prepended to the cross build's
+    // PATH so its find_program resolves a build-machine tool (e.g. a codegen).
+    var hostToolBins = const <String>[];
     if (!native && target.augment.isNotEmpty) {
       final sw = Stopwatch()..start();
       final overlay = OverlayBuilder(workspace, profile);
       try {
-        await overlay.build(
+        final ov = await overlay.build(
           target.augment,
           stageInto: Directory(profile.targetSysroot),
         );
+        hostToolBins = ov.binDirs;
       } on OverlayBuildException catch (e) {
         _logger.err('augment: ${e.message}');
         return ExitCode.software.code;
@@ -591,6 +595,7 @@ class CrossCommand extends Command<int> {
       profile,
       neutralizeHostEnv: !native,
       hostTools: hostTools,
+      hostToolBins: hostToolBins,
     );
 
     final buildSw = Stopwatch()..start();

@@ -38,10 +38,12 @@ class CrossBuilder {
     ProcessRunner runProcess = defaultProcessRunner,
     bool neutralizeHostEnv = true,
     bool hostTools = false,
+    List<String> hostToolBins = const [],
     String? Function(String tool)? resolveHostTool,
   }) : _run = runProcess,
        _neutralize = neutralizeHostEnv,
        _hostTools = hostTools,
+       _hostToolBins = hostToolBins,
        _resolveHostTool = resolveHostTool ?? _hostToolOnPath;
 
   final CrossProfile profile;
@@ -53,6 +55,12 @@ class CrossBuilder {
   /// minimum. The OE env + toolchain/cross file are still applied; only the
   /// configure-tool binary changes.
   final bool _hostTools;
+
+  /// Bin dirs of `host: true` augments to prepend to the build PATH, so the
+  /// cross build's `find_program` (which searches the host PATH) resolves a
+  /// build-machine tool — e.g. a code generator it runs during the target
+  /// build. Empty for builds with no host augments.
+  final List<String> _hostToolBins;
 
   /// Resolves a host build tool (`cmake`/`meson`) to an absolute path, or null
   /// if absent. Injectable so tests don't depend on the runner's real tools.
@@ -128,14 +136,25 @@ class CrossBuilder {
   /// build. The profile's own values (a Yocto SDK's `CC`/`CXX`/`CFLAGS`)
   /// override the blanks; an ARM GNU profile leaves them empty (its flags live
   /// in the toolchain file).
-  Map<String, String> _env() => {
-    // Stray host flag vars are dropped in both modes.
-    for (final v in const ['CFLAGS', 'CXXFLAGS', 'CPPFLAGS', 'LDFLAGS']) v: '',
-    // The compiler selection is dropped only for cross (toolchain-file driven).
-    if (_neutralize)
-      for (final v in const ['CC', 'CXX', 'CPP']) v: '',
-    ...profile.buildEnv(),
-  };
+  Map<String, String> _env() {
+    final env = <String, String>{
+      // Stray host flag vars are dropped in both modes.
+      for (final v in const ['CFLAGS', 'CXXFLAGS', 'CPPFLAGS', 'LDFLAGS'])
+        v: '',
+      // The compiler selection is dropped only for cross (toolchain-driven).
+      if (_neutralize)
+        for (final v in const ['CC', 'CXX', 'CPP']) v: '',
+      ...profile.buildEnv(),
+    };
+    if (_hostToolBins.isNotEmpty) {
+      // Prepend host-augment bin dirs so a cross `find_program` resolves the
+      // build-machine tool. profile.buildEnv() may not set PATH, in which case
+      // the child would inherit the parent's — make that explicit here.
+      final cur = env['PATH'] ?? Platform.environment['PATH'] ?? '';
+      env['PATH'] = [..._hostToolBins, if (cur.isNotEmpty) cur].join(':');
+    }
+    return env;
+  }
 
   /// Default [_resolveHostTool]: the first [tool] on the *host* `PATH`
   /// (`Platform.environment`), or null if none.

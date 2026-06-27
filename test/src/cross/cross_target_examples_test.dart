@@ -67,6 +67,7 @@ void main() {
       expect(t.augment.single.pkg, 'libdisplay-info');
       expect(t.augment.single.build, CrossGenerator.meson);
       expect(t.augment.single.staticLink, isTrue);
+      expect(t.augment.single.host, isFalse); // target lib, not a host tool
       expect(t.sysroot?.devPackages, contains('libdrm-dev'));
       expect(t.sysroot?.devPackages, contains('libegl-dev'));
       expect(t.backends.keys, ['drm-kms-egl']);
@@ -326,6 +327,31 @@ void main() {
           'host_cmake': true,
         }).hostTools,
         isTrue,
+      );
+    });
+
+    test('augment host: true parses (defaults to false)', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'augment': [
+          {
+            'pkg': 'wayland-cxx-scanner',
+            'url': 'https://example/scanner.tar.gz',
+            'build': 'cmake',
+            'host': true,
+          },
+          {'pkg': 'libdisplay-info', 'url': 'https://example/ldi.tar.gz'},
+        ],
+      });
+      final scanner = t.augment.firstWhere(
+        (a) => a.pkg == 'wayland-cxx-scanner',
+      );
+      expect(scanner.host, isTrue);
+      expect(scanner.build, CrossGenerator.cmake);
+      // A normal target augment defaults host to false.
+      expect(
+        t.augment.firstWhere((a) => a.pkg == 'libdisplay-info').host,
+        isFalse,
       );
     });
   });
