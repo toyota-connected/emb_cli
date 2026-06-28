@@ -197,6 +197,16 @@ package:
     finish_args: [--share=ipc, --socket=wayland, --device=dri]
 ```
 
+> **deb auto-`Depends` needs a sysroot.** The `.deb` field is derived by mapping
+> the binary's `DT_NEEDED` sonames to the packages that own them, looked up in
+> the target sysroot's dpkg database plus the resolver's downloaded `-dev`
+> `.deb`s. A `--target local` (native) build has neither, so its `.deb` comes
+> out with an empty `Depends` — list runtime packages in `cross.package.depends`
+> for native builds. This is deb-specific: `.rpm` instead carries soname-level
+> `Requires` (e.g. `libc.so.6()(64bit)`) that rpmbuild extracts straight from
+> the ELF, resolved by the target's package DB at install time, so it needs no
+> sysroot; `.ipk` is explicit-only by design (Yocto sysroots ship no dpkg db).
+
 ## Sysroot provenance (arm-gnu)
 
 The `cross.sysroot` block selects how the sysroot is acquired:
