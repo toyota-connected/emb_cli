@@ -104,6 +104,99 @@ What lands where, under `<workspace>/.config/flutter_workspace/`:
   (`.deb`/`.ipk`/`.rpm`/`.tar.gz`/`.flatpak`).
 - `overlay-<triple>/`, `overlay-src/` — augment build prefix + sources.
 
+## Packaging formats
+
+All five formats hang off a single `cross.package:` block. The shared fields —
+`name`, `version`, `maintainer`, `description`, `bin`, `install_dir`,
+`depends`, `files` (`<source>: <dest>`, source relative to the manifest), and
+`scripts` (`<preinst|postinst|prerm|postrm>: <source>`) — are reused by every
+format; each format adds only what is specific to it. Pick formats per build
+with `--deb` / `--ipk` / `--rpm` / `--targz` / `--flatpak` (combinable).
+
+A complete block exercising every format:
+
+```yaml
+cross:
+  # …provider / sysroot / backends…
+  package:
+    name: ivi-homescreen
+    version: 1.0.0
+    maintainer: "Joel Winarske <joel.winarske@linux.com>"
+    description: "IVI Flutter shell, cross-built by emb"
+    bin: shell/homescreen          # relative to each backend build dir
+    install_dir: /usr/bin
+    depends: [libc6]               # deb Depends / ipk Depends / rpm Requires
+    files:                         # shipped by deb/ipk/rpm/targz (and flatpak)
+      assets/app.toml: /etc/ivi-homescreen/app.toml
+    scripts:                       # deb/ipk maintainer scripts; rpm scriptlets
+      postinst: debian/postinst.sh
+
+    rpm:
+      license: MIT                 # required — rpm refuses to build without it
+      release: "1"
+      group: Applications/System
+    ipk:
+      arch: cortexa53              # opkg MACHINE tuning (else a CPU-arch default)
+    flatpak:
+      app_id: com.toyota.ivi.Homescreen
+      runtime_version: '23.08'
+      finish_args: [--share=ipc, --socket=wayland, --device=dri]
+```
+
+Per-format minimal snippets:
+
+```yaml
+# .deb  — emb cross . --build --deb
+# Root-free; Depends auto-derived from the binary's DT_NEEDED (+ depends:).
+package: { name: ivi-homescreen, version: 1.0.0, bin: shell/homescreen }
+```
+
+```yaml
+# .ipk  — emb cross . --build --ipk   (opkg/OpenEmbedded; needs opkg-utils)
+# Depends is explicit only (no dpkg db in a Yocto sysroot).
+package:
+  name: ivi-homescreen
+  version: 1.0.0
+  bin: shell/homescreen
+  depends: [libc6]
+  ipk: { arch: cortexa53 }         # optional; else aarch64/arm/… from the triple
+```
+
+```yaml
+# .rpm  — emb cross . --build --rpm   (needs rpm-build)
+# scripts: map to %pre/%post/%preun/%postun; License is mandatory.
+package:
+  name: ivi-homescreen
+  version: 1.0.0
+  bin: shell/homescreen
+  scripts: { postinst: rpm/post.sh }
+  rpm: { license: MIT, release: "1" }
+```
+
+```yaml
+# .tar.gz  — emb cross . --build --targz   (needs only tar)
+# Relocatable tree rooted at / (unpack with `tar -C / -xzf`). Ignores scripts:.
+package:
+  name: ivi-homescreen
+  version: 1.0.0
+  bin: shell/homescreen
+  files: { assets/app.toml: /etc/ivi-homescreen/app.toml }
+```
+
+```yaml
+# .flatpak  — emb cross . --build --app <dir> --flatpak
+# Bundles the whole runnable app; needs flatpak-builder + the runtime. app_id
+# is the only required field.
+package:
+  name: ivi-homescreen
+  version: 1.0.0
+  bin: shell/homescreen
+  flatpak:
+    app_id: com.toyota.ivi.Homescreen
+    runtime_version: '23.08'
+    finish_args: [--share=ipc, --socket=wayland, --device=dri]
+```
+
 ## Sysroot provenance (arm-gnu)
 
 The `cross.sysroot` block selects how the sysroot is acquired:
