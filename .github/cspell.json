@@ -122,6 +122,7 @@
     "postun",
     "rpmbuild",
     "soname",
+    "sonames",
     "targz"
   ]
 }
