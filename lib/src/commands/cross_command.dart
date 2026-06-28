@@ -17,10 +17,13 @@ import 'package:emb_cli/src/cross/dockerfile_emitter.dart';
 import 'package:emb_cli/src/cross/emb_lock.dart';
 import 'package:emb_cli/src/cross/flatpak_packager.dart';
 import 'package:emb_cli/src/cross/image_publisher.dart';
+import 'package:emb_cli/src/cross/ipk_packager.dart';
 import 'package:emb_cli/src/cross/local_cross_provider.dart';
 import 'package:emb_cli/src/cross/overlay_builder.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
+import 'package:emb_cli/src/cross/rpm_packager.dart';
 import 'package:emb_cli/src/cross/runnable_bundle.dart';
+import 'package:emb_cli/src/cross/tarball_packager.dart';
 import 'package:emb_cli/src/engine/engine_artifacts.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/host/install_hint.dart';
@@ -106,6 +109,30 @@ class CrossCommand extends Command<int> {
         help:
             'After building, package each backend binary into a .deb '
             '(root-free; Depends derived from the binary + sysroot).',
+        negatable: false,
+      )
+      ..addFlag(
+        'ipk',
+        help:
+            'After building, package each backend binary into an .ipk '
+            '(opkg/OpenEmbedded) via opkg-build. Depends is explicit '
+            '(cross.package.depends); arch via cross.package.ipk.arch.',
+        negatable: false,
+      )
+      ..addFlag(
+        'targz',
+        help:
+            'After building, package each backend binary into a relocatable '
+            '.tar.gz (binary + cross.package.files at their target paths; '
+            'unpack with tar -C /). No package manager needed.',
+        negatable: false,
+      )
+      ..addFlag(
+        'rpm',
+        help:
+            'After building, package each backend binary into an .rpm via '
+            'rpmbuild. Requires cross.package.rpm.license; Requires is '
+            'explicit + rpm auto-soname-deps. Needs rpmbuild on the host.',
         negatable: false,
       )
       ..addFlag(
@@ -491,6 +518,9 @@ class CrossCommand extends Command<int> {
         inputPath,
         host: host,
         deb: args['deb'] == true,
+        ipk: args['ipk'] == true,
+        targz: args['targz'] == true,
+        rpm: args['rpm'] == true,
         flatpak: args['flatpak'] == true,
         defaultName: project.id,
         selectedBackends: selectedBackends,
@@ -547,6 +577,9 @@ class CrossCommand extends Command<int> {
     String inputPath, {
     required HostInfo host,
     bool deb = false,
+    bool ipk = false,
+    bool targz = false,
+    bool rpm = false,
     bool flatpak = false,
     String defaultName = 'app',
     List<String> selectedBackends = const [],
@@ -677,7 +710,7 @@ class CrossCommand extends Command<int> {
     }
 
     if (deb) {
-      return _packageDebs(
+      final rc = await _packageDebs(
         profile,
         target,
         buildRoot,
@@ -685,6 +718,40 @@ class CrossCommand extends Command<int> {
         defaultName,
         source,
       );
+      if (rc != ExitCode.success.code) return rc;
+    }
+    if (ipk) {
+      final rc = await _packageIpks(
+        profile,
+        target,
+        buildRoot,
+        built,
+        defaultName,
+        source,
+      );
+      if (rc != ExitCode.success.code) return rc;
+    }
+    if (rpm) {
+      final rc = await _packageRpms(
+        profile,
+        target,
+        buildRoot,
+        built,
+        defaultName,
+        source,
+      );
+      if (rc != ExitCode.success.code) return rc;
+    }
+    if (targz) {
+      final rc = await _packageTarballs(
+        profile,
+        target,
+        buildRoot,
+        built,
+        defaultName,
+        source,
+      );
+      if (rc != ExitCode.success.code) return rc;
     }
     return ExitCode.success.code;
   }
@@ -1040,6 +1107,205 @@ class CrossCommand extends Command<int> {
         );
         _logger.info('  ${r.backend ?? ""}: packaged → ${out.path}');
       } on DebPackageException catch (e) {
+        _logger.err('  ${r.backend ?? ""}: ${e.message}');
+        return ExitCode.software.code;
+      }
+    }
+    return ExitCode.success.code;
+  }
+
+  /// Package each successfully-built backend binary into an `.ipk` under
+  /// `<buildRoot>/dist`, via opkg-build. Like `--deb` but for opkg/OE targets:
+  /// `Depends` is explicit (`cross.package.depends`), and the opkg arch comes
+  /// from `cross.package.ipk.arch` or a CPU-arch default. The shared
+  /// `files:`/`scripts:` apply.
+  Future<int> _packageIpks(
+    CrossProfile profile,
+    CrossTarget target,
+    Directory buildRoot,
+    List<CrossBuildResult> built,
+    String defaultName,
+    Directory manifestDir,
+  ) async {
+    final spec = target.package ?? const PackageSpec();
+    final arch = spec.ipk?.arch ?? opkgArch(profile.targetTriple);
+    final baseName = spec.name ?? defaultName;
+    final outDir = Directory(p.join(buildRoot.path, 'dist'));
+    final extraFiles = {
+      for (final e in spec.files.entries)
+        p.join(manifestDir.path, e.key): e.value,
+    };
+    final maintainerScripts = {
+      for (final e in spec.scripts.entries)
+        e.key: p.join(manifestDir.path, e.value),
+    };
+    final packager = IpkPackager();
+
+    for (final r in built) {
+      final binary = _artifactFor(r.buildDir, spec.bin);
+      if (binary == null) {
+        _logger.err(
+          '  ${r.backend ?? ""}: no binary to package in ${r.buildDir} '
+          '(set cross.package.bin)',
+        );
+        return ExitCode.software.code;
+      }
+      final multi = built.length > 1 && r.backend != null;
+      final name = multi ? '$baseName-${r.backend}' : baseName;
+      final meta = IpkMetadata(
+        name: name,
+        version: spec.version,
+        architecture: arch,
+        maintainer: spec.maintainer,
+        description: spec.description ?? '$name (cross-built by emb for $arch)',
+        section: spec.section,
+        priority: spec.priority,
+        depends: spec.depends,
+      );
+      try {
+        final out = await packager.build(
+          binary: binary,
+          installPath: p.join(spec.installDir, p.basename(binary.path)),
+          meta: meta,
+          outDir: outDir,
+          extraFiles: extraFiles,
+          maintainerScripts: maintainerScripts,
+        );
+        _logger.info('  ${r.backend ?? ""}: packaged → ${out.path}');
+      } on IpkPackageException catch (e) {
+        _logger.err('  ${r.backend ?? ""}: ${e.message}');
+        return ExitCode.software.code;
+      }
+    }
+    return ExitCode.success.code;
+  }
+
+  /// Package each successfully-built backend binary into an `.rpm` under
+  /// `<buildRoot>/dist`, via rpmbuild. `License` (required) and `release`/`group`
+  /// come from `cross.package.rpm`; `Requires` is explicit (`depends`) plus
+  /// rpm's automatic soname deps. The shared `files:`/`scripts:` apply.
+  Future<int> _packageRpms(
+    CrossProfile profile,
+    CrossTarget target,
+    Directory buildRoot,
+    List<CrossBuildResult> built,
+    String defaultName,
+    Directory manifestDir,
+  ) async {
+    final spec = target.package ?? const PackageSpec();
+    final rpmSpec = spec.rpm;
+    if (rpmSpec?.license == null) {
+      _logger.err(
+        '  --rpm needs cross.package.rpm.license (rpm refuses to build '
+        'without a License tag).',
+      );
+      return ExitCode.usage.code;
+    }
+    final arch = rpmArch(profile.targetTriple);
+    final baseName = spec.name ?? defaultName;
+    final outDir = Directory(p.join(buildRoot.path, 'dist'));
+    final extraFiles = {
+      for (final e in spec.files.entries)
+        p.join(manifestDir.path, e.key): e.value,
+    };
+    final scriptlets = {
+      for (final e in spec.scripts.entries)
+        e.key: p.join(manifestDir.path, e.value),
+    };
+    final packager = RpmPackager();
+
+    for (final r in built) {
+      final binary = _artifactFor(r.buildDir, spec.bin);
+      if (binary == null) {
+        _logger.err(
+          '  ${r.backend ?? ""}: no binary to package in ${r.buildDir} '
+          '(set cross.package.bin)',
+        );
+        return ExitCode.software.code;
+      }
+      final multi = built.length > 1 && r.backend != null;
+      final name = multi ? '$baseName-${r.backend}' : baseName;
+      final meta = RpmMetadata(
+        name: name,
+        version: spec.version,
+        architecture: arch,
+        license: rpmSpec!.license!,
+        summary: spec.description ?? '$name (cross-built by emb for $arch)',
+        release: rpmSpec.release,
+        group: rpmSpec.group,
+        requires: spec.depends,
+        scriptlets: scriptlets,
+      );
+      try {
+        final out = await packager.build(
+          binary: binary,
+          installPath: p.join(spec.installDir, p.basename(binary.path)),
+          meta: meta,
+          outDir: outDir,
+          extraFiles: extraFiles,
+        );
+        _logger.info('  ${r.backend ?? ""}: packaged → ${out.path}');
+      } on RpmPackageException catch (e) {
+        _logger.err('  ${r.backend ?? ""}: ${e.message}');
+        return ExitCode.software.code;
+      }
+    }
+    return ExitCode.success.code;
+  }
+
+  /// Package each successfully-built backend binary into a relocatable
+  /// `.tar.gz` under `<buildRoot>/dist`. Honours the shared `files:` map;
+  /// `scripts:` do not apply (nothing runs them on extraction) and are warned.
+  Future<int> _packageTarballs(
+    CrossProfile profile,
+    CrossTarget target,
+    Directory buildRoot,
+    List<CrossBuildResult> built,
+    String defaultName,
+    Directory manifestDir,
+  ) async {
+    final spec = target.package ?? const PackageSpec();
+    if (spec.scripts.isNotEmpty) {
+      _logger.warn(
+        '  --targz: cross.package.scripts is ignored (a tarball has no '
+        'installer to run maintainer scripts).',
+      );
+    }
+    final arch = archOfTriple(profile.targetTriple);
+    final baseName = spec.name ?? defaultName;
+    final outDir = Directory(p.join(buildRoot.path, 'dist'));
+    final extraFiles = {
+      for (final e in spec.files.entries)
+        p.join(manifestDir.path, e.key): e.value,
+    };
+    final packager = TarballPackager();
+
+    for (final r in built) {
+      final binary = _artifactFor(r.buildDir, spec.bin);
+      if (binary == null) {
+        _logger.err(
+          '  ${r.backend ?? ""}: no binary to package in ${r.buildDir} '
+          '(set cross.package.bin)',
+        );
+        return ExitCode.software.code;
+      }
+      final multi = built.length > 1 && r.backend != null;
+      final name = multi ? '$baseName-${r.backend}' : baseName;
+      final meta = TarballMetadata(
+        name: name,
+        version: spec.version,
+        architecture: arch,
+      );
+      try {
+        final out = await packager.build(
+          binary: binary,
+          installPath: p.join(spec.installDir, p.basename(binary.path)),
+          meta: meta,
+          outDir: outDir,
+          extraFiles: extraFiles,
+        );
+        _logger.info('  ${r.backend ?? ""}: packaged → ${out.path}');
+      } on TarballPackageException catch (e) {
         _logger.err('  ${r.backend ?? ""}: ${e.message}');
         return ExitCode.software.code;
       }

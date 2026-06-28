@@ -93,6 +93,26 @@ cross:
     #   postinst: debian/postinst.sh
     #   prerm: debian/prerm.sh
 
+    # `emb cross . --build --ipk` → dist/<name>_<version>_<arch>.ipk via
+    # opkg-build (opkg/OpenEmbedded targets). Reuses name/version/maintainer/
+    # depends/files/scripts above; Depends is explicit (no auto-derivation).
+    # Only the opkg arch override lives here — otherwise a CPU-arch default is
+    # used (aarch64/arm/...).
+    # ipk:
+    #   arch: cortexa53                      # opkg MACHINE tuning, if your feed uses it
+
+    # `emb cross . --build --rpm` → dist/<name>-<version>-<release>.<arch>.rpm
+    # via rpmbuild. Reuses name/version/depends/files/scripts above (scripts map
+    # to %pre/%post/%preun/%postun). License is required; rpm refuses without it.
+    # rpm:
+    #   license: MIT
+    #   release: "1"
+    #   group: Applications/System
+
+    # `emb cross . --build --targz` → dist/<name>_<version>_<arch>.tar.gz, a
+    # relocatable tree rooted at / (binary + files: at their target paths;
+    # unpack with `tar -C / -xzf`). No package manager needed; ignores scripts:.
+
     # `emb cross . --build --app <dir> --flatpak` → dist/<app_id>_<branch>_<arch>
     # .flatpak. Bundles the whole runnable app (embedder + assets + engine) via
     # flatpak-builder, so it needs --app plus flatpak-builder + the runtime on

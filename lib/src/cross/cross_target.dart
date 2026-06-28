@@ -131,6 +131,8 @@ class PackageSpec {
     this.files = const {},
     this.scripts = const {},
     this.flatpak,
+    this.ipk,
+    this.rpm,
   });
 
   factory PackageSpec.fromMap(Map<dynamic, dynamic> map) => PackageSpec(
@@ -156,6 +158,12 @@ class PackageSpec {
         ? FlatpakPackageSpec.fromMap(
             Map<dynamic, dynamic>.from(map['flatpak'] as Map),
           )
+        : null,
+    ipk: map['ipk'] is Map
+        ? IpkPackageSpec.fromMap(Map<dynamic, dynamic>.from(map['ipk'] as Map))
+        : null,
+    rpm: map['rpm'] is Map
+        ? RpmPackageSpec.fromMap(Map<dynamic, dynamic>.from(map['rpm'] as Map))
         : null,
   );
 
@@ -200,6 +208,48 @@ class PackageSpec {
   /// Flatpak-specific manifest fields (app id, runtime, sandbox perms). Only
   /// consulted by `--flatpak`; `--deb` ignores it.
   final FlatpakPackageSpec? flatpak;
+
+  /// IPK-specific manifest fields (opkg arch override). Only consulted by
+  /// `--ipk`. The shared `files:`/`scripts:`/`depends:` still apply.
+  final IpkPackageSpec? ipk;
+
+  /// RPM-specific manifest fields (license, release, group). Only consulted by
+  /// `--rpm`. The shared `files:`/`scripts:`/`depends:` still apply.
+  final RpmPackageSpec? rpm;
+}
+
+/// The `package.ipk:` sub-block — the opkg-specific knobs `--ipk` needs beyond
+/// the shared [PackageSpec] fields.
+class IpkPackageSpec {
+  const IpkPackageSpec({this.arch});
+
+  factory IpkPackageSpec.fromMap(Map<dynamic, dynamic> map) =>
+      IpkPackageSpec(arch: map['arch']?.toString());
+
+  /// opkg architecture override (e.g. `cortexa53`, `armv7vehf-neon`). When
+  /// unset, `--ipk` derives a plain CPU-arch default from the triple.
+  final String? arch;
+}
+
+/// The `package.rpm:` sub-block — the rpm-specific knobs `--rpm` needs beyond
+/// the shared [PackageSpec] fields. `license` is required to build an rpm.
+class RpmPackageSpec {
+  const RpmPackageSpec({this.license, this.release = '1', this.group});
+
+  factory RpmPackageSpec.fromMap(Map<dynamic, dynamic> map) => RpmPackageSpec(
+    license: map['license']?.toString(),
+    release: (map['release'] ?? '1').toString(),
+    group: map['group']?.toString(),
+  );
+
+  /// `License:` tag — mandatory; `--rpm` errors when unset.
+  final String? license;
+
+  /// `Release:` (defaults to `1`).
+  final String release;
+
+  /// Optional `Group:` tag.
+  final String? group;
 }
 
 /// The `package.flatpak:` sub-block — the flatpak manifest knobs `--flatpak`

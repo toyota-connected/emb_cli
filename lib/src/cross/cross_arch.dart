@@ -34,6 +34,28 @@ String debianArch(String triple) => switch (archOfTriple(triple)) {
   final a => a,
 };
 
+/// The opkg/ipk architecture for a triple's arch. opkg arch names usually
+/// track the CPU arch (or a Yocto MACHINE tuning such as `cortexa53`); this
+/// returns the plain CPU-arch default, overridable per manifest via
+/// `package.ipk.arch` for tuning-specific feeds.
+String opkgArch(String triple) => switch (archOfTriple(triple)) {
+  'aarch64' || 'arm64' => 'aarch64',
+  'arm' || 'armv7' || 'armv7l' || 'armhf' => 'arm',
+  'riscv64' => 'riscv64',
+  'x86_64' || 'amd64' => 'x86_64',
+  final a => a,
+};
+
+/// The rpm architecture for a triple (`aarch64-*` → `aarch64`, `arm-*` →
+/// `armv7hl`), used for `rpmbuild --target` and the spec's `BuildArch`.
+String rpmArch(String triple) => switch (archOfTriple(triple)) {
+  'aarch64' || 'arm64' => 'aarch64',
+  'arm' || 'armv7' || 'armv7l' || 'armhf' => 'armv7hl',
+  'riscv64' => 'riscv64',
+  'x86_64' || 'amd64' => 'x86_64',
+  final a => a,
+};
+
 /// The flatpak architecture name for a triple (`aarch64-*` → `aarch64`,
 /// `arm-*` → `arm`), used for `flatpak-builder --arch` / `build-bundle --arch`
 /// and to pick the matching `org.freedesktop.Platform` runtime.
