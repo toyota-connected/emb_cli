@@ -232,6 +232,9 @@ class FlatpakPackager {
     ];
     final b = StringBuffer()
       ..writeln('app-id: ${m.appId}')
+      // Pin the app branch so the exported ref matches `build-bundle`'s branch.
+      ..writeln('branch: ${m.branch}')
+      ..writeln('default-branch: ${m.branch}')
       ..writeln('runtime: ${m.runtime}')
       ..writeln("runtime-version: '${m.runtimeVersion}'")
       ..writeln('sdk: ${m.sdk}')
