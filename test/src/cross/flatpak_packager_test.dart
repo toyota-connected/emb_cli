@@ -69,6 +69,8 @@ void main() {
     expect(out.path, endsWith('com.example.Homescreen_stable_aarch64.flatpak'));
     // Manifest wires the runtime, command, and a simple `dir`-sourced module.
     expect(capturedManifest, contains('app-id: com.example.Homescreen'));
+    // Branch is pinned so the export ref matches build-bundle's branch.
+    expect(capturedManifest, contains('branch: stable'));
     expect(capturedManifest, contains('command: homescreen'));
     expect(capturedManifest, contains('buildsystem: simple'));
     expect(capturedManifest, contains('cp -r bundle/. /app/com.example.'));

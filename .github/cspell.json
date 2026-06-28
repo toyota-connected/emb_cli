@@ -111,6 +111,17 @@
     "Winarske",
     "Workspace",
     "Yocto",
-    "zypper"
+    "zypper",
+    "cortexa",
+    "opkg",
+    "preinst",
+    "postinst",
+    "prerm",
+    "postrm",
+    "preun",
+    "postun",
+    "rpmbuild",
+    "soname",
+    "targz"
   ]
 }

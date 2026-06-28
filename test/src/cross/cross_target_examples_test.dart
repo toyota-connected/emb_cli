@@ -296,6 +296,73 @@ void main() {
       expect(t.package!.flatpak, isNull);
     });
 
+    test('parses package.ipk.arch (opkg arch override)', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'image_url': 'https://example/x.img.xz',
+        'package': {
+          'name': 'app',
+          'bin': 'app',
+          'ipk': {'arch': 'cortexa53'},
+        },
+      });
+      expect(t.package!.ipk, isNotNull);
+      expect(t.package!.ipk!.arch, 'cortexa53');
+    });
+
+    test('package.ipk defaults to null', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'image_url': 'https://example/x.img.xz',
+        'package': {'name': 'app', 'bin': 'app'},
+      });
+      expect(t.package!.ipk, isNull);
+    });
+
+    test('parses package.rpm: (license/release/group)', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'image_url': 'https://example/x.img.xz',
+        'package': {
+          'name': 'app',
+          'bin': 'app',
+          'rpm': {
+            'license': 'MIT',
+            'release': '3',
+            'group': 'Applications/System',
+          },
+        },
+      });
+      expect(t.package!.rpm, isNotNull);
+      expect(t.package!.rpm!.license, 'MIT');
+      expect(t.package!.rpm!.release, '3');
+      expect(t.package!.rpm!.group, 'Applications/System');
+    });
+
+    test('package.rpm defaults: release 1, null license/group', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'image_url': 'https://example/x.img.xz',
+        'package': {
+          'name': 'app',
+          'bin': 'app',
+          'rpm': {'group': 'Apps'},
+        },
+      });
+      expect(t.package!.rpm!.license, isNull);
+      expect(t.package!.rpm!.release, '1');
+      expect(t.package!.rpm!.group, 'Apps');
+    });
+
+    test('package.rpm defaults to null', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'image_url': 'https://example/x.img.xz',
+        'package': {'name': 'app', 'bin': 'app'},
+      });
+      expect(t.package!.rpm, isNull);
+    });
+
     test('parses package.scripts: (deb maintainer scripts)', () {
       final t = CrossTarget.fromMap(const {
         'provider': 'arm-gnu',

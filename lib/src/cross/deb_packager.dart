@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:emb_cli/src/cross/control_archive_packager.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:path/path.dart' as p;
 
@@ -49,24 +50,25 @@ class DebPackageException implements Exception {
 /// packages, using both the sysroot's dpkg database (base image) and the
 /// resolver-downloaded `.deb`s (the `-dev` closure), so the field reflects what
 /// `apt install ./pkg.deb` must pull on the target.
-class DebPackager {
+class DebPackager extends ControlArchivePackager {
   DebPackager({
     required this.readelf,
     ProcessRunner runProcess = defaultProcessRunner,
-  }) : _run = runProcess;
+  }) : super(runProcess);
 
   /// Path to the cross `readelf` (reads target-arch ELF `DT_NEEDED`).
   final String readelf;
-  final ProcessRunner _run;
+
+  @override
+  String get controlDir => 'DEBIAN';
+
+  @override
+  Never fail(String message) => throw DebPackageException(message);
 
   /// The dpkg maintainer-script names, in the order dpkg runs them across an
   /// install/upgrade/remove cycle. Any subset may be passed to `build`.
-  static const maintainerScriptNames = [
-    'preinst',
-    'postinst',
-    'prerm',
-    'postrm',
-  ];
+  static const maintainerScriptNames =
+      ControlArchivePackager.maintainerScriptNames;
 
   /// Package [binary] to `<outDir>/<name>_<version>_<arch>.deb`, installing it
   /// at the absolute [installPath] on the target. [sysroot] and [debDirs] feed
@@ -84,69 +86,30 @@ class DebPackager {
     Map<String, String> extraFiles = const {},
     Map<String, String> maintainerScripts = const {},
   }) async {
-    if (!binary.existsSync()) {
-      throw DebPackageException('binary not found: ${binary.path}');
-    }
-    if (!p.isAbsolute(installPath)) {
-      throw DebPackageException('install path must be absolute: $installPath');
-    }
-    for (final dest in extraFiles.values) {
-      if (!p.isAbsolute(dest)) {
-        throw DebPackageException('extra file dest must be absolute: $dest');
-      }
-    }
-    for (final name in maintainerScripts.keys) {
-      if (!maintainerScriptNames.contains(name)) {
-        throw DebPackageException(
-          'unknown maintainer script "$name" '
-          '(expected one of: ${maintainerScriptNames.join(", ")})',
-        );
-      }
-    }
-
     final depends = {...meta.dependsExtra};
     if (meta.autoDepends) {
       depends.addAll(await _autoDepends(binary, sysroot, debDirs));
     }
     final deps = depends.toList()..sort();
 
-    outDir.createSync(recursive: true);
-    final stage = Directory(p.join(outDir.path, '${meta.name}.stage'));
-    if (stage.existsSync()) stage.deleteSync(recursive: true);
-    // Install the binary at the requested path inside the staging root.
-    final dest = File(p.join(stage.path, installPath.substring(1)))
-      ..parent.createSync(recursive: true);
-    binary.copySync(dest.path);
-    await _run('chmod', ['0755', dest.path]);
-
-    // Stage any extra files at their absolute target paths inside the root.
-    for (final entry in extraFiles.entries) {
-      final src = File(entry.key);
-      if (!src.existsSync()) {
-        throw DebPackageException('extra file not found: ${entry.key}');
-      }
-      final to = File(p.join(stage.path, entry.value.substring(1)))
-        ..parent.createSync(recursive: true);
-      src.copySync(to.path);
-    }
-
-    File(p.join(stage.path, 'DEBIAN', 'control'))
-      ..parent.createSync(recursive: true)
-      ..writeAsStringSync(_control(meta, deps));
-
-    // Stage maintainer scripts into DEBIAN/ as executables; dpkg runs them at
-    // the matching phase (preinst/postinst on install, prerm/postrm on remove).
-    for (final entry in maintainerScripts.entries) {
-      final src = File(entry.value);
-      if (!src.existsSync()) {
-        throw DebPackageException(
-          'maintainer script not found: ${entry.value}',
-        );
-      }
-      final to = File(p.join(stage.path, 'DEBIAN', entry.key));
-      src.copySync(to.path);
-      await _run('chmod', ['0755', to.path]);
-    }
+    final stageRoot = await stage(
+      binary: binary,
+      installPath: installPath,
+      packageName: meta.name,
+      control: controlBody(
+        name: meta.name,
+        version: meta.version,
+        architecture: meta.architecture,
+        maintainer: meta.maintainer,
+        description: meta.description,
+        section: meta.section,
+        priority: meta.priority,
+        depends: deps,
+      ),
+      outDir: outDir,
+      extraFiles: extraFiles,
+      maintainerScripts: maintainerScripts,
+    );
 
     final out = File(
       p.join(
@@ -154,31 +117,17 @@ class DebPackager {
         '${meta.name}_${meta.version}_${meta.architecture}.deb',
       ),
     );
-    final r = await _run('dpkg-deb', [
+    final r = await run('dpkg-deb', [
       '--root-owner-group',
       '--build',
-      stage.path,
+      stageRoot.path,
       out.path,
     ]);
-    stage.deleteSync(recursive: true);
+    stageRoot.deleteSync(recursive: true);
     if (r.exitCode != 0) {
       throw DebPackageException('dpkg-deb --build failed: ${r.stderr}');
     }
     return out;
-  }
-
-  String _control(DebMetadata m, List<String> depends) {
-    final b = StringBuffer()
-      ..writeln('Package: ${m.name}')
-      ..writeln('Version: ${m.version}')
-      ..writeln('Architecture: ${m.architecture}')
-      ..writeln('Maintainer: ${m.maintainer}')
-      ..writeln('Section: ${m.section}')
-      ..writeln('Priority: ${m.priority}');
-    if (depends.isNotEmpty) b.writeln('Depends: ${depends.join(', ')}');
-    // Debian requires a synopsis line; indent any continuation.
-    b.writeln('Description: ${m.description}');
-    return b.toString();
   }
 
   /// The owning packages of the binary's `DT_NEEDED` shared libraries.
@@ -221,11 +170,11 @@ class DebPackager {
       for (final deb in dir.listSync().whereType<File>()) {
         if (unresolved.isEmpty) break;
         if (!deb.path.endsWith('.deb') || deb.lengthSync() == 0) continue;
-        final contents = await _run('dpkg-deb', ['-c', deb.path]);
+        final contents = await run('dpkg-deb', ['-c', deb.path]);
         if (contents.exitCode != 0) continue;
         final hit = _sonamesIn('${contents.stdout}').intersection(unresolved);
         if (hit.isEmpty) continue;
-        final field = await _run('dpkg-deb', ['-f', deb.path, 'Package']);
+        final field = await run('dpkg-deb', ['-f', deb.path, 'Package']);
         final pkg = '${field.stdout}'.trim();
         if (pkg.isNotEmpty) {
           owners.add(pkg);
@@ -238,7 +187,7 @@ class DebPackager {
 
   /// `DT_NEEDED` sonames of [binary] via `readelf -d`.
   Future<List<String>> _needed(File binary) async {
-    final r = await _run(readelf, ['-d', binary.path]);
+    final r = await run(readelf, ['-d', binary.path]);
     if (r.exitCode != 0) {
       throw DebPackageException('readelf -d failed: ${r.stderr}');
     }
