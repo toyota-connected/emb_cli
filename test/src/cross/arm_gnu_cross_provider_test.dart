@@ -35,37 +35,56 @@ void main() {
     cache.deleteSync(recursive: true);
   });
 
-  /// Pre-stage the sysroot (with [codename]) and pre-populate the shared store
-  /// with the toolchain, so [resolve] short-circuits every download / mount /
-  /// chroot step. The sysroot dir is keyed by the target's sysroot inputs
-  /// (matching the provider); the toolchain lives in the store.
+  Future<File> blob() async =>
+      File(p.join(cache.path, 'blob'))..writeAsStringSync('x');
+
+  /// Pre-populate the store so [resolve] short-circuits every download / mount
+  /// / chroot step: the toolchain always, and — for an **image** sysroot — the
+  /// `sysroot-base` entry (keyed by [sysrootBaseKey]). A **device** sysroot is
+  /// not content-addressable, so it is pre-staged in place under the platform
+  /// dir instead.
   Future<void> prestage(
     String version,
     CrossTarget target, {
     String codename = 'bookworm',
   }) async {
-    final platform = Directory(
-      p.join(
-        tmp.path,
-        '.config',
-        'flutter_workspace',
-        'cross-$_triple-${sysrootKey(target)}',
-      ),
-    );
-    File(p.join(platform.path, 'sysroot', 'etc', 'os-release'))
-      ..createSync(recursive: true)
-      ..writeAsStringSync('VERSION_CODENAME=$codename\n');
     await store.ensure(
       kind: 'toolchain',
       key: 'arm-gnu-toolchain-$version-x86_64-$_triple',
-      fetch: () async =>
-          File(p.join(cache.path, 'blob'))..writeAsStringSync('x'),
-      stage: (blob, into) async {
+      fetch: blob,
+      stage: (b, into) async {
         File(p.join(into.path, 'bin', '$_triple-gcc'))
           ..createSync(recursive: true)
           ..writeAsStringSync('');
       },
     );
+
+    if (target.sysroot?.source == SysrootProvenance.image) {
+      await store.ensure(
+        kind: 'sysroot-base',
+        key: sysrootBaseKey(target),
+        fetch: blob,
+        stage: (b, into) async {
+          File(p.join(into.path, 'etc', 'os-release'))
+            ..createSync(recursive: true)
+            ..writeAsStringSync('VERSION_CODENAME=$codename\n');
+        },
+      );
+    } else {
+      File(
+          p.join(
+            tmp.path,
+            '.config',
+            'flutter_workspace',
+            'cross-$_triple-${sysrootKey(target)}',
+            'sysroot',
+            'etc',
+            'os-release',
+          ),
+        )
+        ..createSync(recursive: true)
+        ..writeAsStringSync('VERSION_CODENAME=$codename\n');
+    }
   }
 
   Future<CrossResolveResult> resolveTarget(
@@ -84,16 +103,17 @@ void main() {
     return r;
   }
 
-  test('resolve restores usr-merge symlinks after staging', () async {
-    // The post-extraction/post-dpkg-deb-x state: /lib is a real dir while the
-    // real libs live under usr/lib/<multiarch>. resolve() must normalize it so
-    // a configure that probes the sysroot (meson's find_library('m')) works.
+  test('image sysroot materializes as a symlink into the store', () async {
+    // The per-workspace sysroot is a symlink into the shared sysroot-base
+    // store entry — the base extraction is not copied per workspace.
     final t = CrossTarget.fromMap({
       'provider': 'arm-gnu',
       'toolchain_version': '12.3.rel1',
       'image_url': 'https://example/x.img.xz',
     });
     await prestage('12.3.rel1', t);
+    final r = await resolveTarget(t);
+    expect(r.ok, isTrue, reason: r.message);
     final sr = p.join(
       tmp.path,
       '.config',
@@ -101,21 +121,13 @@ void main() {
       'cross-$_triple-${sysrootKey(t)}',
       'sysroot',
     );
-    File(p.join(sr, 'usr', 'lib', 'aarch64-linux-gnu', 'libc.so.6'))
-      ..createSync(recursive: true)
-      ..writeAsStringSync('');
-    File(p.join(sr, 'lib', 'systemd', 'x'))
-      ..createSync(recursive: true)
-      ..writeAsStringSync('');
-
-    final r = await resolveTarget(t);
-
-    expect(r.ok, isTrue, reason: r.message);
-    expect(FileSystemEntity.isLinkSync(p.join(sr, 'lib')), isTrue);
+    expect(FileSystemEntity.isLinkSync(sr), isTrue);
     expect(
-      File(p.join(sr, 'lib', 'aarch64-linux-gnu', 'libc.so.6')).existsSync(),
-      isTrue,
+      Link(sr).targetSync(),
+      store.rootOf('sysroot-base', sysrootBaseKey(t)).absolute.path,
     );
+    // The base tree (etc/os-release) resolves through the symlink.
+    expect(File(p.join(sr, 'etc', 'os-release')).existsSync(), isTrue);
   });
 
   test('pinned: resolves a pre-staged toolchain + sysroot', () async {
@@ -197,21 +209,19 @@ void main() {
     final t2 = target('https://example/b.img.xz');
     expect(sysrootKey(t1), isNot(sysrootKey(t2)));
 
-    // Pre-stage only the sysroot for each (distinct platform dirs).
+    // Pre-populate each target's sysroot-base store entry (different images →
+    // different base keys) so only the toolchain download is exercised.
     for (final t in [t1, t2]) {
-      File(
-          p.join(
-            tmp.path,
-            '.config',
-            'flutter_workspace',
-            'cross-$_triple-${sysrootKey(t)}',
-            'sysroot',
-            'etc',
-            'os-release',
-          ),
-        )
-        ..createSync(recursive: true)
-        ..writeAsStringSync('VERSION_CODENAME=bookworm\n');
+      await store.ensure(
+        kind: 'sysroot-base',
+        key: sysrootBaseKey(t),
+        fetch: blob,
+        stage: (b, into) async {
+          File(p.join(into.path, 'etc', 'os-release'))
+            ..createSync(recursive: true)
+            ..writeAsStringSync('VERSION_CODENAME=bookworm\n');
+        },
+      );
     }
 
     final r1 = await resolveTarget(t1);
@@ -242,6 +252,54 @@ void main() {
       );
     }
   });
+
+  test(
+    'sysroot base is shared across targets differing only in augments',
+    () async {
+      CrossTarget withAug(String pkg) => CrossTarget.fromMap({
+        'provider': 'arm-gnu',
+        'toolchain_version': '12.3.rel1',
+        'image_url': 'https://example/x.img.xz',
+        'augment': [
+          {
+            'pkg': pkg,
+            'min': '1.0',
+            'url': 'https://x/$pkg.tar.gz',
+            'build': 'meson',
+          },
+        ],
+      });
+      final a = withAug('liba');
+      final b = withAug('libb');
+      // Different augments → different full key + platform dir, SAME base key.
+      expect(sysrootBaseKey(a), sysrootBaseKey(b));
+      expect(sysrootKey(a), isNot(sysrootKey(b)));
+
+      await prestage('12.3.rel1', a);
+      await prestage('12.3.rel1', b); // toolchain + base are store fast-paths
+
+      expect((await resolveTarget(a)).ok, isTrue);
+      expect((await resolveTarget(b)).ok, isTrue);
+
+      // One shared sysroot-base extraction, referenced by both platform dirs.
+      final base = store.list().where((e) => e.kind == 'sysroot-base').toList();
+      expect(base, hasLength(1));
+      expect(base.single.liveRefs, 2);
+      for (final t in [a, b]) {
+        final sr = p.join(
+          tmp.path,
+          '.config',
+          'flutter_workspace',
+          'cross-$_triple-${sysrootKey(t)}',
+          'sysroot',
+        );
+        expect(
+          Link(sr).targetSync(),
+          store.rootOf('sysroot-base', sysrootBaseKey(t)).absolute.path,
+        );
+      }
+    },
+  );
 
   test('unavailable on a non-Linux host', () async {
     const mac = HostInfo(
