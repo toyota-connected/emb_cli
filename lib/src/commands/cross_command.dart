@@ -28,10 +28,9 @@ import 'package:emb_cli/src/cross/runnable_bundle.dart';
 import 'package:emb_cli/src/cross/tarball_packager.dart';
 import 'package:emb_cli/src/engine/engine_artifacts.dart';
 import 'package:emb_cli/src/host/host_info.dart';
-import 'package:emb_cli/src/host/install_hint.dart';
+import 'package:emb_cli/src/host/preflight.dart';
 import 'package:emb_cli/src/json_output.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
-import 'package:emb_cli/src/pkg/host_provisioner.dart';
 import 'package:emb_cli/src/step_reporter.dart';
 import 'package:emb_cli/src/verbosity.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
@@ -314,6 +313,10 @@ class CrossCommand extends Command<int> {
   /// reflects the verbosity resolved after construction.
   StepReporter get _steps => StepReporter(_logger);
 
+  /// Host-tool preflight (missing-tool probe, install hints, opt-in install),
+  /// shared with `emb doctor --target`.
+  late final Preflight _preflight = Preflight(_logger);
+
   @override
   String get name => 'cross';
 
@@ -467,17 +470,17 @@ class CrossCommand extends Command<int> {
     }
 
     // Provider-declared preflight (tar/xz/rsync for arm-gnu, etc.).
-    final missing = await _missingTools(provider.preflightTools);
+    final missing = await _preflight.missingTools(provider.preflightTools);
     if (missing.isNotEmpty) {
       if (args['install-deps'] == true) {
-        if (!await _installPreflight(host, provider.name, missing)) {
+        if (!await _preflight.install(host, provider.name, missing)) {
           return ExitCode.unavailable.code;
         }
       } else {
         _logger.err(
           'Missing host tools for ${provider.name}: ${missing.join(", ")}',
         );
-        await _logInstallHint(host, missing);
+        await _preflight.logInstallHint(host, missing);
         return ExitCode.unavailable.code;
       }
     }
@@ -1591,9 +1594,9 @@ class CrossCommand extends Command<int> {
     Directory src,
     Directory buildDir,
   ) async {
-    if ((await _missingTools(['cargo'])).isNotEmpty) {
+    if ((await _preflight.missingTools(['cargo'])).isNotEmpty) {
       _logger.err('  module ${m.name}: cargo not found on PATH');
-      await _logInstallHint(host, ['cargo']);
+      await _preflight.logInstallHint(host, ['cargo']);
       return null;
     }
     final triple = rustTriple(profile.targetTriple);
@@ -1650,7 +1653,7 @@ class CrossCommand extends Command<int> {
     CrossTarget target,
     HostInfo host,
   ) async {
-    final missing = await _missingTools(provider.preflightTools);
+    final missing = await _preflight.missingTools(provider.preflightTools);
     _logger
       ..info(styleBold.wrap('Cross plan (${provider.name})'))
       ..info('  triple        : ${target.triple ?? "(provider default)"}')
@@ -1660,7 +1663,7 @@ class CrossCommand extends Command<int> {
         '  preflight     : '
         '${missing.isEmpty ? "ok" : "MISSING ${missing.join(", ")}"}',
       );
-    if (missing.isNotEmpty) await _logInstallHint(host, missing);
+    if (missing.isNotEmpty) await _preflight.logInstallHint(host, missing);
     switch (target.provider) {
       case CrossProviderKind.armGnu:
         final tc = target.versionPolicy == ToolchainVersionPolicy.pinned
@@ -1715,7 +1718,7 @@ class CrossCommand extends Command<int> {
     }
     if (target.launcher != Launcher.none) {
       final exe = target.launcher.exe!;
-      final found = (await _missingTools([exe])).isEmpty;
+      final found = (await _preflight.missingTools([exe])).isEmpty;
       _logger.info('  launcher      : $exe${found ? "" : " (not found)"}');
     }
   }
@@ -1736,7 +1739,7 @@ class CrossCommand extends Command<int> {
         'generator': target.generator.name,
       };
     }
-    final missing = await _missingTools(provider.preflightTools);
+    final missing = await _preflight.missingTools(provider.preflightTools);
     final data = <String, Object?>{
       'provider': provider.name,
       'triple': target.triple,
@@ -1793,7 +1796,7 @@ class CrossCommand extends Command<int> {
       final exe = target.launcher.exe!;
       data['launcher'] = {
         'name': exe,
-        'found': (await _missingTools([exe])).isEmpty,
+        'found': (await _preflight.missingTools([exe])).isEmpty,
       };
     }
     return data;
@@ -2053,15 +2056,6 @@ class CrossCommand extends Command<int> {
     }
   }
 
-  Future<List<String>> _missingTools(List<String> tools) async {
-    final missing = <String>[];
-    for (final t in tools) {
-      final r = await Process.run('which', [t]);
-      if (r.exitCode != 0) missing.add(t);
-    }
-    return missing;
-  }
-
   /// Resolve [CrossTarget.launcher] to a compiler-launcher executable, or null.
   ///
   /// Warns and disables (never fails a build) when the tool is absent on
@@ -2070,7 +2064,7 @@ class CrossCommand extends Command<int> {
   Future<String?> _resolveLauncher(CrossTarget target) async {
     final exe = target.launcher.exe;
     if (exe == null) return null;
-    if ((await _missingTools([exe])).isNotEmpty) {
+    if ((await _preflight.missingTools([exe])).isNotEmpty) {
       _logger.warn('launcher $exe not found on PATH; building without it');
       return null;
     }
@@ -2082,98 +2076,5 @@ class CrossCommand extends Command<int> {
       );
     }
     return exe;
-  }
-
-  /// Install the missing preflight [tools] via [HostProvisioner] (opt-in, with
-  /// `--install-deps`). Returns true only when the tools are present after.
-  /// Falls back to the manual hint when no backend is reachable.
-  Future<bool> _installPreflight(
-    HostInfo host,
-    String providerName,
-    List<String> tools,
-  ) async {
-    HostProvisioner? provisioner;
-    try {
-      provisioner = HostProvisioner.forHost(host);
-      // ignore: avoid_catching_errors
-    } on UnsupportedError {
-      provisioner = null;
-    }
-    if (provisioner == null || !await provisioner.isAvailable()) {
-      await provisioner?.dispose();
-      _logger.err(
-        'Cannot auto-install host tools (no package backend). Install '
-        'manually:',
-      );
-      await _logInstallHint(host, tools);
-      return false;
-    }
-
-    final progress = _steps.start(
-      'Installing host tools for $providerName: ${tools.join(", ")}',
-    );
-    try {
-      final result = await provisioner.install(
-        tools.toSet(),
-        onProgress: (p) => progress.update(p.label),
-      );
-      if (!result.success) {
-        progress.fail(
-          result.message ?? 'install failed: ${result.failed.join(", ")}',
-        );
-        return false;
-      }
-      progress.complete('Installed: ${result.installed.join(", ")}');
-    } on Exception catch (e) {
-      progress.fail('install failed: $e');
-      return false;
-    } finally {
-      await provisioner.dispose();
-    }
-
-    // The backend reported success; confirm the binaries are actually on PATH.
-    final stillMissing = await _missingTools(tools);
-    if (stillMissing.isNotEmpty) {
-      _logger.err('Still missing after install: ${stillMissing.join(", ")}');
-      return false;
-    }
-    return true;
-  }
-
-  /// Log how to install the missing preflight [tools].
-  ///
-  /// Routes through the existing [HostProvisioner] first — it resolves real
-  /// package names from the running backend (PackageKit `WhatProvides`, brew,
-  /// …), so there is no second distro→package map to drift. Only when no
-  /// backend is reachable (no daemon / native bridge, or a platform backend
-  /// not compiled into this build) does it fall back to [staticInstallHint].
-  Future<void> _logInstallHint(HostInfo host, List<String> tools) async {
-    HostProvisioner? provisioner;
-    try {
-      provisioner = HostProvisioner.forHost(host);
-      // forHost throws UnsupportedError when the platform backend isn't
-      // compiled in (default macOS/Windows) — fall back to the static hint.
-      // ignore: avoid_catching_errors
-    } on UnsupportedError {
-      provisioner = null;
-    }
-    if (provisioner != null) {
-      try {
-        if (await provisioner.isAvailable()) {
-          final plan = await provisioner.simulate(tools.toSet());
-          final pkgs = [...plan.toInstall, ...plan.unresolved];
-          if (pkgs.isNotEmpty) {
-            _logger.info('Install via ${provisioner.name}: ${pkgs.join(", ")}');
-            return;
-          }
-        }
-      } on Exception {
-        // Any provisioner error → fall back to the static hint below.
-      } finally {
-        await provisioner.dispose();
-      }
-    }
-    final hint = staticInstallHint(host, tools);
-    if (hint != null) _logger.info('Install with: $hint');
   }
 }

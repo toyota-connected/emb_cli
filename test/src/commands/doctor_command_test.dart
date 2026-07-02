@@ -1,11 +1,14 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/commands/doctor_command.dart';
 import 'package:emb_cli/src/host/host_info.dart';
+import 'package:emb_cli/src/host/preflight.dart';
 import 'package:emb_cli/src/pkg/host_provisioner.dart';
 import 'package:emb_cli/src/pkg/provision_models.dart';
 import 'package:mason_logger/mason_logger.dart';
+import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 /// Captures `info` lines so a `--json` envelope can be parsed back.
@@ -142,5 +145,94 @@ void main() {
     expect(code, ExitCode.unavailable.code);
     expect(json['ok'], false);
     expect(((json['data'] as Map)['backend'] as Map)['available'], false);
+  });
+
+  group('--target', () {
+    late Directory tmp;
+    late String manifest;
+    setUp(() {
+      tmp = Directory.systemTemp.createTempSync('emb_doctor_');
+      manifest = p.join(tmp.path, 'pi.emb.yaml');
+      File(manifest).writeAsStringSync('''
+id: doctor-fixture
+cross:
+  provider: arm-gnu
+  triple: aarch64-none-linux-gnu
+  image_url: https://example/os.img.xz
+  targets:
+    pi5: {cpu_flags: [-mcpu=cortex-a76]}
+''');
+    });
+    tearDown(() => tmp.deleteSync(recursive: true));
+
+    // A Preflight whose `which` probe reports [missing] as absent.
+    Preflight fakePreflight(Logger logger, Set<String> missing) =>
+        Preflight(logger, probe: (t) async => !missing.contains(t));
+
+    Future<int?> runTarget(
+      String target, {
+      Logger? logger,
+      Set<String> missing = const {},
+    }) {
+      final log = logger ?? Logger();
+      final runner = CommandRunner<int>('emb', 'test')
+        ..addCommand(
+          DoctorCommand(
+            logger: log,
+            host: _host,
+            provisionerFactory: (_) => _FakeProvisioner(),
+            preflight: fakePreflight(log, missing),
+          ),
+        );
+      return runner.run(['doctor', '--target', target, manifest]);
+    }
+
+    test('a target whose preflight tools are all present succeeds', () async {
+      expect(await runTarget('pi5'), ExitCode.success.code);
+    });
+
+    test('a missing preflight tool exits unavailable', () async {
+      expect(
+        await runTarget('pi5', missing: {'rsync'}),
+        ExitCode.unavailable.code,
+      );
+    });
+
+    test('the native target has no preflight tools (always ok)', () async {
+      expect(await runTarget('local'), ExitCode.success.code);
+    });
+
+    test('an unknown target is a usage error', () async {
+      expect(await runTarget('nope'), ExitCode.usage.code);
+    });
+
+    test('--json carries target.preflight.{ok, missing}', () async {
+      final logger = _CaptureLogger();
+      final runner = CommandRunner<int>('emb', 'test')
+        ..addCommand(
+          DoctorCommand(
+            logger: logger,
+            host: _host,
+            provisionerFactory: (_) => _FakeProvisioner(),
+            preflight: fakePreflight(logger, {'rsync'}),
+          ),
+        );
+      final code = await runner.run([
+        'doctor',
+        '--json',
+        '--target',
+        'pi5',
+        manifest,
+      ]);
+      final json = jsonDecode(logger.buffer.toString()) as Map<String, dynamic>;
+      expect(code, ExitCode.unavailable.code);
+      expect(json['ok'], false);
+      final target = (json['data'] as Map)['target'] as Map<String, dynamic>;
+      expect(target['name'], 'pi5');
+      expect(target['provider'], 'arm-gnu');
+      final preflight = target['preflight'] as Map<String, dynamic>;
+      expect(preflight['ok'], false);
+      expect(preflight['missing'], ['rsync']);
+    });
   });
 }
