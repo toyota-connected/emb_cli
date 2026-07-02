@@ -1,37 +1,28 @@
 import 'dart:io';
 
 import 'package:emb_cli/src/cross/deployer.dart';
+import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:test/test.dart';
 
-({
-  Future<ProcessResult> Function(
-    String,
-    List<String>, {
-    String? workingDirectory,
-    Map<String, String>? environment,
-    bool includeParentEnvironment,
-    bool runInShell,
-  })
-  run,
-  List<List<String>> calls,
-})
-recorder({
+({ProcessRunner run, List<List<String>> calls}) recorder({
   bool Function(String exe)? failOn,
   bool Function(List<String> args)? exitNonZero,
 }) {
   final calls = <List<String>>[];
-  Future<ProcessResult> run(
+  Future<RunResult> run(
     String exe,
     List<String> args, {
     String? workingDirectory,
     Map<String, String>? environment,
     bool includeParentEnvironment = true,
     bool runInShell = false,
+    ProcessOutputMode output = ProcessOutputMode.capture,
+    String? label,
   }) async {
     calls.add([exe, ...args]);
     final fail =
         (failOn?.call(exe) ?? false) || (exitNonZero?.call(args) ?? false);
-    return ProcessResult(0, fail ? 1 : 0, '', 'boom');
+    return RunResult(fail ? 1 : 0, '', 'boom');
   }
 
   return (run: run, calls: calls);
@@ -120,16 +111,18 @@ void main() {
 
   test('remoteArch queries uname -m over the ssh transport', () async {
     final calls = <List<String>>[];
-    Future<ProcessResult> run(
+    Future<RunResult> run(
       String exe,
       List<String> args, {
       String? workingDirectory,
       Map<String, String>? environment,
       bool includeParentEnvironment = true,
       bool runInShell = false,
+      ProcessOutputMode output = ProcessOutputMode.capture,
+      String? label,
     }) async {
       calls.add([exe, ...args]);
-      return ProcessResult(0, 0, 'aarch64\n', '');
+      return const RunResult(0, 'aarch64\n', '');
     }
 
     final arch = await Deployer(

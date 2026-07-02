@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/cross/overlay_builder.dart';
+import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
@@ -48,16 +49,18 @@ void main() {
 
   test('skips a lib the sysroot already satisfies (G-04)', () async {
     final calls = <List<String>>[];
-    Future<ProcessResult> run(
+    Future<RunResult> run(
       String exe,
       List<String> args, {
       String? workingDirectory,
       Map<String, String>? environment,
       bool includeParentEnvironment = true,
       bool runInShell = false,
+      ProcessOutputMode output = ProcessOutputMode.capture,
+      String? label,
     }) async {
       calls.add([exe, ...args]);
-      return ProcessResult(0, 0, '', ''); // pkg-config: satisfied
+      return const RunResult(0, '', ''); // pkg-config: satisfied
     }
 
     final ob = OverlayBuilder(Workspace(tmp), _profile, runProcess: run);
@@ -73,18 +76,20 @@ void main() {
     prestage('libdisplay-info-0.2.0');
     final calls = <List<String>>[];
     final envs = <Map<String, String>?>[];
-    Future<ProcessResult> run(
+    Future<RunResult> run(
       String exe,
       List<String> args, {
       String? workingDirectory,
       Map<String, String>? environment,
       bool includeParentEnvironment = true,
       bool runInShell = false,
+      ProcessOutputMode output = ProcessOutputMode.capture,
+      String? label,
     }) async {
       calls.add([exe, ...args]);
       envs.add(environment);
-      if (exe == 'pkg-config') return ProcessResult(0, 1, '', ''); // unmet
-      return ProcessResult(0, 0, '', '');
+      if (exe == 'pkg-config') return const RunResult(1, '', ''); // unmet
+      return const RunResult(0, '', '');
     }
 
     final ob = OverlayBuilder(Workspace(tmp), _profile, runProcess: run);
@@ -103,17 +108,19 @@ void main() {
   test('builds a cmake header-only lib (G-06)', () async {
     prestage('vulkan-headers-1.4.309');
     final calls = <List<String>>[];
-    Future<ProcessResult> run(
+    Future<RunResult> run(
       String exe,
       List<String> args, {
       String? workingDirectory,
       Map<String, String>? environment,
       bool includeParentEnvironment = true,
       bool runInShell = false,
+      ProcessOutputMode output = ProcessOutputMode.capture,
+      String? label,
     }) async {
       calls.add([exe, ...args]);
-      if (exe == 'pkg-config') return ProcessResult(0, 1, '', '');
-      return ProcessResult(0, 0, '', '');
+      if (exe == 'pkg-config') return const RunResult(1, '', '');
+      return const RunResult(0, '', '');
     }
 
     final ob = OverlayBuilder(Workspace(tmp), _profile, runProcess: run);
@@ -130,19 +137,21 @@ void main() {
 
   test('surfaces a failed build step (G-07)', () async {
     prestage('libdisplay-info-0.2.0');
-    Future<ProcessResult> run(
+    Future<RunResult> run(
       String exe,
       List<String> args, {
       String? workingDirectory,
       Map<String, String>? environment,
       bool includeParentEnvironment = true,
       bool runInShell = false,
+      ProcessOutputMode output = ProcessOutputMode.capture,
+      String? label,
     }) async {
-      if (exe == 'pkg-config') return ProcessResult(0, 1, '', '');
+      if (exe == 'pkg-config') return const RunResult(1, '', '');
       if (exe == 'ninja' && !args.contains('install')) {
-        return ProcessResult(0, 2, '', ''); // build fails
+        return const RunResult(2, '', ''); // build fails
       }
-      return ProcessResult(0, 0, '', '');
+      return const RunResult(0, '', '');
     }
 
     final ob = OverlayBuilder(Workspace(tmp), _profile, runProcess: run);

@@ -183,6 +183,7 @@ class FlatpakPackager {
       'flatpak-builder',
       builderArgs,
       workingDirectory: ctx.path,
+      output: ProcessOutputMode.stream,
     );
     if (br.exitCode != 0) {
       throw FlatpakPackageException('flatpak-builder failed: ${br.stderr}');
@@ -201,7 +202,7 @@ class FlatpakPackager {
       out.path,
       meta.appId,
       meta.branch,
-    ]);
+    ], output: ProcessOutputMode.stream);
     if (bundleRes.exitCode != 0) {
       throw FlatpakPackageException(
         'flatpak build-bundle failed: ${bundleRes.stderr}',
@@ -293,7 +294,7 @@ class FlatpakPackager {
   Future<String?> _which(String exe) async {
     final r = await _run('command', ['-v', exe], runInShell: true);
     if (r.exitCode != 0) return null;
-    final out = '${r.stdout}'.trim();
+    final out = r.stdout.trim();
     return out.isEmpty ? null : out;
   }
 

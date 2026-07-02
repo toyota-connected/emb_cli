@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:emb_cli/src/aot/aot_builder.dart';
+import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
 import 'package:path/path.dart' as p;
@@ -37,11 +38,15 @@ class _Recorder {
   final String app;
   final List<({String exe, List<String> args})> calls = [];
 
-  Future<int> run(
+  Future<RunResult> run(
     String exe,
     List<String> args, {
-    required String workingDirectory,
+    String? workingDirectory,
     Map<String, String>? environment,
+    bool includeParentEnvironment = true,
+    bool runInShell = false,
+    ProcessOutputMode output = ProcessOutputMode.capture,
+    String? label,
   }) async {
     calls.add((exe: p.basename(exe), args: args));
     if (args.isNotEmpty && args.first == 'build') {
@@ -50,7 +55,7 @@ class _Recorder {
         p.join(app, '.dart_tool', 'flutter_build', 'abc123'),
       ).createSync(recursive: true);
     }
-    return 0;
+    return const RunResult(0, '', '');
   }
 }
 

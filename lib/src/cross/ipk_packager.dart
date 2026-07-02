@@ -112,7 +112,7 @@ class IpkPackager extends ControlArchivePackager {
       'root',
       stageRoot.path,
       outDir.path,
-    ]);
+    ], output: ProcessOutputMode.stream);
     stageRoot.deleteSync(recursive: true);
     if (r.exitCode != 0) {
       throw IpkPackageException('opkg-build failed: ${r.stderr}');
@@ -133,7 +133,7 @@ class IpkPackager extends ControlArchivePackager {
   Future<String?> _which(String exe) async {
     final r = await run('command', ['-v', exe], runInShell: true);
     if (r.exitCode != 0) return null;
-    final out = '${r.stdout}'.trim();
+    final out = r.stdout.trim();
     return out.isEmpty ? null : out;
   }
 }

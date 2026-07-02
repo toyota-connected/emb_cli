@@ -124,7 +124,7 @@ class DebPackager extends ControlArchivePackager {
       '--build',
       stageRoot.path,
       out.path,
-    ]);
+    ], output: ProcessOutputMode.stream);
     stageRoot.deleteSync(recursive: true);
     if (r.exitCode != 0) {
       throw DebPackageException('dpkg-deb --build failed: ${r.stderr}');
@@ -174,10 +174,10 @@ class DebPackager extends ControlArchivePackager {
         if (!deb.path.endsWith('.deb') || deb.lengthSync() == 0) continue;
         final contents = await run('dpkg-deb', ['-c', deb.path]);
         if (contents.exitCode != 0) continue;
-        final hit = _sonamesIn('${contents.stdout}').intersection(unresolved);
+        final hit = _sonamesIn(contents.stdout).intersection(unresolved);
         if (hit.isEmpty) continue;
         final field = await run('dpkg-deb', ['-f', deb.path, 'Package']);
-        final pkg = '${field.stdout}'.trim();
+        final pkg = field.stdout.trim();
         if (pkg.isNotEmpty) {
           owners.add(pkg);
           unresolved.removeAll(hit);
@@ -194,7 +194,7 @@ class DebPackager extends ControlArchivePackager {
       throw DebPackageException('readelf -d failed: ${r.stderr}');
     }
     final re = RegExp(r'Shared library:\s*\[([^\]]+)\]');
-    return [for (final m in re.allMatches('${r.stdout}')) m.group(1)!];
+    return [for (final m in re.allMatches(r.stdout)) m.group(1)!];
   }
 
   /// Basenames of the shared-object entries in `dpkg-deb -c` output.

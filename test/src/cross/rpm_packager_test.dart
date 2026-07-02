@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/cross/rpm_packager.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
@@ -13,16 +14,18 @@ void main() {
   // generated .spec and faking the built rpm into RPMS/<arch>/.
   String? capturedSpec;
   List<String>? rpmbuildArgv;
-  Future<ProcessResult> fakeRun(
+  Future<RunResult> fakeRun(
     String exe,
     List<String> args, {
     String? workingDirectory,
     Map<String, String>? environment,
     bool includeParentEnvironment = true,
     bool runInShell = false,
+    ProcessOutputMode output = ProcessOutputMode.capture,
+    String? label,
   }) async {
-    if (exe == 'command') return ProcessResult(0, 0, '/usr/bin/rpmbuild\n', '');
-    if (exe == 'chmod') return ProcessResult(0, 0, '', '');
+    if (exe == 'command') return const RunResult(0, '/usr/bin/rpmbuild\n', '');
+    if (exe == 'chmod') return const RunResult(0, '', '');
     if (exe == 'rpmbuild') {
       rpmbuildArgv = args;
       final spec = args.last;
@@ -39,9 +42,9 @@ void main() {
         )
         ..parent.createSync(recursive: true)
         ..writeAsStringSync('rpm');
-      return ProcessResult(0, 0, '', '');
+      return const RunResult(0, '', '');
     }
-    return ProcessResult(0, 0, '', '');
+    return const RunResult(0, '', '');
   }
 
   File fakeBinary() =>
@@ -110,16 +113,18 @@ void main() {
   });
 
   test('fails with a hint when rpmbuild is absent', () async {
-    Future<ProcessResult> noRpm(
+    Future<RunResult> noRpm(
       String exe,
       List<String> args, {
       String? workingDirectory,
       Map<String, String>? environment,
       bool includeParentEnvironment = true,
       bool runInShell = false,
+      ProcessOutputMode output = ProcessOutputMode.capture,
+      String? label,
     }) async {
-      if (exe == 'command') return ProcessResult(1, 1, '', '');
-      return ProcessResult(0, 0, '', '');
+      if (exe == 'command') return const RunResult(1, '', '');
+      return const RunResult(0, '', '');
     }
 
     final packager = RpmPackager(runProcess: noRpm);

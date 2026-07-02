@@ -133,7 +133,7 @@ class RpmPackager extends PackageStager {
       '--target',
       meta.architecture,
       spec.path,
-    ]);
+    ], output: ProcessOutputMode.stream);
     if (r.exitCode != 0) {
       payload.deleteSync(recursive: true);
       topDir.deleteSync(recursive: true);
@@ -225,7 +225,7 @@ class RpmPackager extends PackageStager {
   Future<String?> _which(String exe) async {
     final r = await run('command', ['-v', exe], runInShell: true);
     if (r.exitCode != 0) return null;
-    final out = '${r.stdout}'.trim();
+    final out = r.stdout.trim();
     return out.isEmpty ? null : out;
   }
 }

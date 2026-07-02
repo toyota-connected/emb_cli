@@ -70,7 +70,13 @@ class TarballPackager extends PackageStager {
       ),
     );
     // `-C <root> .` packs paths relative to the target root (./usr/bin/…).
-    final r = await run('tar', ['-czf', out.path, '-C', root.path, '.']);
+    final r = await run('tar', [
+      '-czf',
+      out.path,
+      '-C',
+      root.path,
+      '.',
+    ], output: ProcessOutputMode.stream);
     root.deleteSync(recursive: true);
     if (r.exitCode != 0) {
       throw TarballPackageException('tar failed: ${r.stderr}');

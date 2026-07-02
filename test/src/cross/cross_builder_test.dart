@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:emb_cli/src/cross/cross_builder.dart';
 import 'package:emb_cli/src/cross/cross_profile.dart';
+import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
@@ -21,34 +22,24 @@ const _profile = CrossProfile(
 );
 
 /// A recording fake [process runner] that fails the steps named in [failOn].
-({
-  Future<ProcessResult> Function(
-    String,
-    List<String>, {
-    String? workingDirectory,
-    Map<String, String>? environment,
-    bool includeParentEnvironment,
-    bool runInShell,
-  })
-  run,
-  List<List<String>> calls,
-  List<Map<String, String>?> envs,
-})
+({ProcessRunner run, List<List<String>> calls, List<Map<String, String>?> envs})
 recorder({bool Function(String exe, List<String> args)? failOn}) {
   final calls = <List<String>>[];
   final envs = <Map<String, String>?>[];
-  Future<ProcessResult> run(
+  Future<RunResult> run(
     String exe,
     List<String> args, {
     String? workingDirectory,
     Map<String, String>? environment,
     bool includeParentEnvironment = true,
     bool runInShell = false,
+    ProcessOutputMode output = ProcessOutputMode.capture,
+    String? label,
   }) async {
     calls.add([exe, ...args]);
     envs.add(environment);
     final fail = failOn?.call(exe, args) ?? false;
-    return ProcessResult(0, fail ? 1 : 0, '', 'boom');
+    return RunResult(fail ? 1 : 0, '', 'boom');
   }
 
   return (run: run, calls: calls, envs: envs);

@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:emb_cli/src/cross/flatpak_packager.dart';
+import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
@@ -15,20 +16,22 @@ void main() {
   String? capturedLauncher;
   List<String>? builderArgv;
   List<String>? bundleArgv;
-  Future<ProcessResult> fakeRun(
+  Future<RunResult> fakeRun(
     String exe,
     List<String> args, {
     String? workingDirectory,
     Map<String, String>? environment,
     bool includeParentEnvironment = true,
     bool runInShell = false,
+    ProcessOutputMode output = ProcessOutputMode.capture,
+    String? label,
   }) async {
-    if (exe == 'command') return ProcessResult(0, 0, '/usr/bin/$exe\n', '');
+    if (exe == 'command') return RunResult(0, '/usr/bin/$exe\n', '');
     if (exe == 'cp') {
       // Emulate `cp -a . <dst>` for the bundle stage.
       final dst = args.last;
       Directory(dst).createSync(recursive: true);
-      return ProcessResult(0, 0, '', '');
+      return const RunResult(0, '', '');
     }
     if (exe == 'flatpak-builder') {
       builderArgv = args;
@@ -36,14 +39,14 @@ void main() {
       final ctx = workingDirectory!;
       capturedManifest = File(args.last).readAsStringSync();
       capturedLauncher = File(p.join(ctx, 'launcher.sh')).readAsStringSync();
-      return ProcessResult(0, 0, '', '');
+      return const RunResult(0, '', '');
     }
     if (exe == 'flatpak' && args.first == 'build-bundle') {
       bundleArgv = args;
       File(args[2]).writeAsStringSync('flatpak'); // out path
-      return ProcessResult(0, 0, '', '');
+      return const RunResult(0, '', '');
     }
-    return ProcessResult(0, 0, '', '');
+    return const RunResult(0, '', '');
   }
 
   Directory fakeBundle() {

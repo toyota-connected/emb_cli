@@ -85,7 +85,7 @@ class Deployer {
       _sshTransport(port, opts),
       _slash(localDir.path),
       '$host:${_slash(destDir)}',
-    ]);
+    ], output: ProcessOutputMode.stream);
     return DeployResult(
       success: r.exitCode == 0,
       method: 'rsync',
@@ -106,7 +106,10 @@ class Deployer {
     final remote = 'mkdir -p "$destDir" && tar -xzf - -C "$destDir"';
     final pipeline =
         'tar -czf - -C ${_shQuote(localDir.path)} . | $ssh ${_shQuote(remote)}';
-    final r = await _run('sh', ['-c', pipeline]);
+    final r = await _run('sh', [
+      '-c',
+      pipeline,
+    ], output: ProcessOutputMode.stream);
     return DeployResult(
       success: r.exitCode == 0,
       method: 'tar',
@@ -119,7 +122,7 @@ class Deployer {
   Future<String?> remoteArch(String host, {int port = 22, String? opts}) async {
     final r = await _run('ssh', [..._sshArgs(port, opts), host, 'uname -m']);
     if (r.exitCode != 0) return null;
-    final a = '${r.stdout}'.trim();
+    final a = r.stdout.trim();
     return a.isEmpty ? null : a;
   }
 

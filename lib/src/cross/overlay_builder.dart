@@ -168,27 +168,36 @@ class OverlayBuilder {
           sysroot: profile.targetSysroot,
           cpuFlags: profile.cFlags,
         );
-    final setup = await _run('meson', [
-      'setup',
-      bld.path,
-      src.path,
-      '--cross-file',
-      cross,
-      '--prefix',
-      '/usr',
-      '--libdir',
-      'lib',
-      '--buildtype',
-      'release',
-      '--default-library',
-      if (lib.staticLink) 'static' else 'shared',
-      // Package-specific project options, mirroring the CMake path's cache
-      // entries (e.g. `-Dsome_feature=enabled`). Meson uses the same
-      // `-Dkey=value` syntax for project options.
-      for (final e in lib.defines.entries) '-D${e.key}=${e.value}',
-    ], environment: profile.buildEnv());
+    final setup = await _run(
+      'meson',
+      [
+        'setup',
+        bld.path,
+        src.path,
+        '--cross-file',
+        cross,
+        '--prefix',
+        '/usr',
+        '--libdir',
+        'lib',
+        '--buildtype',
+        'release',
+        '--default-library',
+        if (lib.staticLink) 'static' else 'shared',
+        // Package-specific project options, mirroring the CMake path's cache
+        // entries (e.g. `-Dsome_feature=enabled`). Meson uses the same
+        // `-Dkey=value` syntax for project options.
+        for (final e in lib.defines.entries) '-D${e.key}=${e.value}',
+      ],
+      environment: profile.buildEnv(),
+      output: ProcessOutputMode.stream,
+    );
     _check(lib, 'meson setup', setup);
-    _check(lib, 'ninja', await _run('ninja', ['-C', bld.path]));
+    _check(
+      lib,
+      'ninja',
+      await _run('ninja', ['-C', bld.path], output: ProcessOutputMode.stream),
+    );
     _check(
       lib,
       'ninja install',
@@ -196,6 +205,7 @@ class OverlayBuilder {
         'ninja',
         ['-C', bld.path, 'install'],
         environment: {...profile.buildEnv(), 'DESTDIR': overlay.path},
+        output: ProcessOutputMode.stream,
       ),
     );
   }
@@ -204,20 +214,25 @@ class OverlayBuilder {
     final src = await _fetchSource(lib);
     final bld = _freshBuildDir(src);
     final tc = profile.cmakeToolchainFile;
-    final configure = await _run('cmake', [
-      '-S',
-      src.path,
-      '-B',
-      bld.path,
-      if (tc != null) '-DCMAKE_TOOLCHAIN_FILE=$tc',
-      '-DCMAKE_INSTALL_PREFIX=/usr',
-      '-DCMAKE_BUILD_TYPE=Release',
-      // Honor the augment's `static` flag for libraries that defer to
-      // BUILD_SHARED_LIBS (no explicit STATIC/SHARED on add_library).
-      '-DBUILD_SHARED_LIBS=${lib.staticLink ? 'OFF' : 'ON'}',
-      // Package-specific cache entries (e.g. BLEND2D_STATIC / BLEND2D_NO_JIT).
-      for (final e in lib.defines.entries) '-D${e.key}=${e.value}',
-    ], environment: profile.buildEnv());
+    final configure = await _run(
+      'cmake',
+      [
+        '-S',
+        src.path,
+        '-B',
+        bld.path,
+        if (tc != null) '-DCMAKE_TOOLCHAIN_FILE=$tc',
+        '-DCMAKE_INSTALL_PREFIX=/usr',
+        '-DCMAKE_BUILD_TYPE=Release',
+        // Honor the augment's `static` flag for libraries that defer to
+        // BUILD_SHARED_LIBS (no explicit STATIC/SHARED on add_library).
+        '-DBUILD_SHARED_LIBS=${lib.staticLink ? 'OFF' : 'ON'}',
+        // Package-specific cache entries (e.g. BLEND2D_STATIC / BLEND2D_NO_JIT).
+        for (final e in lib.defines.entries) '-D${e.key}=${e.value}',
+      ],
+      environment: profile.buildEnv(),
+      output: ProcessOutputMode.stream,
+    );
     _check(lib, 'cmake configure', configure);
     // Build before install. A no-op for header-only libs (e.g. Vulkan-Headers,
     // which expose no compiled targets), but required for compiled libs (e.g.
@@ -226,11 +241,12 @@ class OverlayBuilder {
     _check(
       lib,
       'cmake build',
-      await _run('cmake', [
-        '--build',
-        bld.path,
-        '--parallel',
-      ], environment: profile.buildEnv()),
+      await _run(
+        'cmake',
+        ['--build', bld.path, '--parallel'],
+        environment: profile.buildEnv(),
+        output: ProcessOutputMode.stream,
+      ),
     );
     // Stage via DESTDIR rather than `--install --prefix`: the configured
     // CMAKE_INSTALL_PREFIX (/usr) controls where files land and what gets baked
@@ -244,6 +260,7 @@ class OverlayBuilder {
         'cmake',
         ['--install', bld.path],
         environment: {...profile.buildEnv(), 'DESTDIR': overlay.path},
+        output: ProcessOutputMode.stream,
       ),
     );
   }
@@ -273,12 +290,16 @@ class OverlayBuilder {
         '-DCMAKE_INSTALL_PREFIX=/usr',
         '-DCMAKE_BUILD_TYPE=Release',
         for (final e in lib.defines.entries) '-D${e.key}=${e.value}',
-      ]),
+      ], output: ProcessOutputMode.stream),
     );
     _check(
       lib,
       'cmake build (host)',
-      await _run('cmake', ['--build', bld.path, '--parallel']),
+      await _run('cmake', [
+        '--build',
+        bld.path,
+        '--parallel',
+      ], output: ProcessOutputMode.stream),
     );
     _check(
       lib,
@@ -287,6 +308,7 @@ class OverlayBuilder {
         'cmake',
         ['--install', bld.path],
         environment: {'DESTDIR': hostTools.path},
+        output: ProcessOutputMode.stream,
       ),
     );
     return p.join(hostTools.path, 'usr', 'bin');
@@ -294,13 +316,13 @@ class OverlayBuilder {
 
   /// Throw with the failing [step]'s stderr so an overlay failure is
   /// actionable rather than a bare "failed to build into overlay".
-  void _check(AugmentLib lib, String step, ProcessResult r) {
+  void _check(AugmentLib lib, String step, RunResult r) {
     if (r.exitCode == 0) return;
     // meson/cmake write diagnostics to stdout as often as stderr, so surface
     // both — otherwise a "meson setup failed (exit 1)" is undebuggable.
     final detail = [
-      '${r.stderr}',
-      '${r.stdout}',
+      r.stderr,
+      r.stdout,
     ].map((s) => s.trim()).where((s) => s.isNotEmpty).join('\n');
     throw OverlayBuildException(
       '${lib.pkg}: $step failed (exit ${r.exitCode})'
