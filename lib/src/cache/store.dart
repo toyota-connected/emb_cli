@@ -134,6 +134,64 @@ class Store {
     });
   }
 
+  /// Adopt an already-extracted [existingDir] as the entry for ([kind], [key])
+  /// — move it into `store/<kind>/<key>/root` and write complete meta — without
+  /// re-extracting. Used by `emb cache migrate`. If the entry is already
+  /// complete, [existingDir] is left untouched and the existing root returned.
+  Future<Directory> adopt({
+    required String kind,
+    required String key,
+    required Directory existingDir,
+    String? sourceUrl,
+  }) async {
+    if (_isComplete(kind, key)) return rootOf(kind, key);
+    entryDir(kind, key).createSync(recursive: true);
+    return withFileLock(_lockFile(kind, key), () async {
+      if (_isComplete(kind, key)) return rootOf(kind, key);
+      final target = rootOf(kind, key);
+      if (target.existsSync()) target.deleteSync(recursive: true);
+      _moveDir(existingDir, target);
+      CacheMeta(
+        kind: kind,
+        key: key,
+        sourceUrl: sourceUrl,
+        created: nowIso(),
+        lastUsed: nowIso(),
+        sizeBytes: _treeSize(target),
+        complete: true,
+      ).write(_metaFile(kind, key));
+      return target;
+    });
+  }
+
+  /// Move [from] → [to], preferring an atomic same-filesystem rename and
+  /// falling back to a symlink-preserving recursive copy when the store lives
+  /// on a different filesystem than the workspace (the common case).
+  void _moveDir(Directory from, Directory to) {
+    try {
+      from.renameSync(to.path);
+    } on FileSystemException {
+      _copyDir(from, to);
+      from.deleteSync(recursive: true);
+    }
+  }
+
+  void _copyDir(Directory from, Directory to) {
+    to.createSync(recursive: true);
+    for (final e in from.listSync(recursive: true, followLinks: false)) {
+      final dest = p.join(to.path, p.relative(e.path, from: from.path));
+      if (e is Link) {
+        Directory(p.dirname(dest)).createSync(recursive: true);
+        Link(dest).createSync(e.targetSync());
+      } else if (e is Directory) {
+        Directory(dest).createSync(recursive: true);
+      } else if (e is File) {
+        Directory(p.dirname(dest)).createSync(recursive: true);
+        e.copySync(dest);
+      }
+    }
+  }
+
   /// Symlink [linkPath] → the store root for ([kind], [key]) and record a
   /// backlink so gc can discover this live reference. Any existing symlink,
   /// dir, or file at [linkPath] is replaced.

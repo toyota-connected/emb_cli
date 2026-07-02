@@ -459,7 +459,10 @@ class ArmGnuCrossProvider implements CrossProvider {
       );
     }
 
-    final cache = Directory(p.join(sysrootDir.parent.path, 'apt'))
+    // Machine-global apt index cache — the mirror metadata is workspace- and
+    // sysrootKey-independent, so cache it under the shared cache dir rather
+    // than re-fetching it into every sysroot-base staging run.
+    final cache = Directory(p.join(_store.root.path, 'apt'))
       ..createSync(recursive: true);
     final index = AptIndex();
     for (final url in urls) {
@@ -485,7 +488,7 @@ class ArmGnuCrossProvider implements CrossProvider {
         ? parseInstalled(status.readAsStringSync())
         : <String>{};
 
-    final debs = Directory(p.join(sysrootDir.parent.path, 'debs'))
+    final debs = Directory(p.join(_store.root.path, 'apt', 'debs'))
       ..createSync(recursive: true);
     final done = Directory(p.join(sysrootDir.path, '.emb', 'dev-packages'))
       ..createSync(recursive: true);
@@ -535,9 +538,9 @@ class ArmGnuCrossProvider implements CrossProvider {
 
   /// Download a compressed `Packages` index (cached) and decompress it to text.
   Future<String?> _fetchIndex(String url, Directory cache) async {
-    final dest = File(
-      p.join(cache.path, '${url.hashCode.toRadixString(16)}.xz'),
-    );
+    // Stable, portable name (12-hex content hash of the URL) — String.hashCode
+    // is not stable across runs, so the old name never actually cached a hit.
+    final dest = File(p.join(cache.path, '${contentHash([url])}.xz'));
     if (!dest.existsSync() && !await _download(url, dest)) return null;
     final un = await Process.run('xz', ['-dc', dest.path]);
     return un.exitCode == 0 ? un.stdout.toString() : null;

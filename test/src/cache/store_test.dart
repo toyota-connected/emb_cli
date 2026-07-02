@@ -141,6 +141,38 @@ void main() {
     expect(store.entryDir('toolchain', 'partial').existsSync(), isFalse);
   });
 
+  test(
+    'adopt moves an existing tree into the store, preserving symlinks',
+    () async {
+      final ext = Directory(p.join(tmp.path, 'existing'))
+        ..createSync(recursive: true);
+      File(p.join(ext.path, 'bin', 'gcc'))
+        ..createSync(recursive: true)
+        ..writeAsStringSync('#');
+      Link(p.join(ext.path, 'lib')).createSync('usr/lib');
+
+      final root = await store.adopt(
+        kind: 'toolchain',
+        key: 'k',
+        existingDir: ext,
+      );
+      expect(File(p.join(root.path, 'bin', 'gcc')).existsSync(), isTrue);
+      expect(FileSystemEntity.isLinkSync(p.join(root.path, 'lib')), isTrue);
+      expect(ext.existsSync(), isFalse); // moved, not copied
+      expect(store.list().single.meta!.complete, isTrue);
+
+      // A second adopt of a complete entry is a no-op (arg left untouched).
+      final again = Directory(p.join(tmp.path, 'again'))..createSync();
+      final root2 = await store.adopt(
+        kind: 'toolchain',
+        key: 'k',
+        existingDir: again,
+      );
+      expect(root2.path, root.path);
+      expect(again.existsSync(), isTrue);
+    },
+  );
+
   test('gc --dry-run reports without deleting', () async {
     store.entryDir('toolchain', 'partial').createSync(recursive: true);
     store.rootOf('toolchain', 'partial').createSync(recursive: true);
