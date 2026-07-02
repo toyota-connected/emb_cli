@@ -799,11 +799,13 @@ every workspace and target. Location resolves as `$EMB_CACHE_DIR`, else
 | `path` | Print the resolved cache directory. |
 | `list [--json]` | List store entries (kind, key, size, live references). |
 | `gc [--dry-run]` | Remove incomplete entries and unreferenced, stale ones; report space reclaimed. |
+| `migrate [-w <ws>] [--dry-run]` | Adopt a workspace's existing toolchain/engine trees into the store (moved in place of a re-download), leaving symlinks behind. |
 
 ```sh
 emb cache path
 emb cache list --json | jq '.data.entries'
 emb cache gc --dry-run
+emb cache migrate --dry-run          # preview adoptions for the current workspace
 ```
 
 ---

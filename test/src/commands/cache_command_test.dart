@@ -82,4 +82,66 @@ void main() {
       expect(store.entryDir('toolchain', 'partial').existsSync(), isTrue);
     },
   );
+
+  test(
+    'cache migrate adopts toolchain/engine trees and symlinks them',
+    () async {
+      // A workspace with un-migrated (real) toolchain + engine trees.
+      final ws = Directory(p.join(tmp.path, 'ws'))..createSync();
+      final fw = p.join(ws.path, '.config', 'flutter_workspace');
+      const tcName =
+          'arm-gnu-toolchain-12.3.rel1-x86_64-aarch64-none-linux-gnu';
+      final tc = Directory(p.join(fw, 'cross-aarch64-x-y', 'toolchain', tcName))
+        ..createSync(recursive: true);
+      File(p.join(tc.path, 'bin', 'gcc')).createSync(recursive: true);
+      final eng = Directory(
+        p.join(fw, 'flutter-engine', 'abc123', 'engine-sdk-release-arm64'),
+      )..createSync(recursive: true);
+      File(
+        p.join(eng.path, 'lib', 'libflutter_engine.so'),
+      ).createSync(recursive: true);
+
+      Future<(int?, String)> migrate(List<String> extra) async {
+        final logger = _CaptureLogger();
+        final runner = CommandRunner<int>('emb', 'test')
+          ..addCommand(
+            CacheCommand(
+              logger: logger,
+              environment: {'EMB_CACHE_DIR': tmp.path},
+            ),
+          );
+        final code = await runner.run([
+          'cache',
+          'migrate',
+          '-w',
+          ws.path,
+          ...extra,
+        ]);
+        return (code, logger.buffer.toString());
+      }
+
+      // --dry-run reports but moves nothing.
+      final (dc, dout) = await migrate(['--dry-run']);
+      expect(dc, ExitCode.success.code);
+      expect(dout, contains('would adopt toolchain/$tcName'));
+      expect(dout, contains('would adopt engine/abc123-arm64-release'));
+      expect(tc.existsSync(), isTrue);
+
+      // Real migrate: trees move into the store, dirs become symlinks.
+      final (mc, _) = await migrate(const []);
+      expect(mc, ExitCode.success.code);
+      final store = Store(tmp);
+      expect(
+        store.list().map((e) => '${e.kind}/${e.key}'),
+        containsAll(['toolchain/$tcName', 'engine/abc123-arm64-release']),
+      );
+      expect(FileSystemEntity.isLinkSync(tc.path), isTrue);
+      expect(FileSystemEntity.isLinkSync(eng.path), isTrue);
+      expect(
+        File(p.join(tc.path, 'bin', 'gcc')).existsSync(),
+        isTrue,
+        reason: 'resolves through the symlink into the store',
+      );
+    },
+  );
 }
