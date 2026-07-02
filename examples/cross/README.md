@@ -104,6 +104,40 @@ What lands where, under `<workspace>/.config/flutter_workspace/`:
   (`.deb`/`.ipk`/`.rpm`/`.tar.gz`/`.flatpak`).
 - `overlay-<triple>/`, `overlay-src/` — augment build prefix + sources.
 
+## Modules (app-owned native libraries)
+
+A `cross.modules:` list builds native libraries from the **app's own source
+tree** and stages them into the app bundle's `lib/` (next to `libapp.so`), so
+Dart can load them at runtime with `DynamicLibrary.open('libX.so')`. Unlike an
+`augment:` (a dependency *fetched* from a URL and layered into the embedder's
+build), a module is local and its output ships *inside the bundle*. Each module
+compiles against the same toolchain / sysroot / overlay as the embedder.
+
+```yaml
+cross:
+  # …provider / sysroot…
+  modules:
+    - name: hello                 # label; build dir is module-hello/
+      path: native/hello          # source dir, relative to the manifest
+      build: cmake                # cmake | meson | cargo
+      artifacts: [libhello.so]    # sonames to stage into the bundle's lib/
+      defines: { HELLO_FAST: ON } # -D configure options (cmake/meson)
+```
+
+- `artifacts:` is **required** and lists the sonames to copy out of the build
+  tree. Versioned outputs (`libhello.so.1.2.3` with `libhello.so` / `.so.1`
+  symlinks) are staged whole — the real file plus every soname link — so both
+  the bare name and any `DT_NEEDED` SONAME resolve at load time.
+- Modules build (and stage) only when a runnable bundle is produced — i.e. with
+  `--app`. Declared without `--app`, they are skipped with a warning.
+- `build: cargo` (Rust) is not yet implemented; `cmake` and `meson` are.
+
+**Where modules ship.** They land in the app bundle's `lib/`, so the runnable
+bundle (`--app`, `--tar`, `--deploy`) and the flatpak packager carry them
+automatically. The deb/ipk/rpm/targz packagers package the *embedder binary*
+plus `cross.package.files:` — not the app bundle — so a module reaches those
+only if the bundle tree is listed under `files:` (the same as `libapp.so`).
+
 ## Packaging formats
 
 All five formats hang off a single `cross.package:` block. The shared fields —

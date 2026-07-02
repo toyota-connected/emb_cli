@@ -87,6 +87,45 @@ void main() {
       expect(sysrootBaseKey(rpi5), matches(RegExp(r'^[0-9a-f]{12}$')));
     });
 
+    test('modules change the buildKey but not the sysroot keys', () {
+      final withModule = _t(const {
+        'provider': 'arm-gnu',
+        'toolchain_version': '12.3.rel1',
+        'image_url': 'https://example/raspios.img.xz',
+        'cpu_flags': ['-mcpu=cortex-a76'],
+        'modules': [
+          {
+            'name': 'hello',
+            'path': 'native/hello',
+            'build': 'cmake',
+            'artifacts': ['libhello.so'],
+          },
+        ],
+      });
+      expect(buildKey(withModule), isNot(buildKey(rpi5)));
+      // Modules are a build-tier input; the sysroot is untouched.
+      expect(sysrootKey(withModule), sysrootKey(rpi5));
+      expect(sysrootBaseKey(withModule), sysrootBaseKey(rpi5));
+
+      // A change to a module's defines flips the buildKey.
+      final withDefine = _t(const {
+        'provider': 'arm-gnu',
+        'toolchain_version': '12.3.rel1',
+        'image_url': 'https://example/raspios.img.xz',
+        'cpu_flags': ['-mcpu=cortex-a76'],
+        'modules': [
+          {
+            'name': 'hello',
+            'path': 'native/hello',
+            'build': 'cmake',
+            'artifacts': ['libhello.so'],
+            'defines': {'HELLO_FAST': 'ON'},
+          },
+        ],
+      });
+      expect(buildKey(withDefine), isNot(buildKey(withModule)));
+    });
+
     test('launcher does not change the buildKey (not a build output)', () {
       final withLauncher = _t(const {
         'provider': 'arm-gnu',

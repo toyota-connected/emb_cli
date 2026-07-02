@@ -19,6 +19,7 @@ import 'package:emb_cli/src/cross/flatpak_packager.dart';
 import 'package:emb_cli/src/cross/image_publisher.dart';
 import 'package:emb_cli/src/cross/ipk_packager.dart';
 import 'package:emb_cli/src/cross/local_cross_provider.dart';
+import 'package:emb_cli/src/cross/module_stager.dart';
 import 'package:emb_cli/src/cross/overlay_builder.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/cross/rpm_packager.dart';
@@ -744,12 +745,19 @@ class CrossCommand extends Command<int> {
       _logger.err('--deploy needs --app (no runnable bundle to send).');
       return ExitCode.usage.code;
     }
+    if (appPath == null && target.modules.isNotEmpty) {
+      _logger.warn(
+        '  modules       : ${target.modules.map((m) => m.name).join(", ")} '
+        'declared but no --app bundle to stage them into (add --app).',
+      );
+    }
     if (appPath != null) {
       final rc = await _runnable(
         profile,
         target,
         buildRoot,
         built,
+        builder: builder,
         host: host,
         workspace: workspace,
         appPath: appPath,
@@ -892,6 +900,7 @@ class CrossCommand extends Command<int> {
     CrossTarget target,
     Directory buildRoot,
     List<CrossBuildResult> built, {
+    required CrossBuilder builder,
     required HostInfo host,
     required Workspace workspace,
     required String appPath,
@@ -931,6 +940,23 @@ class CrossCommand extends Command<int> {
       return ExitCode.software.code;
     }
     progress.complete('App bundle ready → ${res.outputDir}');
+
+    // Build any app-owned native modules once and stage their declared `.so`
+    // artifacts into the bundle's lib/ (next to libapp.so). Done before the
+    // per-backend copy below, so `_copyTree` propagates them to every runnable
+    // dir, tarball, flatpak, and deploy.
+    if (target.modules.isNotEmpty) {
+      final libDir = Directory(p.join(appBundle.path, 'lib'))
+        ..createSync(recursive: true);
+      final ok = await _buildModules(
+        builder,
+        target,
+        manifestDir,
+        buildRoot,
+        libDir,
+      );
+      if (!ok) return ExitCode.software.code;
+    }
 
     final runnable = RunnableBundle();
     for (final r in built) {
@@ -1482,6 +1508,63 @@ class CrossCommand extends Command<int> {
       }
     }
     return null;
+  }
+
+  /// Build each app-owned [CrossTarget.modules] entry against the embedder's
+  /// cross toolchain ([builder]) and stage its declared `.so` artifacts into
+  /// [libDir] (the app bundle's `lib/`). Returns false — with an error logged —
+  /// on any build failure or missing declared artifact.
+  Future<bool> _buildModules(
+    CrossBuilder builder,
+    CrossTarget target,
+    Directory manifestDir,
+    Directory buildRoot,
+    Directory libDir,
+  ) async {
+    for (final m in target.modules) {
+      final gen = m.build.generator;
+      if (gen == null) {
+        // cargo (Rust) modules are a follow-up; cmake/meson only for now.
+        _logger.err(
+          '  module ${m.name}: build "${m.build.name}" not supported',
+        );
+        return false;
+      }
+      final src = Directory(p.join(manifestDir.path, m.path));
+      if (!src.existsSync()) {
+        _logger.err('  module ${m.name}: source dir not found: ${src.path}');
+        return false;
+      }
+      final sw = Stopwatch()..start();
+      final r = await builder.build(
+        sourceDir: src,
+        buildDir: Directory(p.join(buildRoot.path, 'module-${m.name}')),
+        generator: gen,
+        defines: m.defines,
+      );
+      if (!r.success) {
+        _logger.err('  module ${m.name}: ${r.message ?? "build failed"}');
+        return false;
+      }
+      for (final soname in m.artifacts) {
+        final staged = stageSharedLibrary(
+          soname: soname,
+          buildDir: Directory(r.buildDir),
+          libDir: libDir,
+        );
+        if (staged == null) {
+          _logger.err(
+            '  module ${m.name}: artifact "$soname" not found under '
+            '${r.buildDir}',
+          );
+          return false;
+        }
+      }
+      _logger.info(
+        '  module ${m.name}: ${m.artifacts.join(", ")} → lib/ (${_secs(sw)})',
+      );
+    }
+    return true;
   }
 
   /// Derive the cross `readelf` path from the profile's `gcc`.
