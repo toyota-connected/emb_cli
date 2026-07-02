@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:emb_cli/src/cross/cross_profile.dart';
+import 'package:emb_cli/src/cross/overlay_builder.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/cross/toolchain_emitter.dart';
 import 'package:path/path.dart' as p;
@@ -42,16 +43,24 @@ class CrossBuilder {
     String? Function(String tool)? resolveHostTool,
     String? launcher,
     String? ccacheBaseDir,
+    OverlayPaths? overlay,
   }) : _run = runProcess,
        _neutralize = neutralizeHostEnv,
        _hostTools = hostTools,
        _hostToolBins = hostToolBins,
        _resolveHostTool = resolveHostTool ?? _hostToolOnPath,
        _launcher = launcher,
-       _ccacheBaseDir = ccacheBaseDir;
+       _ccacheBaseDir = ccacheBaseDir,
+       _overlay = overlay;
 
   final CrossProfile profile;
   final ProcessRunner _run;
+
+  /// Search paths for augment libraries built into a per-workspace overlay
+  /// prefix (outside the sysroot). Null when there are no augments. Consumed as
+  /// `CMAKE_FIND_ROOT_PATH`/`CMAKE_PREFIX_PATH` (find_package/find_library) plus
+  /// a pkg-config env that searches the overlay before the sysroot.
+  final OverlayPaths? _overlay;
 
   /// Compiler-cache launcher executable (`ccache`/`sccache`), already resolved
   /// on `PATH`, or null. Applied to CMake as `CMAKE_<LANG>_COMPILER_LAUNCHER`.
@@ -157,7 +166,26 @@ class CrossBuilder {
       if (_neutralize)
         for (final v in const ['CC', 'CXX', 'CPP']) v: '',
       ...profile.buildEnv(),
+      // Augment overlay pkg-config: search the overlay's .pc files before the
+      // sysroot's (supersedes the profile's PKG_CONFIG_LIBDIR/SYSROOT_DIR).
+      if (_overlay != null) ..._overlay.pkgConfigEnv(profile),
     };
+    if (_overlay case final ov?) {
+      // The augment lives in a per-workspace overlay prefix *outside* the
+      // sysroot, so pkg-config's PKG_CONFIG_SYSROOT_DIR wrongly rebases the
+      // overlay's own .pc paths under the sysroot. Add the overlay include/lib
+      // dirs as real compiler flags too; cmake appends $CFLAGS/$LDFLAGS to the
+      // toolchain-file flags, so the header/lib are found regardless of what
+      // pkg-config reports. (These are emb-controlled, not host — safe to set
+      // over the neutralized blanks.)
+      final inc = ov.includeDirs.map((d) => '-I$d').join(' ');
+      final lib = ov.libDirs.map((d) => '-L$d').join(' ');
+      String prepend(String extra, String? cur) =>
+          [extra, cur ?? ''].where((s) => s.isNotEmpty).join(' ');
+      env['CFLAGS'] = prepend(inc, env['CFLAGS']);
+      env['CXXFLAGS'] = prepend(inc, env['CXXFLAGS']);
+      env['LDFLAGS'] = prepend(lib, env['LDFLAGS']);
+    }
     if (_hostToolBins.isNotEmpty) {
       // Prepend host-augment bin dirs so a cross `find_program` resolves the
       // build-machine tool. profile.buildEnv() may not set PATH, in which case
@@ -224,6 +252,13 @@ class CrossBuilder {
         if (_launcher != null) ...[
           '-DCMAKE_C_COMPILER_LAUNCHER=$_launcher',
           '-DCMAKE_CXX_COMPILER_LAUNCHER=$_launcher',
+        ],
+        // Augment overlay prefix (outside the sysroot): add it as a find root
+        // and prefix so find_package/find_library resolve header/config
+        // augments (e.g. Vulkan-Headers). CMAKE_SYSROOT stays a find root too.
+        if (_overlay != null) ...[
+          '-DCMAKE_FIND_ROOT_PATH=${_overlay.prefix}',
+          '-DCMAKE_PREFIX_PATH=${_overlay.prefix}',
         ],
         for (final e in defines.entries) '-D${e.key}=${e.value}',
         ...cmakeArgs,
