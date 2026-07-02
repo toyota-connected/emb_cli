@@ -800,12 +800,26 @@ every workspace and target. Location resolves as `$EMB_CACHE_DIR`, else
 | `list [--json]` | List store entries (kind, key, size, live references). |
 | `gc [--dry-run]` | Remove incomplete entries and unreferenced, stale ones; report space reclaimed. |
 | `migrate [-w <ws>] [--dry-run]` | Adopt a workspace's existing toolchain/engine trees into the store (moved in place of a re-download), leaving symlinks behind. |
+| `push [<kind>/<key> …] --registry <r> [--repo <r>] [--force] [--dry-run] [--json]` | Upload store entries to an OCI registry as artifacts (via `oras`), so a team/CI shares prebuilt trees. Defaults to every complete entry; skips refs that already exist unless `--force`. |
+| `pull <kind>/<key> … --registry <r> [--repo <r>] [--link <dir>] [--json]` | Download named entries from the registry into the store (extract-staged like a local build); `--link` also symlinks each into `<dir>`. |
+
+`push`/`pull` speak to an OCI registry through `oras` (one static binary on
+Linux/macOS/Windows, no daemon). Set the registry with `--registry` or
+`$EMB_CACHE_REGISTRY` and authenticate beforehand with `oras login` (it reuses
+`~/.docker/config.json`). The ref for an entry is
+`<registry>/<repo>:<kind>-<key>` (repo defaults to `emb-cache`). Entry keys are
+identity-based, so a puller must name the exact `<kind>/<key>` (from `emb cache
+list` on the producer, or a prior resolve).
 
 ```sh
 emb cache path
 emb cache list --json | jq '.data.entries'
 emb cache gc --dry-run
 emb cache migrate --dry-run          # preview adoptions for the current workspace
+oras login ghcr.io                   # once, to authenticate
+emb cache push --registry ghcr.io/acme --dry-run   # preview refs
+emb cache pull toolchain/arm-gnu-12.3.rel1-x86_64-aarch64-none-linux-gnu \
+  --registry ghcr.io/acme
 ```
 
 ---
