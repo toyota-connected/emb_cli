@@ -300,38 +300,132 @@ class ArmGnuCrossProvider implements CrossProvider {
       );
     }
 
-    // Acquire the base rootfs (skip if already populated).
-    if (!File(p.join(sysrootDir.path, 'etc', 'os-release')).existsSync()) {
-      final err = switch (spec.source) {
-        SysrootProvenance.image => await _prepareSysrootFromImage(
-          sysrootDir,
-          spec,
-        ),
-        SysrootProvenance.device => await _prepareSysrootFromDevice(
-          sysrootDir,
-          spec,
-        ),
-      };
-      if (err != null) return err;
+    // Image sysroots are content-addressable: extract once into the shared
+    // store (keyed by sysrootBaseKey, independent of augments) and symlink.
+    if (spec.source == SysrootProvenance.image) {
+      return _prepareSysrootImageStore(sysrootDir, spec);
     }
 
-    // Layer the `-dev` packages in, root-free (download + dpkg-deb -x).
+    // Device sysroots are a live rsync/tar-over-ssh — not content-addressable —
+    // so they stay a per-workspace in-place tree.
+    if (!File(p.join(sysrootDir.path, 'etc', 'os-release')).existsSync()) {
+      final err = await _prepareSysrootFromDevice(sysrootDir, spec);
+      if (err != null) return err;
+    }
     if (spec.devPackages.isNotEmpty) {
       final err = await _populateDevPackages(sysrootDir, spec);
       if (err != null) return err;
     }
-
-    // Declared in-sysroot symlinks (e.g. drm -> libdrm for images whose kernel
-    // headers omit the drm UAPI). After dev staging so targets exist.
     _applySysrootSymlinks(sysrootDir, spec);
-
-    // Restore Debian's usr-merge symlinks (/lib -> usr/lib, …) *after* all
-    // staging. debugfs mangles them on extraction, and `dpkg-deb -x` of the
-    // `-dev` set re-materializes them as real dirs — either leaves libc.so's
-    // `/lib/...` linker-script refs unresolved and silently poisons every
-    // configure that probes the sysroot (e.g. meson's `find_library('m')`).
     normalizeUsrMerge(sysrootDir);
     return null;
+  }
+
+  /// Extract the image-derived sysroot base into the shared store and symlink
+  /// it into [sysrootDir]. The `.img.xz` is content-addressed through the CAS
+  /// (downloaded once per machine), and the entire extraction — decompress,
+  /// partition carve, rootfs dump, `-dev` packages, symlink fixups, usr-merge —
+  /// runs once inside the store's staging dir, producing an immutable tree
+  /// shared across every workspace and every augment/cpu variation.
+  Future<CrossResolveResult?> _prepareSysrootImageStore(
+    Directory sysrootDir,
+    SysrootSpec spec,
+  ) async {
+    final imageUrl = spec.imageUrl;
+    if (imageUrl == null) {
+      return const CrossResolveResult.unavailable(
+        'image sysroot needs cross.sysroot.image_url (or top-level image_url)',
+      );
+    }
+    final key = sysrootBaseKey(target);
+    try {
+      await _store.ensure(
+        kind: 'sysroot-base',
+        key: key,
+        sourceUrl: imageUrl,
+        fetch: () async {
+          final blob = await _cas.ensure(imageUrl);
+          _artifacts.add(
+            LockedArtifact(
+              kind: ArtifactKind.image,
+              url: imageUrl,
+              sha256: await _sha256OfFile(blob),
+            ),
+          );
+          return blob;
+        },
+        stage: (blob, into) async {
+          final err = await _stageSysrootBase(blob, into, spec);
+          if (err != null) {
+            throw _SysrootStageException(
+              err.message ?? 'sysroot staging failed',
+            );
+          }
+        },
+      );
+    } on _SysrootStageException catch (e) {
+      return CrossResolveResult.failed(e.message);
+    }
+    _store.materialize(
+      kind: 'sysroot-base',
+      key: key,
+      linkPath: sysrootDir.path,
+    );
+    return null;
+  }
+
+  /// Run the full sysroot-base extraction into the store staging dir [into]:
+  /// decompress the CAS `.img.xz` [blob], carve + dump the rootfs partition,
+  /// layer `-dev` packages, and apply the symlink / usr-merge fixups. The
+  /// large intermediates (decompressed image, carved partition) live under the
+  /// store `tmp/` (`into.parent`), never inside the immutable root.
+  Future<CrossResolveResult?> _stageSysrootBase(
+    File blob,
+    Directory into,
+    SysrootSpec spec,
+  ) async {
+    final img = File(p.join(into.parent.path, '${p.basename(into.path)}.img'));
+    if (!img.existsSync()) {
+      final un = await Process.run('sh', [
+        '-c',
+        r'xz -dc "$1" > "$2"',
+        'sh',
+        blob.path,
+        img.path,
+      ]);
+      if (un.exitCode != 0) {
+        return CrossResolveResult.failed('xz decompress failed: ${un.stderr}');
+      }
+    }
+    into.createSync(recursive: true);
+
+    // Prefer the root-free extraction (sfdisk + dd + debugfs rdump) when the
+    // tools are present; fall back to the privileged loop-mount otherwise.
+    final rootless = await _hasTool('sfdisk') && await _hasTool('debugfs');
+    final err = rootless
+        ? await _extractImageRootless(img, spec.partition, into)
+        : await _extractImageViaLoopMount(img, spec.partition, into);
+    if (err != null) return err;
+
+    // Reclaim the multi-GB decompressed image + carved partition.
+    _safeDelete(img);
+    _safeDelete(File('${img.path}.p${spec.partition}'));
+
+    relativizeSysrootSymlinks(
+      into,
+      Directory(p.join(into.path, 'usr', 'lib', _multiarch)),
+    );
+    if (spec.devPackages.isNotEmpty) {
+      final e = await _populateDevPackages(into, spec);
+      if (e != null) return e;
+    }
+    _applySysrootSymlinks(into, spec);
+    normalizeUsrMerge(into);
+    return null;
+  }
+
+  void _safeDelete(File f) {
+    if (f.existsSync()) f.deleteSync();
   }
 
   /// Create the `cross.sysroot.symlinks` (`<link>: <target>`) inside the
@@ -452,59 +546,6 @@ class ArmGnuCrossProvider implements CrossProvider {
   /// Unpack a distro image: download/decompress, loop-mount the rootfs
   /// partition (`sysroot.partition`, default 2), rsync it out, relativize
   /// multiarch symlinks. Root.
-  Future<CrossResolveResult?> _prepareSysrootFromImage(
-    Directory sysrootDir,
-    SysrootSpec spec,
-  ) async {
-    final imageUrl = spec.imageUrl;
-    if (imageUrl == null) {
-      return const CrossResolveResult.unavailable(
-        'image sysroot needs cross.sysroot.image_url (or top-level image_url)',
-      );
-    }
-
-    final downloads = Directory(p.join(sysrootDir.parent.path, 'downloads'))
-      ..createSync(recursive: true);
-    final imgXz = File(
-      p.join(downloads.path, p.basename(Uri.parse(imageUrl).path)),
-    );
-    if (!imgXz.existsSync()) {
-      if (!await _download(imageUrl, imgXz)) {
-        return CrossResolveResult.failed('image download failed: $imageUrl');
-      }
-    }
-    _artifacts.add(
-      LockedArtifact(
-        kind: ArtifactKind.image,
-        url: imageUrl,
-        sha256: await _sha256OfFile(imgXz),
-      ),
-    );
-    final img = File(imgXz.path.replaceFirst(RegExp(r'\.xz$'), ''));
-    if (!img.existsSync()) {
-      final un = await Process.run('xz', ['-dk', imgXz.path]);
-      if (un.exitCode != 0) {
-        return CrossResolveResult.failed('xz decompress failed: ${un.stderr}');
-      }
-    }
-
-    sysrootDir.createSync(recursive: true);
-
-    // Prefer the root-free extraction (sfdisk + dd + debugfs rdump) when the
-    // tools are present; fall back to the privileged loop-mount otherwise.
-    final rootless = await _hasTool('sfdisk') && await _hasTool('debugfs');
-    final err = rootless
-        ? await _extractImageRootless(img, spec.partition, sysrootDir)
-        : await _extractImageViaLoopMount(img, spec.partition, sysrootDir);
-    if (err != null) return err;
-
-    relativizeSysrootSymlinks(
-      sysrootDir,
-      Directory(p.join(sysrootDir.path, 'usr', 'lib', _multiarch)),
-    );
-    return null;
-  }
-
   Future<bool> _hasTool(String tool) async =>
       (await Process.run('which', [tool])).exitCode == 0;
 
@@ -786,4 +827,13 @@ void relativizeSysrootSymlinks(Directory sysrootRoot, Directory dir) {
       ..deleteSync()
       ..createSync(rel);
   }
+}
+
+/// Thrown inside the `sysroot-base` store `stage` callback to carry a
+/// [CrossResolveResult] failure message out through `Store.ensure`.
+class _SysrootStageException implements Exception {
+  _SysrootStageException(this.message);
+  final String message;
+  @override
+  String toString() => 'SysrootStageException: $message';
 }

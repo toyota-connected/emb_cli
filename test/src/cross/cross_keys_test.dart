@@ -55,6 +55,38 @@ void main() {
       expect(buildKey(withBackend), isNot(buildKey(rpi5)));
     });
 
+    test('sysrootBaseKey excludes augments but tracks the sysroot inputs', () {
+      final withAugment = _t(const {
+        'provider': 'arm-gnu',
+        'toolchain_version': '12.3.rel1',
+        'image_url': 'https://example/raspios.img.xz',
+        'cpu_flags': ['-mcpu=cortex-a76'],
+        'augment': [
+          {
+            'pkg': 'libdisplay-info',
+            'min': '0.2.0',
+            'url': 'https://x/libdisplay-info.tar.gz',
+            'build': 'meson',
+          },
+        ],
+      });
+      // Same image/toolchain, no augment → different sysrootKey, SAME base key.
+      expect(sysrootBaseKey(withAugment), sysrootBaseKey(rpi5));
+      expect(sysrootKey(withAugment), isNot(sysrootKey(rpi5)));
+      // But a different image or dev_packages does change the base key.
+      final withDev = _t(const {
+        'provider': 'arm-gnu',
+        'toolchain_version': '12.3.rel1',
+        'image_url': 'https://example/raspios.img.xz',
+        'cpu_flags': ['-mcpu=cortex-a76'],
+        'sysroot': {
+          'dev_packages': ['libfoo-dev'],
+        },
+      });
+      expect(sysrootBaseKey(withDev), isNot(sysrootBaseKey(rpi5)));
+      expect(sysrootBaseKey(rpi5), matches(RegExp(r'^[0-9a-f]{12}$')));
+    });
+
     test('launcher does not change the buildKey (not a build output)', () {
       final withLauncher = _t(const {
         'provider': 'arm-gnu',

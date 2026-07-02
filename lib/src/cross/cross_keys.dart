@@ -12,12 +12,9 @@ String _kv(Map<String, String> m) {
   return [for (final k in keys) '$k=${m[k]}'].join(',');
 }
 
-/// Hash of the inputs that determine a target's **toolchain + sysroot**:
-/// provider, toolchain version/policy, the sysroot source (image/device +
-/// partition + dev packages) and the augment set. Deliberately excludes
-/// `cpu_flags`/`backends`/`defines`, so cpu-only variants of one board (e.g.
-/// rpi4 vs rpi5 on the same raspios image) share a single extraction.
-String sysrootKey(CrossTarget t) => contentHash([
+/// The provider/toolchain + sysroot-source inputs, shared by [sysrootKey] and
+/// [sysrootBaseKey]. Order is significant — it fixes both hashes.
+List<String> _sysrootParts(CrossTarget t) => [
   'provider:${t.provider.token}',
   'triple:${t.targetTriple ?? ''}',
   'tc:${t.toolchainVersion ?? ''}',
@@ -37,9 +34,24 @@ String sysrootKey(CrossTarget t) => contentHash([
     'pkgs:${(s.devPackages.toList()..sort()).join(",")}',
     'links:${_kv(s.symlinks)}',
   ],
+];
+
+/// Hash of the inputs that determine a target's **toolchain + sysroot**:
+/// provider, toolchain version/policy, the sysroot source (image/device +
+/// partition + dev packages) and the augment set. Deliberately excludes
+/// `cpu_flags`/`backends`/`defines`, so cpu-only variants of one board (e.g.
+/// rpi4 vs rpi5 on the same raspios image) share a single extraction.
+String sysrootKey(CrossTarget t) => contentHash([
+  ..._sysrootParts(t),
   for (final a in t.augment)
     'aug:${a.pkg}:${a.minVersion}:${a.url}:${a.build.name}:${a.staticLink}',
 ]);
+
+/// Hash of the **shared sysroot base**: [sysrootKey] without the augment set,
+/// since augments build into a separate per-workspace overlay prefix rather
+/// than the sysroot. Names the `sysroot-base` store entry, so one image
+/// extraction is shared across every target that differs only in its augments.
+String sysrootBaseKey(CrossTarget t) => contentHash(_sysrootParts(t));
 
 /// Hash of the **full build** configuration: everything in [sysrootKey] plus
 /// cpu flags, generator, backends, defines and raw cmake args. Names the
