@@ -206,9 +206,17 @@ read-only and doesn't refresh). Exit code is non-zero if the backend is
 unavailable; the update check never fails the command. `--json` emits a
 machine-readable `{schema, command, ok, data}` envelope instead of text.
 
+With `--target <name>` it instead reports a cross target's **provider
+preflight** — the host tools that target's provider needs (e.g. `tar`/`xz`/
+`rsync` for arm-gnu), each present or missing, with an install hint — resolving
+the manifest at the positional path (default: the current directory). Exit code
+is non-zero when a required tool is missing.
+
 ```sh
 emb doctor
 emb doctor --json | jq .data.backend
+emb doctor --target rpi5-bookworm examples/cross/pi5.emb.yaml
+emb doctor --target rpi5-bookworm . --json | jq .data.target.preflight
 ```
 
 ---

@@ -1,12 +1,21 @@
 import 'package:args/command_runner.dart';
+import 'package:emb_cli/src/cross/cross_project.dart';
+import 'package:emb_cli/src/cross/cross_provider.dart';
+import 'package:emb_cli/src/cross/cross_target.dart';
+import 'package:emb_cli/src/cross/local_cross_provider.dart';
 import 'package:emb_cli/src/engine/engine_artifacts.dart';
 import 'package:emb_cli/src/host/host_info.dart';
+import 'package:emb_cli/src/host/preflight.dart';
 import 'package:emb_cli/src/json_output.dart';
+import 'package:emb_cli/src/manifest/manifest_loader.dart';
 import 'package:emb_cli/src/pkg/host_provisioner.dart';
+import 'package:emb_cli/src/workspace/workspace.dart';
 import 'package:mason_logger/mason_logger.dart';
 
 /// {@template doctor_command}
 /// `emb doctor` — report the detected host and which package backend is active.
+/// With `--target <name>`, instead report a cross target's provider preflight
+/// (the host tools it needs, present or missing, with an install hint).
 /// {@endtemplate}
 class DoctorCommand extends Command<int> {
   /// {@macro doctor_command}
@@ -14,19 +23,34 @@ class DoctorCommand extends Command<int> {
     required Logger logger,
     HostInfo? host,
     HostProvisioner Function(HostInfo host)? provisionerFactory,
+    ManifestLoader loader = const ManifestLoader(),
+    Preflight? preflight,
   }) : _logger = logger,
        _host = host,
-       _provisionerFactory = provisionerFactory ?? HostProvisioner.forHost {
-    argParser.addFlag(
-      'json',
-      negatable: false,
-      help: 'Emit a machine-readable {schema, command, ok, data} envelope.',
-    );
+       _provisionerFactory = provisionerFactory ?? HostProvisioner.forHost,
+       _project = CrossProjectResolver(loader),
+       _preflight = preflight ?? Preflight(logger) {
+    argParser
+      ..addFlag(
+        'json',
+        negatable: false,
+        help: 'Emit a machine-readable {schema, command, ok, data} envelope.',
+      )
+      ..addOption(
+        'target',
+        abbr: 't',
+        help:
+            'Report a cross target provider preflight (host tools) instead of '
+            'the package backend. Resolves the manifest at the positional path '
+            '(default: current directory).',
+      );
   }
 
   final Logger _logger;
   final HostInfo? _host;
   final HostProvisioner Function(HostInfo host) _provisionerFactory;
+  final CrossProjectResolver _project;
+  final Preflight _preflight;
 
   @override
   String get description =>
@@ -38,7 +62,14 @@ class DoctorCommand extends Command<int> {
   @override
   Future<int> run() async {
     final host = _host ?? HostInfo.detect();
-    if (argResults?['json'] == true) return _runJson(host);
+    final targetArg = argResults?['target'] as String?;
+    final json = argResults?['json'] == true;
+    if (targetArg != null) {
+      return json
+          ? _runTargetJson(host, targetArg)
+          : _runTarget(host, targetArg);
+    }
+    if (json) return _runJson(host);
 
     _logger
       ..info(styleBold.wrap('Host'))
@@ -112,15 +143,7 @@ class DoctorCommand extends Command<int> {
         }
       }
       final data = <String, Object?>{
-        'host': {
-          'os': host.os.name,
-          'arch': host.machineArch,
-          'flutterArch': host.flutterArch,
-          'engineArch': EngineArtifacts.engineArchForHost(host),
-          'hostType': host.hostType,
-          'version': host.versionId,
-          if (host.prettyName != null) 'release': host.prettyName,
-        },
+        'host': _hostData(host),
         'backend': {
           'name': provisioner.name,
           'available': available,
@@ -143,5 +166,137 @@ class DoctorCommand extends Command<int> {
     } finally {
       await provisioner.dispose();
     }
+  }
+
+  /// The host facts, shared by the backend and target JSON paths.
+  Map<String, Object?> _hostData(HostInfo host) => {
+    'os': host.os.name,
+    'arch': host.machineArch,
+    'flutterArch': host.flutterArch,
+    'engineArch': EngineArtifacts.engineArchForHost(host),
+    'hostType': host.hostType,
+    'version': host.versionId,
+    if (host.prettyName != null) 'release': host.prettyName,
+  };
+
+  /// Resolve the manifest+[targetArg] to its [CrossProvider], or a usage error
+  /// (message logged only when [logErrors]). Returns `(provider, null)` on
+  /// success or `(null, exitCode)` on failure.
+  Future<(CrossProvider?, int?)> _resolveProvider(
+    HostInfo host,
+    String targetArg, {
+    required bool logErrors,
+  }) async {
+    final rest = argResults?.rest ?? const [];
+    final inputPath = rest.isNotEmpty ? rest.first : '.';
+    final CrossProject project;
+    try {
+      final resolved = _project.resolve(inputPath);
+      if (resolved == null) {
+        if (logErrors) _logger.err('No emb manifest at $inputPath.');
+        return (null, ExitCode.usage.code);
+      }
+      project = resolved;
+    } on CrossProjectException catch (e) {
+      if (logErrors) _logger.err(e.message);
+      return (null, ExitCode.usage.code);
+    }
+
+    final isNative = targetArg == 'local' || targetArg == 'host';
+    final Map<dynamic, dynamic> selected;
+    if (isNative) {
+      selected = project.nativeCross;
+    } else {
+      final ref = project[targetArg];
+      if (ref == null) {
+        if (logErrors) {
+          _logger.err(
+            'Unknown target "$targetArg". '
+            'Available: ${project.targets.keys.join(", ")}',
+          );
+        }
+        return (null, ExitCode.usage.code);
+      }
+      selected = ref.cross;
+    }
+
+    final CrossTarget target;
+    try {
+      target = CrossTarget.fromMap(selected);
+      // fromMap throws ArgumentError on an unknown provider token.
+      // ignore: avoid_catching_errors
+    } on ArgumentError catch (e) {
+      if (logErrors) _logger.err('Invalid cross: block — ${e.message}');
+      return (null, ExitCode.usage.code);
+    }
+
+    final workspace = Workspace.resolve();
+    final provider = isNative
+        ? LocalCrossProvider(host)
+        : CrossProvider.forTarget(target, workspace: workspace, host: host);
+    return (provider, null);
+  }
+
+  /// `--target` text path: resolve the target, report its provider preflight.
+  Future<int> _runTarget(HostInfo host, String targetArg) async {
+    final (provider, err) = await _resolveProvider(
+      host,
+      targetArg,
+      logErrors: true,
+    );
+    if (provider == null) return err!;
+
+    final missing = await _preflight.missingTools(provider.preflightTools);
+    _logger
+      ..info(styleBold.wrap('Target $targetArg (${provider.name})'))
+      ..info(
+        '  preflight: '
+        '${missing.isEmpty ? "ok" : "MISSING ${missing.join(", ")}"}',
+      );
+    if (missing.isNotEmpty) {
+      await _preflight.logInstallHint(host, missing);
+      return ExitCode.unavailable.code;
+    }
+    return ExitCode.success.code;
+  }
+
+  /// `--target --json` path: the same preflight as a `{host, target}` envelope.
+  Future<int> _runTargetJson(HostInfo host, String targetArg) async {
+    final (provider, err) = await _resolveProvider(
+      host,
+      targetArg,
+      logErrors: false,
+    );
+    if (provider == null) {
+      _logger.info(
+        jsonEnvelope(
+          'doctor',
+          ok: false,
+          data: {
+            'host': _hostData(host),
+            'target': {'name': targetArg, 'error': 'unresolved'},
+          },
+        ),
+      );
+      return err!;
+    }
+
+    final missing = await _preflight.missingTools(provider.preflightTools);
+    final ok = missing.isEmpty;
+    _logger.info(
+      jsonEnvelope(
+        'doctor',
+        ok: ok,
+        data: {
+          'host': _hostData(host),
+          'target': {
+            'name': targetArg,
+            'provider': provider.name,
+            'preflight': {'ok': ok, 'missing': missing},
+          },
+        },
+      ),
+    );
+    return ok ? ExitCode.success.code : ExitCode.unavailable.code;
   }
 }
