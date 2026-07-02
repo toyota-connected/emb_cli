@@ -2,7 +2,9 @@ import 'dart:io';
 
 import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/cache/cache_dir.dart';
+import 'package:emb_cli/src/cache/oci_transport.dart';
 import 'package:emb_cli/src/cache/store.dart';
+import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/engine/engine_artifacts.dart';
 import 'package:emb_cli/src/json_output.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
@@ -22,6 +24,8 @@ class CacheCommand extends Command<int> {
     addSubcommand(
       CacheMigrateCommand(logger: logger, environment: environment),
     );
+    addSubcommand(CachePushCommand(logger: logger, environment: environment));
+    addSubcommand(CachePullCommand(logger: logger, environment: environment));
   }
 
   @override
@@ -290,6 +294,289 @@ class CacheMigrateCommand extends Command<int> {
     }
     adopted.add('$kind/$key');
     return size;
+  }
+}
+
+/// Shared base for `cache push`/`pull`: registry/repo resolution and the store.
+abstract class _CacheOciCommand extends Command<int> {
+  _CacheOciCommand({
+    required Logger logger,
+    Map<String, String>? environment,
+    ProcessRunner? run,
+    OciTransport? transport,
+  }) : _logger = logger,
+       _env = environment,
+       _run = run ?? defaultProcessRunner,
+       _transport = transport {
+    argParser
+      ..addOption(
+        'registry',
+        help: r'Registry host[/path] (else $EMB_CACHE_REGISTRY).',
+      )
+      ..addOption(
+        'repo',
+        defaultsTo: 'emb-cache',
+        help: 'Repository name under the registry.',
+      )
+      ..addFlag(
+        'json',
+        negatable: false,
+        help: 'Emit a machine-readable {schema, command, ok, data} envelope.',
+      );
+  }
+
+  final Logger _logger;
+  final Map<String, String>? _env;
+  final ProcessRunner _run;
+  final OciTransport? _transport;
+
+  OciTransport get transport => _transport ?? OrasTransport(run: _run);
+  Store store() => Store(resolveCacheDir(environment: _env), run: _run);
+
+  /// The `<registry>` to use, or null (with an error logged) when unresolved.
+  String? registry() {
+    final r =
+        (argResults?['registry'] as String?) ?? _env?['EMB_CACHE_REGISTRY'];
+    if (r == null || r.isEmpty) {
+      _logger.err(
+        'No registry. Pass --registry <host>[/path] or set '
+        r'$EMB_CACHE_REGISTRY.',
+      );
+      return null;
+    }
+    return r;
+  }
+
+  String get repo => argResults?['repo'] as String;
+  bool get json => argResults?['json'] == true;
+
+  /// Parse `<kind>/<key>` selectors from the positional args (split on the
+  /// first `/`). Returns null (error logged) on a malformed selector.
+  List<(String, String)>? selectors() {
+    final out = <(String, String)>[];
+    for (final a in argResults?.rest ?? const <String>[]) {
+      final slash = a.indexOf('/');
+      if (slash <= 0 || slash == a.length - 1) {
+        _logger.err('Bad selector "$a": expected <kind>/<key>.');
+        return null;
+      }
+      out.add((a.substring(0, slash), a.substring(slash + 1)));
+    }
+    return out;
+  }
+}
+
+/// `emb cache push` — upload store entries to an OCI registry as artifacts.
+class CachePushCommand extends _CacheOciCommand {
+  /// Creates the subcommand.
+  CachePushCommand({
+    required super.logger,
+    super.environment,
+    super.run,
+    super.transport,
+  }) {
+    argParser
+      ..addFlag(
+        'force',
+        negatable: false,
+        help: 'Push even if the ref already exists (default: skip).',
+      )
+      ..addFlag(
+        'dry-run',
+        negatable: false,
+        help: 'Report the refs that would be pushed without uploading.',
+      );
+  }
+
+  @override
+  String get name => 'push';
+
+  @override
+  String get description =>
+      'Push cached store entries to an OCI registry (via oras).';
+
+  @override
+  Future<int> run() async {
+    final registry = this.registry();
+    if (registry == null) return ExitCode.usage.code;
+    final sel = selectors();
+    if (sel == null) return ExitCode.usage.code;
+    final dryRun = argResults?['dry-run'] == true;
+    final force = argResults?['force'] == true;
+    final st = store();
+
+    // Complete entries only; filter to the named selectors when given.
+    var entries = st.list().where((e) => e.meta?.complete ?? false).toList();
+    if (sel.isNotEmpty) {
+      final want = sel.toSet();
+      entries = entries.where((e) => want.contains((e.kind, e.key))).toList();
+    }
+    if (entries.isEmpty) {
+      _logger.info(
+        json
+            ? jsonEnvelope('cache push', ok: true, data: {'pushed': <String>[]})
+            : 'Nothing to push.',
+      );
+      return ExitCode.success.code;
+    }
+
+    final pushed = <String>[];
+    final skipped = <String>[];
+    for (final e in entries) {
+      final ref = cacheRef(registry, repo, e.kind, e.key);
+      if (dryRun) {
+        pushed.add(ref);
+        if (!json) _logger.info('would push $ref');
+        continue;
+      }
+      if (!force && await transport.exists(ref)) {
+        skipped.add(ref);
+        if (!json) _logger.info('skip (exists) $ref');
+        continue;
+      }
+      final tmp = Directory.systemTemp.createTempSync('emb_push_');
+      try {
+        final layer = File(
+          p.join(tmp.path, '${cacheTag(e.kind, e.key)}.tar.gz'),
+        );
+        final root = st.rootOf(e.kind, e.key);
+        final tar = await _run('tar', [
+          '-czf',
+          layer.path,
+          '-C',
+          root.path,
+          '.',
+        ], output: ProcessOutputMode.capture);
+        if (tar.exitCode != 0) {
+          _logger.err('tar ${e.kind}/${e.key} failed: ${tar.stderr}');
+          return ExitCode.software.code;
+        }
+        try {
+          await transport.push(
+            ref,
+            layer,
+            annotations: {
+              'org.opencontainers.image.title': p.basename(layer.path),
+              'dev.emb.cache.kind': e.kind,
+              'dev.emb.cache.key': e.key,
+              if (e.meta?.sourceUrl case final u?) 'dev.emb.cache.source': u,
+              if (e.meta?.sizeBytes case final s?) 'dev.emb.cache.size': '$s',
+            },
+          );
+        } on OciTransportException catch (err) {
+          _logger.err(err.message);
+          return ExitCode.software.code;
+        }
+        pushed.add(ref);
+        if (!json) _logger.info('pushed $ref');
+      } finally {
+        tmp.deleteSync(recursive: true);
+      }
+    }
+
+    if (json) {
+      _logger.info(
+        jsonEnvelope(
+          'cache push',
+          ok: true,
+          data: {'pushed': pushed, 'skipped': skipped, 'dryRun': dryRun},
+        ),
+      );
+    } else {
+      _logger.info(
+        '${dryRun ? "Would push" : "Pushed"} ${pushed.length}, '
+        'skipped ${skipped.length}.',
+      );
+    }
+    return ExitCode.success.code;
+  }
+}
+
+/// `emb cache pull` — download store entries from an OCI registry.
+class CachePullCommand extends _CacheOciCommand {
+  /// Creates the subcommand.
+  CachePullCommand({
+    required super.logger,
+    super.environment,
+    super.run,
+    super.transport,
+  }) {
+    argParser.addOption(
+      'link',
+      help: 'Symlink each pulled entry into this directory (materialize).',
+    );
+  }
+
+  @override
+  String get name => 'pull';
+
+  @override
+  String get description =>
+      'Pull store entries from an OCI registry into the cache (via oras).';
+
+  @override
+  Future<int> run() async {
+    final registry = this.registry();
+    if (registry == null) return ExitCode.usage.code;
+    final sel = selectors();
+    if (sel == null) return ExitCode.usage.code;
+    if (sel.isEmpty) {
+      _logger.err('Nothing to pull: name one or more <kind>/<key> entries.');
+      return ExitCode.usage.code;
+    }
+    final st = store();
+    final link = argResults?['link'] as String?;
+
+    final pulled = <String>[];
+    for (final (kind, key) in sel) {
+      final ref = cacheRef(registry, repo, kind, key);
+      final tmp = Directory.systemTemp.createTempSync('emb_pull_');
+      try {
+        await st.ensure(
+          kind: kind,
+          key: key,
+          sourceUrl: ref,
+          fetch: () => transport.pull(ref, tmp),
+          stage: (blob, into) async {
+            final r = await _run('tar', [
+              '-xzf',
+              blob.path,
+              '-C',
+              into.path,
+            ], output: ProcessOutputMode.capture);
+            if (r.exitCode != 0) {
+              throw OciTransportException('untar $ref failed: ${r.stderr}');
+            }
+          },
+        );
+      } on OciTransportException catch (err) {
+        _logger.err(err.message);
+        return ExitCode.software.code;
+      } finally {
+        tmp.deleteSync(recursive: true);
+      }
+      if (link != null) {
+        st.materialize(
+          kind: kind,
+          key: key,
+          linkPath: p.join(link, '$kind-$key'),
+        );
+      }
+      pulled.add(ref);
+      if (!json) _logger.info('pulled $ref');
+    }
+
+    if (json) {
+      _logger.info(
+        jsonEnvelope('cache pull', ok: true, data: {'pulled': pulled}),
+      );
+    } else {
+      _logger.info(
+        'Pulled ${pulled.length} entr'
+        '${pulled.length == 1 ? "y" : "ies"}.',
+      );
+    }
+    return ExitCode.success.code;
   }
 }
 
