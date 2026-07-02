@@ -476,6 +476,27 @@ void main() {
       expect(t.backends['wayland-egl'], {'BUILD_BACKEND_WAYLAND_EGL': 'ON'});
     });
 
+    test('parses launcher (defaults to none; unknown throws)', () {
+      expect(
+        CrossTarget.fromMap(const {
+          'provider': 'arm-gnu',
+          'launcher': 'ccache',
+        }).launcher,
+        Launcher.ccache,
+      );
+      expect(
+        CrossTarget.fromMap(const {'provider': 'arm-gnu'}).launcher,
+        Launcher.none,
+      );
+      expect(
+        () => CrossTarget.fromMap(const {
+          'provider': 'arm-gnu',
+          'launcher': 'nope',
+        }),
+        throwsArgumentError,
+      );
+    });
+
     test('host_build_tools (and host_cmake alias) parse to hostTools', () {
       expect(
         CrossTarget.fromMap(const {'provider': 'yocto-sdk'}).hostTools,

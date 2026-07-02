@@ -31,6 +31,35 @@ enum CrossProviderKind {
   };
 }
 
+/// Optional compiler-cache launcher wrapped around the cross compiler to speed
+/// up warm rebuilds. Applied to CMake as `CMAKE_<LANG>_COMPILER_LAUNCHER`; for
+/// Meson only [ccache] applies (auto-detected on `PATH`).
+enum Launcher {
+  /// No launcher (default).
+  none,
+
+  /// ccache. Works with CMake and Meson.
+  ccache,
+
+  /// sccache. Works with CMake builds only.
+  sccache;
+
+  /// Parse a `launcher:` token; unknown values throw.
+  static Launcher fromToken(String token) => switch (token.toLowerCase()) {
+    'none' || '' => Launcher.none,
+    'ccache' => Launcher.ccache,
+    'sccache' => Launcher.sccache,
+    _ => throw ArgumentError('unknown launcher: $token'),
+  };
+
+  /// The executable that wraps the compiler, or null for [none].
+  String? get exe => switch (this) {
+    Launcher.none => null,
+    Launcher.ccache => 'ccache',
+    Launcher.sccache => 'sccache',
+  };
+}
+
 /// How the ARM GNU toolchain version is chosen.
 enum ToolchainVersionPolicy {
   /// Pinned in the manifest (`toolchain_version`).
@@ -451,6 +480,7 @@ class CrossTarget {
     this.sdkEnvSetup,
     this.augment = const [],
     this.generator = CrossGenerator.cmake,
+    this.launcher = Launcher.none,
     this.backends = const {},
     this.package,
     this.defines = const {},
@@ -487,6 +517,7 @@ class CrossTarget {
       generator: CrossGenerator.fromToken(
         (map['generator'] ?? 'cmake').toString(),
       ),
+      launcher: Launcher.fromToken((map['launcher'] ?? 'none').toString()),
       backends: _parseBackends(map['backends']),
       package: map['package'] is Map
           ? PackageSpec.fromMap(
@@ -558,6 +589,11 @@ class CrossTarget {
 
   /// Build system to configure the embedder with (default CMake).
   final CrossGenerator generator;
+
+  /// Optional compiler-cache launcher (`ccache`/`sccache`) wrapped around the
+  /// cross compiler. Deliberately excluded from `buildKey` — it does not change
+  /// build outputs.
+  final Launcher launcher;
 
   /// Per-backend build matrix: backend name → the build-system `-D` defines it
   /// implies, e.g. `{wayland-egl: {BUILD_BACKEND_WAYLAND_EGL: ON}}`. Each is

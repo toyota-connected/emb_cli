@@ -499,6 +499,10 @@ class CrossCommand extends Command<int> {
       return _emitDockerfile(profile, target);
     }
 
+    // Resolve the optional compiler-cache launcher (ccache/sccache) once, for
+    // both the augment overlay and the main build.
+    final launcher = await _resolveLauncher(target);
+
     // --publish: emit, then build + push the toolchain image to a registry.
     if (args['publish'] == true) {
       return _publishImage(
@@ -517,6 +521,7 @@ class CrossCommand extends Command<int> {
         workspace,
         profile,
         runProcess: _runProcess,
+        launcher: launcher,
       );
       try {
         final ov = await overlay.build(target.augment);
@@ -622,6 +627,10 @@ class CrossCommand extends Command<int> {
     // A native `local` build: no sysroot, host toolchain, no augment staging.
     final native = profile.providerName == 'local';
 
+    // Resolve the optional compiler-cache launcher (ccache/sccache) once, for
+    // both the augment overlay and the main build.
+    final launcher = await _resolveLauncher(target);
+
     // --backend filters the matrix (validated in run()); merge shared
     // cross.defines into each backend (a backend define wins on a clash).
     final backends = {
@@ -643,6 +652,7 @@ class CrossCommand extends Command<int> {
         workspace,
         profile,
         runProcess: _runProcess,
+        launcher: launcher,
       );
       try {
         final ov = await overlay.build(
@@ -672,6 +682,8 @@ class CrossCommand extends Command<int> {
       neutralizeHostEnv: !native,
       hostTools: hostTools,
       hostToolBins: hostToolBins,
+      launcher: launcher,
+      ccacheBaseDir: workspace.root.path,
     );
 
     final buildSw = Stopwatch()..start();
@@ -1541,6 +1553,11 @@ class CrossCommand extends Command<int> {
         '(${target.generator.name})',
       );
     }
+    if (target.launcher != Launcher.none) {
+      final exe = target.launcher.exe!;
+      final found = (await _missingTools([exe])).isEmpty;
+      _logger.info('  launcher      : $exe${found ? "" : " (not found)"}');
+    }
   }
 
   /// A stopwatch rendered as `X.Ys`, for the per-phase build timings.
@@ -1804,6 +1821,28 @@ class CrossCommand extends Command<int> {
       if (r.exitCode != 0) missing.add(t);
     }
     return missing;
+  }
+
+  /// Resolve [CrossTarget.launcher] to a compiler-launcher executable, or null.
+  ///
+  /// Warns and disables (never fails a build) when the tool is absent on
+  /// `PATH`. sccache is applied to CMake only; with a Meson generator it warns
+  /// that it has no effect there.
+  Future<String?> _resolveLauncher(CrossTarget target) async {
+    final exe = target.launcher.exe;
+    if (exe == null) return null;
+    if ((await _missingTools([exe])).isNotEmpty) {
+      _logger.warn('launcher $exe not found on PATH; building without it');
+      return null;
+    }
+    if (target.launcher == Launcher.sccache &&
+        target.generator == CrossGenerator.meson) {
+      _logger.warn(
+        'launcher sccache applies to CMake only; the Meson build will not '
+        'use it',
+      );
+    }
+    return exe;
   }
 
   /// Install the missing preflight [tools] via [HostProvisioner] (opt-in, with

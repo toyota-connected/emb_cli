@@ -97,6 +97,42 @@ void main() {
     expect(env['PATH'], startsWith('/emb/host-tools/usr/bin:'));
   });
 
+  test('launcher: injects COMPILER_LAUNCHER + CCACHE_BASEDIR', () async {
+    final rec = recorder();
+    final r =
+        await CrossBuilder(
+          _profile,
+          runProcess: rec.run,
+          launcher: 'ccache',
+          ccacheBaseDir: '/ws',
+        ).build(
+          sourceDir: dir('src'),
+          buildDir: dir('b'),
+          generator: CrossGenerator.cmake,
+        );
+    expect(r.success, isTrue);
+    final cfg = rec.calls.firstWhere(
+      (c) => c.first == 'cmake' && c.contains('-S'),
+    );
+    expect(cfg, contains('-DCMAKE_C_COMPILER_LAUNCHER=ccache'));
+    expect(cfg, contains('-DCMAKE_CXX_COMPILER_LAUNCHER=ccache'));
+    expect(rec.envs.first!['CCACHE_BASEDIR'], '/ws');
+  });
+
+  test('no launcher: omits the COMPILER_LAUNCHER defines', () async {
+    final rec = recorder();
+    await CrossBuilder(_profile, runProcess: rec.run).build(
+      sourceDir: dir('src'),
+      buildDir: dir('b'),
+      generator: CrossGenerator.cmake,
+    );
+    final cfg = rec.calls.firstWhere(
+      (c) => c.first == 'cmake' && c.contains('-S'),
+    );
+    expect(cfg.any((a) => a.contains('COMPILER_LAUNCHER')), isFalse);
+    expect(rec.envs.first!.containsKey('CCACHE_BASEDIR'), isFalse);
+  });
+
   test(
     'meson: sets up with the cross file + options, then runs ninja',
     () async {
