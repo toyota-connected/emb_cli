@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:args/command_runner.dart';
@@ -8,6 +9,13 @@ import 'package:emb_cli/src/host/host_info.dart';
 import 'package:mason_logger/mason_logger.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
+
+/// Captures `info` lines so a `--json` envelope can be parsed back.
+class _CaptureLogger extends Logger {
+  final StringBuffer buffer = StringBuffer();
+  @override
+  void info(String? message, {LogStyle? style}) => buffer.writeln(message);
+}
 
 const _host = HostInfo(
   os: HostOs.linux,
@@ -26,6 +34,14 @@ void main() {
     final runner = CommandRunner<int>('emb', 'test')
       ..addCommand(CrossCommand(logger: Logger(), host: _host));
     return runner.run(args);
+  }
+
+  Future<(int?, Map<String, dynamic>)> runJson(List<String> args) async {
+    final logger = _CaptureLogger();
+    final runner = CommandRunner<int>('emb', 'test')
+      ..addCommand(CrossCommand(logger: logger, host: _host));
+    final code = await runner.run(args);
+    return (code, jsonDecode(logger.buffer.toString()) as Map<String, dynamic>);
   }
 
   Directory pkgWith(String name, String embYaml) {
@@ -81,6 +97,29 @@ void main() {
         '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n',
       );
     expect(await run(['cross', '--dry-run', f.path]), ExitCode.success.code);
+  });
+
+  test('--json emits the plan envelope (implies --dry-run)', () async {
+    final pkg = pkgWith(
+      'j',
+      'id: j\ntype: app\ncross:\n  provider: arm-gnu\n'
+          '  triple: aarch64-none-linux-gnu\n'
+          '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n'
+          '  cpu_flags: [-mcpu=cortex-a76]\n'
+          '  backends:\n    wayland-egl:\n'
+          '      BUILD_BACKEND_WAYLAND_EGL: ON\n',
+    );
+    final (code, json) = await runJson(['cross', '--json', pkg.path]);
+    expect(code, ExitCode.success.code);
+    expect(json['schema'], 1);
+    expect(json['command'], 'cross');
+    expect(json['ok'], true);
+    final data = json['data'] as Map<String, dynamic>;
+    expect(data['provider'], 'arm-gnu');
+    expect(data['triple'], 'aarch64-none-linux-gnu');
+    expect(data['cpuFlags'], ['-mcpu=cortex-a76']);
+    expect(data['backends'], ['wayland-egl']);
+    expect((data['sysroot'] as Map)['source'], 'image');
   });
 
   // A manifest whose cross: block defines several platforms via cross.targets.
