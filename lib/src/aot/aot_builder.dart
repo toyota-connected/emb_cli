@@ -4,6 +4,7 @@ import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/engine/engine_artifacts.dart';
 import 'package:emb_cli/src/flutter/flutter_sdk.dart';
 import 'package:emb_cli/src/host/host_info.dart';
+import 'package:emb_cli/src/verbosity.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
 import 'package:path/path.dart' as p;
 import 'package:yaml/yaml.dart';
@@ -111,9 +112,10 @@ class AotBuilder {
     };
     final r = await runProcess(
       _flutterBin,
-      ['build', 'bundle', flag],
+      ['build', 'bundle', flag, ...embVerbosity.flutterArgs],
       workingDirectory: p.absolute(appPath),
-      output: ProcessOutputMode.inherit,
+      output: ProcessOutputMode.stream,
+      label: '$mode:flutter',
     );
     return r.exitCode == 0;
   }
@@ -149,16 +151,17 @@ class AotBuilder {
       onStep?.call('[$mode] flutter build bundle');
       final bundle = await runProcess(
         _flutterBin,
-        ['build', 'bundle'],
+        ['build', 'bundle', ...embVerbosity.flutterArgs],
         workingDirectory: app,
-        output: ProcessOutputMode.inherit,
+        output: ProcessOutputMode.stream,
+        label: '$mode:flutter',
       );
       if (bundle.exitCode != 0) {
         results.add(
           AotModeResult(
             mode: mode,
             success: false,
-            message: 'flutter build bundle failed',
+            message: _withTail('flutter build bundle failed', bundle.stderr),
           ),
         );
         continue;
@@ -177,19 +180,19 @@ class AotBuilder {
       }
 
       onStep?.call('[$mode] kernel snapshot');
-      final kernelOk = await _kernelSnapshot(
+      final kernel = await _kernelSnapshot(
         app: app,
         appName: appName,
         mode: mode,
         buildDir: buildDir,
         newScheme: newScheme,
       );
-      if (kernelOk != 0) {
+      if (kernel.exitCode != 0) {
         results.add(
           AotModeResult(
             mode: mode,
             success: false,
-            message: 'kernel snapshot failed',
+            message: _withTail('kernel snapshot failed', kernel.stderr),
           ),
         );
         continue;
@@ -225,7 +228,8 @@ class AotBuilder {
           p.join(buildDir, 'app.dill'),
         ],
         workingDirectory: app,
-        output: ProcessOutputMode.inherit,
+        output: ProcessOutputMode.stream,
+        label: '$mode:gen_snapshot',
       );
       final genCode = genResult.exitCode;
       results.add(
@@ -233,14 +237,16 @@ class AotBuilder {
           mode: mode,
           success: genCode == 0,
           output: genCode == 0 ? p.join(app, out) : null,
-          message: genCode == 0 ? null : 'gen_snapshot failed',
+          message: genCode == 0
+              ? null
+              : _withTail('gen_snapshot failed', genResult.stderr),
         ),
       );
     }
     return AotResult(results);
   }
 
-  Future<int> _kernelSnapshot({
+  Future<RunResult> _kernelSnapshot({
     required String app,
     required String appName,
     required String mode,
@@ -294,13 +300,21 @@ class AotBuilder {
       '--verbosity=error',
       'package:$appName/main.dart',
     ];
-    final r = await runProcess(
+    return runProcess(
       dartRuntime,
       args,
       workingDirectory: app,
-      output: ProcessOutputMode.inherit,
+      output: ProcessOutputMode.stream,
+      label: '$mode:kernel',
     );
-    return r.exitCode;
+  }
+
+  /// Appends a trimmed stderr [tail] to a failure [message] when present, so an
+  /// AOT failure is diagnosable (the runner retains a bounded tail even when
+  /// the step didn't stream live).
+  String _withTail(String message, String tail) {
+    final t = tail.trim();
+    return t.isEmpty ? message : '$message\n$t';
   }
 
   /// Optional dart_plugin_registrant source flags (mirrors create_aot.py).

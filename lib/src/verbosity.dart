@@ -24,4 +24,18 @@ enum Verbosity {
   /// Whether streamed (`ProcessOutputMode.stream`) child output should be teed
   /// to the console live rather than captured silently. True at [verbose]+.
   bool get streamsChildOutput => index >= Verbosity.verbose.index;
+
+  /// Extra args to propagate this verbosity to `flutter build` — `--verbose`
+  /// at [verbose]+, nothing otherwise.
+  List<String> get flutterArgs =>
+      streamsChildOutput ? const ['--verbose'] : const [];
 }
+
+/// The process-wide resolved verbosity, set once by the command runner after
+/// parsing `-v`/`-vv`/`-q`/`--verbose`/`--quiet` (or `EMB_VERBOSITY`).
+///
+/// A deliberate global: commands are constructed before their arguments are
+/// parsed, so a command reads this at run time to build a verbosity-aware
+/// process runner and to choose streamed vs. spinner output. Tests may set it
+/// directly and should reset it in `tearDown`.
+Verbosity embVerbosity = Verbosity.normal;

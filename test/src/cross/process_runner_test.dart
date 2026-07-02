@@ -1,4 +1,8 @@
+import 'dart:io';
+
 import 'package:emb_cli/src/cross/process_runner.dart';
+import 'package:emb_cli/src/verbosity.dart';
+import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 void main() {
@@ -17,5 +21,71 @@ void main() {
       environment: {'EMB_T': 'hi'},
     );
     expect(r.stdout, 'hi');
+  });
+
+  group('stream mode', () {
+    late Directory tmp;
+    setUp(() => tmp = Directory.systemTemp.createTempSync('emb_pr_'));
+    tearDown(() => tmp.deleteSync(recursive: true));
+
+    test('tees prefixed lines live at -v and retains the output', () async {
+      final log = File(p.join(tmp.path, 'tee.log'));
+      final sink = log.openWrite();
+      final run = makeProcessRunner(
+        verbosity: Verbosity.verbose,
+        out: sink,
+        err: sink,
+      );
+      final r = await run(
+        'sh',
+        ['-c', 'echo hello; echo oops >&2'],
+        output: ProcessOutputMode.stream,
+        label: 'demo',
+      );
+      await sink.flush();
+      await sink.close();
+
+      expect(r.exitCode, 0);
+      expect(r.stdout, contains('hello'));
+      expect(r.stderr, contains('oops'));
+      final teed = log.readAsStringSync();
+      expect(teed, contains('[demo] hello'));
+      expect(teed, contains('[demo] oops'));
+    });
+
+    test('captures silently at normal verbosity', () async {
+      final log = File(p.join(tmp.path, 'tee.log'));
+      final sink = log.openWrite();
+      final run = makeProcessRunner(
+        verbosity: Verbosity.normal,
+        out: sink,
+        err: sink,
+      );
+      final r = await run(
+        'sh',
+        ['-c', 'echo hello'],
+        output: ProcessOutputMode.stream,
+        label: 'demo',
+      );
+      await sink.flush();
+      await sink.close();
+
+      // The output is retained for diagnostics but nothing is teed live.
+      expect(r.stdout, contains('hello'));
+      expect(log.readAsStringSync(), isEmpty);
+    });
+
+    test('bounds the retained tail to the most recent lines', () async {
+      final run = makeProcessRunner(verbosity: Verbosity.normal);
+      final r = await run('sh', [
+        '-c',
+        r'for i in $(seq 1 300); do echo line$i; done',
+      ], output: ProcessOutputMode.stream);
+      final lines = r.stdout.split('\n');
+      expect(lines.length, lessThanOrEqualTo(200));
+      expect(r.stdout, contains('line300'));
+      // The earliest lines are dropped once the cap is exceeded.
+      expect(r.stdout, isNot(contains('line1\n')));
+    });
   });
 }

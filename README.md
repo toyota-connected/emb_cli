@@ -183,8 +183,13 @@ emb <command> [arguments]
 | Option | Description |
 |---|---|
 | `-h`, `--help` | Print usage. Works at the top level and per command (`emb <cmd> --help`). |
-| `-v`, `--version` | Print the CLI version. |
-| `--[no-]verbose` | Noisy logging, including every shell command executed. |
+| `--version` | Print the CLI version. |
+| `-v`, `--verbose` | Stream toolchain output live, prefixed per step (`[cmake:…]`, `[ninja:…]`). |
+| `-vv` | Everything `-v` does, plus diagnostic logging (every shell command, resolved env). |
+| `-q`, `--quiet` | Errors only; suppress progress and info logging. |
+
+Verbosity may also be set with `EMB_VERBOSITY=0\|1\|2` (used when no flag is
+passed). Note `--version` is long-only — `-v` now means verbose.
 
 `--workspace` (`-w`), shown on most commands, follows the resolution order
 above. `--mode`/`--arch` defaults and value sets differ **per command** — see
