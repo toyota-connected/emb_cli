@@ -12,6 +12,16 @@ String _kv(Map<String, String> m) {
   return [for (final k in keys) '$k=${m[k]}'].join(',');
 }
 
+/// A module's build-identity-affecting fields, flattened for [buildKey].
+String _module(ModuleSpec m) => [
+  m.name,
+  m.build.name,
+  m.path,
+  m.artifacts.join(','),
+  m.features.join(','),
+  _kv(m.defines),
+].join(':');
+
 /// The provider/toolchain + sysroot-source inputs, shared by [sysrootKey] and
 /// [sysrootBaseKey]. Order is significant — it fixes both hashes.
 List<String> _sysrootParts(CrossTarget t) => [
@@ -61,6 +71,7 @@ String buildKey(CrossTarget t) => contentHash([
   'cpu:${t.cpuFlags.join(" ")}',
   'gen:${t.generator.name}',
   for (final e in t.backends.entries) 'be:${e.key}:${_kv(e.value)}',
+  for (final m in t.modules) 'mod:${_module(m)}',
   'def:${_kv(t.defines)}',
   'cmake:${t.cmakeArgs.join(" ")}',
 ]);

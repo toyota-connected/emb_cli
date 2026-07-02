@@ -141,6 +141,119 @@ class AugmentLib {
   final bool host;
 }
 
+/// How an app-owned [ModuleSpec] is built. Unlike [CrossGenerator] (which
+/// drives the embedder's CMake/Meson configure), this also admits `cargo` for
+/// Rust modules.
+enum ModuleBuild {
+  /// A CMake project (built via the shared cross toolchain file).
+  cmake,
+
+  /// A Meson project (built via the shared cross file).
+  meson,
+
+  /// A Cargo (Rust) crate. Cross-built against the resolved profile's triple.
+  cargo;
+
+  /// Parse a `build:` token; unknown values throw.
+  static ModuleBuild fromToken(String token) => switch (token.toLowerCase()) {
+    'cmake' => ModuleBuild.cmake,
+    'meson' => ModuleBuild.meson,
+    'cargo' || 'rust' => ModuleBuild.cargo,
+    _ => throw ArgumentError('unknown module build system: $token'),
+  };
+
+  /// The equivalent embedder [CrossGenerator] for [cmake]/[meson], or null for
+  /// [cargo] (which has no CMake/Meson generator).
+  CrossGenerator? get generator => switch (this) {
+    ModuleBuild.cmake => CrossGenerator.cmake,
+    ModuleBuild.meson => CrossGenerator.meson,
+    ModuleBuild.cargo => null,
+  };
+}
+
+/// A native library built from the **app's own source tree** and shipped inside
+/// the app bundle's `lib/` (next to `libapp.so`), so Dart code can resolve it at
+/// runtime with `DynamicLibrary.open('<soname>')`.
+///
+/// Unlike an [AugmentLib] — a dependency *fetched* from a URL and layered into
+/// the embedder's build search paths — a module is local ([path]) and its
+/// output artifacts are staged into the bundle, not consumed at the embedder's
+/// link time. It compiles against the same resolved [CrossProfile] (toolchain,
+/// sysroot, overlay) as the embedder.
+class ModuleSpec {
+  const ModuleSpec({
+    required this.name,
+    required this.path,
+    required this.artifacts,
+    this.build = ModuleBuild.cmake,
+    this.defines = const {},
+    this.features = const [],
+    this.profile,
+  });
+
+  factory ModuleSpec.fromMap(Map<dynamic, dynamic> map) {
+    final name = (map['name'] ?? '').toString();
+    if (name.isEmpty) {
+      throw ArgumentError('module requires a non-empty name');
+    }
+    final path = (map['path'] ?? '').toString();
+    if (path.isEmpty) {
+      throw ArgumentError('module "$name" requires a source path');
+    }
+    final artifacts = (map['artifacts'] as List<dynamic>? ?? const [])
+        .map((e) => e.toString())
+        .where((s) => s.isNotEmpty)
+        .toList();
+    if (artifacts.isEmpty) {
+      throw ArgumentError(
+        'module "$name" requires a non-empty artifacts list '
+        '(the sonames to stage into the bundle, e.g. [libfoo.so])',
+      );
+    }
+    return ModuleSpec(
+      name: name,
+      path: path,
+      artifacts: artifacts,
+      build: ModuleBuild.fromToken((map['build'] ?? 'cmake').toString()),
+      defines:
+          (map['defines'] as Map?)?.map(
+            (k, v) => MapEntry(k.toString(), v.toString()),
+          ) ??
+          const <String, String>{},
+      features: (map['features'] as List<dynamic>? ?? const [])
+          .map((e) => e.toString())
+          .toList(),
+      profile: map['profile']?.toString(),
+    );
+  }
+
+  /// Module label — used for the build dir (`module-<name>`) and diagnostics.
+  final String name;
+
+  /// Source directory, relative to the manifest.
+  final String path;
+
+  /// Build system.
+  final ModuleBuild build;
+
+  /// Sonames to stage into the bundle's `lib/`, e.g. `[libfoo.so]`. The builder
+  /// copies each named shared library (resolving version/symlink chains like
+  /// `libfoo.so.1.2.3`) out of the build tree. Required and non-empty.
+  final List<String> artifacts;
+
+  /// Extra `-D<key>=<value>` configure options: CMake cache entries or Meson
+  /// project options (both `-Dkey=value`); for cargo, reserved env/feature
+  /// knobs.
+  final Map<String, String> defines;
+
+  /// Build features (cargo/meson feature flags).
+  final List<String> features;
+
+  /// Optional build profile hook (reserved for future per-module profile
+  /// selection); currently informational.
+  final String? profile;
+}
+
 /// The `package:` block of a cross manifest — how `emb cross --deb`/`--flatpak`
 /// turns a built binary (or assembled bundle) into a distributable package. All
 /// fields are optional; the command fills in sensible defaults (name from the
@@ -479,6 +592,7 @@ class CrossTarget {
     this.sdkUrl,
     this.sdkEnvSetup,
     this.augment = const [],
+    this.modules = const [],
     this.generator = CrossGenerator.cmake,
     this.launcher = Launcher.none,
     this.backends = const {},
@@ -513,6 +627,10 @@ class CrossTarget {
       augment: (map['augment'] as List<dynamic>? ?? const [])
           .whereType<Map<dynamic, dynamic>>()
           .map(AugmentLib.fromMap)
+          .toList(),
+      modules: (map['modules'] as List<dynamic>? ?? const [])
+          .whereType<Map<dynamic, dynamic>>()
+          .map(ModuleSpec.fromMap)
           .toList(),
       generator: CrossGenerator.fromToken(
         (map['generator'] ?? 'cmake').toString(),
@@ -586,6 +704,12 @@ class CrossTarget {
 
   /// Source-built libraries to stage into the overlay (libdisplay-info, …).
   final List<AugmentLib> augment;
+
+  /// App-owned native libraries built from the app's own source tree and
+  /// staged into the app bundle's `lib/` (next to `libapp.so`), resolved at
+  /// runtime via `DynamicLibrary.open`. App-owned, so a higher manifest layer
+  /// replaces (never merges) this list.
+  final List<ModuleSpec> modules;
 
   /// Build system to configure the embedder with (default CMake).
   final CrossGenerator generator;

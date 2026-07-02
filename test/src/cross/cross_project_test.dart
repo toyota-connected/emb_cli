@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:emb_cli/src/cross/cross_project.dart';
+import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
@@ -309,6 +310,62 @@ cross:
       final backends =
           project.targets['rpi5-bookworm']!.cross['backends'] as Map;
       expect(backends.keys, ['software']);
+    });
+
+    test('modules pass through the layer and parse into ModuleSpec', () {
+      final project = resolveProject('''
+id: ivi-homescreen
+cross:
+  targets:
+    rpi5-bookworm:
+      extends: rpi5-bookworm
+      modules:
+        - name: hello
+          path: native/hello
+          build: cmake
+          artifacts: [libhello.so]
+''');
+      final target = project.targets['rpi5-bookworm']!;
+      final cross = CrossTarget.fromMap(target.cross);
+      expect(cross.modules, hasLength(1));
+      expect(cross.modules.single.name, 'hello');
+      expect(cross.modules.single.build, ModuleBuild.cmake);
+      expect(cross.modules.single.artifacts, ['libhello.so']);
+    });
+
+    test('a re-declared modules list replaces (not unions) across layers', () {
+      // project layer: one module.
+      Directory(p.join(tmp.path, 'proj', '.emb')).createSync(recursive: true);
+      File(p.join(tmp.path, 'proj', '.emb', 'rpi.emb.yaml')).writeAsStringSync(
+        '''
+id: ivi-homescreen
+cross:
+  targets:
+    rpi5-bookworm:
+      extends: rpi5-bookworm
+      modules:
+        - {name: base, path: native/base, artifacts: [libbase.so]}
+''',
+      );
+      // app layer: a different module set — replaces the project's.
+      final app = File(p.join(tmp.path, 'app.emb.yaml'))
+        ..writeAsStringSync('''
+id: myapp
+cross:
+  targets:
+    rpi5-bookworm:
+      extends: 'proj#rpi5-bookworm'
+      modules:
+        - {name: app, path: native/app, artifacts: [libapp_native.so]}
+''');
+      final project = CrossProjectResolver(
+        const ManifestLoader(),
+        boards,
+      ).resolve(app.path)!;
+      final cross = CrossTarget.fromMap(
+        project.targets['rpi5-bookworm']!.cross,
+      );
+      expect(cross.modules.map((m) => m.name), ['app']);
     });
 
     test('unknown board name throws', () {
