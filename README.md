@@ -787,6 +787,27 @@ emb update
 
 ---
 
+### `emb cache`
+
+Inspect and reclaim the shared artifact cache — a content-addressed store of
+toolchain and engine artifacts, downloaded once per machine and shared across
+every workspace and target. Location resolves as `$EMB_CACHE_DIR`, else
+`$XDG_CACHE_HOME/emb`, else `~/.cache/emb`.
+
+| Subcommand | Description |
+|---|---|
+| `path` | Print the resolved cache directory. |
+| `list [--json]` | List store entries (kind, key, size, live references). |
+| `gc [--dry-run]` | Remove incomplete entries and unreferenced, stale ones; report space reclaimed. |
+
+```sh
+emb cache path
+emb cache list --json | jq '.data.entries'
+emb cache gc --dry-run
+```
+
+---
+
 ## Modes
 
 | `--mode`  | How it builds                         | Bundle contents | Valid in |

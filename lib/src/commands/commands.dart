@@ -1,6 +1,7 @@
 export 'aot_command.dart';
 export 'build_command.dart';
 export 'bundle_command.dart';
+export 'cache_command.dart';
 export 'cross_command.dart';
 export 'deps_command.dart';
 export 'doctor_command.dart';
