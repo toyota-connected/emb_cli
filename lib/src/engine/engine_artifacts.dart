@@ -1,6 +1,8 @@
 import 'dart:io';
 
-import 'package:crypto/crypto.dart';
+import 'package:emb_cli/src/cache/cache_dir.dart';
+import 'package:emb_cli/src/cache/cas.dart';
+import 'package:emb_cli/src/cache/store.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
 import 'package:path/path.dart' as p;
@@ -54,11 +56,26 @@ class EngineFetchResult {
 /// stage `icudtl.dat` + `libflutter_engine.so` into a `bundle-<runtime>-<arch>`
 /// layout.
 class EngineArtifacts {
-  EngineArtifacts(this.workspace, {HttpClient? httpClient})
-    : _http = httpClient ?? HttpClient();
+  EngineArtifacts(
+    this.workspace, {
+    HttpClient? httpClient,
+    Cas? cas,
+    Store? store,
+  }) : _http = httpClient ?? HttpClient(),
+       _casOverride = cas,
+       _storeOverride = store;
 
   final Workspace workspace;
   final HttpClient _http;
+
+  final Cas? _casOverride;
+  final Store? _storeOverride;
+
+  /// Content-addressed download cache and extracted-tree store, rooted at the
+  /// shared cache dir. Built lazily; injectable for tests.
+  late final Cas _cas =
+      _casOverride ?? Cas(ensureCacheDir(), httpClient: _http);
+  late final Store _store = _storeOverride ?? Store(ensureCacheDir());
 
   static const _releaseBase =
       'https://github.com/meta-flutter/flutter-engine/releases/download';
@@ -119,6 +136,13 @@ class EngineArtifacts {
   }
 
   /// Fetch and stage the engine artifact for one [runtime] mode.
+  ///
+  /// The extracted engine SDK is sourced from the shared store (downloaded once
+  /// per machine, keyed by `(commit, arch, runtime)`) and symlinked into the
+  /// per-workspace `flutter-engine/<commit>/engine-sdk-<runtime>-<arch>` so
+  /// gen_snapshot resolution is unchanged. The tiny `bundle-<runtime>-<arch>`
+  /// (`icudtl.dat` + `libflutter_engine.so`) is staged per workspace from the
+  /// store tree.
   Future<EngineFetchResult> fetch({
     required String runtime,
     required String arch,
@@ -126,30 +150,49 @@ class EngineArtifacts {
     bool clean = false,
   }) async {
     final url = engineSdkUrl(runtime, arch, commit);
-    final filename = p.basename(Uri.parse(url).path);
     final engineDir = workspace.ensurePlatformDir('flutter-engine');
     final cwdEngine = Directory(p.join(engineDir.path, commit))
       ..createSync(recursive: true);
-    final archiveFile = File(p.join(cwdEngine.path, filename));
-    final sha256File = File('${archiveFile.path}.sha256');
     final bundleDir = Directory(
       p.join(engineDir.path, 'bundle-$runtime-$arch'),
     );
+    final restoreLink = p.join(cwdEngine.path, 'engine-sdk-$runtime-$arch');
+    final key = '$commit-${engineArch(arch)}-$runtime';
 
-    // Download unless a verified copy already exists.
-    if (!_sha256Matches(archiveFile, sha256File)) {
-      final ok = await _download(url, archiveFile);
-      if (!ok) {
-        return EngineFetchResult(
-          runtime: runtime,
-          arch: arch,
-          status: EngineFetchStatus.unavailable,
-          url: url,
-          message: 'No published prebuilt for $runtime/$arch@$commit',
-        );
-      }
-      sha256File.writeAsStringSync(_sha256OfFile(archiveFile));
-    } else if (bundleDir.existsSync() && !clean) {
+    // Ensure the extracted engine SDK is in the shared store, then symlink the
+    // per-workspace path to it (preserving the clang_<host>/bin↔lib64 sibling
+    // layout gen_snapshot walks).
+    final Directory storeRoot;
+    try {
+      storeRoot = await _store.ensure(
+        kind: 'engine',
+        key: key,
+        sourceUrl: url,
+        fetch: () => _cas.ensure(url),
+        stage: (blob, into) async {
+          final r = await _store.run('tar', [
+            '-xzf',
+            blob.path,
+            '-C',
+            into.path,
+          ]);
+          if (r.exitCode != 0) {
+            throw StateError('engine extract failed: ${r.stderr}');
+          }
+        },
+      );
+    } on Object {
+      return EngineFetchResult(
+        runtime: runtime,
+        arch: arch,
+        status: EngineFetchStatus.unavailable,
+        url: url,
+        message: 'No published prebuilt for $runtime/$arch@$commit',
+      );
+    }
+    _store.materialize(kind: 'engine', key: key, linkPath: restoreLink);
+
+    if (bundleDir.existsSync() && !clean) {
       return EngineFetchResult(
         runtime: runtime,
         arch: arch,
@@ -159,42 +202,16 @@ class EngineArtifacts {
       );
     }
 
-    // Extract.
-    final restoreDir = Directory(
-      p.join(cwdEngine.path, 'engine-sdk-$runtime-$arch'),
-    )..createSync(recursive: true);
-    final tar = await Process.run('tar', [
-      '-xzf',
-      archiveFile.path,
-      '-C',
-      restoreDir.path,
-    ]);
-    if (tar.exitCode != 0) {
-      return EngineFetchResult(
-        runtime: runtime,
-        arch: arch,
-        status: EngineFetchStatus.failed,
-        url: url,
-        message: 'tar extraction failed: ${tar.stderr}',
-      );
-    }
-
-    // Stage the bundle layout: bundle-<runtime>-<arch>/{data,lib}.
-    if (clean && bundleDir.existsSync()) {
-      bundleDir.deleteSync(recursive: true);
-    }
+    // Stage the bundle layout: bundle-<runtime>-<arch>/{data,lib}, sourced from
+    // the store tree. The archive nests the two artifacts under a variable
+    // `…/engine-sdk/…` prefix, so locate them by name (exactly one of each).
+    if (clean && bundleDir.existsSync()) bundleDir.deleteSync(recursive: true);
     final dataDir = Directory(p.join(bundleDir.path, 'data'))
       ..createSync(recursive: true);
     final libDir = Directory(p.join(bundleDir.path, 'lib'))
       ..createSync(recursive: true);
-
-    // The archive nests the artifacts under
-    // `[flutter/engine/]src/out/linux_<runtime>_<token>/engine-sdk/...`, where
-    // <token> is the Flutter arch token (x64), not the release token (x86_64),
-    // and the mono-repo prefix varies. Locate them by name rather than guessing
-    // the path — there is exactly one of each in the archive.
-    final icu = _findFile(restoreDir, 'icudtl.dat');
-    final lib = _findFile(restoreDir, 'libflutter_engine.so');
+    final icu = _findFile(storeRoot, 'icudtl.dat');
+    final lib = _findFile(storeRoot, 'libflutter_engine.so');
     if (icu == null || lib == null) {
       return EngineFetchResult(
         runtime: runtime,
@@ -226,30 +243,4 @@ class EngineArtifacts {
     }
     return null;
   }
-
-  Future<bool> _download(String url, File dest) async {
-    try {
-      final req = await _http.getUrl(Uri.parse(url));
-      req.followRedirects = true;
-      final resp = await req.close();
-      if (resp.statusCode != 200) {
-        await resp.drain<void>();
-        return false;
-      }
-      final sink = dest.openWrite();
-      await resp.pipe(sink);
-      return true;
-    } on Object {
-      return false;
-    }
-  }
-
-  bool _sha256Matches(File archive, File sha256File) {
-    if (!archive.existsSync() || !sha256File.existsSync()) return false;
-    final expected = sha256File.readAsStringSync().replaceAll('\n', '').trim();
-    return _sha256OfFile(archive) == expected;
-  }
-
-  String _sha256OfFile(File f) =>
-      sha256.convert(f.readAsBytesSync()).toString();
 }
