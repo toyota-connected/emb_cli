@@ -29,6 +29,8 @@ import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/host/install_hint.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
 import 'package:emb_cli/src/pkg/host_provisioner.dart';
+import 'package:emb_cli/src/step_reporter.dart';
+import 'package:emb_cli/src/verbosity.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
 import 'package:mason_logger/mason_logger.dart';
 import 'package:path/path.dart' as p;
@@ -50,14 +52,14 @@ class CrossCommand extends Command<int> {
     AotBuilder Function(Workspace ws, HostInfo host)? aotFactory,
     BundleBuilder Function(Workspace ws)? bundleFactory,
     EngineArtifacts Function(Workspace ws)? engineFactory,
-    ProcessRunner processRunner = defaultProcessRunner,
+    ProcessRunner? processRunner,
   }) : _logger = logger,
        _host = host,
        _project = CrossProjectResolver(loader),
-       _aotFactory = aotFactory ?? ((ws, h) => AotBuilder(ws, host: h)),
+       _aotFactoryInjected = aotFactory,
        _bundleFactory = bundleFactory ?? BundleBuilder.new,
        _engineFactory = engineFactory ?? EngineArtifacts.new,
-       _runProcess = processRunner {
+       _injectedRunner = processRunner {
     argParser
       ..addOption(
         'workspace',
@@ -278,10 +280,29 @@ class CrossCommand extends Command<int> {
   final Logger _logger;
   final HostInfo? _host;
   final CrossProjectResolver _project;
-  final AotBuilder Function(Workspace ws, HostInfo host) _aotFactory;
+  final AotBuilder Function(Workspace ws, HostInfo host)? _aotFactoryInjected;
   final BundleBuilder Function(Workspace ws) _bundleFactory;
   final EngineArtifacts Function(Workspace ws) _engineFactory;
-  final ProcessRunner _runProcess;
+
+  /// A test-injected runner, or null to build one from [embVerbosity] at run
+  /// time (commands are constructed before their args, hence the lazy resolve).
+  final ProcessRunner? _injectedRunner;
+
+  /// The effective process runner: the injected one, else a verbosity-aware
+  /// runner that streams build steps live at `-v`.
+  late final ProcessRunner _runProcess =
+      _injectedRunner ?? makeProcessRunner(verbosity: embVerbosity);
+
+  /// Builds an [AotBuilder] using the injected factory, else the default wired
+  /// to the verbosity-aware [_runProcess] so AOT output streams at `-v`.
+  AotBuilder _makeAot(Workspace ws, HostInfo host) =>
+      _aotFactoryInjected?.call(ws, host) ??
+      AotBuilder(ws, host: host, runProcess: _runProcess);
+
+  /// Progress reporter that draws spinners normally but plain banners at `-v`+,
+  /// where a spinner would garble streamed toolchain output. Read fresh so it
+  /// reflects the verbosity resolved after construction.
+  StepReporter get _steps => StepReporter(_logger);
 
   @override
   String get name => 'cross';
@@ -441,9 +462,7 @@ class CrossCommand extends Command<int> {
       }
     }
 
-    final progress = _logger.progress(
-      'Resolving ${provider.name} cross profile',
-    );
+    final progress = _steps.start('Resolving ${provider.name} cross profile');
     final result = await provider.resolve();
     if (!result.ok) {
       progress.fail(result.message ?? 'resolve failed');
@@ -494,7 +513,11 @@ class CrossCommand extends Command<int> {
     }
 
     if (args['prepare'] == true && target.augment.isNotEmpty) {
-      final overlay = OverlayBuilder(workspace, profile);
+      final overlay = OverlayBuilder(
+        workspace,
+        profile,
+        runProcess: _runProcess,
+      );
       try {
         final ov = await overlay.build(target.augment);
         _logger.info('Overlay: ${ov.prefix}');
@@ -616,7 +639,11 @@ class CrossCommand extends Command<int> {
     var hostToolBins = const <String>[];
     if (!native && target.augment.isNotEmpty) {
       final sw = Stopwatch()..start();
-      final overlay = OverlayBuilder(workspace, profile);
+      final overlay = OverlayBuilder(
+        workspace,
+        profile,
+        runProcess: _runProcess,
+      );
       try {
         final ov = await overlay.build(
           target.augment,
@@ -641,6 +668,7 @@ class CrossCommand extends Command<int> {
     // Native keeps the host compiler env; cross neutralizes it.
     final builder = CrossBuilder(
       profile,
+      runProcess: _runProcess,
       neutralizeHostEnv: !native,
       hostTools: hostTools,
       hostToolBins: hostToolBins,
@@ -857,10 +885,10 @@ class CrossCommand extends Command<int> {
     final appBundle = Directory(
       p.join(buildRoot.path, 'app-bundle-$mode-$arch'),
     );
-    final progress = _logger.progress('Building app bundle ($mode/$arch)');
+    final progress = _steps.start('Building app bundle ($mode/$arch)');
     final res = await buildAndAssemble(
       workspace: workspace,
-      aot: _aotFactory(workspace, host),
+      aot: _makeAot(workspace, host),
       bundle: _bundleFactory(workspace),
       engine: _engineFactory(workspace),
       appPath: appPath,
@@ -963,7 +991,7 @@ class CrossCommand extends Command<int> {
     required String bundleArch,
     required bool run,
   }) async {
-    final deployer = Deployer();
+    final deployer = Deployer(runProcess: _runProcess);
     final device = spec?.source == SysrootProvenance.device;
     final port = device ? spec!.sshPort : 22;
     final opts = device ? spec!.sshOpts : null;
@@ -980,7 +1008,7 @@ class CrossCommand extends Command<int> {
       );
     }
 
-    final progress = _logger.progress('Deploying → $host:$destDir');
+    final progress = _steps.start('Deploying → $host:$destDir');
     final res = await deployer.push(
       outDir,
       host: host,
@@ -1067,7 +1095,10 @@ class CrossCommand extends Command<int> {
       for (final e in spec.scripts.entries)
         e.key: p.join(manifestDir.path, e.value),
     };
-    final packager = DebPackager(readelf: _readelfFor(profile));
+    final packager = DebPackager(
+      readelf: _readelfFor(profile),
+      runProcess: _runProcess,
+    );
 
     for (final r in built) {
       final binary = _artifactFor(r.buildDir, spec.bin);
@@ -1134,7 +1165,7 @@ class CrossCommand extends Command<int> {
       for (final e in spec.scripts.entries)
         e.key: p.join(manifestDir.path, e.value),
     };
-    final packager = IpkPackager();
+    final packager = IpkPackager(runProcess: _runProcess);
 
     for (final r in built) {
       final binary = _artifactFor(r.buildDir, spec.bin);
@@ -1205,7 +1236,7 @@ class CrossCommand extends Command<int> {
       for (final e in spec.scripts.entries)
         e.key: p.join(manifestDir.path, e.value),
     };
-    final packager = RpmPackager();
+    final packager = RpmPackager(runProcess: _runProcess);
 
     for (final r in built) {
       final binary = _artifactFor(r.buildDir, spec.bin);
@@ -1269,7 +1300,7 @@ class CrossCommand extends Command<int> {
     final baseName = spec.name ?? defaultName;
     final outDir = Directory(p.join(buildRoot.path, 'dist'));
     final ef = _extraFiles(spec, manifestDir);
-    final packager = TarballPackager();
+    final packager = TarballPackager(runProcess: _runProcess);
 
     for (final r in built) {
       final binary = _artifactFor(r.buildDir, spec.bin);
@@ -1355,9 +1386,9 @@ class CrossCommand extends Command<int> {
       categories: fp.categories,
     );
     final outDir = Directory(p.join(buildRoot.path, 'dist'));
-    final progress = _logger.progress('${tag}Packaging flatpak ($appId)');
+    final progress = _steps.start('${tag}Packaging flatpak ($appId)');
     try {
-      final out = await FlatpakPackager().build(
+      final out = await FlatpakPackager(runProcess: _runProcess).build(
         bundleDir: bundleDir,
         meta: meta,
         outDir: outDir,
@@ -1800,7 +1831,7 @@ class CrossCommand extends Command<int> {
       return false;
     }
 
-    final progress = _logger.progress(
+    final progress = _steps.start(
       'Installing host tools for $providerName: ${tools.join(", ")}',
     );
     try {

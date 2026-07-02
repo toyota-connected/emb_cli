@@ -1,7 +1,10 @@
+import 'dart:io';
+
 import 'package:args/args.dart';
 import 'package:args/command_runner.dart';
 import 'package:cli_completion/cli_completion.dart';
 import 'package:emb_cli/src/commands/commands.dart';
+import 'package:emb_cli/src/verbosity.dart';
 import 'package:emb_cli/src/version.dart';
 import 'package:mason_logger/mason_logger.dart';
 import 'package:pub_updater/pub_updater.dart';
@@ -25,15 +28,20 @@ class EmbCliCommandRunner extends CompletionCommandRunner<int> {
       super(executableName, description) {
     // Add root options and flags
     argParser
-      ..addFlag(
-        'version',
-        abbr: 'v',
-        negatable: false,
-        help: 'Print the current version.',
-      )
+      ..addFlag('version', negatable: false, help: 'Print the current version.')
       ..addFlag(
         'verbose',
-        help: 'Noisy logging, including all shell commands executed.',
+        abbr: 'v',
+        negatable: false,
+        help:
+            'Stream toolchain output live; repeat (-vv) for diagnostic '
+            'logging (all shell commands, resolved env).',
+      )
+      ..addFlag(
+        'quiet',
+        abbr: 'q',
+        negatable: false,
+        help: 'Errors only; suppress progress and info logging.',
       );
 
     // Add sub commands
@@ -67,11 +75,15 @@ class EmbCliCommandRunner extends CompletionCommandRunner<int> {
 
   @override
   Future<int> run(Iterable<String> args) async {
+    // `package:args` can't count repeated flags, so resolve verbosity in a raw
+    // pre-pass (-v, -vv, --verbose, -q, --quiet, else $EMB_VERBOSITY) and strip
+    // those tokens before parsing. The level drives both mason logging and the
+    // process runner's streaming (see `embVerbosity`).
+    final (verbosity, rest) = _resolveVerbosity(args.toList());
+    embVerbosity = verbosity;
+    _logger.level = _levelFor(verbosity);
     try {
-      final topLevelResults = parse(args);
-      if (topLevelResults['verbose'] == true) {
-        _logger.level = Level.verbose;
-      }
+      final topLevelResults = parse(rest);
       return await runCommand(topLevelResults) ?? ExitCode.success.code;
     } on FormatException catch (e, stackTrace) {
       // On format errors, show the commands error message, root usage and
@@ -92,6 +104,63 @@ class EmbCliCommandRunner extends CompletionCommandRunner<int> {
       return ExitCode.usage.code;
     }
   }
+
+  /// Counts `-v`/`-vv`/`--verbose` and `-q`/`--quiet` occurrences, strips them,
+  /// and returns the resolved [Verbosity] plus the remaining args. When no
+  /// verbosity flag is present, `$EMB_VERBOSITY` (`0`|`1`|`2`) is honored.
+  (Verbosity, List<String>) _resolveVerbosity(List<String> args) {
+    var vCount = 0;
+    var quiet = false;
+    final rest = <String>[];
+    final shortV = RegExp(r'^-(v+)$');
+    for (final a in args) {
+      if (a == '--verbose') {
+        vCount++;
+        continue;
+      }
+      if (a == '--quiet' || a == '-q') {
+        quiet = true;
+        continue;
+      }
+      final m = shortV.firstMatch(a);
+      if (m != null) {
+        vCount += m.group(1)!.length;
+        continue;
+      }
+      rest.add(a);
+    }
+    if (vCount == 0 && !quiet) {
+      final env = int.tryParse(Platform.environment['EMB_VERBOSITY'] ?? '');
+      if (env != null) {
+        return (
+          switch (env) {
+            <= 0 => Verbosity.normal,
+            1 => Verbosity.verbose,
+            _ => Verbosity.debug,
+          },
+          rest,
+        );
+      }
+    }
+    if (quiet) return (Verbosity.quiet, rest);
+    return (
+      switch (vCount) {
+        0 => Verbosity.normal,
+        1 => Verbosity.verbose,
+        _ => Verbosity.debug,
+      },
+      rest,
+    );
+  }
+
+  /// Maps [Verbosity] to a mason [Level]. `verbose` stays at `info` (streaming
+  /// is a runner concern, not a logging one); only `-vv` unlocks `detail(...)`.
+  Level _levelFor(Verbosity v) => switch (v) {
+    Verbosity.quiet => Level.error,
+    Verbosity.normal => Level.info,
+    Verbosity.verbose => Level.info,
+    Verbosity.debug => Level.verbose,
+  };
 
   @override
   Future<int?> runCommand(ArgResults topLevelResults) async {

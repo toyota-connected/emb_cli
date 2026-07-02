@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:args/command_runner.dart';
 import 'package:cli_completion/cli_completion.dart';
 import 'package:emb_cli/src/command_runner.dart';
+import 'package:emb_cli/src/verbosity.dart';
 import 'package:emb_cli/src/version.dart';
 import 'package:mason_logger/mason_logger.dart';
 import 'package:mocktail/mocktail.dart';
@@ -149,29 +150,43 @@ void main() {
       });
     });
 
-    group('--verbose', () {
-      test('enables verbose logging', () async {
-        final result = await commandRunner.run(['--verbose']);
-        expect(result, equals(ExitCode.success.code));
+    group('verbosity', () {
+      tearDown(() => embVerbosity = Verbosity.normal);
 
+      test('-vv enables diagnostic (detail) logging', () async {
+        final result = await commandRunner.run(['-vv']);
+        expect(result, equals(ExitCode.success.code));
+        expect(embVerbosity, Verbosity.debug);
+        verify(() => logger.level = Level.verbose).called(1);
         verify(() => logger.detail('Argument information:')).called(1);
         verify(() => logger.detail('  Top level options:')).called(1);
-        verify(() => logger.detail('  - verbose: true')).called(1);
         verifyNever(() => logger.detail('    Command options:'));
       });
 
-      test('enables verbose logging for sub commands', () async {
+      test('-vv dumps sub command options', () async {
         final progress = _MockProgress();
         when(() => logger.progress(any())).thenReturn(progress);
 
-        final result = await commandRunner.run(['--verbose', 'update']);
+        final result = await commandRunner.run(['-vv', 'update']);
         expect(result, equals(ExitCode.success.code));
-
-        verify(() => logger.detail('Argument information:')).called(1);
-        verify(() => logger.detail('  Top level options:')).called(1);
-        verify(() => logger.detail('  - verbose: true')).called(1);
         verify(() => logger.detail('  Command: update')).called(1);
         verify(() => logger.detail('    Command options:')).called(1);
+      });
+
+      test('-v selects verbose (streaming) at info level', () async {
+        final result = await commandRunner.run(['-v']);
+        expect(result, equals(ExitCode.success.code));
+        expect(embVerbosity, Verbosity.verbose);
+        // info level (not Level.verbose) — a single -v streams toolchain
+        // output but does not unlock the diagnostic argv/env dumps.
+        verify(() => logger.level = Level.info).called(1);
+      });
+
+      test('-q selects quiet (errors only)', () async {
+        final result = await commandRunner.run(['-q']);
+        expect(result, equals(ExitCode.success.code));
+        expect(embVerbosity, Verbosity.quiet);
+        verify(() => logger.level = Level.error).called(1);
       });
     });
   });

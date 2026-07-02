@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:emb_cli/src/verbosity.dart';
@@ -61,12 +62,13 @@ typedef ProcessRunner =
 
 /// Builds the production [ProcessRunner].
 ///
-/// [verbosity] governs whether [ProcessOutputMode.stream] steps are teed live
-/// (added on top of this seam); [out]/[err] default to the process's stdout/
-/// stderr and exist so tests can redirect. The `label` on a call is a line
-/// prefix for streamed output (e.g. `cmake:drm-kms-egl`).
+/// [verbosity] governs whether [ProcessOutputMode.stream] steps are teed live;
+/// when null it is read from the global [embVerbosity] on each call, so the
+/// default runner tracks `-v` without being rebuilt. [out]/[err] default to the
+/// process's stdout/stderr and exist so tests can redirect. The `label` on a
+/// call is a line prefix for streamed output (e.g. `cmake:drm-kms-egl`).
 ProcessRunner makeProcessRunner({
-  Verbosity verbosity = Verbosity.normal,
+  Verbosity? verbosity,
   IOSink? out,
   IOSink? err,
 }) {
@@ -93,9 +95,41 @@ ProcessRunner makeProcessRunner({
       return RunResult(await proc.exitCode, '', '');
     }
 
-    // capture and (for now) stream: fully buffer both streams, preserving the
-    // exact bytes callers parse. Live teeing of stream steps is layered on
-    // this seam separately.
+    if (output == ProcessOutputMode.stream) {
+      final proc = await Process.start(
+        executable,
+        arguments,
+        workingDirectory: workingDirectory,
+        environment: environment,
+        includeParentEnvironment: includeParentEnvironment,
+        runInShell: runInShell,
+      );
+      final prefix = (label == null || label.isEmpty) ? '' : '[$label] ';
+      final live = (verbosity ?? embVerbosity).streamsChildOutput;
+      final outTail = _TailBuffer();
+      final errTail = _TailBuffer();
+
+      // Always drain both pipes (or the child blocks once a buffer fills);
+      // retain a bounded tail for diagnostics and, when verbose, tee live.
+      Future<void> pump(Stream<List<int>> src, _TailBuffer tail, IOSink sink) {
+        return src
+            .transform(utf8.decoder)
+            .transform(const LineSplitter())
+            .forEach((line) {
+              tail.add(line);
+              if (live) sink.writeln('$prefix$line');
+            });
+      }
+
+      await Future.wait([
+        pump(proc.stdout, outTail, out ?? stdout),
+        pump(proc.stderr, errTail, err ?? stderr),
+      ]);
+      return RunResult(await proc.exitCode, outTail.text, errTail.text);
+    }
+
+    // capture: fully buffer both streams, preserving the exact bytes callers
+    // parse (`command -v`, `dpkg-deb -c/-f`, `readelf -d`, `uname -m`).
     final result = await Process.run(
       executable,
       arguments,
@@ -110,6 +144,28 @@ ProcessRunner makeProcessRunner({
       (result.stderr as String?) ?? '',
     );
   };
+}
+
+/// A bounded ring buffer of the most recent output lines. Lets a failed
+/// [ProcessOutputMode.stream] step show a diagnostic tail without retaining an
+/// entire multi-minute build log in memory.
+class _TailBuffer {
+  static const _maxLines = 200;
+  static const _maxBytes = 64 * 1024;
+
+  final List<String> _lines = [];
+  int _bytes = 0;
+
+  void add(String line) {
+    _lines.add(line);
+    _bytes += line.length + 1;
+    while (_lines.length > _maxLines ||
+        (_bytes > _maxBytes && _lines.length > 1)) {
+      _bytes -= _lines.removeAt(0).length + 1;
+    }
+  }
+
+  String get text => _lines.join('\n');
 }
 
 final ProcessRunner _defaultRunner = makeProcessRunner();
