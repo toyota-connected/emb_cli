@@ -245,4 +245,52 @@ void main() {
       expect(() => EmbLock.parse('- not\n- a\n- map'), throwsFormatException);
     });
   });
+
+  group('lockKey', () {
+    test('a flat manifest file qualifies the target with its stem', () {
+      expect(
+        lockKey(
+          inputPath: '/w/pi5.emb.yaml',
+          isDirectory: false,
+          target: 'pi5',
+        ),
+        'pi5:pi5',
+      );
+      expect(
+        lockKey(
+          inputPath: '/w/board-a.emb.yaml',
+          isDirectory: false,
+          target: 'rpi5-bookworm',
+        ),
+        'board-a:rpi5-bookworm',
+      );
+    });
+
+    test('a project directory uses the bare target', () {
+      expect(
+        lockKey(inputPath: '/w/proj', isDirectory: true, target: 'rpi5'),
+        'rpi5',
+      );
+    });
+
+    test('two co-located flat manifests get distinct lock keys', () {
+      // Same directory, same resolved target name → the stems disambiguate.
+      final a = lockKey(
+        inputPath: '/w/a.emb.yaml',
+        isDirectory: false,
+        target: 'pi5',
+      );
+      final b = lockKey(
+        inputPath: '/w/b.emb.yaml',
+        isDirectory: false,
+        target: 'pi5',
+      );
+      expect(a, isNot(b));
+      // They coexist as independent entries in one shared document.
+      final lock = EmbLock().withTarget(a, _armGnu()).withTarget(b, _armGnu());
+      expect(lock.targets.keys, containsAll([a, b]));
+      final reloaded = EmbLock.parse(lock.encode());
+      expect(reloaded.targets.keys, containsAll([a, b]));
+    });
+  });
 }

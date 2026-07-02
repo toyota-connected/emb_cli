@@ -498,12 +498,15 @@ class CrossCommand extends Command<int> {
     // from a moved URL / changed derived-version. Only providers that capture
     // resolved facts populate lockEntry (arm-gnu today).
     if (result.lockEntry case final resolved?) {
-      final projectRoot = FileSystemEntity.isDirectorySync(inputPath)
-          ? inputPath
-          : p.dirname(inputPath);
+      final isDir = FileSystemEntity.isDirectorySync(inputPath);
+      final projectRoot = isDir ? inputPath : p.dirname(inputPath);
       if (!_syncLock(
         projectRoot: projectRoot,
-        target: effectiveTarget,
+        target: lockKey(
+          inputPath: inputPath,
+          isDirectory: isDir,
+          target: effectiveTarget,
+        ),
         resolved: resolved,
         updateLock: args['update-lock'] == true,
         verify: args['no-verify'] != true,

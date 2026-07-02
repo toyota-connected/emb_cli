@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:path/path.dart' as p;
 import 'package:yaml/yaml.dart';
 
 /// The kind of artifact a [LockedArtifact] pins.
@@ -299,6 +300,23 @@ class LockReconcile {
 
   /// Human drift reasons — non-empty only for [LockAction.drifted].
   final List<String> problems;
+}
+
+/// The `emb.lock` entry key for a resolve of [target] from [inputPath].
+///
+/// A flat manifest **file** qualifies the target with the manifest stem
+/// (`<stem>:<target>`) so two co-located `*.emb.yaml` in one directory — which
+/// share a single `<dir>/emb.lock` — don't clobber each other's entry when they
+/// resolve the same target name. A project **directory** ([isDirectory]) uses
+/// the bare [target]: its target names are already project-unique.
+String lockKey({
+  required String inputPath,
+  required bool isDirectory,
+  required String target,
+}) {
+  if (isDirectory) return target;
+  final stem = p.basename(inputPath).split('.').first;
+  return '$stem:$target';
 }
 
 /// Pure reconciliation of a freshly [resolved] target against the [existing]
