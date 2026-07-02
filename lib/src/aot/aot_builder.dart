@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/engine/engine_artifacts.dart';
 import 'package:emb_cli/src/flutter/flutter_sdk.dart';
 import 'package:emb_cli/src/host/host_info.dart';
@@ -43,7 +44,7 @@ class AotBuilder {
   AotBuilder(
     this.workspace, {
     HostInfo? host,
-    this.runProcess = _defaultRun,
+    this.runProcess = defaultProcessRunner,
     this.glibcSysroot,
   }) : host = host ?? HostInfo.detect();
 
@@ -56,30 +57,10 @@ class AotBuilder {
   /// regardless of the host's glibc.
   final String? glibcSysroot;
 
-  /// Runs a process streaming stdio; returns the exit code. Injectable.
-  final Future<int> Function(
-    String executable,
-    List<String> args, {
-    required String workingDirectory,
-    Map<String, String>? environment,
-  })
-  runProcess;
-
-  static Future<int> _defaultRun(
-    String executable,
-    List<String> args, {
-    required String workingDirectory,
-    Map<String, String>? environment,
-  }) async {
-    final proc = await Process.start(
-      executable,
-      args,
-      workingDirectory: workingDirectory,
-      environment: environment,
-      mode: ProcessStartMode.inheritStdio,
-    );
-    return proc.exitCode;
-  }
+  /// The shared process seam. AOT's flutter/gen_snapshot/kernel-snapshot steps
+  /// pass `ProcessOutputMode.inherit`, wiring child stdio to the parent TTY
+  /// (as before). Injectable for tests.
+  final ProcessRunner runProcess;
 
   String get _flutterBin => FlutterSdk(workspace).flutterBin;
   Directory get _hostEngine => Directory(
@@ -128,12 +109,13 @@ class AotBuilder {
       'profile' => '--profile',
       _ => '--release',
     };
-    final code = await runProcess(_flutterBin, [
-      'build',
-      'bundle',
-      flag,
-    ], workingDirectory: p.absolute(appPath));
-    return code == 0;
+    final r = await runProcess(
+      _flutterBin,
+      ['build', 'bundle', flag],
+      workingDirectory: p.absolute(appPath),
+      output: ProcessOutputMode.inherit,
+    );
+    return r.exitCode == 0;
   }
 
   /// Build AOT images for [modes] (default release + profile) of the app at
@@ -165,11 +147,13 @@ class AotBuilder {
     final results = <AotModeResult>[];
     for (final mode in modes) {
       onStep?.call('[$mode] flutter build bundle');
-      if (await runProcess(_flutterBin, [
-            'build',
-            'bundle',
-          ], workingDirectory: app) !=
-          0) {
+      final bundle = await runProcess(
+        _flutterBin,
+        ['build', 'bundle'],
+        workingDirectory: app,
+        output: ProcessOutputMode.inherit,
+      );
+      if (bundle.exitCode != 0) {
         results.add(
           AotModeResult(
             mode: mode,
@@ -229,15 +213,21 @@ class AotBuilder {
       }
       final out = 'libapp.so.$mode';
       final (genExe, genLead) = _genSnapshotInvocation(gen);
-      final genCode = await runProcess(genExe, [
-        ...genLead,
-        '--deterministic',
-        '--snapshot_kind=app-aot-elf',
-        '--elf=$out',
-        '--strip',
-        '--obfuscate',
-        p.join(buildDir, 'app.dill'),
-      ], workingDirectory: app);
+      final genResult = await runProcess(
+        genExe,
+        [
+          ...genLead,
+          '--deterministic',
+          '--snapshot_kind=app-aot-elf',
+          '--elf=$out',
+          '--strip',
+          '--obfuscate',
+          p.join(buildDir, 'app.dill'),
+        ],
+        workingDirectory: app,
+        output: ProcessOutputMode.inherit,
+      );
+      final genCode = genResult.exitCode;
       results.add(
         AotModeResult(
           mode: mode,
@@ -304,7 +294,13 @@ class AotBuilder {
       '--verbosity=error',
       'package:$appName/main.dart',
     ];
-    return runProcess(dartRuntime, args, workingDirectory: app);
+    final r = await runProcess(
+      dartRuntime,
+      args,
+      workingDirectory: app,
+      output: ProcessOutputMode.inherit,
+    );
+    return r.exitCode;
   }
 
   /// Optional dart_plugin_registrant source flags (mirrors create_aot.py).

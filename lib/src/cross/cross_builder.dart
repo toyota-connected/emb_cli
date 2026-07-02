@@ -195,16 +195,21 @@ class CrossBuilder {
     } else {
       cmakeExe = 'cmake';
     }
-    final configure = await _run(cmakeExe, [
-      '-S',
-      src.path,
-      '-B',
-      build.path,
-      if (tc != null && tc.isNotEmpty) '-DCMAKE_TOOLCHAIN_FILE=$tc',
-      '-DCMAKE_BUILD_TYPE=$buildType',
-      for (final e in defines.entries) '-D${e.key}=${e.value}',
-      ...cmakeArgs,
-    ], environment: _env());
+    final configure = await _run(
+      cmakeExe,
+      [
+        '-S',
+        src.path,
+        '-B',
+        build.path,
+        if (tc != null && tc.isNotEmpty) '-DCMAKE_TOOLCHAIN_FILE=$tc',
+        '-DCMAKE_BUILD_TYPE=$buildType',
+        for (final e in defines.entries) '-D${e.key}=${e.value}',
+        ...cmakeArgs,
+      ],
+      environment: _env(),
+      output: ProcessOutputMode.stream,
+    );
     if (configure.exitCode != 0) {
       return CrossBuildResult(
         success: false,
@@ -212,11 +217,12 @@ class CrossBuilder {
         message: 'cmake configure failed: ${configure.stderr}',
       );
     }
-    final compile = await _run(cmakeExe, [
-      '--build',
-      build.path,
-      '--parallel',
-    ], environment: _env());
+    final compile = await _run(
+      cmakeExe,
+      ['--build', build.path, '--parallel'],
+      environment: _env(),
+      output: ProcessOutputMode.stream,
+    );
     return CrossBuildResult(
       success: compile.exitCode == 0,
       buildDir: build.path,
@@ -263,15 +269,20 @@ class CrossBuilder {
     } else {
       mesonExe = 'meson';
     }
-    final setup = await _run(mesonExe, [
-      'setup',
-      build.path,
-      src.path,
-      if (cross != null && cross.isNotEmpty) ...['--cross-file', cross],
-      '--buildtype',
-      buildType.toLowerCase(),
-      for (final e in defines.entries) '-D${e.key}=${e.value}',
-    ], environment: _env());
+    final setup = await _run(
+      mesonExe,
+      [
+        'setup',
+        build.path,
+        src.path,
+        if (cross != null && cross.isNotEmpty) ...['--cross-file', cross],
+        '--buildtype',
+        buildType.toLowerCase(),
+        for (final e in defines.entries) '-D${e.key}=${e.value}',
+      ],
+      environment: _env(),
+      output: ProcessOutputMode.stream,
+    );
     if (setup.exitCode != 0) {
       return CrossBuildResult(
         success: false,
@@ -279,10 +290,12 @@ class CrossBuilder {
         message: 'meson setup failed: ${setup.stderr}',
       );
     }
-    final compile = await _run('ninja', [
-      '-C',
-      build.path,
-    ], environment: _env());
+    final compile = await _run(
+      'ninja',
+      ['-C', build.path],
+      environment: _env(),
+      output: ProcessOutputMode.stream,
+    );
     return CrossBuildResult(
       success: compile.exitCode == 0,
       buildDir: build.path,

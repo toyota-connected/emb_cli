@@ -1692,18 +1692,23 @@ class CrossCommand extends Command<int> {
     }
   }
 
-  /// Run one publish step, streaming nothing but surfacing stderr on failure.
+  /// Run one publish step. At `-v` the container tool's output streams live;
+  /// otherwise it is captured and its stderr surfaced on failure.
   Future<bool> _runStep(String label, ContainerCmd cmd) async {
     _logger.info('\$ $cmd');
-    final ProcessResult r;
+    final RunResult r;
     try {
-      r = await _runProcess(cmd.exe, cmd.args);
+      r = await _runProcess(
+        cmd.exe,
+        cmd.args,
+        output: ProcessOutputMode.stream,
+      );
     } on ProcessException catch (e) {
       _logger.err('$label failed: ${e.message}');
       return false;
     }
     if (r.exitCode != 0) {
-      final err = (r.stderr as String?)?.trim() ?? '';
+      final err = r.stderr.trim();
       final detail = err.isEmpty ? '' : ': $err';
       _logger.err('$label failed (exit ${r.exitCode})$detail');
       return false;

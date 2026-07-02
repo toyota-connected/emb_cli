@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:emb_cli/src/cross/ipk_packager.dart';
+import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
@@ -14,18 +15,20 @@ void main() {
   String? capturedControl;
   Map<String, String>? capturedScripts;
   List<String>? opkgArgv;
-  Future<ProcessResult> fakeRun(
+  Future<RunResult> fakeRun(
     String exe,
     List<String> args, {
     String? workingDirectory,
     Map<String, String>? environment,
     bool includeParentEnvironment = true,
     bool runInShell = false,
+    ProcessOutputMode output = ProcessOutputMode.capture,
+    String? label,
   }) async {
     if (exe == 'command') {
-      return ProcessResult(0, 0, '/usr/bin/opkg-build\n', '');
+      return const RunResult(0, '/usr/bin/opkg-build\n', '');
     }
-    if (exe == 'chmod') return ProcessResult(0, 0, '', '');
+    if (exe == 'chmod') return const RunResult(0, '', '');
     if (exe == 'opkg-build') {
       opkgArgv = args;
       final stage = args[args.length - 2];
@@ -42,9 +45,9 @@ void main() {
       File(
         p.join(dest, 'ivi-homescreen_1.0.0_aarch64.ipk'),
       ).writeAsStringSync('ipk');
-      return ProcessResult(0, 0, '', '');
+      return const RunResult(0, '', '');
     }
-    return ProcessResult(0, 0, '', '');
+    return const RunResult(0, '', '');
   }
 
   File fakeBinary() =>
@@ -118,16 +121,18 @@ void main() {
   });
 
   test('fails with a hint when opkg-build is absent', () async {
-    Future<ProcessResult> noOpkg(
+    Future<RunResult> noOpkg(
       String exe,
       List<String> args, {
       String? workingDirectory,
       Map<String, String>? environment,
       bool includeParentEnvironment = true,
       bool runInShell = false,
+      ProcessOutputMode output = ProcessOutputMode.capture,
+      String? label,
     }) async {
-      if (exe == 'command') return ProcessResult(1, 1, '', ''); // not found
-      return ProcessResult(0, 0, '', '');
+      if (exe == 'command') return const RunResult(1, '', ''); // not found
+      return const RunResult(0, '', '');
     }
 
     final packager = IpkPackager(runProcess: noOpkg);

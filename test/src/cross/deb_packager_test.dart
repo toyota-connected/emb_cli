@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:emb_cli/src/cross/deb_packager.dart';
+import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
@@ -18,16 +19,18 @@ void main() {
   Map<String, String>? capturedScripts;
   final chmodded = <String>[];
   final chmodArgs = <String>[];
-  Future<ProcessResult> fakeRun(
+  Future<RunResult> fakeRun(
     String exe,
     List<String> args, {
     String? workingDirectory,
     Map<String, String>? environment,
     bool includeParentEnvironment = true,
     bool runInShell = false,
+    ProcessOutputMode output = ProcessOutputMode.capture,
+    String? label,
   }) async {
     if (exe.endsWith('readelf')) {
-      return ProcessResult(0, 0, '''
+      return const RunResult(0, '''
  0x0000000000000001 (NEEDED) Shared library: [libc.so.6]
  0x0000000000000001 (NEEDED) Shared library: [libm.so.6]
  0x0000000000000001 (NEEDED) Shared library: [libgbm.so.1]
@@ -36,16 +39,16 @@ void main() {
     if (exe == 'chmod') {
       chmodded.add(args.last);
       chmodArgs.add(args.join(' '));
-      return ProcessResult(0, 0, '', '');
+      return const RunResult(0, '', '');
     }
     if (exe == 'dpkg-deb') {
       if (args.first == '-c') {
-        return ProcessResult(0, 0, '''
+        return const RunResult(0, '''
 -rwxr-xr-x root/root 100 2024-01-01 ./usr/lib/aarch64-linux-gnu/libgbm.so.1.0.0
 lrwxrwxrwx root/root 0 2024-01-01 ./usr/lib/aarch64-linux-gnu/libgbm.so.1 -> libgbm.so.1.0.0
 ''', '');
       }
-      if (args.first == '-f') return ProcessResult(0, 0, 'libgbm1\n', '');
+      if (args.first == '-f') return const RunResult(0, 'libgbm1\n', '');
       if (args.contains('--build')) {
         final stage = args[args.length - 2];
         capturedControl = File(
@@ -58,10 +61,10 @@ lrwxrwxrwx root/root 0 2024-01-01 ./usr/lib/aarch64-linux-gnu/libgbm.so.1 -> lib
         };
         builtTo = args.last;
         File(args.last).writeAsStringSync('deb');
-        return ProcessResult(0, 0, '', '');
+        return const RunResult(0, '', '');
       }
     }
-    return ProcessResult(0, 0, '', '');
+    return const RunResult(0, '', '');
   }
 
   /// A sysroot whose dpkg db owns libc (provides libc.so.6 + libm.so.6).
