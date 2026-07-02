@@ -657,13 +657,13 @@ class CrossCommand extends Command<int> {
           e.key: {...target.defines, ...e.value},
     };
 
-    // Stage any augment libraries the sysroot doesn't already satisfy (e.g.
-    // libdisplay-info >= 0.2.0) into the sysroot before configuring, so the
-    // embedder's pkg-config probes resolve them. Native builds use the host's
-    // system libraries instead (install via the manifest deps / emb deps).
-    // Bin dirs of any `host: true` augments, prepended to the cross build's
-    // PATH so its find_program resolves a build-machine tool (e.g. a codegen).
+    // Build any augment libraries the sysroot doesn't already satisfy (e.g.
+    // libdisplay-info >= 0.2.0) into a per-workspace overlay prefix — kept out
+    // of the sysroot so the sysroot can be a shared read-only store tree — and
+    // layer its include/lib/pkg-config search paths onto the embedder build.
+    // Native builds use the host's system libraries instead.
     var hostToolBins = const <String>[];
+    OverlayPaths? overlayPaths;
     if (!native && target.augment.isNotEmpty) {
       final sw = Stopwatch()..start();
       final overlay = OverlayBuilder(
@@ -673,11 +673,8 @@ class CrossCommand extends Command<int> {
         launcher: launcher,
       );
       try {
-        final ov = await overlay.build(
-          target.augment,
-          stageInto: Directory(profile.targetSysroot),
-        );
-        hostToolBins = ov.binDirs;
+        overlayPaths = await overlay.build(target.augment);
+        hostToolBins = overlayPaths.binDirs;
       } on OverlayBuildException catch (e) {
         _logger.err('augment: ${e.message}');
         return ExitCode.software.code;
@@ -686,7 +683,7 @@ class CrossCommand extends Command<int> {
       }
       _logger.info(
         '  augment       : ${target.augment.map((a) => a.pkg).join(", ")} '
-        'staged (${_secs(sw)})',
+        'built (${_secs(sw)})',
       );
     }
 
@@ -702,6 +699,7 @@ class CrossCommand extends Command<int> {
       hostToolBins: hostToolBins,
       launcher: launcher,
       ccacheBaseDir: workspace.root.path,
+      overlay: overlayPaths,
     );
 
     final buildSw = Stopwatch()..start();

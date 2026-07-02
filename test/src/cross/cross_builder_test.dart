@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:emb_cli/src/cross/cross_builder.dart';
 import 'package:emb_cli/src/cross/cross_profile.dart';
+import 'package:emb_cli/src/cross/overlay_builder.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
 import 'package:path/path.dart' as p;
@@ -131,6 +132,45 @@ void main() {
     );
     expect(cfg.any((a) => a.contains('COMPILER_LAUNCHER')), isFalse);
     expect(rec.envs.first!.containsKey('CCACHE_BASEDIR'), isFalse);
+  });
+
+  test('overlay: layers augment search paths onto the cmake build', () async {
+    final rec = recorder();
+    const overlay = OverlayPaths(
+      prefix: '/ws/overlay',
+      includeDirs: ['/ws/overlay/usr/include'],
+      libDirs: ['/ws/overlay/usr/lib'],
+      pkgConfigDirs: ['/ws/overlay/usr/lib/pkgconfig'],
+    );
+    final r =
+        await CrossBuilder(
+          _profile,
+          runProcess: rec.run,
+          overlay: overlay,
+        ).build(
+          sourceDir: dir('src'),
+          buildDir: dir('b'),
+          generator: CrossGenerator.cmake,
+        );
+    expect(r.success, isTrue);
+    final cfg = rec.calls.firstWhere(
+      (c) => c.first == 'cmake' && c.contains('-S'),
+    );
+    // find_package/find_library search the overlay prefix (+ the sysroot).
+    expect(cfg, contains('-DCMAKE_FIND_ROOT_PATH=/ws/overlay'));
+    expect(cfg, contains('-DCMAKE_PREFIX_PATH=/ws/overlay'));
+    final env = rec.envs.first!;
+    // pkg-config finds the module (detection) — but its reported -I is
+    // sysroot-rebased and wrong for an out-of-sysroot overlay, so the real
+    // include/lib dirs are injected as compiler flags the compiler honors.
+    expect(
+      env['PKG_CONFIG_LIBDIR'],
+      '/ws/overlay/usr/lib/pkgconfig:/sr/usr/lib/pkgconfig',
+    );
+    expect(env['PKG_CONFIG_SYSROOT_DIR'], '/sr');
+    expect(env['CFLAGS'], contains('-I/ws/overlay/usr/include'));
+    expect(env['CXXFLAGS'], contains('-I/ws/overlay/usr/include'));
+    expect(env['LDFLAGS'], contains('-L/ws/overlay/usr/lib'));
   });
 
   test(
