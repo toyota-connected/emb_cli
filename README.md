@@ -202,11 +202,13 @@ each entry.
 Report host detection (os / arch / distro), package-manager backend
 availability, and — when the backend can report it (PackageKit) — the count of
 available package updates (from the backend's last cache refresh; `doctor` is
-read-only and doesn't refresh). No options. Exit code is non-zero if the backend
-is unavailable; the update check never fails the command.
+read-only and doesn't refresh). Exit code is non-zero if the backend is
+unavailable; the update check never fails the command. `--json` emits a
+machine-readable `{schema, command, ok, data}` envelope instead of text.
 
 ```sh
 emb doctor
+emb doctor --json | jq .data.backend
 ```
 
 ---
@@ -469,6 +471,7 @@ emb cross <project-dir|manifest.yaml> [options]
 | `-t`, `--target <name>` | flat manifest's target, else `local` | Select a target (e.g. `rpi5`, `imx93-evk`): a `cross.targets` entry or a per-board `.emb/` file. `local`/`host` is a native build on this machine. With multiple targets, omitting `--target` defaults to `local`. |
 | `--list-targets` | off | List the targets this project defines — `cross.targets` entries and `.emb/` files, grouped by family — plus the built-in `local`, then exit. |
 | `--dry-run` | off | Report the resolution plan (provider, toolchain, sysroot, preflight, augment, backends) with no download / mount / ssh. |
+| `--json` | off | Emit the plan as a machine-readable `{schema, command, ok, data}` envelope instead of text (implies `--dry-run`). Also on `emb doctor`. |
 | `--prepare` | off | After resolving, build the `augment` libraries into the overlay. |
 | `--build` | off | Configure + build the embedder under the resolved profile, one build per `cross.backends` entry. |
 | `--backend <name>` | all | Build only the named `cross.backends` entries. Repeatable. |

@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/commands/doctor_command.dart';
 import 'package:emb_cli/src/host/host_info.dart';
@@ -5,6 +7,13 @@ import 'package:emb_cli/src/pkg/host_provisioner.dart';
 import 'package:emb_cli/src/pkg/provision_models.dart';
 import 'package:mason_logger/mason_logger.dart';
 import 'package:test/test.dart';
+
+/// Captures `info` lines so a `--json` envelope can be parsed back.
+class _CaptureLogger extends Logger {
+  final StringBuffer buffer = StringBuffer();
+  @override
+  void info(String? message, {LogStyle? style}) => buffer.writeln(message);
+}
 
 const _host = HostInfo(
   os: HostOs.linux,
@@ -68,6 +77,16 @@ Future<int?> _run(_FakeProvisioner p) {
   return runner.run(['doctor']);
 }
 
+Future<(int?, Map<String, dynamic>)> _runJson(_FakeProvisioner p) async {
+  final logger = _CaptureLogger();
+  final runner = CommandRunner<int>('emb', 'test')
+    ..addCommand(
+      DoctorCommand(logger: logger, host: _host, provisionerFactory: (_) => p),
+    );
+  final code = await runner.run(['doctor', '--json']);
+  return (code, jsonDecode(logger.buffer.toString()) as Map<String, dynamic>);
+}
+
 void main() {
   test('checks for updates when the backend is available', () async {
     final p = _FakeProvisioner(updates: ['a', 'b', 'c']);
@@ -103,4 +122,25 @@ void main() {
       });
     },
   );
+
+  test('--json emits the {schema, command, ok, data} envelope', () async {
+    final (code, json) = await _runJson(_FakeProvisioner(updates: ['a', 'b']));
+    expect(code, ExitCode.success.code);
+    expect(json['schema'], 1);
+    expect(json['command'], 'doctor');
+    expect(json['ok'], true);
+    final data = json['data'] as Map<String, dynamic>;
+    expect((data['host'] as Map)['os'], 'linux');
+    final backend = data['backend'] as Map<String, dynamic>;
+    expect(backend['name'], 'fake');
+    expect(backend['available'], true);
+    expect((backend['updates'] as Map)['count'], 2);
+  });
+
+  test('--json reports ok:false when the backend is unavailable', () async {
+    final (code, json) = await _runJson(_FakeProvisioner(available: false));
+    expect(code, ExitCode.unavailable.code);
+    expect(json['ok'], false);
+    expect(((json['data'] as Map)['backend'] as Map)['available'], false);
+  });
 }

@@ -1,6 +1,7 @@
 import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/engine/engine_artifacts.dart';
 import 'package:emb_cli/src/host/host_info.dart';
+import 'package:emb_cli/src/json_output.dart';
 import 'package:emb_cli/src/pkg/host_provisioner.dart';
 import 'package:mason_logger/mason_logger.dart';
 
@@ -15,7 +16,13 @@ class DoctorCommand extends Command<int> {
     HostProvisioner Function(HostInfo host)? provisionerFactory,
   }) : _logger = logger,
        _host = host,
-       _provisionerFactory = provisionerFactory ?? HostProvisioner.forHost;
+       _provisionerFactory = provisionerFactory ?? HostProvisioner.forHost {
+    argParser.addFlag(
+      'json',
+      negatable: false,
+      help: 'Emit a machine-readable {schema, command, ok, data} envelope.',
+    );
+  }
 
   final Logger _logger;
   final HostInfo? _host;
@@ -31,6 +38,7 @@ class DoctorCommand extends Command<int> {
   @override
   Future<int> run() async {
     final host = _host ?? HostInfo.detect();
+    if (argResults?['json'] == true) return _runJson(host);
 
     _logger
       ..info(styleBold.wrap('Host'))
@@ -85,5 +93,55 @@ class DoctorCommand extends Command<int> {
     }
 
     return ExitCode.success.code;
+  }
+
+  /// The `--json` path: compute the same host/backend facts without the text
+  /// banners or spinners, and emit the envelope. `ok` is the backend
+  /// availability (also the exit code), matching the text path.
+  Future<int> _runJson(HostInfo host) async {
+    final provisioner = _provisionerFactory(host);
+    try {
+      final available = await provisioner.isAvailable();
+      List<String>? updates;
+      var updateError = false;
+      if (available) {
+        try {
+          updates = await provisioner.availableUpdates();
+        } on Object {
+          updateError = true;
+        }
+      }
+      final data = <String, Object?>{
+        'host': {
+          'os': host.os.name,
+          'arch': host.machineArch,
+          'flutterArch': host.flutterArch,
+          'engineArch': EngineArtifacts.engineArchForHost(host),
+          'hostType': host.hostType,
+          'version': host.versionId,
+          if (host.prettyName != null) 'release': host.prettyName,
+        },
+        'backend': {
+          'name': provisioner.name,
+          'available': available,
+          if (available)
+            'updates': {
+              if (updateError)
+                'error': 'update check failed'
+              else if (updates == null)
+                'supported': false
+              else ...{
+                'supported': true,
+                'count': updates.length,
+                'available': updates,
+              },
+            },
+        },
+      };
+      _logger.info(jsonEnvelope('doctor', ok: available, data: data));
+      return available ? ExitCode.success.code : ExitCode.unavailable.code;
+    } finally {
+      await provisioner.dispose();
+    }
   }
 }

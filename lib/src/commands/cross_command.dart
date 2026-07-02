@@ -27,6 +27,7 @@ import 'package:emb_cli/src/cross/tarball_packager.dart';
 import 'package:emb_cli/src/engine/engine_artifacts.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/host/install_hint.dart';
+import 'package:emb_cli/src/json_output.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
 import 'package:emb_cli/src/pkg/host_provisioner.dart';
 import 'package:emb_cli/src/step_reporter.dart';
@@ -76,6 +77,13 @@ class CrossCommand extends Command<int> {
         help:
             'Report the resolution plan (provider, toolchain, sysroot, '
             'preflight, local inputs) without downloading, mounting, or ssh.',
+        negatable: false,
+      )
+      ..addFlag(
+        'json',
+        help:
+            'With --dry-run (implied), emit the plan as a machine-readable '
+            '{schema, command, ok, data} envelope instead of text.',
         negatable: false,
       )
       ..addFlag(
@@ -412,9 +420,19 @@ class CrossCommand extends Command<int> {
       );
     }
 
-    // --dry-run: report the plan without any download / mount / ssh side
-    // effects, so every target validates on any host.
-    if (args['dry-run'] == true) {
+    // --dry-run (implied by --json): report the plan without any download /
+    // mount / ssh side effects, so every target validates on any host.
+    if (args['dry-run'] == true || args['json'] == true) {
+      if (args['json'] == true) {
+        _logger.info(
+          jsonEnvelope(
+            'cross',
+            ok: true,
+            data: await _planData(provider, target, host, isNative: isNative),
+          ),
+        );
+        return ExitCode.success.code;
+      }
       if (isNative) {
         final be = target.backends.isEmpty
             ? '(plain)'
@@ -1558,6 +1576,85 @@ class CrossCommand extends Command<int> {
       final found = (await _missingTools([exe])).isEmpty;
       _logger.info('  launcher      : $exe${found ? "" : " (not found)"}');
     }
+  }
+
+  /// The dry-run plan as a JSON-serializable map — the same facts [_plan]
+  /// renders as text, for `--json`.
+  Future<Map<String, Object?>> _planData(
+    CrossProvider provider,
+    CrossTarget target,
+    HostInfo host, {
+    required bool isNative,
+  }) async {
+    if (isNative) {
+      return {
+        'native': true,
+        'arch': host.machineArch,
+        'backends': target.backends.keys.toList(),
+        'generator': target.generator.name,
+      };
+    }
+    final missing = await _missingTools(provider.preflightTools);
+    final data = <String, Object?>{
+      'provider': provider.name,
+      'triple': target.triple,
+      'cpuFlags': target.cpuFlags,
+      'host': {'os': host.os.name, 'arch': host.machineArch},
+      'preflight': {'ok': missing.isEmpty, 'missing': missing},
+    };
+    switch (target.provider) {
+      case CrossProviderKind.armGnu:
+        data['toolchain'] =
+            target.versionPolicy == ToolchainVersionPolicy.pinned
+            ? target.toolchainVersion
+            : 'derive-from-sysroot';
+        final s = target.sysroot;
+        data['sysroot'] = switch (s?.source) {
+          SysrootProvenance.image => {
+            'source': 'image',
+            'imageUrl': s?.imageUrl,
+          },
+          SysrootProvenance.device => {
+            'source': 'device',
+            'host': s?.deviceHost,
+            'sshPort': s?.sshPort,
+          },
+          null => null,
+        };
+      case CrossProviderKind.yoctoRecipe:
+        final build = target.yoctoBuild;
+        data['recipe'] = target.recipe;
+        data['build'] = build;
+        data['buildPresent'] = build != null && Directory(build).existsSync();
+        data['machineTuple'] = target.machineTuple;
+      case CrossProviderKind.yoctoSdk:
+        final isUrl =
+            target.sdkUrl != null &&
+            target.sdkPath == null &&
+            target.sdkEnvSetup == null;
+        final present = target.sdkEnvSetup != null
+            ? File(target.sdkEnvSetup!).existsSync()
+            : target.sdkPath != null && Directory(target.sdkPath!).existsSync();
+        data['sdk'] = target.sdkEnvSetup ?? target.sdkPath ?? target.sdkUrl;
+        data['sdkState'] = isUrl
+            ? 'download'
+            : (present ? 'present' : 'absent');
+    }
+    if (target.augment.isNotEmpty) {
+      data['augment'] = target.augment.map((a) => a.pkg).toList();
+    }
+    if (target.backends.isNotEmpty) {
+      data['backends'] = target.backends.keys.toList();
+      data['generator'] = target.generator.name;
+    }
+    if (target.launcher != Launcher.none) {
+      final exe = target.launcher.exe!;
+      data['launcher'] = {
+        'name': exe,
+        'found': (await _missingTools([exe])).isEmpty,
+      };
+    }
+    return data;
   }
 
   /// A stopwatch rendered as `X.Ys`, for the per-phase build timings.
