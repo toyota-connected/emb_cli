@@ -84,6 +84,7 @@
     "libapp",
     "libc",
     "libflutter",
+    "libfoo",
     "libfreetype",
     "libjpeg",
     "libpackagekit",
