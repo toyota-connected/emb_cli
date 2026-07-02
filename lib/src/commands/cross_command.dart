@@ -4,6 +4,7 @@ import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/aot/aot_builder.dart';
 import 'package:emb_cli/src/bundle/bundle_builder.dart';
 import 'package:emb_cli/src/bundle/bundle_pipeline.dart';
+import 'package:emb_cli/src/cross/cargo_env.dart';
 import 'package:emb_cli/src/cross/cross_arch.dart';
 import 'package:emb_cli/src/cross/cross_builder.dart';
 import 'package:emb_cli/src/cross/cross_keys.dart';
@@ -950,6 +951,8 @@ class CrossCommand extends Command<int> {
         ..createSync(recursive: true);
       final ok = await _buildModules(
         builder,
+        profile,
+        host,
         target,
         manifestDir,
         buildRoot,
@@ -1516,46 +1519,54 @@ class CrossCommand extends Command<int> {
   /// on any build failure or missing declared artifact.
   Future<bool> _buildModules(
     CrossBuilder builder,
+    CrossProfile profile,
+    HostInfo host,
     CrossTarget target,
     Directory manifestDir,
     Directory buildRoot,
     Directory libDir,
   ) async {
     for (final m in target.modules) {
-      final gen = m.build.generator;
-      if (gen == null) {
-        // cargo (Rust) modules are a follow-up; cmake/meson only for now.
-        _logger.err(
-          '  module ${m.name}: build "${m.build.name}" not supported',
-        );
-        return false;
-      }
       final src = Directory(p.join(manifestDir.path, m.path));
       if (!src.existsSync()) {
         _logger.err('  module ${m.name}: source dir not found: ${src.path}');
         return false;
       }
+      final buildDir = Directory(p.join(buildRoot.path, 'module-${m.name}'));
       final sw = Stopwatch()..start();
-      final r = await builder.build(
-        sourceDir: src,
-        buildDir: Directory(p.join(buildRoot.path, 'module-${m.name}')),
-        generator: gen,
-        defines: m.defines,
-      );
-      if (!r.success) {
-        _logger.err('  module ${m.name}: ${r.message ?? "build failed"}');
-        return false;
+
+      final gen = m.build.generator;
+      final Directory artifactDir;
+      if (gen != null) {
+        // cmake/meson: reuse the embedder's cross toolchain via CrossBuilder.
+        final r = await builder.build(
+          sourceDir: src,
+          buildDir: buildDir,
+          generator: gen,
+          defines: m.defines,
+        );
+        if (!r.success) {
+          _logger.err('  module ${m.name}: ${r.message ?? "build failed"}');
+          return false;
+        }
+        artifactDir = Directory(r.buildDir);
+      } else {
+        // cargo: synthesize the cross env from the profile and run cargo.
+        final dir = await _cargoModule(profile, host, m, src, buildDir);
+        if (dir == null) return false;
+        artifactDir = dir;
       }
+
       for (final soname in m.artifacts) {
         final staged = stageSharedLibrary(
           soname: soname,
-          buildDir: Directory(r.buildDir),
+          buildDir: artifactDir,
           libDir: libDir,
         );
         if (staged == null) {
           _logger.err(
             '  module ${m.name}: artifact "$soname" not found under '
-            '${r.buildDir}',
+            '${artifactDir.path}',
           );
           return false;
         }
@@ -1565,6 +1576,53 @@ class CrossCommand extends Command<int> {
       );
     }
     return true;
+  }
+
+  /// Cross-compile a `build: cargo` module for the profile's Rust target and
+  /// return the release dir holding its artifacts, or null (error logged) on a
+  /// missing `cargo`, an uninstallable target, or a build failure.
+  Future<Directory?> _cargoModule(
+    CrossProfile profile,
+    HostInfo host,
+    ModuleSpec m,
+    Directory src,
+    Directory buildDir,
+  ) async {
+    if ((await _missingTools(['cargo'])).isNotEmpty) {
+      _logger.err('  module ${m.name}: cargo not found on PATH');
+      await _logInstallHint(host, ['cargo']);
+      return null;
+    }
+    final triple = rustTriple(profile.targetTriple);
+    final env = {
+      ...cargoEnv(profile, triple),
+      'CARGO_TARGET_DIR': buildDir.path,
+    };
+    // Best-effort: install the target's std (idempotent; no-op without rustup).
+    try {
+      await _runProcess('rustup', ['target', 'add', triple]);
+    } on ProcessException {
+      // No rustup — assume the target std is present, else cargo will error.
+    }
+    final r = await _runProcess(
+      'cargo',
+      [
+        'build',
+        '--release',
+        '--target',
+        triple,
+        if (m.features.isNotEmpty) ...['--features', m.features.join(',')],
+      ],
+      workingDirectory: src.path,
+      environment: env,
+      output: ProcessOutputMode.stream,
+      label: 'cargo:${m.name}',
+    );
+    if (r.exitCode != 0) {
+      _logger.err('  module ${m.name}: cargo build failed: ${r.stderr}');
+      return null;
+    }
+    return Directory(p.join(buildDir.path, triple, 'release'));
   }
 
   /// Derive the cross `readelf` path from the profile's `gcc`.

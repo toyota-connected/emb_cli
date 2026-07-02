@@ -130,7 +130,13 @@ cross:
   the bare name and any `DT_NEEDED` SONAME resolve at load time.
 - Modules build (and stage) only when a runnable bundle is produced — i.e. with
   `--app`. Declared without `--app`, they are skipped with a warning.
-- `build: cargo` (Rust) is not yet implemented; `cmake` and `meson` are.
+- `build: cargo` cross-compiles a Rust crate: emb derives the Rust target from
+  the GNU triple, synthesizes the cargo/cc-rs env from the profile (target-
+  scoped `CC_<triple>` / `CARGO_TARGET_<TRIPLE>_LINKER` / `CFLAGS_<triple>` /
+  `PKG_CONFIG_*`), best-effort runs `rustup target add`, then `cargo build
+  --release --target <triple>` and stages the crate's `cdylib` output. Needs
+  `cargo` on `PATH`; targets the `arm-gnu` provider (the compiler is a real
+  cross `gcc`). `features:` map to `--features`.
 
 **Where modules ship.** They land in the app bundle's `lib/`, so the runnable
 bundle (`--app`, `--tar`, `--deploy`) and the flatpak packager carry them
