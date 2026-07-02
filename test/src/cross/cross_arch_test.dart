@@ -28,4 +28,14 @@ void main() {
     expect(debianArch('riscv64-poky-linux'), 'riscv64');
     expect(debianArch('x86_64-linux-gnu'), 'amd64');
   });
+
+  test('rustTriple maps a GNU triple to its Rust target', () {
+    expect(rustTriple('aarch64-none-linux-gnu'), 'aarch64-unknown-linux-gnu');
+    expect(
+      rustTriple('arm-none-linux-gnueabihf'),
+      'armv7-unknown-linux-gnueabihf',
+    );
+    expect(rustTriple('riscv64-poky-linux'), 'riscv64gc-unknown-linux-gnu');
+    expect(rustTriple('x86_64-linux-gnu'), 'x86_64-unknown-linux-gnu');
+  });
 }

@@ -66,3 +66,15 @@ String flatpakArch(String triple) => switch (archOfTriple(triple)) {
   'x86_64' || 'amd64' => 'x86_64',
   final a => a,
 };
+
+/// The Rust target triple for a GNU triple's arch (`aarch64-*` →
+/// `aarch64-unknown-linux-gnu`, `arm-*`/`armhf` → `armv7-unknown-linux-gnueabihf`),
+/// used for `cargo build --target` and the target-suffixed cargo env vars.
+/// Derived from the GNU triple — boards carry no separate `rust_triple`.
+String rustTriple(String triple) => switch (archOfTriple(triple)) {
+  'aarch64' || 'arm64' => 'aarch64-unknown-linux-gnu',
+  'arm' || 'armv7' || 'armv7l' || 'armhf' => 'armv7-unknown-linux-gnueabihf',
+  'riscv64' => 'riscv64gc-unknown-linux-gnu',
+  'x86_64' || 'amd64' => 'x86_64-unknown-linux-gnu',
+  final a => '$a-unknown-linux-gnu',
+};
