@@ -97,6 +97,7 @@ class FlatpakPackager {
     required FlatpakMetadata meta,
     required Directory outDir,
     Map<String, String> extraFiles = const {},
+    Map<String, String> fileModes = const {},
   }) async {
     if (!bundleDir.existsSync()) {
       throw FlatpakPackageException('bundle not found: ${bundleDir.path}');
@@ -162,7 +163,7 @@ class FlatpakPackager {
       }
       final staged = 'extra/$i';
       src.copySync(p.join(ctx.path, staged));
-      extras.add(_Extra(staged, _appDest(entry.value)));
+      extras.add(_Extra(staged, _appDest(entry.value), fileModes[entry.key]));
       i++;
     }
 
@@ -228,7 +229,8 @@ class FlatpakPackager {
       'install -Dm644 ${m.appId}.desktop $desktopDest',
       if (m.icon != null)
         'install -Dm644 icon${p.extension(m.icon!.path)} $iconDest',
-      for (final e in extras) 'install -Dm644 ${e.staged} ${e.dest}',
+      for (final e in extras)
+        'install -Dm${e.mode ?? "644"} ${e.staged} ${e.dest}',
     ];
     final b = StringBuffer()
       ..writeln('app-id: ${m.appId}')
@@ -309,9 +311,11 @@ class FlatpakPackager {
   }
 }
 
-/// A staged extra file and its destination inside `/app`.
+/// A staged extra file, its destination inside `/app`, and an optional explicit
+/// octal mode (null → installed `0644`).
 class _Extra {
-  _Extra(this.staged, this.dest);
+  _Extra(this.staged, this.dest, this.mode);
   final String staged;
   final String dest;
+  final String? mode;
 }

@@ -52,6 +52,7 @@ class TarballPackager extends PackageStager {
     required TarballMetadata meta,
     required Directory outDir,
     Map<String, String> extraFiles = const {},
+    Map<String, String> fileModes = const {},
   }) async {
     final root = await stagePayload(
       binary: binary,
@@ -59,6 +60,7 @@ class TarballPackager extends PackageStager {
       packageName: meta.name,
       outDir: outDir,
       extraFiles: extraFiles,
+      fileModes: fileModes,
     );
 
     final out = File(

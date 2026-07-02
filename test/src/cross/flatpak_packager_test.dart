@@ -104,6 +104,25 @@ void main() {
     );
   });
 
+  test('applies an explicit per-file mode in the install command', () async {
+    final helper = File(p.join(tmp.path, 'helper'))..writeAsStringSync('#!sh');
+    final packager = FlatpakPackager(runProcess: fakeRun);
+    await packager.build(
+      bundleDir: fakeBundle(),
+      meta: const FlatpakMetadata(
+        appId: 'com.example.App',
+        command: 'homescreen',
+      ),
+      outDir: Directory(p.join(tmp.path, 'dist')),
+      extraFiles: {helper.path: 'bin/helper'},
+      fileModes: {helper.path: '0755'},
+    );
+    expect(
+      capturedManifest,
+      contains('install -Dm0755 extra/0 /app/bin/helper'),
+    );
+  });
+
   test('rejects a non-reverse-DNS app id', () async {
     final packager = FlatpakPackager(runProcess: fakeRun);
     expect(

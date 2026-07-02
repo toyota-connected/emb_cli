@@ -84,6 +84,7 @@ class DebPackager extends ControlArchivePackager {
     Directory? sysroot,
     List<Directory> debDirs = const [],
     Map<String, String> extraFiles = const {},
+    Map<String, String> fileModes = const {},
     Map<String, String> maintainerScripts = const {},
   }) async {
     final depends = {...meta.dependsExtra};
@@ -108,6 +109,7 @@ class DebPackager extends ControlArchivePackager {
       ),
       outDir: outDir,
       extraFiles: extraFiles,
+      fileModes: fileModes,
       maintainerScripts: maintainerScripts,
     );
 
