@@ -3,6 +3,9 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
+import 'package:emb_cli/src/cache/cache_dir.dart';
+import 'package:emb_cli/src/cache/cas.dart';
+import 'package:emb_cli/src/cache/store.dart';
 import 'package:emb_cli/src/cross/apt_resolver.dart';
 import 'package:emb_cli/src/cross/cross_arch.dart';
 import 'package:emb_cli/src/cross/cross_keys.dart';
@@ -36,14 +39,28 @@ class ArmGnuCrossProvider implements CrossProvider {
     required this.host,
     ToolchainEmitter emitter = const ToolchainEmitter(),
     HttpClient? httpClient,
+    Cas? cas,
+    Store? store,
   }) : _emitter = emitter,
-       _http = httpClient ?? HttpClient();
+       _http = httpClient ?? HttpClient(),
+       _casOverride = cas,
+       _storeOverride = store;
 
   final CrossTarget target;
   final Workspace workspace;
   final HostInfo host;
   final ToolchainEmitter _emitter;
   final HttpClient _http;
+
+  final Cas? _casOverride;
+  final Store? _storeOverride;
+
+  /// Content-addressed download cache and extracted-tree store, both rooted at
+  /// the shared cache dir. Built lazily so constructing the provider (e.g. for
+  /// a plan) never touches the cache; injectable for tests.
+  late final Cas _cas =
+      _casOverride ?? Cas(ensureCacheDir(), httpClient: _http);
+  late final Store _store = _storeOverride ?? Store(ensureCacheDir());
 
   /// Artifacts this resolve actually (re)materialized, recorded for `emb.lock`.
   /// Only populated on the paths that fetch/decompress — a fully cached resolve
@@ -201,7 +218,13 @@ class ArmGnuCrossProvider implements CrossProvider {
     return null;
   }
 
-  /// Fetch + extract the ARM GNU toolchain, returning its `bin/` dir.
+  /// Fetch + extract the ARM GNU toolchain into the shared store, symlink it
+  /// into [platformDir], and return the `bin/` dir (all absolute).
+  ///
+  /// The store key is `(vendor, version, host-arch, triple)` — independent of
+  /// `sysrootKey`, so every target/workspace on the same toolchain shares one
+  /// download and one extraction. The extracted tree is immutable (no
+  /// post-extract fixups), which is why it is safe to share read-only.
   Future<String?> _prepareToolchain({
     required String version,
     required String triple,
@@ -209,37 +232,48 @@ class ArmGnuCrossProvider implements CrossProvider {
   }) async {
     final tcHost = host.machineArch == 'aarch64' ? 'aarch64' : 'x86_64';
     final dirName = 'arm-gnu-toolchain-$version-$tcHost-$triple';
-    final extracted = Directory(p.join(platformDir.path, 'toolchain', dirName));
-    final binDir = p.join(extracted.path, 'bin');
-    if (File(p.join(binDir, '$triple-gcc')).existsSync()) return binDir;
-
+    final link = Directory(p.join(platformDir.path, 'toolchain', dirName));
+    final binDir = p.join(link.path, 'bin');
     final url =
         target.toolchainUrl ?? _defaultToolchainUrl(version, tcHost, triple);
-    final downloads = Directory(p.join(platformDir.path, 'downloads'))
-      ..createSync(recursive: true);
-    final tarball = File(p.join(downloads.path, '$dirName.tar.xz'));
-    if (!tarball.existsSync()) {
-      if (!await _download(url, tarball)) return null;
-    }
-    // Reached only on a cache miss (the extracted gcc check above returns
-    // early otherwise), so this records a fresh sha exactly when re-fetched.
-    _artifacts.add(
-      LockedArtifact(
-        kind: ArtifactKind.toolchain,
-        url: url,
-        sha256: await _sha256OfFile(tarball),
-      ),
-    );
 
-    extracted.parent.createSync(recursive: true);
-    // --strip-components=1: the tarball nests everything under <dirName>/.
-    final tar = await Process.run('tar', [
-      '-xf',
-      tarball.path,
-      '-C',
-      extracted.path.replaceFirst(RegExp(r'/[^/]+$'), ''),
-    ]);
-    if (tar.exitCode != 0) return null;
+    try {
+      await _store.ensure(
+        kind: 'toolchain',
+        key: dirName,
+        sourceUrl: url,
+        fetch: () async {
+          final blob = await _cas.ensure(url);
+          // Content-addressed: the blob is keyed by its sha, so record that
+          // exact digest in emb.lock (drift compares it as before).
+          _artifacts.add(
+            LockedArtifact(
+              kind: ArtifactKind.toolchain,
+              url: url,
+              sha256: await _sha256OfFile(blob),
+            ),
+          );
+          return blob;
+        },
+        // The tarball nests everything under <dirName>/; strip it so the store
+        // root holds `bin/…` directly. `tar -xf` auto-detects the xz.
+        stage: (blob, into) async {
+          final r = await _store.run('tar', [
+            '-xf',
+            blob.path,
+            '--strip-components=1',
+            '-C',
+            into.path,
+          ]);
+          if (r.exitCode != 0) {
+            throw StateError('toolchain extract failed: ${r.stderr}');
+          }
+        },
+      );
+    } on Object {
+      return null;
+    }
+    _store.materialize(kind: 'toolchain', key: dirName, linkPath: link.path);
     return File(p.join(binDir, '$triple-gcc')).existsSync() ? binDir : null;
   }
 
