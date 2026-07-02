@@ -1,5 +1,7 @@
 import 'dart:io';
 
+import 'package:emb_cli/src/cache/cas.dart';
+import 'package:emb_cli/src/cache/store.dart';
 import 'package:emb_cli/src/cross/arm_gnu_cross_provider.dart';
 import 'package:emb_cli/src/cross/cross_keys.dart';
 import 'package:emb_cli/src/cross/cross_profile.dart';
@@ -21,17 +23,27 @@ const _triple = 'aarch64-none-linux-gnu';
 
 void main() {
   late Directory tmp;
-  setUp(() => tmp = Directory.systemTemp.createTempSync('emb_armgnu_'));
-  tearDown(() => tmp.deleteSync(recursive: true));
+  late Directory cache;
+  late Store store;
+  setUp(() {
+    tmp = Directory.systemTemp.createTempSync('emb_armgnu_');
+    cache = Directory.systemTemp.createTempSync('emb_armgnu_cache_');
+    store = Store(cache);
+  });
+  tearDown(() {
+    tmp.deleteSync(recursive: true);
+    cache.deleteSync(recursive: true);
+  });
 
-  /// Pre-stage the sysroot (with [codename]) and an extracted toolchain so
-  /// [resolve] short-circuits every download / mount / chroot step. The dir is
-  /// keyed by the target's sysroot inputs, matching the provider.
-  void prestage(
+  /// Pre-stage the sysroot (with [codename]) and pre-populate the shared store
+  /// with the toolchain, so [resolve] short-circuits every download / mount /
+  /// chroot step. The sysroot dir is keyed by the target's sysroot inputs
+  /// (matching the provider); the toolchain lives in the store.
+  Future<void> prestage(
     String version,
     CrossTarget target, {
     String codename = 'bookworm',
-  }) {
+  }) async {
     final platform = Directory(
       p.join(
         tmp.path,
@@ -43,10 +55,17 @@ void main() {
     File(p.join(platform.path, 'sysroot', 'etc', 'os-release'))
       ..createSync(recursive: true)
       ..writeAsStringSync('VERSION_CODENAME=$codename\n');
-    final dirName = 'arm-gnu-toolchain-$version-x86_64-$_triple';
-    File(p.join(platform.path, 'toolchain', dirName, 'bin', '$_triple-gcc'))
-      ..createSync(recursive: true)
-      ..writeAsStringSync('');
+    await store.ensure(
+      kind: 'toolchain',
+      key: 'arm-gnu-toolchain-$version-x86_64-$_triple',
+      fetch: () async =>
+          File(p.join(cache.path, 'blob'))..writeAsStringSync('x'),
+      stage: (blob, into) async {
+        File(p.join(into.path, 'bin', '$_triple-gcc'))
+          ..createSync(recursive: true)
+          ..writeAsStringSync('');
+      },
+    );
   }
 
   Future<CrossResolveResult> resolveTarget(
@@ -57,6 +76,8 @@ void main() {
       t,
       workspace: Workspace(tmp),
       host: host ?? _linux,
+      store: store,
+      cas: Cas(cache),
     );
     final r = await provider.resolve();
     provider.close();
@@ -72,7 +93,7 @@ void main() {
       'toolchain_version': '12.3.rel1',
       'image_url': 'https://example/x.img.xz',
     });
-    prestage('12.3.rel1', t);
+    await prestage('12.3.rel1', t);
     final sr = p.join(
       tmp.path,
       '.config',
@@ -104,7 +125,7 @@ void main() {
       'image_url': 'https://example/x.img.xz',
       'cpu_flags': ['-mcpu=cortex-a76'],
     });
-    prestage('12.3.rel1', t);
+    await prestage('12.3.rel1', t);
     final r = await resolveTarget(t);
     expect(r.ok, isTrue, reason: r.message);
     final pf = r.profile!;
@@ -129,10 +150,97 @@ void main() {
       'cpu_flags': ['-mcpu=cortex-a53'],
       'sysroot': {'source': 'device', 'host': 'ubuntu@board'},
     });
-    prestage('12.3.rel1', t);
+    await prestage('12.3.rel1', t);
     final r = await resolveTarget(t);
     expect(r.ok, isTrue, reason: r.message);
     expect(r.profile!.cc, endsWith('$_triple-gcc'));
+  });
+
+  test('same toolchain across sysrootKeys downloads + extracts once', () async {
+    // A tiny real toolchain tarball, nested under <dirName>/ like arm's.
+    const dirName = 'arm-gnu-toolchain-12.3.rel1-x86_64-$_triple';
+    Directory(
+      p.join(tmp.path, 'src', dirName, 'bin'),
+    ).createSync(recursive: true);
+    File(
+      p.join(tmp.path, 'src', dirName, 'bin', '$_triple-gcc'),
+    ).writeAsStringSync('#!/bin/sh');
+    final fixture = File(p.join(tmp.path, 'tc.tar.xz'));
+    final tarRc = await Process.run('tar', [
+      '-cJf',
+      fixture.path,
+      '-C',
+      p.join(tmp.path, 'src'),
+      dirName,
+    ]);
+    expect(tarRc.exitCode, 0, reason: '${tarRc.stderr}');
+    final body = fixture.readAsBytesSync();
+
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    var hits = 0;
+    server.listen((req) {
+      hits++;
+      req.response
+        ..add(body)
+        ..close();
+    });
+    addTearDown(() => server.close(force: true));
+    final url = 'http://127.0.0.1:${server.port}/tc.tar.xz';
+
+    CrossTarget target(String img) => CrossTarget.fromMap({
+      'provider': 'arm-gnu',
+      'toolchain_version': '12.3.rel1',
+      'toolchain_url': url,
+      'image_url': img,
+    });
+    final t1 = target('https://example/a.img.xz');
+    final t2 = target('https://example/b.img.xz');
+    expect(sysrootKey(t1), isNot(sysrootKey(t2)));
+
+    // Pre-stage only the sysroot for each (distinct platform dirs).
+    for (final t in [t1, t2]) {
+      File(
+          p.join(
+            tmp.path,
+            '.config',
+            'flutter_workspace',
+            'cross-$_triple-${sysrootKey(t)}',
+            'sysroot',
+            'etc',
+            'os-release',
+          ),
+        )
+        ..createSync(recursive: true)
+        ..writeAsStringSync('VERSION_CODENAME=bookworm\n');
+    }
+
+    final r1 = await resolveTarget(t1);
+    final r2 = await resolveTarget(t2);
+    expect(r1.ok, isTrue, reason: r1.message);
+    expect(r2.ok, isTrue, reason: r2.message);
+    // Downloaded once and shared: the second sysrootKey is a store hit.
+    expect(hits, 1);
+
+    final tc = store.list().where((e) => e.kind == 'toolchain').toList();
+    expect(tc, hasLength(1));
+    expect(tc.single.liveRefs, 2);
+
+    // Each workspace platform dir holds a symlink into the one store entry.
+    for (final t in [t1, t2]) {
+      final link = p.join(
+        tmp.path,
+        '.config',
+        'flutter_workspace',
+        'cross-$_triple-${sysrootKey(t)}',
+        'toolchain',
+        dirName,
+      );
+      expect(FileSystemEntity.isLinkSync(link), isTrue);
+      expect(
+        Link(link).targetSync(),
+        store.rootOf('toolchain', dirName).absolute.path,
+      );
+    }
   });
 
   test('unavailable on a non-Linux host', () async {
