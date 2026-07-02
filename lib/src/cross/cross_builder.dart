@@ -40,14 +40,26 @@ class CrossBuilder {
     bool hostTools = false,
     List<String> hostToolBins = const [],
     String? Function(String tool)? resolveHostTool,
+    String? launcher,
+    String? ccacheBaseDir,
   }) : _run = runProcess,
        _neutralize = neutralizeHostEnv,
        _hostTools = hostTools,
        _hostToolBins = hostToolBins,
-       _resolveHostTool = resolveHostTool ?? _hostToolOnPath;
+       _resolveHostTool = resolveHostTool ?? _hostToolOnPath,
+       _launcher = launcher,
+       _ccacheBaseDir = ccacheBaseDir;
 
   final CrossProfile profile;
   final ProcessRunner _run;
+
+  /// Compiler-cache launcher executable (`ccache`/`sccache`), already resolved
+  /// on `PATH`, or null. Applied to CMake as `CMAKE_<LANG>_COMPILER_LAUNCHER`.
+  final String? _launcher;
+
+  /// `CCACHE_BASEDIR` for the build env (ccache only) so cache hits survive a
+  /// workspace relocation; null to leave it unset.
+  final String? _ccacheBaseDir;
 
   /// When true, run the host's build tool (`cmake`/`meson`, resolved from the
   /// host `PATH`) rather than whichever the profile's build env resolves — some
@@ -153,6 +165,11 @@ class CrossBuilder {
       final cur = env['PATH'] ?? Platform.environment['PATH'] ?? '';
       env['PATH'] = [..._hostToolBins, if (cur.isNotEmpty) cur].join(':');
     }
+    // ccache: Meson auto-detects it on PATH; CCACHE_BASEDIR lets hits survive a
+    // workspace relocation. Harmless (ignored) for the CMake/sccache paths.
+    if (_launcher == 'ccache' && _ccacheBaseDir != null) {
+      env['CCACHE_BASEDIR'] = _ccacheBaseDir;
+    }
     return env;
   }
 
@@ -204,6 +221,10 @@ class CrossBuilder {
         build.path,
         if (tc != null && tc.isNotEmpty) '-DCMAKE_TOOLCHAIN_FILE=$tc',
         '-DCMAKE_BUILD_TYPE=$buildType',
+        if (_launcher != null) ...[
+          '-DCMAKE_C_COMPILER_LAUNCHER=$_launcher',
+          '-DCMAKE_CXX_COMPILER_LAUNCHER=$_launcher',
+        ],
         for (final e in defines.entries) '-D${e.key}=${e.value}',
         ...cmakeArgs,
       ],

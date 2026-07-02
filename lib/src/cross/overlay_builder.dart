@@ -56,15 +56,22 @@ class OverlayBuilder {
     ToolchainEmitter emitter = const ToolchainEmitter(),
     ProcessRunner runProcess = defaultProcessRunner,
     HttpClient? httpClient,
+    String? launcher,
   }) : _emitter = emitter,
        _run = runProcess,
-       _http = httpClient ?? HttpClient();
+       _http = httpClient ?? HttpClient(),
+       _launcher = launcher;
 
   final Workspace workspace;
   final CrossProfile profile;
   final ToolchainEmitter _emitter;
   final ProcessRunner _run;
   final HttpClient _http;
+
+  /// Compiler-cache launcher (`ccache`/`sccache`), already resolved on `PATH`,
+  /// or null. Applied to the augment CMake builds as a compiler launcher, but
+  /// not the host-tool builds (those use the host compiler).
+  final String? _launcher;
 
   /// Build every lib in [libs] that the sysroot doesn't already satisfy.
   /// Returns the overlay search paths to layer onto the build env.
@@ -224,6 +231,10 @@ class OverlayBuilder {
         if (tc != null) '-DCMAKE_TOOLCHAIN_FILE=$tc',
         '-DCMAKE_INSTALL_PREFIX=/usr',
         '-DCMAKE_BUILD_TYPE=Release',
+        if (_launcher != null) ...[
+          '-DCMAKE_C_COMPILER_LAUNCHER=$_launcher',
+          '-DCMAKE_CXX_COMPILER_LAUNCHER=$_launcher',
+        ],
         // Honor the augment's `static` flag for libraries that defer to
         // BUILD_SHARED_LIBS (no explicit STATIC/SHARED on add_library).
         '-DBUILD_SHARED_LIBS=${lib.staticLink ? 'OFF' : 'ON'}',

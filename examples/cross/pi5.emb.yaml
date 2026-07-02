@@ -25,6 +25,12 @@ cross:
   image_url: https://downloads.raspberrypi.com/raspios_lite_arm64/images/raspios_lite_arm64-2024-11-19/2024-11-19-raspios-bookworm-arm64-lite.img.xz
   cpu_flags: [-mcpu=cortex-a76]           # pi5; pi4=cortex-a72, piz2=cortex-a53, generic=[]
 
+  # Optional compiler-cache launcher for faster warm rebuilds. One of
+  # none (default) / ccache / sccache. Applied to CMake as
+  # CMAKE_<LANG>_COMPILER_LAUNCHER; for Meson only ccache applies (auto-
+  # detected on PATH). A missing tool warns and builds without it.
+  # launcher: ccache
+
   sysroot:
     # rootfs is p2 on a raspios .img (default). dev_packages are resolved to
     # their dependency closure against the image's own apt sources and layered

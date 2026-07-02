@@ -55,6 +55,19 @@ void main() {
       expect(buildKey(withBackend), isNot(buildKey(rpi5)));
     });
 
+    test('launcher does not change the buildKey (not a build output)', () {
+      final withLauncher = _t(const {
+        'provider': 'arm-gnu',
+        'toolchain_version': '12.3.rel1',
+        'image_url': 'https://example/raspios.img.xz',
+        'cpu_flags': ['-mcpu=cortex-a76'],
+        'launcher': 'ccache',
+      });
+      expect(withLauncher.launcher, Launcher.ccache);
+      expect(buildKey(withLauncher), buildKey(rpi5));
+      expect(sysrootKey(withLauncher), sysrootKey(rpi5));
+    });
+
     test('sysroot symlinks change the sysrootKey', () {
       final withLink = _t(const {
         'provider': 'arm-gnu',
