@@ -695,9 +695,11 @@ emb cross . --target rpi5 --build                 # later → verifies, fails on
 emb cross . --target rpi5 --build --update-lock    # accept an intentional change
 ```
 
-> Note: `emb.lock` lives at the project root keyed by target name, so loosely
-> co-located single-file manifests that share one directory would collide on the
-> `default` target. One project = one directory is the intended layout.
+> Note: `emb.lock` lives at the project root. A `.emb/` project keys its entries
+> by target name (unique across the project). A **flat single-file manifest**
+> keys its entry by `<manifest-stem>:<target>`, so several loosely co-located
+> `*.emb.yaml` sharing one directory get independent entries in the shared
+> `emb.lock` instead of clobbering one another.
 
 #### Toolchain images
 
