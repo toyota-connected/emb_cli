@@ -17,6 +17,7 @@ void main() {
   // removes it, plus the paths chmod was asked to make executable.
   Map<String, String>? capturedScripts;
   final chmodded = <String>[];
+  final chmodArgs = <String>[];
   Future<ProcessResult> fakeRun(
     String exe,
     List<String> args, {
@@ -34,6 +35,7 @@ void main() {
     }
     if (exe == 'chmod') {
       chmodded.add(args.last);
+      chmodArgs.add(args.join(' '));
       return ProcessResult(0, 0, '', '');
     }
     if (exe == 'dpkg-deb') {
@@ -181,6 +183,33 @@ lrwxrwxrwx root/root 0 2024-01-01 ./usr/lib/aarch64-linux-gnu/libgbm.so.1 -> lib
     // Each staged script was chmod 0755'd.
     expect(chmodded.any((p) => p.endsWith('DEBIAN/postinst')), isTrue);
     expect(chmodded.any((p) => p.endsWith('DEBIAN/prerm')), isTrue);
+  });
+
+  test('applies an explicit per-file mode to an extra file', () async {
+    final helper = File(p.join(tmp.path, 'helper'))..writeAsStringSync('#!sh');
+    final packager = DebPackager(readelf: '/x/readelf', runProcess: fakeRun);
+    await packager.build(
+      binary: fakeBinary(),
+      installPath: '/usr/bin/homescreen',
+      meta: const DebMetadata(
+        name: 'app',
+        version: '1',
+        architecture: 'arm64',
+        maintainer: 'm <m@x>',
+        description: 'd',
+        autoDepends: false,
+      ),
+      outDir: Directory(p.join(tmp.path, 'dist')),
+      extraFiles: {helper.path: '/usr/bin/helper'},
+      fileModes: {helper.path: '0755'},
+    );
+    // The staged extra file was chmod 0755'd (separate from the binary's).
+    expect(
+      chmodArgs.any(
+        (a) => a.startsWith('0755 ') && a.endsWith('usr/bin/helper'),
+      ),
+      isTrue,
+    );
   });
 
   test('rejects an unknown maintainer script name', () async {

@@ -61,6 +61,7 @@ abstract class ControlArchivePackager extends PackageStager {
     required String control,
     required Directory outDir,
     Map<String, String> extraFiles = const {},
+    Map<String, String> fileModes = const {},
     Map<String, String> maintainerScripts = const {},
   }) async {
     for (final name in maintainerScripts.keys) {
@@ -78,6 +79,7 @@ abstract class ControlArchivePackager extends PackageStager {
       packageName: packageName,
       outDir: outDir,
       extraFiles: extraFiles,
+      fileModes: fileModes,
     );
 
     File(p.join(root.path, controlDir, 'control'))

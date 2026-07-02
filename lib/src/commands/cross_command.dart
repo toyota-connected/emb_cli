@@ -1061,10 +1061,7 @@ class CrossCommand extends Command<int> {
       Directory(p.join(p.dirname(profile.targetSysroot), 'debs')),
     ];
     // Extra files resolved against the manifest dir → absolute target paths.
-    final extraFiles = {
-      for (final e in spec.files.entries)
-        p.join(manifestDir.path, e.key): e.value,
-    };
+    final ef = _extraFiles(spec, manifestDir);
     // Maintainer scripts (preinst/postinst/prerm/postrm) → DEBIAN/<name>.
     final maintainerScripts = {
       for (final e in spec.scripts.entries)
@@ -1102,7 +1099,8 @@ class CrossCommand extends Command<int> {
           outDir: outDir,
           sysroot: Directory(profile.targetSysroot),
           debDirs: debDirs,
-          extraFiles: extraFiles,
+          extraFiles: ef.files,
+          fileModes: ef.modes,
           maintainerScripts: maintainerScripts,
         );
         _logger.info('  ${r.backend ?? ""}: packaged → ${out.path}');
@@ -1131,10 +1129,7 @@ class CrossCommand extends Command<int> {
     final arch = spec.ipk?.arch ?? opkgArch(profile.targetTriple);
     final baseName = spec.name ?? defaultName;
     final outDir = Directory(p.join(buildRoot.path, 'dist'));
-    final extraFiles = {
-      for (final e in spec.files.entries)
-        p.join(manifestDir.path, e.key): e.value,
-    };
+    final ef = _extraFiles(spec, manifestDir);
     final maintainerScripts = {
       for (final e in spec.scripts.entries)
         e.key: p.join(manifestDir.path, e.value),
@@ -1168,7 +1163,8 @@ class CrossCommand extends Command<int> {
           installPath: p.join(spec.installDir, p.basename(binary.path)),
           meta: meta,
           outDir: outDir,
-          extraFiles: extraFiles,
+          extraFiles: ef.files,
+          fileModes: ef.modes,
           maintainerScripts: maintainerScripts,
         );
         _logger.info('  ${r.backend ?? ""}: packaged → ${out.path}');
@@ -1204,10 +1200,7 @@ class CrossCommand extends Command<int> {
     final arch = rpmArch(profile.targetTriple);
     final baseName = spec.name ?? defaultName;
     final outDir = Directory(p.join(buildRoot.path, 'dist'));
-    final extraFiles = {
-      for (final e in spec.files.entries)
-        p.join(manifestDir.path, e.key): e.value,
-    };
+    final ef = _extraFiles(spec, manifestDir);
     final scriptlets = {
       for (final e in spec.scripts.entries)
         e.key: p.join(manifestDir.path, e.value),
@@ -1242,7 +1235,8 @@ class CrossCommand extends Command<int> {
           installPath: p.join(spec.installDir, p.basename(binary.path)),
           meta: meta,
           outDir: outDir,
-          extraFiles: extraFiles,
+          extraFiles: ef.files,
+          fileModes: ef.modes,
         );
         _logger.info('  ${r.backend ?? ""}: packaged → ${out.path}');
       } on RpmPackageException catch (e) {
@@ -1274,10 +1268,7 @@ class CrossCommand extends Command<int> {
     final arch = archOfTriple(profile.targetTriple);
     final baseName = spec.name ?? defaultName;
     final outDir = Directory(p.join(buildRoot.path, 'dist'));
-    final extraFiles = {
-      for (final e in spec.files.entries)
-        p.join(manifestDir.path, e.key): e.value,
-    };
+    final ef = _extraFiles(spec, manifestDir);
     final packager = TarballPackager();
 
     for (final r in built) {
@@ -1302,7 +1293,8 @@ class CrossCommand extends Command<int> {
           installPath: p.join(spec.installDir, p.basename(binary.path)),
           meta: meta,
           outDir: outDir,
-          extraFiles: extraFiles,
+          extraFiles: ef.files,
+          fileModes: ef.modes,
         );
         _logger.info('  ${r.backend ?? ""}: packaged → ${out.path}');
       } on TarballPackageException catch (e) {
@@ -1346,10 +1338,7 @@ class CrossCommand extends Command<int> {
     final icon = iconRel != null
         ? File(p.join(manifestDir.path, iconRel))
         : null;
-    final extraFiles = {
-      for (final e in spec.files.entries)
-        p.join(manifestDir.path, e.key): e.value,
-    };
+    final ef = _extraFiles(spec, manifestDir);
     final meta = FlatpakMetadata(
       appId: appId,
       command: embedder,
@@ -1372,7 +1361,8 @@ class CrossCommand extends Command<int> {
         bundleDir: bundleDir,
         meta: meta,
         outDir: outDir,
-        extraFiles: extraFiles,
+        extraFiles: ef.files,
+        fileModes: ef.modes,
       );
       progress.complete('${tag}flatpak → ${out.path}');
       return ExitCode.success.code;
@@ -1381,6 +1371,30 @@ class CrossCommand extends Command<int> {
       return ExitCode.software.code;
     }
   }
+
+  /// Resolve [spec]'s `files:` against [manifestDir] into a (host source →
+  /// dest) map and a (host source → octal mode) map. The mode is the entry's
+  /// explicit `mode:`, else the source file's own mode (so an executable stays
+  /// executable and a shared object stays 0644 without spelling it out).
+  ({Map<String, String> files, Map<String, String> modes}) _extraFiles(
+    PackageSpec spec,
+    Directory manifestDir,
+  ) {
+    final files = <String, String>{};
+    final modes = <String, String>{};
+    for (final e in spec.files.entries) {
+      final src = p.join(manifestDir.path, e.key);
+      files[src] = e.value;
+      final f = File(src);
+      final mode = spec.fileModes[e.key] ?? (f.existsSync() ? _octal(f) : null);
+      if (mode != null) modes[src] = mode;
+    }
+    return (files: files, modes: modes);
+  }
+
+  /// The file's permission bits as a 4-digit octal string (e.g. `0755`).
+  String _octal(File f) =>
+      '0${(f.statSync().mode & 0x1FF).toRadixString(8).padLeft(3, '0')}';
 
   /// The binary to package: [bin] resolved under [buildDir], else the first ELF
   /// executable found there.

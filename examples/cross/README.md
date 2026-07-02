@@ -113,6 +113,21 @@ All five formats hang off a single `cross.package:` block. The shared fields —
 format; each format adds only what is specific to it. Pick formats per build
 with `--deb` / `--ipk` / `--rpm` / `--targz` / `--flatpak` (combinable).
 
+A `files:` entry may be a bare dest string, or a map that sets an explicit
+mode — useful for an executable helper or a shared object whose source bit is
+wrong:
+
+```yaml
+files:
+  assets/app.toml: /etc/app/app.toml                  # preserves the source mode
+  tools/helper: { to: /usr/bin/helper, mode: "0755" } # forced executable
+  libs/libfoo.so: { to: /usr/lib/libfoo.so, mode: "0644" }
+```
+
+Without a `mode:`, the source file's own permission bits are preserved (so a
+`+x` source stays executable). For flatpak the same applies — the file is
+installed into the `/app` prefix with that mode instead of the old flat `0644`.
+
 A complete block exercising every format:
 
 ```yaml

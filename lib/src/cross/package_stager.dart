@@ -23,14 +23,17 @@ abstract class PackageStager {
 
   /// Stage [binary] at the absolute [installPath], plus [extraFiles] (host
   /// source → absolute target path), under `<outDir>/<packageName>.stage`
-  /// (0755 on the binary). Returns the staging root — a tree rooted at the
-  /// target's `/` — for the format's build step to consume.
+  /// (0755 on the binary). [fileModes] gives an octal mode per extra-file
+  /// source (e.g. `0755`); a source absent from it keeps the copied file's
+  /// mode. Returns the staging root — a tree rooted at the target's `/` — for
+  /// the format's build step to consume.
   Future<Directory> stagePayload({
     required File binary,
     required String installPath,
     required String packageName,
     required Directory outDir,
     Map<String, String> extraFiles = const {},
+    Map<String, String> fileModes = const {},
   }) async {
     if (!binary.existsSync()) fail('binary not found: ${binary.path}');
     if (!p.isAbsolute(installPath)) {
@@ -50,13 +53,16 @@ abstract class PackageStager {
     binary.copySync(dest.path);
     await _run('chmod', ['0755', dest.path]);
 
-    // Stage any extra files at their absolute target paths inside the root.
+    // Stage any extra files at their absolute target paths inside the root,
+    // applying an explicit mode when given.
     for (final entry in extraFiles.entries) {
       final src = File(entry.key);
       if (!src.existsSync()) fail('extra file not found: ${entry.key}');
       final to = File(p.join(root.path, entry.value.substring(1)))
         ..parent.createSync(recursive: true);
       src.copySync(to.path);
+      final mode = fileModes[entry.key];
+      if (mode != null) await _run('chmod', [mode, to.path]);
     }
     return root;
   }

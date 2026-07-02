@@ -285,6 +285,30 @@ void main() {
       expect(fp.categories, ['Utility', 'AudioVideo']);
     });
 
+    test('parses package.files map form with an explicit mode', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'image_url': 'https://example/x.img.xz',
+        'package': {
+          'name': 'app',
+          'bin': 'app',
+          'files': {
+            'assets/app.toml': '/etc/app/app.toml', // bare string → no mode
+            'tools/helper': {'to': '/usr/bin/helper', 'mode': '0755'},
+            'libs/libfoo.so': {'dest': '/usr/lib/libfoo.so'}, // map, no mode
+          },
+        },
+      });
+      // Both string and map forms populate the dest map.
+      expect(t.package!.files, {
+        'assets/app.toml': '/etc/app/app.toml',
+        'tools/helper': '/usr/bin/helper',
+        'libs/libfoo.so': '/usr/lib/libfoo.so',
+      });
+      // Only the entry with an explicit mode appears in fileModes.
+      expect(t.package!.fileModes, {'tools/helper': '0755'});
+    });
+
     test('package.files defaults to empty and flatpak to null', () {
       final t = CrossTarget.fromMap(const {
         'provider': 'arm-gnu',

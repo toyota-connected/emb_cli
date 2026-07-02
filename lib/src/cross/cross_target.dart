@@ -129,43 +129,73 @@ class PackageSpec {
     this.depends = const [],
     this.autoDepends = true,
     this.files = const {},
+    this.fileModes = const {},
     this.scripts = const {},
     this.flatpak,
     this.ipk,
     this.rpm,
   });
 
-  factory PackageSpec.fromMap(Map<dynamic, dynamic> map) => PackageSpec(
-    name: map['name']?.toString(),
-    version: (map['version'] ?? '0.0.0').toString(),
-    maintainer: (map['maintainer'] ?? 'emb <emb@localhost>').toString(),
-    description: map['description']?.toString(),
-    section: (map['section'] ?? 'misc').toString(),
-    priority: (map['priority'] ?? 'optional').toString(),
-    bin: map['bin']?.toString(),
-    installDir: (map['install_dir'] ?? '/usr/bin').toString(),
-    depends: (map['depends'] as List<dynamic>? ?? const [])
-        .map((e) => e.toString())
-        .toList(),
-    autoDepends: (map['auto_depends'] ?? true) as bool,
-    files: (map['files'] as Map<dynamic, dynamic>? ?? const {}).map(
-      (k, v) => MapEntry(k.toString(), v.toString()),
-    ),
-    scripts: (map['scripts'] as Map<dynamic, dynamic>? ?? const {}).map(
-      (k, v) => MapEntry(k.toString(), v.toString()),
-    ),
-    flatpak: map['flatpak'] is Map
-        ? FlatpakPackageSpec.fromMap(
-            Map<dynamic, dynamic>.from(map['flatpak'] as Map),
-          )
-        : null,
-    ipk: map['ipk'] is Map
-        ? IpkPackageSpec.fromMap(Map<dynamic, dynamic>.from(map['ipk'] as Map))
-        : null,
-    rpm: map['rpm'] is Map
-        ? RpmPackageSpec.fromMap(Map<dynamic, dynamic>.from(map['rpm'] as Map))
-        : null,
-  );
+  factory PackageSpec.fromMap(Map<dynamic, dynamic> map) {
+    final (files, fileModes) = _parseFiles(map['files']);
+    return PackageSpec(
+      name: map['name']?.toString(),
+      version: (map['version'] ?? '0.0.0').toString(),
+      maintainer: (map['maintainer'] ?? 'emb <emb@localhost>').toString(),
+      description: map['description']?.toString(),
+      section: (map['section'] ?? 'misc').toString(),
+      priority: (map['priority'] ?? 'optional').toString(),
+      bin: map['bin']?.toString(),
+      installDir: (map['install_dir'] ?? '/usr/bin').toString(),
+      depends: (map['depends'] as List<dynamic>? ?? const [])
+          .map((e) => e.toString())
+          .toList(),
+      autoDepends: (map['auto_depends'] ?? true) as bool,
+      files: files,
+      fileModes: fileModes,
+      scripts: (map['scripts'] as Map<dynamic, dynamic>? ?? const {}).map(
+        (k, v) => MapEntry(k.toString(), v.toString()),
+      ),
+      flatpak: map['flatpak'] is Map
+          ? FlatpakPackageSpec.fromMap(
+              Map<dynamic, dynamic>.from(map['flatpak'] as Map),
+            )
+          : null,
+      ipk: map['ipk'] is Map
+          ? IpkPackageSpec.fromMap(
+              Map<dynamic, dynamic>.from(map['ipk'] as Map),
+            )
+          : null,
+      rpm: map['rpm'] is Map
+          ? RpmPackageSpec.fromMap(
+              Map<dynamic, dynamic>.from(map['rpm'] as Map),
+            )
+          : null,
+    );
+  }
+
+  /// Parse the `files:` block into a `<source>: <dest>` map and a sparse
+  /// `<source>: <mode>` map. An entry value is either a bare dest string, or a
+  /// map `{to|dest: <path>, mode: "0755"}` carrying an explicit octal mode.
+  static (Map<String, String>, Map<String, String>) _parseFiles(Object? raw) {
+    final files = <String, String>{};
+    final modes = <String, String>{};
+    if (raw is Map) {
+      for (final e in raw.entries) {
+        final src = e.key.toString();
+        final v = e.value;
+        if (v is Map) {
+          final dest = (v['to'] ?? v['dest'] ?? v['path'])?.toString();
+          if (dest != null) files[src] = dest;
+          final mode = v['mode']?.toString();
+          if (mode != null) modes[src] = mode;
+        } else {
+          files[src] = v.toString();
+        }
+      }
+    }
+    return (files, modes);
+  }
 
   /// Package name; defaults to the manifest id when unset.
   final String? name;
@@ -196,7 +226,16 @@ class PackageSpec {
   /// `/etc/app/config.toml`) or a path under the `/app` prefix for a
   /// `.flatpak`. Lets a manifest ship config, icons, udev rules, etc. alongside
   /// the binary.
+  ///
+  /// An entry may be a bare dest string, or a map carrying an explicit mode:
+  /// `tools/helper: { to: /usr/bin/helper, mode: "0755" }`. The mode lands in
+  /// [fileModes]; without one, the source file's own mode is preserved.
   final Map<String, String> files;
+
+  /// Explicit octal modes for [files] entries, keyed by the same source path.
+  /// Sparse — only entries that set a `mode:`. A missing entry means "preserve
+  /// the source file's mode".
+  final Map<String, String> fileModes;
 
   /// Debian maintainer scripts, as `<name>: <host script>`, where name is one
   /// of `preinst`, `postinst`, `prerm`, `postrm`. Sources resolve relative to

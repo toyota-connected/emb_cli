@@ -78,11 +78,12 @@ cross:
 
     # Extra files to ship in the package, as <source>: <dest>. The source is
     # relative to this manifest's directory; the dest is an absolute target
-    # path for a .deb, or a path under the /app prefix for a .flatpak. Shared
-    # by both packagers.
+    # path for a .deb/.ipk/.rpm/.tar.gz, or a path under /app for a .flatpak.
+    # An entry may set an explicit mode; without one the source mode is kept.
     # files:
     #   assets/app.toml: /etc/ivi-homescreen/app.toml
     #   assets/99-input.rules: /lib/udev/rules.d/99-input.rules
+    #   tools/helper: { to: /usr/bin/helper, mode: "0755" }
 
     # Debian maintainer scripts, <name>: <source relative to this manifest>.
     # Name must be one of preinst/postinst/prerm/postrm; each is staged into

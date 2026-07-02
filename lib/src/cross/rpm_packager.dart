@@ -85,6 +85,7 @@ class RpmPackager extends PackageStager {
     required RpmMetadata meta,
     required Directory outDir,
     Map<String, String> extraFiles = const {},
+    Map<String, String> fileModes = const {},
   }) async {
     if (meta.license.trim().isEmpty) {
       fail('rpm requires a license (set cross.package.rpm.license)');
@@ -113,6 +114,7 @@ class RpmPackager extends PackageStager {
       packageName: meta.name,
       outDir: outDir,
       extraFiles: extraFiles,
+      fileModes: fileModes,
     );
 
     // rpmbuild needs a private _topdir; RPMS/ is where the .rpm lands.
