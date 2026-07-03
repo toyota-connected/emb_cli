@@ -9,13 +9,16 @@ void main() {
       toolchainVersion: '12.3.rel1',
     );
 
-    test('bakes toolchain + sysroot at the keyed platform dir under /emb', () {
-      const dir =
-          '/emb/.config/flutter_workspace/'
-          'cross-aarch64-none-linux-gnu-abc123def456';
-      expect(df, contains('COPY toolchain $dir/toolchain'));
-      expect(df, contains('COPY sysroot $dir/sysroot'));
+    test('bakes no cross toolchain or sysroot (fetched at build time)', () {
+      // The image is a build environment; the toolchain and sysroot come from
+      // the shared cache / resolve, so nothing is COPY'd in.
+      expect(df, isNot(contains('COPY toolchain')));
+      expect(df, isNot(contains('COPY sysroot')));
       expect(df, contains('ENV FLUTTER_WORKSPACE=/emb'));
+    });
+
+    test('the build context is empty (dockerignore excludes everything)', () {
+      expect(ToolchainImage.dockerignore().trim(), '*');
     });
 
     test('installs the host build tools and carries provenance labels', () {
@@ -87,27 +90,5 @@ void main() {
       expect(tag(const []), isNot(tag(['libpugixml-dev'])));
       expect(tag(['libpugixml-dev']).startsWith('KEY-'), isTrue);
     });
-  });
-
-  test('dockerignore keeps only toolchain + sysroot in the context', () {
-    final di = ToolchainImage.dockerignore();
-    expect(di, contains('*'));
-    expect(di, contains('!toolchain'));
-    expect(di, contains('!sysroot'));
-  });
-
-  test('dockerignore slims the sysroot but keeps build-essential trees', () {
-    final di = ToolchainImage.dockerignore();
-    // Drops device-rootfs bloat (data, apps, kernel/firmware, target bins).
-    expect(di, contains('sysroot/usr/share/locale'));
-    expect(di, contains('sysroot/usr/share/doc'));
-    expect(di, contains('sysroot/usr/lib/firmware'));
-    expect(di, contains('sysroot/usr/bin'));
-    expect(di, contains('sysroot/boot'));
-    // Never prunes headers, libraries, or pkgconfig/cmake/wayland metadata.
-    expect(di, isNot(contains('sysroot/usr/include')));
-    expect(di, isNot(contains('sysroot/usr/lib/aarch64')));
-    expect(di, isNot(contains('sysroot/usr/share/pkgconfig')));
-    expect(di, isNot(contains('sysroot/usr/share/wayland')));
   });
 }

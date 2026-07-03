@@ -40,6 +40,9 @@ class YoctoRecipeCrossProvider implements CrossProvider {
   @override
   List<String> get preflightTools => const ['pkg-config'];
 
+  @override
+  List<({String kind, String key})> cacheSelectors() => const [];
+
   /// Default OE tuning when the manifest gives none — matches the i.MX8MM
   /// weston recipe's flags.
   static const _defaultCpuFlags = [

@@ -103,6 +103,50 @@ void main() {
     return r;
   }
 
+  ArmGnuCrossProvider providerFor(CrossTarget t, {HostInfo? host}) =>
+      ArmGnuCrossProvider(
+        t,
+        workspace: Workspace(tmp),
+        host: host ?? _linux,
+        store: store,
+        cas: Cas(cache),
+      );
+
+  test(
+    'cacheSelectors: sysroot base + toolchain when the version is pinned',
+    () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'toolchain_version': '12.3.rel1',
+        'image_url': 'https://example/raspios.img.xz',
+        'cpu_flags': ['-mcpu=cortex-a76'],
+      });
+      final sel = providerFor(t).cacheSelectors();
+      expect(sel, [
+        (kind: 'sysroot-base', key: sysrootBaseKey(t)),
+        (
+          kind: 'toolchain',
+          key: armGnuToolchainKey(
+            version: '12.3.rel1',
+            tcHost: 'x86_64',
+            triple: _triple,
+          ),
+        ),
+      ]);
+    },
+  );
+
+  test('cacheSelectors: sysroot base only when the version is derived', () {
+    // No toolchain_version + an image sysroot ⇒ derive-from-sysroot: the
+    // toolchain key isn't known pre-resolve, so it is not a pull selector.
+    final t = CrossTarget.fromMap(const {
+      'provider': 'arm-gnu',
+      'image_url': 'https://example/raspios.img.xz',
+    });
+    final sel = providerFor(t).cacheSelectors();
+    expect(sel, [(kind: 'sysroot-base', key: sysrootBaseKey(t))]);
+  });
+
   test('image sysroot materializes as a symlink into the store', () async {
     // The per-workspace sysroot is a symlink into the shared sysroot-base
     // store entry — the base extraction is not copied per workspace.

@@ -49,6 +49,10 @@ CrossTarget _target() => CrossTarget.fromMap(const {
   'cpu_flags': ['-mcpu=cortex-a76'],
 });
 
+/// The sysroot-base selector for [t].
+CacheSelector _sel(CrossTarget t) =>
+    (kind: 'sysroot-base', key: sysrootBaseKey(t));
+
 void main() {
   late Directory tmp;
   setUp(() => tmp = Directory.systemTemp.createTempSync('emb_xcache_'));
@@ -88,7 +92,7 @@ void main() {
     final t = _target();
     final cc = cache(Store(tmp), _FakeTransport());
     expect(
-      cc.refFor(t),
+      cc.refFor(_sel(t)),
       cacheRef('reg.example/x', 'emb-cache', 'sysroot-base', sysrootBaseKey(t)),
     );
   });
@@ -104,13 +108,13 @@ void main() {
       stage: (_, into) async =>
           File(p.join(into.path, 'marker')).writeAsStringSync('x'),
     );
-    await cache(store, fake).push(_target());
+    await cache(store, fake).push([_sel(_target())]);
     expect(fake.pushedRefs, isEmpty);
   });
 
   test('push is a no-op when nothing is staged locally', () async {
     final fake = _FakeTransport();
-    await cache(Store(tmp), fake).push(_target());
+    await cache(Store(tmp), fake).push([_sel(_target())]);
     expect(fake.pushedRefs, isEmpty);
   });
 
@@ -125,7 +129,7 @@ void main() {
           File(p.join(into.path, 'marker')).writeAsStringSync('x'),
     );
     final fake = _FakeTransport();
-    await cache(store, fake).push(t);
+    await cache(store, fake).push([_sel(t)]);
     expect(fake.pushedRefs, [
       cacheRef('reg.example/x', 'emb-cache', 'sysroot-base', sysrootBaseKey(t)),
     ]);
@@ -147,7 +151,7 @@ void main() {
     expect(tar.exitCode, 0);
 
     final store = Store(Directory(p.join(tmp.path, 'store'))..createSync());
-    await cache(store, _FakeTransport(layer: layer)).pull(t);
+    await cache(store, _FakeTransport(layer: layer)).pull([_sel(t)]);
 
     final root = store.rootOf('sysroot-base', sysrootBaseKey(t));
     expect(File(p.join(root.path, 'os-release')).existsSync(), isTrue);
@@ -157,7 +161,7 @@ void main() {
     final t = _target();
     // layer == null → the fake throws in pull(); CrossCache must swallow it.
     final store = Store(Directory(p.join(tmp.path, 'store'))..createSync());
-    await cache(store, _FakeTransport()).pull(t);
+    await cache(store, _FakeTransport()).pull([_sel(t)]);
     expect(
       store.rootOf('sysroot-base', sysrootBaseKey(t)).existsSync(),
       isFalse,

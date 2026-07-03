@@ -63,6 +63,16 @@ String sysrootKey(CrossTarget t) => contentHash([
 /// extraction is shared across every target that differs only in its augments.
 String sysrootBaseKey(CrossTarget t) => contentHash(_sysrootParts(t));
 
+/// The `toolchain` store key: `(vendor, version, host-arch, target-triple)`.
+/// Independent of the sysroot, so every target/workspace on the same toolchain
+/// shares one download + extraction. [tcHost] is the build-machine arch mapped
+/// to the vendor's naming (`aarch64` or `x86_64`).
+String armGnuToolchainKey({
+  required String version,
+  required String tcHost,
+  required String triple,
+}) => 'arm-gnu-toolchain-$version-$tcHost-$triple';
+
 /// Hash of the **full build** configuration: everything in [sysrootKey] plus
 /// cpu flags, generator, backends, defines and raw cmake args. Names the
 /// per-board build dir (and the cpu-specific emitted toolchain file).
