@@ -36,6 +36,7 @@ import 'package:emb_cli/src/json_output.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
 import 'package:emb_cli/src/step_reporter.dart';
 import 'package:emb_cli/src/verbosity.dart';
+import 'package:emb_cli/src/version.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
 import 'package:mason_logger/mason_logger.dart';
 import 'package:path/path.dart' as p;
@@ -531,6 +532,7 @@ class CrossCommand extends Command<int> {
           target: effectiveTarget,
         ),
         resolved: resolved,
+        env: await _selfPins(workspace),
         updateLock: args['update-lock'] == true,
         verify: args['no-verify'] != true,
       )) {
@@ -2068,15 +2070,50 @@ class CrossCommand extends Command<int> {
     return true;
   }
 
+  /// The host tool versions this resolve ran with, for the lock's root `env`
+  /// self-pins. Each is best-effort: a missing SDK/tool records null rather
+  /// than failing the build.
+  Future<LockEnv> _selfPins(Workspace workspace) async {
+    return LockEnv(
+      embVersion: packageVersion,
+      engineCommit: workspace.engineCommit(),
+      flutterCommit: await _gitHead(workspace.flutterDir),
+      rustcVersion: await _rustcVersion(),
+    );
+  }
+
+  /// The git HEAD commit of [dir], or null when it isn't a checkout / git is
+  /// unavailable.
+  Future<String?> _gitHead(Directory dir) async {
+    if (!dir.existsSync()) return null;
+    if ((await _preflight.missingTools(['git'])).isNotEmpty) return null;
+    final r = await _runProcess('git', ['-C', dir.path, 'rev-parse', 'HEAD']);
+    if (r.exitCode != 0) return null;
+    final out = r.stdout.trim();
+    return out.isEmpty ? null : out;
+  }
+
+  /// The `rustc --version` line (e.g. `rustc 1.79.0 (...)`), or null when rustc
+  /// isn't installed.
+  Future<String?> _rustcVersion() async {
+    if ((await _preflight.missingTools(['rustc'])).isNotEmpty) return null;
+    final r = await _runProcess('rustc', ['--version']);
+    if (r.exitCode != 0) return null;
+    final out = r.stdout.trim();
+    return out.isEmpty ? null : out;
+  }
+
   /// Reconcile `<projectRoot>/emb.lock` with the freshly [resolved] facts.
   ///
   /// Auto-creates the entry when absent (first resolve, pub-style), verifies
-  /// and fails on drift when present, or rewrites it under [updateLock].
-  /// Returns false only on a verification failure (the caller then exits).
+  /// and fails on drift when present, or rewrites it under [updateLock]. The
+  /// root [env] self-pins are attached when (re)writing. Returns false only on
+  /// a verification failure (the caller then exits).
   bool _syncLock({
     required String projectRoot,
     required String target,
     required LockedTarget resolved,
+    required LockEnv env,
     required bool updateLock,
     required bool verify,
   }) {
@@ -2098,7 +2135,7 @@ class CrossCommand extends Command<int> {
     );
     switch (outcome.action) {
       case LockAction.wrote:
-        outcome.lock!.save(lockFile);
+        outcome.lock!.withEnv(env).save(lockFile);
         _logger.info('${had ? "Updated" : "Wrote"} emb.lock ($target).');
         return true;
       case LockAction.verified:

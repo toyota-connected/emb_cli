@@ -42,6 +42,7 @@ List<String> _sysrootParts(CrossTarget t) => [
     'dev:${s.deviceHost ?? ''}:${s.sshPort}',
     'part:${s.partition}',
     'pkgs:${(s.devPackages.toList()..sort()).join(",")}',
+    'snap:${s.snapshot ?? ''}',
     'links:${_kv(s.symlinks)}',
   ],
 ];

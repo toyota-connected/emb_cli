@@ -293,4 +293,79 @@ void main() {
       expect(reloaded.targets.keys, containsAll([a, b]));
     });
   });
+
+  group('package pins', () {
+    LockedTarget withPkgs(List<LockedPackage> pkgs) => LockedTarget(
+      provider: 'arm-gnu',
+      triple: 'aarch64-none-linux-gnu',
+      sysrootKey: 'k1',
+      buildKey: 'k2',
+      packages: pkgs,
+    );
+
+    test('packages round-trip through encode/parse, sorted by name', () {
+      final lock = EmbLock().withTarget(
+        'rpi5',
+        withPkgs(const [
+          LockedPackage(name: 'libdrm-dev', version: '2.4.120', sha256: 'aa'),
+          LockedPackage(name: 'libc6-dev', version: '2.36', sha256: 'bb'),
+        ]),
+      );
+      final pkgs = EmbLock.parse(lock.encode()).targets['rpi5']!.packages;
+      expect(pkgs.map((p) => p.name), ['libc6-dev', 'libdrm-dev']);
+      expect(pkgs.first.version, '2.36');
+    });
+
+    test('a changed package version is reported as drift', () {
+      final locked = withPkgs(const [
+        LockedPackage(name: 'libdrm-dev', version: '2.4.120'),
+      ]);
+      final resolved = withPkgs(const [
+        LockedPackage(name: 'libdrm-dev', version: '2.4.121'),
+      ]);
+      final problems = locked.driftAgainst(resolved);
+      expect(problems, hasLength(1));
+      expect(problems.single, contains('libdrm-dev'));
+      expect(problems.single, contains('2.4.121'));
+    });
+
+    test('an unchanged version is not drift', () {
+      final t = withPkgs(const [
+        LockedPackage(name: 'libdrm-dev', version: '2.4.120'),
+      ]);
+      expect(t.driftAgainst(t), isEmpty);
+    });
+  });
+
+  group('env self-pins', () {
+    test('round-trip through encode/parse', () {
+      final lock = EmbLock()
+          .withEnv(
+            const LockEnv(
+              embVersion: '0.1.0',
+              engineCommit: 'deadbeef',
+              flutterCommit: 'cafe',
+              rustcVersion: 'rustc 1.79.0',
+            ),
+          )
+          .withTarget('rpi5', _armGnu());
+      final env = EmbLock.parse(lock.encode()).env;
+      expect(env.embVersion, '0.1.0');
+      expect(env.engineCommit, 'deadbeef');
+      expect(env.flutterCommit, 'cafe');
+      expect(env.rustcVersion, 'rustc 1.79.0');
+    });
+
+    test('an empty env writes no env block', () {
+      final encoded = EmbLock().withTarget('rpi5', _armGnu()).encode();
+      expect(encoded, isNot(contains('env:')));
+    });
+
+    test('withTarget preserves the env', () {
+      final lock = EmbLock()
+          .withEnv(const LockEnv(embVersion: '0.1.0'))
+          .withTarget('a', _armGnu());
+      expect(lock.env.embVersion, '0.1.0');
+    });
+  });
 }

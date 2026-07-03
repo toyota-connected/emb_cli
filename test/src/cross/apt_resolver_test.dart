@@ -161,4 +161,38 @@ Components: main
       ]);
     });
   });
+
+  group('version + digest capture', () {
+    const withVersions = '''
+Package: libfoo-dev
+Version: 1.2.3-4
+Filename: pool/main/f/foo/libfoo-dev_1.2.3-4_arm64.deb
+SHA256: abc123
+Depends: libfoo1
+
+Package: libfoo1
+Version: 1.2.3-4
+Filename: pool/main/f/foo/libfoo1_1.2.3-4_arm64.deb
+''';
+
+    test('parsePackagesIndex records Version and SHA256 when present', () {
+      final index = parsePackagesIndex(withVersions, repoBase: 'http://m/d');
+      final dev = index.packages['libfoo-dev']!;
+      expect(dev.version, '1.2.3-4');
+      expect(dev.sha256, 'abc123');
+    });
+
+    test('version/sha are null when the fields are absent', () {
+      final index = parsePackagesIndex(withVersions, repoBase: 'http://m/d');
+      expect(index.packages['libfoo1']!.sha256, isNull);
+    });
+
+    test('the closure carries the resolved versions', () {
+      final index = parsePackagesIndex(withVersions, repoBase: 'http://m/d');
+      final versions = {
+        for (final p in index.closure(['libfoo-dev'])) p.name: p.version,
+      };
+      expect(versions, {'libfoo-dev': '1.2.3-4', 'libfoo1': '1.2.3-4'});
+    });
+  });
 }

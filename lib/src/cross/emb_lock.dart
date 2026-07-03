@@ -58,6 +58,30 @@ class LockedArtifact {
   };
 }
 
+/// One `-dev` package as resolved into a sysroot: the exact version and the
+/// digest the apt index advertised. A `Packages.lock` in miniature — recorded
+/// so a re-resolve that a live (or substituted) mirror answers with a different
+/// version fails loudly instead of building against silently-changed headers.
+class LockedPackage {
+  const LockedPackage({required this.name, this.version, this.sha256});
+
+  factory LockedPackage.fromMap(Map<dynamic, dynamic> map) => LockedPackage(
+    name: (map['name'] ?? '').toString(),
+    version: map['version']?.toString(),
+    sha256: map['sha256']?.toString(),
+  );
+
+  final String name;
+  final String? version;
+  final String? sha256;
+
+  Map<String, String> toMap() => {
+    'name': name,
+    if (version != null) 'version': version!,
+    if (sha256 != null) 'sha256': sha256!,
+  };
+}
+
 /// The resolved facts for a single target, as captured at resolve time.
 ///
 /// Distinct from the manifest's *declared* inputs: it records what resolution
@@ -74,6 +98,7 @@ class LockedTarget {
     this.compilerVersion,
     this.codename,
     this.artifacts = const [],
+    this.packages = const [],
   });
 
   factory LockedTarget.fromMap(Map<dynamic, dynamic> map) => LockedTarget(
@@ -87,6 +112,10 @@ class LockedTarget {
     artifacts: (map['artifacts'] as List<dynamic>? ?? const [])
         .whereType<Map<dynamic, dynamic>>()
         .map(LockedArtifact.fromMap)
+        .toList(),
+    packages: (map['packages'] as List<dynamic>? ?? const [])
+        .whereType<Map<dynamic, dynamic>>()
+        .map(LockedPackage.fromMap)
         .toList(),
   );
 
@@ -103,12 +132,19 @@ class LockedTarget {
   final String? codename;
   final List<LockedArtifact> artifacts;
 
+  /// The `-dev` packages resolved into the sysroot, with their pinned versions.
+  final List<LockedPackage> packages;
+
   /// Artifacts in a stable order (kind, then url) for deterministic output.
   List<LockedArtifact> get sortedArtifacts => [...artifacts]
     ..sort((a, b) {
       final k = a.kind.index.compareTo(b.kind.index);
       return k != 0 ? k : a.id.compareTo(b.id);
     });
+
+  /// Packages in a stable order (by name) for deterministic output.
+  List<LockedPackage> get sortedPackages =>
+      [...packages]..sort((a, b) => a.name.compareTo(b.name));
 
   /// Drift of this locked target against a freshly-[resolved] one — the human
   /// reasons the resolution no longer matches the lock. Empty means they agree.
@@ -155,6 +191,23 @@ class LockedTarget {
         );
       }
     }
+
+    // Package drift: a mirror answering an -dev name with a different version
+    // than was locked means the sysroot's headers/libs changed underfoot.
+    final resolvedPkgs = {for (final p in resolved.packages) p.name: p};
+    for (final locked in packages) {
+      final now = resolvedPkgs[locked.name];
+      if (now == null || locked.version == null || now.version == null) {
+        continue; // not re-resolved this run, or a side lacks a version
+      }
+      if (locked.version != now.version) {
+        problems.add(
+          'package ${locked.name}: locked ${locked.version}, '
+          'resolved ${now.version} '
+          '(mirror moved; --update-lock if intentional)',
+        );
+      }
+    }
     return problems;
   }
 
@@ -168,15 +221,52 @@ class LockedTarget {
     'build_key': buildKey,
     if (artifacts.isNotEmpty)
       'artifacts': [for (final a in sortedArtifacts) a.toMap()],
+    if (packages.isNotEmpty)
+      'packages': [for (final p in sortedPackages) p.toMap()],
   };
+}
+
+/// The tool versions a resolve ran with, pinned at the document root. Distinct
+/// from the per-target facts: these are the host-side inputs (emb itself, the
+/// Flutter/engine commits, rustc) that shape every target's output, and whose
+/// drift explains an otherwise-mysterious rebuild difference in year nine.
+class LockEnv {
+  const LockEnv({
+    this.embVersion,
+    this.engineCommit,
+    this.flutterCommit,
+    this.rustcVersion,
+  });
+
+  factory LockEnv.fromMap(Map<dynamic, dynamic> map) => LockEnv(
+    embVersion: map['emb_version']?.toString(),
+    engineCommit: map['engine_commit']?.toString(),
+    flutterCommit: map['flutter_commit']?.toString(),
+    rustcVersion: map['rustc_version']?.toString(),
+  );
+
+  final String? embVersion;
+  final String? engineCommit;
+  final String? flutterCommit;
+  final String? rustcVersion;
+
+  bool get isEmpty =>
+      embVersion == null &&
+      engineCommit == null &&
+      flutterCommit == null &&
+      rustcVersion == null;
 }
 
 /// An `emb.lock` document: resolved facts per target, so a moved URL or a
 /// drifted derived-version fails loudly instead of silently building something
-/// different. YAML, pinned to a schema [version], keyed by target name.
+/// different. YAML, pinned to a schema [version], keyed by target name, with an
+/// [env] block of the host tool versions the resolve ran with.
 class EmbLock {
-  EmbLock({this.version = currentVersion, Map<String, LockedTarget>? targets})
-    : targets = targets ?? {};
+  EmbLock({
+    this.version = currentVersion,
+    this.env = const LockEnv(),
+    Map<String, LockedTarget>? targets,
+  }) : targets = targets ?? {};
 
   /// Parse a lock document. Throws [FormatException] on a non-map root.
   factory EmbLock.parse(String yaml) {
@@ -194,9 +284,11 @@ class EmbLock {
         }
       }
     }
+    final env = doc['env'];
     return EmbLock(
       version:
           int.tryParse('${doc['version'] ?? currentVersion}') ?? currentVersion,
+      env: env is YamlMap ? LockEnv.fromMap(env) : const LockEnv(),
       targets: targets,
     );
   }
@@ -205,6 +297,7 @@ class EmbLock {
   static const currentVersion = 1;
 
   final int version;
+  final LockEnv env;
   final Map<String, LockedTarget> targets;
 
   /// Load the lock at [file], or null when it is absent. Throws
@@ -214,7 +307,11 @@ class EmbLock {
 
   /// A copy with [target] set/replaced under [name].
   EmbLock withTarget(String name, LockedTarget target) =>
-      EmbLock(version: version, targets: {...targets, name: target});
+      EmbLock(version: version, env: env, targets: {...targets, name: target});
+
+  /// A copy with the root [env] self-pins replaced.
+  EmbLock withEnv(LockEnv env) =>
+      EmbLock(version: version, env: env, targets: targets);
 
   void save(File file) {
     file.parent.createSync(recursive: true);
@@ -228,6 +325,17 @@ class EmbLock {
       ..writeln('# Generated by `emb cross`. Do not edit by hand.')
       ..writeln('# Pins resolved toolchain/sysroot inputs per target.')
       ..writeln('version: $version');
+    if (!env.isEmpty) {
+      out.writeln('env:');
+      void field(String key, String? value) {
+        if (value != null) out.writeln('  $key: ${_scalar(value)}');
+      }
+
+      field('emb_version', env.embVersion);
+      field('engine_commit', env.engineCommit);
+      field('flutter_commit', env.flutterCommit);
+      field('rustc_version', env.rustcVersion);
+    }
     if (targets.isEmpty) {
       out.writeln('targets: {}');
       return out.toString();
@@ -255,18 +363,31 @@ class EmbLock {
     field('codename', t.codename);
     field('sysroot_key', t.sysrootKey);
     field('build_key', t.buildKey);
-    if (t.artifacts.isEmpty) return;
-    out.writeln('    artifacts:');
-    for (final a in t.sortedArtifacts) {
-      out.writeln('      - kind: ${_scalar(a.kind.token)}');
-      if (a.url != null) {
-        out.writeln('        url: ${_scalar(a.url!)}');
+    if (t.artifacts.isNotEmpty) {
+      out.writeln('    artifacts:');
+      for (final a in t.sortedArtifacts) {
+        out.writeln('      - kind: ${_scalar(a.kind.token)}');
+        if (a.url != null) {
+          out.writeln('        url: ${_scalar(a.url!)}');
+        }
+        if (a.sha256 != null) {
+          out.writeln('        sha256: ${_scalar(a.sha256!)}');
+        }
+        if (a.host != null) {
+          out.writeln('        host: ${_scalar(a.host!)}');
+        }
       }
-      if (a.sha256 != null) {
-        out.writeln('        sha256: ${_scalar(a.sha256!)}');
-      }
-      if (a.host != null) {
-        out.writeln('        host: ${_scalar(a.host!)}');
+    }
+    if (t.packages.isNotEmpty) {
+      out.writeln('    packages:');
+      for (final pkg in t.sortedPackages) {
+        out.writeln('      - name: ${_scalar(pkg.name)}');
+        if (pkg.version != null) {
+          out.writeln('        version: ${_scalar(pkg.version!)}');
+        }
+        if (pkg.sha256 != null) {
+          out.writeln('        sha256: ${_scalar(pkg.sha256!)}');
+        }
       }
     }
   }

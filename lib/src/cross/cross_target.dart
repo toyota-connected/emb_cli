@@ -511,6 +511,7 @@ class SysrootSpec {
     this.sshOpts,
     this.partition = 2,
     this.devPackages = const [],
+    this.snapshot,
     this.symlinks = const {},
   });
 
@@ -526,6 +527,7 @@ class SysrootSpec {
     devPackages: (map['dev_packages'] as List<dynamic>? ?? const [])
         .map((e) => e.toString())
         .toList(),
+    snapshot: map['snapshot']?.toString(),
     symlinks: (map['symlinks'] as Map<dynamic, dynamic>? ?? const {}).map(
       (k, v) => MapEntry(k.toString(), v.toString()),
     ),
@@ -556,6 +558,14 @@ class SysrootSpec {
   /// no root. List only the top-level packages (e.g. `libdrm-dev`,
   /// `libegl-dev`); deps are pulled in automatically.
   final List<String> devPackages;
+
+  /// A date (`YYYY-MM-DD`, or a full `YYYYMMDDTHHMMSSZ` stamp) pinning apt
+  /// resolution to a mirror snapshot (snapshot.debian.org /
+  /// snapshot.raspbian.org), so `dev_packages` resolve to the same versions on
+  /// every build for the life of the product. Without it, resolution tracks the
+  /// live mirror. Folded into the sysroot store key so a changed date
+  /// re-extracts.
+  final String? snapshot;
 
   /// Symlinks to create inside the sysroot after staging, as
   /// `<link-path-in-sysroot>: <target>` (the target is used verbatim, so a

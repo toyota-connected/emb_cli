@@ -7,6 +7,7 @@ import 'package:emb_cli/src/cache/cache_dir.dart';
 import 'package:emb_cli/src/cache/cas.dart';
 import 'package:emb_cli/src/cache/store.dart';
 import 'package:emb_cli/src/cross/apt_resolver.dart';
+import 'package:emb_cli/src/cross/apt_snapshot.dart';
 import 'package:emb_cli/src/cross/cross_arch.dart';
 import 'package:emb_cli/src/cross/cross_keys.dart';
 import 'package:emb_cli/src/cross/cross_profile.dart';
@@ -66,6 +67,11 @@ class ArmGnuCrossProvider implements CrossProvider {
   /// Only populated on the paths that fetch/decompress — a fully cached resolve
   /// records nothing, so the lock keeps its prior shas (drift skips them).
   final List<LockedArtifact> _artifacts = [];
+
+  /// The `-dev` packages resolved into the sysroot this run, with their pinned
+  /// versions. Populated only when the sysroot base is (re)staged, mirroring
+  /// [_artifacts] — a cached resolve records nothing.
+  final List<LockedPackage> _devPackages = [];
 
   @override
   String get name => 'arm-gnu';
@@ -228,6 +234,7 @@ class ArmGnuCrossProvider implements CrossProvider {
       sysrootKey: sysrootKey(target),
       buildKey: buildKey(target),
       artifacts: _artifacts,
+      packages: _devPackages,
     );
     return CrossResolveResult.ok(profile, lockEntry: lockEntry);
   }
@@ -479,11 +486,38 @@ class ArmGnuCrossProvider implements CrossProvider {
     SysrootSpec spec,
   ) async {
     final arch = debianArch(target.targetTriple ?? _defaultTriple);
-    final urls = aptIndexUrls(_readAptSources(sysrootDir), arch);
+    var urls = aptIndexUrls(_readAptSources(sysrootDir), arch);
     if (urls.isEmpty) {
       return CrossResolveResult.failed(
         'no apt sources in ${sysrootDir.path}/etc/apt (cannot resolve -dev)',
       );
+    }
+
+    // Pin resolution to a mirror snapshot when the target declares a date, so
+    // the same `dev_packages` resolve to the same versions for the product's
+    // life. A source with no known snapshot service falls back to its live
+    // mirror (warned) rather than silently mis-resolving.
+    if (spec.snapshot case final date?) {
+      final ts = snapshotTimestamp(date);
+      if (ts == null) {
+        return CrossResolveResult.failed(
+          'sysroot.snapshot: cannot parse date "$date" '
+          '(use YYYY-MM-DD or a YYYYMMDDTHHMMSSZ stamp)',
+        );
+      }
+      urls = [
+        for (final u in urls)
+          switch (snapshotRewrite(u, ts)) {
+            final s? => s,
+            _ => () {
+              stderr.writeln(
+                'warning: no snapshot mirror for $u — '
+                'resolving against the live mirror (not reproducible)',
+              );
+              return u;
+            }(),
+          },
+      ];
     }
 
     // Machine-global apt index cache — the mirror metadata is workspace- and
@@ -520,6 +554,11 @@ class ArmGnuCrossProvider implements CrossProvider {
     final done = Directory(p.join(sysrootDir.path, '.emb', 'dev-packages'))
       ..createSync(recursive: true);
     for (final pkg in index.closure(spec.devPackages, satisfied: installed)) {
+      // Record the resolved version/digest for the lock's Packages pins before
+      // the idempotency short-circuit, so a re-stage captures the full set.
+      _devPackages.add(
+        LockedPackage(name: pkg.name, version: pkg.version, sha256: pkg.sha256),
+      );
       final name = p.basename(Uri.parse(pkg.url).path);
       final marker = File(p.join(done.path, name));
       if (marker.existsSync()) continue;
