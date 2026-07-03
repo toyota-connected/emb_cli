@@ -223,6 +223,22 @@ class CrossCommand extends Command<int> {
         negatable: false,
       )
       ..addFlag(
+        'fetch-only',
+        help:
+            'Resolve and materialize the toolchain + sysroot closure (and pin '
+            'emb.lock), then stop before configuring or building. The '
+            'acquisition step to run once while online.',
+        negatable: false,
+      )
+      ..addFlag(
+        'offline',
+        help:
+            'Deny all network access: reuse already-cached toolchain/sysroot '
+            'inputs and fail on a miss (run --fetch-only online first). Also '
+            'builds cargo modules with CARGO_NET_OFFLINE.',
+        negatable: false,
+      )
+      ..addFlag(
         'host-tools',
         help:
             "With --build: use the host's cmake/meson instead of the SDK's "
@@ -415,9 +431,15 @@ class CrossCommand extends Command<int> {
 
     final host = _host ?? HostInfo.detect();
     final workspace = Workspace.resolve(override: args['workspace'] as String?);
+    final offline = args['offline'] == true;
     final provider = isNative
         ? LocalCrossProvider(host)
-        : CrossProvider.forTarget(target, workspace: workspace, host: host);
+        : CrossProvider.forTarget(
+            target,
+            workspace: workspace,
+            host: host,
+            offline: offline,
+          );
 
     // --clean / --clean-all: remove working dirs and exit (no download).
     if (args['clean'] == true || args['clean-all'] == true) {
@@ -538,6 +560,14 @@ class CrossCommand extends Command<int> {
       )) {
         return ExitCode.software.code;
       }
+    }
+
+    // --fetch-only: the closure (toolchain + sysroot + apt -dev set) is now
+    // materialized in the store and pinned in emb.lock. Stop before any build
+    // so this can run online, after which the build runs with --offline.
+    if (args['fetch-only'] == true) {
+      _logger.success('Fetched cross closure for $effectiveTarget.');
+      return ExitCode.success.code;
     }
 
     // --dockerfile: emit an OCI build for the resolved toolchain+sysroot, then
@@ -1659,15 +1689,22 @@ class CrossCommand extends Command<int> {
       return null;
     }
     final triple = rustTriple(profile.targetTriple);
+    final offline = argResults!['offline'] == true;
     final env = {
       ...cargoEnv(profile, triple),
       'CARGO_TARGET_DIR': buildDir.path,
+      // A fast-fail under an offline build: cargo errors immediately on a
+      // needed registry/git fetch instead of hanging on a network timeout.
+      if (offline) 'CARGO_NET_OFFLINE': '1',
     };
     // Best-effort: install the target's std (idempotent; no-op without rustup).
-    try {
-      await _runProcess('rustup', ['target', 'add', triple]);
-    } on ProcessException {
-      // No rustup — assume the target std is present, else cargo will error.
+    // Skipped offline — it would reach rustup's dist server.
+    if (!offline) {
+      try {
+        await _runProcess('rustup', ['target', 'add', triple]);
+      } on ProcessException {
+        // No rustup — assume the target std is present, else cargo will error.
+      }
     }
     final r = await _runProcess(
       'cargo',
@@ -1676,6 +1713,7 @@ class CrossCommand extends Command<int> {
         '--release',
         '--target',
         triple,
+        if (offline) '--offline',
         if (m.features.isNotEmpty) ...['--features', m.features.join(',')],
       ],
       workingDirectory: src.path,

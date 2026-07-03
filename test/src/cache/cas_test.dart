@@ -72,4 +72,43 @@ void main() {
       throwsA(isA<CasException>()),
     );
   });
+
+  group('offline', () {
+    test('a cached blob is served without touching the network', () async {
+      final body = utf8.encode('hello cas');
+      final (url, hits, server) = await serve(body);
+      addTearDown(() => server.close(force: true));
+      final sha = sha256.convert(body).toString();
+
+      // Warm the cache online, then close the server so any network use fails.
+      final online = Cas(tmp);
+      await online.ensure(url);
+      online.close();
+      await server.close(force: true);
+
+      final offline = Cas(tmp, offline: true);
+      addTearDown(offline.close);
+      final f = await offline.ensure(url, expectedSha: sha);
+      expect(f.readAsBytesSync(), body);
+      expect(hits(), 1); // only the warming request
+    });
+
+    test('a cache miss fails closed instead of downloading', () async {
+      final (url, hits, server) = await serve(utf8.encode('x'));
+      addTearDown(() => server.close(force: true));
+      final cas = Cas(tmp, offline: true);
+      addTearDown(cas.close);
+      await expectLater(
+        cas.ensure(url, expectedSha: 'a' * 64),
+        throwsA(
+          isA<CasException>().having(
+            (e) => e.message,
+            'message',
+            contains('offline'),
+          ),
+        ),
+      );
+      expect(hits(), 0); // never reached the server
+    });
+  });
 }

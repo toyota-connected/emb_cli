@@ -40,4 +40,16 @@ void main() {
     expect(forProvider('yocto-recipe').preflightTools, contains('pkg-config'));
     expect(forProvider('yocto-sdk').preflightTools, contains('bash'));
   });
+
+  test('forTarget threads offline into the arm-gnu provider', () {
+    final on = CrossProvider.forTarget(
+      CrossTarget.fromMap({'provider': 'arm-gnu'}),
+      workspace: Workspace(tmp),
+      host: host,
+      offline: true,
+    );
+    expect((on as ArmGnuCrossProvider).offline, isTrue);
+    // Default stays online.
+    expect((forProvider('arm-gnu') as ArmGnuCrossProvider).offline, isFalse);
+  });
 }

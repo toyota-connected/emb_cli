@@ -42,6 +42,7 @@ class ArmGnuCrossProvider implements CrossProvider {
     HttpClient? httpClient,
     Cas? cas,
     Store? store,
+    this.offline = false,
   }) : _emitter = emitter,
        _http = httpClient ?? HttpClient(),
        _casOverride = cas,
@@ -50,6 +51,12 @@ class ArmGnuCrossProvider implements CrossProvider {
   final CrossTarget target;
   final Workspace workspace;
   final HostInfo host;
+
+  /// When true, every network fetch during resolve is denied: a cached
+  /// toolchain/sysroot/apt input is reused, and a miss fails rather than
+  /// reaching out.
+  final bool offline;
+
   final ToolchainEmitter _emitter;
   final HttpClient _http;
 
@@ -60,7 +67,8 @@ class ArmGnuCrossProvider implements CrossProvider {
   /// the shared cache dir. Built lazily so constructing the provider (e.g. for
   /// a plan) never touches the cache; injectable for tests.
   late final Cas _cas =
-      _casOverride ?? Cas(ensureCacheDir(), httpClient: _http);
+      _casOverride ??
+      Cas(ensureCacheDir(), httpClient: _http, offline: offline);
   late final Store _store = _storeOverride ?? Store(ensureCacheDir());
 
   /// Artifacts this resolve actually (re)materialized, recorded for `emb.lock`.
@@ -845,6 +853,9 @@ class ArmGnuCrossProvider implements CrossProvider {
   }
 
   Future<bool> _download(String url, File dest) async {
+    // Offline: never reach the network. Callers cache-check before calling
+    // this, so reaching here means a genuine miss — fail closed.
+    if (offline) return false;
     try {
       final req = await _http.getUrl(Uri.parse(url));
       req.followRedirects = true;

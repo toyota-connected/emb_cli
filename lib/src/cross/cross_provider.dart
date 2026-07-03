@@ -44,16 +44,20 @@ abstract class CrossProvider {
   /// with a content-addressed image base (arm-gnu) override this.
   List<({String kind, String key})> cacheSelectors() => const [];
 
-  /// Select the provider for [target] on [host], rooted at [workspace].
+  /// Select the provider for [target] on [host], rooted at [workspace]. When
+  /// [offline] is set the provider denies every network fetch during resolve,
+  /// reusing already-cached toolchain/sysroot inputs and failing on a miss.
   static CrossProvider forTarget(
     CrossTarget target, {
     required Workspace workspace,
     required HostInfo host,
+    bool offline = false,
   }) => switch (target.provider) {
     CrossProviderKind.armGnu => ArmGnuCrossProvider(
       target,
       workspace: workspace,
       host: host,
+      offline: offline,
     ),
     CrossProviderKind.yoctoRecipe => YoctoRecipeCrossProvider(
       target,
