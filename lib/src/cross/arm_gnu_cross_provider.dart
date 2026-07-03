@@ -80,6 +80,29 @@ class ArmGnuCrossProvider implements CrossProvider {
   @override
   List<String> get preflightTools => const ['tar', 'xz', 'rsync'];
 
+  @override
+  List<({String kind, String key})> cacheSelectors() {
+    final out = <({String kind, String key})>[
+      (kind: 'sysroot-base', key: sysrootBaseKey(target)),
+    ];
+    // The toolchain key needs its version. A pinned version is known here; a
+    // derived-from-sysroot version (unoq) isn't resolved yet, so its toolchain
+    // is left to the direct download rather than a pre-resolve cache pull.
+    final version = target.toolchainVersion;
+    if (version != null) {
+      final tcHost = host.machineArch == 'aarch64' ? 'aarch64' : 'x86_64';
+      out.add((
+        kind: 'toolchain',
+        key: armGnuToolchainKey(
+          version: version,
+          tcHost: tcHost,
+          triple: triple,
+        ),
+      ));
+    }
+    return out;
+  }
+
   /// Codename → ARM GNU toolchain version. The pin tracks the target's glibc:
   /// the bundled glibc must be ≤ the target's, and libstdc++'s gthr header
   /// must match the target's `pthread_cond_t` layout (reshuffled in glibc
@@ -231,7 +254,11 @@ class ArmGnuCrossProvider implements CrossProvider {
     required Directory platformDir,
   }) async {
     final tcHost = host.machineArch == 'aarch64' ? 'aarch64' : 'x86_64';
-    final dirName = 'arm-gnu-toolchain-$version-$tcHost-$triple';
+    final dirName = armGnuToolchainKey(
+      version: version,
+      tcHost: tcHost,
+      triple: triple,
+    );
     final link = Directory(p.join(platformDir.path, 'toolchain', dirName));
     final binDir = p.join(link.path, 'bin');
     final url =

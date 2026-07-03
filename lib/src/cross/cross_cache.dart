@@ -3,19 +3,23 @@ import 'dart:io';
 import 'package:emb_cli/src/cache/cache_dir.dart';
 import 'package:emb_cli/src/cache/oci_transport.dart';
 import 'package:emb_cli/src/cache/store.dart';
-import 'package:emb_cli/src/cross/cross_keys.dart';
-import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:mason_logger/mason_logger.dart';
 import 'package:path/path.dart' as p;
 
-/// Syncs the shared, content-addressed **sysroot base** with an OCI registry so
-/// a cross build resolves it as a cache hit instead of re-downloading and
-/// re-extracting the multi-GB distro image on every run (the slow, root-only
-/// path that fails in a non-privileged CI container).
+/// A content-addressed store entry to sync: its `kind` (`sysroot-base`,
+/// `toolchain`) and `key`. A provider names the ones a build can fetch before
+/// resolving via `cacheSelectors()`.
+typedef CacheSelector = ({String kind, String key});
+
+/// Syncs a provider's shared, content-addressed cross artifacts (the sysroot
+/// base and toolchain) with an OCI registry, so a cross build resolves them as
+/// store cache hits instead of re-downloading and re-extracting the multi-GB
+/// distro image + toolchain on every run (the slow, root-only path that fails
+/// in a non-privileged CI container).
 ///
-/// The base is keyed by [sysrootBaseKey] — augment-independent — so one pushed
-/// blob serves every target / CPU / augment variation that shares it. Both
+/// Each artifact is keyed independently of the augment set, so one pushed blob
+/// serves every target / CPU / augment variation that shares it. Both
 /// operations are best-effort: a miss, an unreachable registry, or a failed
 /// push all fall back to (or leave intact) the normal local extraction, so this
 /// only ever *saves* work. It is opt-in via `$EMB_CACHE_REGISTRY` — with no
@@ -59,23 +63,35 @@ class CrossCache {
   final ProcessRunner _run;
   final Logger? _logger;
 
-  static const _kind = 'sysroot-base';
+  /// The registry reference a [selector] pushes to / pulls from.
+  String refFor(CacheSelector selector) =>
+      cacheRef(registry, repo, selector.kind, selector.key);
 
-  /// The registry reference [target]'s sysroot base pushes to / pulls from.
-  String refFor(CrossTarget target) =>
-      cacheRef(registry, repo, _kind, sysrootBaseKey(target));
-
-  /// Populate the local store with [target]'s sysroot base from the registry.
+  /// Populate the local store with each [selectors] entry from the registry.
   /// A cache hit (already staged locally) never touches the network; a registry
-  /// miss or transport error leaves the normal image extraction to produce it.
-  Future<void> pull(CrossTarget target) async {
-    final key = sysrootBaseKey(target);
-    final ref = refFor(target);
+  /// miss or transport error leaves the normal local resolution to produce it.
+  Future<void> pull(Iterable<CacheSelector> selectors) async {
+    for (final s in selectors) {
+      await _pullOne(s);
+    }
+  }
+
+  /// Push each locally-resolved [selectors] entry to the registry (skipped when
+  /// the ref already exists). Call after a resolve has populated the store; a
+  /// push failure is logged but does not fail the caller.
+  Future<void> push(Iterable<CacheSelector> selectors) async {
+    for (final s in selectors) {
+      await _pushOne(s);
+    }
+  }
+
+  Future<void> _pullOne(CacheSelector s) async {
+    final ref = refFor(s);
     final tmp = Directory.systemTemp.createTempSync('emb_xc_pull_');
     try {
       await _store.ensure(
-        kind: _kind,
-        key: key,
+        kind: s.kind,
+        key: s.key,
         sourceUrl: ref,
         fetch: () => _transport.pull(ref, tmp),
         stage: (blob, into) async {
@@ -90,35 +106,33 @@ class CrossCache {
           }
         },
       );
-      _logger?.detail('sysroot-base pulled from $ref');
+      _logger?.detail('${s.kind} pulled from $ref');
     } on Exception catch (e) {
       // Not published yet, registry unreachable, or oras absent: fall back to
-      // the local extraction path. Never fail the build over a cache miss.
-      _logger?.detail('sysroot-base not pulled ($ref): $e');
+      // the local resolution path. Never fail the build over a cache miss.
+      _logger?.detail('${s.kind} not pulled ($ref): $e');
     } finally {
       tmp.deleteSync(recursive: true);
     }
   }
 
-  /// Push [target]'s locally-resolved sysroot base to the registry (skipped
-  /// when the ref already exists). Call after a resolve has populated the
-  /// store; a push failure is logged but does not fail the caller.
-  Future<void> push(CrossTarget target) async {
-    final key = sysrootBaseKey(target);
-    final ref = refFor(target);
+  Future<void> _pushOne(CacheSelector s) async {
+    final ref = refFor(s);
     try {
       if (await _transport.exists(ref)) {
-        _logger?.detail('sysroot-base already in registry ($ref)');
+        _logger?.detail('${s.kind} already in registry ($ref)');
         return;
       }
-      final root = _store.rootOf(_kind, key);
+      final root = _store.rootOf(s.kind, s.key);
       if (!root.existsSync()) {
-        _logger?.detail('no local sysroot-base to push ($ref)');
+        _logger?.detail('no local ${s.kind} to push ($ref)');
         return;
       }
       final tmp = Directory.systemTemp.createTempSync('emb_xc_push_');
       try {
-        final layer = File(p.join(tmp.path, '${cacheTag(_kind, key)}.tar.gz'));
+        final layer = File(
+          p.join(tmp.path, '${cacheTag(s.kind, s.key)}.tar.gz'),
+        );
         final tar = await _run('tar', [
           '-czf',
           layer.path,
@@ -127,7 +141,7 @@ class CrossCache {
           '.',
         ], output: ProcessOutputMode.capture);
         if (tar.exitCode != 0) {
-          _logger?.warn('sysroot-base tar failed ($ref): ${tar.stderr}');
+          _logger?.warn('${s.kind} tar failed ($ref): ${tar.stderr}');
           return;
         }
         await _transport.push(
@@ -135,16 +149,16 @@ class CrossCache {
           layer,
           annotations: {
             'org.opencontainers.image.title': p.basename(layer.path),
-            'dev.emb.cache.kind': _kind,
-            'dev.emb.cache.key': key,
+            'dev.emb.cache.kind': s.kind,
+            'dev.emb.cache.key': s.key,
           },
         );
-        _logger?.detail('sysroot-base pushed to $ref');
+        _logger?.detail('${s.kind} pushed to $ref');
       } finally {
         tmp.deleteSync(recursive: true);
       }
     } on Exception catch (e) {
-      _logger?.warn('sysroot-base push failed ($ref): $e');
+      _logger?.warn('${s.kind} push failed ($ref): $e');
     }
   }
 }

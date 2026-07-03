@@ -486,21 +486,20 @@ class CrossCommand extends Command<int> {
       }
     }
 
-    // When a cache registry is configured, pull the shared sysroot base before
-    // resolving so the resolve is a store cache hit instead of re-downloading +
-    // re-extracting the distro image (the slow, root-only path that fails in a
-    // non-privileged container). No-op without a registry, and a miss simply
-    // falls through to the normal extraction. arm-gnu is the only provider
-    // whose sysroot is an extracted image base.
-    final crossCache = provider.name == 'arm-gnu'
-        ? CrossCache.fromEnv(
-            environment: Platform.environment,
-            run: _runProcess,
-            logger: _logger,
-          )
-        : null;
-    if (crossCache != null) {
-      await crossCache.pull(target);
+    // When a cache registry is configured, pull the provider's shared artifacts
+    // (sysroot base + toolchain) before resolving so the resolve is a store
+    // cache hit instead of re-downloading + re-extracting them (the slow,
+    // root-only sysroot path fails in a non-privileged container). No-op
+    // without a registry or for providers with no content-addressed base, and
+    // a miss simply falls through to the normal resolution.
+    final crossCache = CrossCache.fromEnv(
+      environment: Platform.environment,
+      run: _runProcess,
+      logger: _logger,
+    );
+    final cacheSelectors = provider.cacheSelectors();
+    if (crossCache != null && cacheSelectors.isNotEmpty) {
+      await crossCache.pull(cacheSelectors);
     }
 
     final progress = _steps.start('Resolving ${provider.name} cross profile');
@@ -558,11 +557,13 @@ class CrossCommand extends Command<int> {
         push: args['push'] == true,
         toolOverride: args['container-tool'] as String?,
       );
-      // Publish the shared sysroot base so consuming builds pull it instead of
-      // re-extracting. Best-effort (see CrossCache) and only when a cache
+      // Publish the shared artifacts so consuming builds pull them instead of
+      // re-resolving. Best-effort (see CrossCache) and only when a cache
       // registry is configured; the image is the primary artifact.
-      if (code == ExitCode.success.code && crossCache != null) {
-        await crossCache.push(target);
+      if (code == ExitCode.success.code &&
+          crossCache != null &&
+          cacheSelectors.isNotEmpty) {
+        await crossCache.push(cacheSelectors);
       }
       return code;
     }

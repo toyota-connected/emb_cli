@@ -54,6 +54,9 @@ class YoctoSdkCrossProvider implements CrossProvider {
   @override
   List<String> get preflightTools => const ['bash', 'sh'];
 
+  @override
+  List<({String kind, String key})> cacheSelectors() => const [];
+
   /// Close the underlying HTTP client.
   void close() => _http.close(force: true);
 

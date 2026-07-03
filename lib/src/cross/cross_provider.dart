@@ -38,6 +38,12 @@ abstract class CrossProvider {
   /// read-only or shared Yocto SDK sysroot stays pristine.
   Future<CrossResolveResult> resolve();
 
+  /// Content-addressed store selectors `(kind, key)` this provider can fetch
+  /// from a shared OCI cache *before* resolving, so a build pulls them instead
+  /// of re-downloading and re-extracting. Empty by default — only providers
+  /// with a content-addressed image base (arm-gnu) override this.
+  List<({String kind, String key})> cacheSelectors() => const [];
+
   /// Select the provider for [target] on [host], rooted at [workspace].
   static CrossProvider forTarget(
     CrossTarget target, {

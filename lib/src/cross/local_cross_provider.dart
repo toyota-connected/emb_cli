@@ -26,6 +26,9 @@ class LocalCrossProvider implements CrossProvider {
   List<String> get preflightTools => const [];
 
   @override
+  List<({String kind, String key})> cacheSelectors() => const [];
+
+  @override
   Future<CrossResolveResult> resolve() async {
     if (host.os != HostOs.linux) {
       return CrossResolveResult.unavailable(
