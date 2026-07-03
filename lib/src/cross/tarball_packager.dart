@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:emb_cli/src/cross/determinism.dart';
 import 'package:emb_cli/src/cross/package_stager.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:path/path.dart' as p;
@@ -69,9 +70,20 @@ class TarballPackager extends PackageStager {
         '${meta.name}_${meta.version}_${meta.architecture}.tar.gz',
       ),
     );
-    // `-C <root> .` packs paths relative to the target root (./usr/bin/…).
+    // Deterministic tarball: stable entry order, fixed ownership, and
+    // (when SOURCE_DATE_EPOCH is set) a clamped mtime, with `gzip -n` so the
+    // compressed stream carries no timestamp of its own. `-C <root> .` packs
+    // paths relative to the target root (./usr/bin/…).
+    final epoch = sourceDateEpoch();
     final r = await run('tar', [
-      '-czf',
+      '--sort=name',
+      '--owner=0',
+      '--group=0',
+      '--numeric-owner',
+      if (epoch != null) ...['--mtime=@$epoch', '--clamp-mtime'],
+      '--use-compress-program',
+      'gzip -n',
+      '-cf',
       out.path,
       '-C',
       root.path,
