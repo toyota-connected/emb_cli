@@ -152,5 +152,24 @@ void main() {
       // Same toolchain/image, but the sysroot content differs.
       expect(sysrootKey(withLink), isNot(sysrootKey(rpi5)));
     });
+
+    test('a snapshot date changes the sysrootBaseKey', () {
+      CrossTarget snap(String? date) => _t({
+        'provider': 'arm-gnu',
+        'toolchain_version': '12.3.rel1',
+        'image_url': 'https://example/raspios.img.xz',
+        'cpu_flags': const ['-mcpu=cortex-a76'],
+        'sysroot': {
+          'dev_packages': const ['libdrm-dev'],
+          if (date != null) 'snapshot': date,
+        },
+      });
+      // A different pin date must re-key so the sysroot re-extracts against the
+      // new snapshot; the same date is stable.
+      final jun = sysrootBaseKey(snap('2024-06-01'));
+      expect(jun, isNot(sysrootBaseKey(snap(null))));
+      expect(jun, isNot(sysrootBaseKey(snap('2024-07-01'))));
+      expect(jun, sysrootBaseKey(snap('2024-06-01')));
+    });
   });
 }

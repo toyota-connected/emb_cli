@@ -11,6 +11,8 @@ class AptPackage {
     required this.name,
     required this.filename,
     required this.repoBase,
+    this.version,
+    this.sha256,
     this.depends = const [],
     this.provides = const [],
   });
@@ -22,6 +24,13 @@ class AptPackage {
 
   /// Repository root the package is downloaded from (`<repoBase>/<filename>`).
   final String repoBase;
+
+  /// `Version:` — the exact package version, recorded so a resolve can be
+  /// pinned and later re-resolves can detect a mirror serving different bytes.
+  final String? version;
+
+  /// `SHA256:` — the digest of the `.deb` as the index advertises it.
+  final String? sha256;
 
   final List<String> depends;
   final List<String> provides;
@@ -103,6 +112,8 @@ AptIndex parsePackagesIndex(String text, {required String repoBase}) {
       name: name,
       filename: filename,
       repoBase: repoBase,
+      version: fields['Version'],
+      sha256: fields['SHA256'],
       depends: depends,
       provides: prov,
     );
