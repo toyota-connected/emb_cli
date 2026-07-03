@@ -5,6 +5,8 @@ import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/commands/cross_command.dart';
 import 'package:emb_cli/src/cross/cross_keys.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
+import 'package:emb_cli/src/cross/dockerfile_emitter.dart';
+import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:mason_logger/mason_logger.dart';
 import 'package:path/path.dart' as p;
@@ -76,6 +78,69 @@ void main() {
     );
     // No --image, so it must error without downloading anything.
     expect(await run(['cross', pkg.path, '--publish']), ExitCode.usage.code);
+  });
+
+  test('publish skip probe uses the resolved triple', () async {
+    // A manifest that omits `triple` resolves to the arm-gnu default; the
+    // skip-on-exists probe must use that resolved triple, not an empty one, or
+    // it would never match the published tag and would re-resolve every run.
+    const cross = {
+      'provider': 'arm-gnu',
+      'toolchain_version': '12.3.rel1',
+      'image_url': 'https://x/y.img.xz',
+    };
+    final pkg = pkgWith(
+      'skip',
+      'id: skip\ntype: app\ncross:\n  provider: arm-gnu\n'
+          '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n',
+    );
+    final target = CrossTarget.fromMap(cross);
+    final publishedTag = ToolchainImage.imageTag(
+      triple: 'aarch64-none-linux-gnu',
+      sysrootKey: sysrootKey(target),
+      toolchainVersion: target.toolchainVersion,
+      hostDevPackages: target.hostDevPackages,
+    );
+    const image = 'reg.example/x';
+
+    final calls = <String>[];
+    Future<RunResult> runner(
+      String exe,
+      List<String> args, {
+      String? workingDirectory,
+      Map<String, String>? environment,
+      bool includeParentEnvironment = true,
+      bool runInShell = false,
+      ProcessOutputMode output = ProcessOutputMode.capture,
+      String? label,
+    }) async {
+      calls.add('$exe ${args.join(' ')}');
+      // docker is present, skopeo is not (so the probe is `manifest inspect`).
+      if (args.length == 1 && args.first == '--version') {
+        return RunResult(exe == 'docker' ? 0 : 1, '', '');
+      }
+      // "Published" only for the correct, resolved-triple ref.
+      if (args.length >= 2 && args[0] == 'manifest' && args[1] == 'inspect') {
+        return RunResult(args.last == '$image:$publishedTag' ? 0 : 1, '', '');
+      }
+      return const RunResult(1, '', '');
+    }
+
+    final crossRunner = CommandRunner<int>('emb', 'test')
+      ..addCommand(
+        CrossCommand(logger: Logger(), host: _host, processRunner: runner),
+      );
+    final code = await crossRunner.run([
+      'cross',
+      pkg.path,
+      '--publish',
+      '--image',
+      image,
+    ]);
+
+    // Skipped (no resolve/download), and the probe used the resolved-triple tag.
+    expect(code, ExitCode.success.code);
+    expect(calls, contains('docker manifest inspect $image:$publishedTag'));
   });
 
   test('--dry-run reports the backends matrix', () async {

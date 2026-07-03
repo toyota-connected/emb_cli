@@ -463,6 +463,7 @@ class CrossCommand extends Command<int> {
         provider.name == 'arm-gnu') {
       if (await _publishedAlready(
         target,
+        triple: provider.triple,
         image: publishImage!,
         toolOverride: args['container-tool'] as String?,
       )) {
@@ -1966,13 +1967,18 @@ class CrossCommand extends Command<int> {
   /// matches the one [_writeImageBuildContext] would emit post-resolve.
   Future<bool> _publishedAlready(
     CrossTarget target, {
+    required String triple,
     required String image,
     required String? toolOverride,
   }) async {
     final tool = await _resolveContainerTool(toolOverride);
     if (tool == null) return false; // the full path reports the tool error
+    // Use the provider's resolved triple, not `target.targetTriple ?? ''`: the
+    // build tags with the resolved default (aarch64-none-linux-gnu) for a
+    // manifest that omits `triple`, so probing the empty-triple tag would never
+    // match and the skip-on-exists fast path would be dead.
     final imageTag = ToolchainImage.imageTag(
-      triple: target.targetTriple ?? '',
+      triple: triple,
       sysrootKey: sysrootKey(target),
       toolchainVersion: target.toolchainVersion,
       hostDevPackages: target.hostDevPackages,
