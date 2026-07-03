@@ -4,6 +4,7 @@ import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/aot/aot_builder.dart';
 import 'package:emb_cli/src/bundle/bundle_builder.dart';
 import 'package:emb_cli/src/bundle/bundle_pipeline.dart';
+import 'package:emb_cli/src/cross/bundle_audit.dart';
 import 'package:emb_cli/src/cross/cargo_env.dart';
 import 'package:emb_cli/src/cross/cross_arch.dart';
 import 'package:emb_cli/src/cross/cross_builder.dart';
@@ -16,6 +17,7 @@ import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/cross/deb_packager.dart';
 import 'package:emb_cli/src/cross/deployer.dart';
 import 'package:emb_cli/src/cross/dockerfile_emitter.dart';
+import 'package:emb_cli/src/cross/elf_check.dart';
 import 'package:emb_cli/src/cross/emb_lock.dart';
 import 'package:emb_cli/src/cross/flatpak_packager.dart';
 import 'package:emb_cli/src/cross/image_publisher.dart';
@@ -994,6 +996,24 @@ class CrossCommand extends Command<int> {
       if (!ok) return ExitCode.software.code;
     }
 
+    // Verify the assembled bundle's lib/ holds only the engine, the app image,
+    // and the declared module artifacts, each built for the target — before it
+    // is copied to every runnable dir, tarball, flatpak, and deploy target.
+    final audit = auditBundleLib(
+      Directory(p.join(appBundle.path, 'lib')),
+      triple: profile.targetTriple,
+      moduleArtifacts: target.modules.expand((m) => m.artifacts),
+    );
+    if (!audit.ok) {
+      for (final m in audit.archMismatches) {
+        _logger.err('  bundle lib/: $m');
+      }
+      for (final s in audit.strays) {
+        _logger.err('  bundle lib/: unexpected file "$s"');
+      }
+      return ExitCode.software.code;
+    }
+
     final runnable = RunnableBundle();
     for (final r in built) {
       final binary = _artifactFor(r.buildDir, target.package?.bin);
@@ -1002,6 +1022,11 @@ class CrossCommand extends Command<int> {
           '  ${r.backend ?? ""}: no embedder binary in ${r.buildDir} '
           '(set cross.package.bin)',
         );
+        return ExitCode.software.code;
+      }
+      final binArchErr = verifyElfForTriple(binary, profile.targetTriple);
+      if (binArchErr != null) {
+        _logger.err('  ${r.backend ?? ""}: embedder binary $binArchErr');
         return ExitCode.software.code;
       }
       final multi = built.length > 1 && r.backend != null;
@@ -1601,6 +1626,11 @@ class CrossCommand extends Command<int> {
             '  module ${m.name}: artifact "$soname" not found under '
             '${artifactDir.path}',
           );
+          return false;
+        }
+        final archErr = verifyElfForTriple(staged, profile.targetTriple);
+        if (archErr != null) {
+          _logger.err('  module ${m.name}: artifact "$soname" $archErr');
           return false;
         }
       }

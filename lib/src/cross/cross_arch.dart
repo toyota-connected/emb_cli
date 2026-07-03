@@ -67,6 +67,33 @@ String flatpakArch(String triple) => switch (archOfTriple(triple)) {
   final a => a,
 };
 
+/// The ELF `e_machine` value expected for a triple's arch (`aarch64` →
+/// `EM_AARCH64` 0xB7, `arm` → `EM_ARM` 0x28, `riscv64` → `EM_RISCV` 0xF3,
+/// `x86_64` → `EM_X86_64` 0x3E). Returns 0 for an arch with no known mapping,
+/// which callers treat as "skip the machine check" rather than a mismatch.
+int elfMachine(String triple) => switch (archOfTriple(triple)) {
+  'aarch64' || 'arm64' => 0xB7,
+  'arm' || 'armv7' || 'armv7l' || 'armhf' => 0x28,
+  'riscv64' => 0xF3,
+  'x86_64' || 'amd64' => 0x3E,
+  final _ => 0,
+};
+
+/// The ELF class expected for a triple's arch: 1 = ELFCLASS32 (32-bit), 2 =
+/// ELFCLASS64 (64-bit). Only `arm` is 32-bit among the arches emb targets.
+int elfClass(String triple) => switch (archOfTriple(triple)) {
+  'arm' || 'armv7' || 'armv7l' || 'armhf' => 1,
+  final _ => 2,
+};
+
+/// Whether the triple's ABI mandates the ARM hard-float ELF flag
+/// (`EF_ARM_ABI_FLOAT_HARD`, 0x400). True for the `*eabihf` arm triples
+/// (`arm-…-gnueabihf`, `armhf-*`), whose objects must not be mixed with a
+/// soft-float runtime. Only meaningful for the 32-bit `arm` family.
+bool elfArmHardFloat(String triple) =>
+    elfClass(triple) == 1 &&
+    (triple.toLowerCase().contains('hf') || archOfTriple(triple) == 'armhf');
+
 /// The Rust target triple for a GNU triple's arch (`aarch64-*` →
 /// `aarch64-unknown-linux-gnu`, `arm-*`/`armhf` → `armv7-unknown-linux-gnueabihf`),
 /// used for `cargo build --target` and the target-suffixed cargo env vars.

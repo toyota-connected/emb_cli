@@ -82,6 +82,10 @@ void main() {
       cpuFlags: const [],
     );
     final text = File(path).readAsStringSync();
-    expect(text, contains("c_args = ['--sysroot=/sr']"));
+    // Only the sysroot and the prefix-map remain; no cpu tuning.
+    const expected =
+        "c_args = ['--sysroot=/sr', '-ffile-prefix-map=/sr=/emb/sysroot'";
+    expect(text, contains(expected));
+    expect(text, isNot(contains('-mcpu')));
   });
 }

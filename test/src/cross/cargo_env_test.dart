@@ -38,14 +38,19 @@ void main() {
 
   test('carries the sysroot + cpu tuning into target CFLAGS and bindgen', () {
     final env = cargoEnv(profile(), rust);
-    // cc-rs C compilation must see the sysroot, not just the cpu tuning.
+    // cc-rs C compilation must see the sysroot, not just the cpu tuning, plus
+    // the reproducibility prefix-map flags.
     expect(
       env['CFLAGS_aarch64_unknown_linux_gnu'],
-      '--sysroot=/sysroot -mcpu=cortex-a76',
+      startsWith('--sysroot=/sysroot -mcpu=cortex-a76'),
+    );
+    expect(
+      env['CFLAGS_aarch64_unknown_linux_gnu'],
+      contains('-ffile-prefix-map=/sysroot=/emb/sysroot'),
     );
     expect(
       env['BINDGEN_EXTRA_CLANG_ARGS'],
-      '--sysroot=/sysroot -mcpu=cortex-a76',
+      startsWith('--sysroot=/sysroot -mcpu=cortex-a76'),
     );
   });
 
@@ -72,10 +77,16 @@ void main() {
       // arm-gnu keeps in cFlags, with ldFlags empty. Without this the linker
       // cannot find crt1.o / -lc.
       final env = cargoEnv(profile(), rust);
+      final rf = env['CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS']!;
       expect(
-        env['CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS'],
-        '-C link-arg=--sysroot=/sysroot -C link-arg=-mcpu=cortex-a76',
+        rf,
+        startsWith(
+          '-C link-arg=--sysroot=/sysroot -C link-arg=-mcpu=cortex-a76',
+        ),
       );
+      // The Rust half is canonicalized with --remap-path-prefix, not the
+      // gcc-style prefix-map flags.
+      expect(rf, contains('--remap-path-prefix=/sysroot=/emb/sysroot'));
 
       // A realistic Debian-multiarch arm-gnu flag set: the -B/-L crt/libc paths
       // must reach the linker as link-args.
@@ -101,11 +112,12 @@ void main() {
         contains('-C link-arg=-L/sysroot/usr/lib/aarch64-linux-gnu'),
       );
 
-      // Provider ldFlags (when set, e.g. Yocto) are appended after cFlags.
+      // Provider ldFlags (when set, e.g. Yocto) are appended after cFlags —
+      // among the link args, ahead of the trailing remap-path-prefix flags.
       final withLd = cargoEnv(profile(ldFlags: [r'-Wl,-rpath,$ORIGIN']), rust);
       expect(
         withLd['CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS'],
-        endsWith(r'-C link-arg=-Wl,-rpath,$ORIGIN'),
+        contains(r'-C link-arg=-Wl,-rpath,$ORIGIN'),
       );
     },
   );

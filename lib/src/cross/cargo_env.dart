@@ -1,4 +1,6 @@
 import 'package:emb_cli/src/cross/cross_profile.dart';
+import 'package:emb_cli/src/cross/determinism.dart';
+import 'package:path/path.dart' as p;
 
 /// The Cargo / cc-rs environment for cross-compiling a Rust module for
 /// [rustTriple] using the C toolchain in [profile]. The caller layers this over
@@ -31,9 +33,23 @@ Map<String, String> cargoEnv(CrossProfile profile, String rustTriple) {
   final sysrootArg = profile.targetSysroot.isNotEmpty
       ? ['--sysroot=${profile.targetSysroot}']
       : const <String>[];
-  final cflags = [...sysrootArg, ...profile.cFlags].join(' ');
-  final cxxflags = [...sysrootArg, ...profile.cxxFlags].join(' ');
+
+  // Strip host paths (sysroot + toolchain bin) out of recorded build paths, so
+  // the cdylib is reproducible across checkouts. The C halves take gcc's
+  // prefix-map flags; the Rust half takes rustc's `--remap-path-prefix`.
+  final prefixMap = toolchainPrefixMap(
+    sysroot: profile.targetSysroot,
+    crossBin: p.dirname(profile.cc),
+  );
+  final pmFlags = prefixMapFlags(prefixMap);
+
+  final cflags = [...sysrootArg, ...profile.cFlags, ...pmFlags].join(' ');
+  final cxxflags = [...sysrootArg, ...profile.cxxFlags, ...pmFlags].join(' ');
   final linkArgs = [...sysrootArg, ...profile.cFlags, ...profile.ldFlags];
+  final rustFlags = [
+    ...linkArgs.map((f) => '-C link-arg=$f'),
+    ...rustRemapArgs(prefixMap),
+  ];
 
   return {
     // Linker driver + cc-rs compiler selection, target-scoped.
@@ -43,17 +59,20 @@ Map<String, String> cargoEnv(CrossProfile profile, String rustTriple) {
     'AR_$lower': profile.ar,
     if (cflags.isNotEmpty) 'CFLAGS_$lower': cflags,
     if (cxxflags.isNotEmpty) 'CXXFLAGS_$lower': cxxflags,
-    // Target-scoped rustc link args — kept off the global RUSTFLAGS so host
-    // build scripts are unaffected. Each flag is wrapped as a `link-arg` so
-    // rustc forwards it verbatim to the `gcc` linker driver.
-    if (linkArgs.isNotEmpty)
-      'CARGO_TARGET_${upper}_RUSTFLAGS': linkArgs
-          .map((f) => '-C link-arg=$f')
-          .join(' '),
+    // Target-scoped rustc flags — kept off the global RUSTFLAGS so host build
+    // scripts are unaffected. C link args are wrapped as `link-arg` so rustc
+    // forwards them verbatim to the `gcc` linker driver; `--remap-path-prefix`
+    // is a rustc flag in its own right.
+    if (rustFlags.isNotEmpty)
+      'CARGO_TARGET_${upper}_RUSTFLAGS': rustFlags.join(' '),
     // pkg-config: permit cross probing and carry the sysroot wiring.
     'PKG_CONFIG_ALLOW_CROSS': '1',
     ...?profile.pkgConfig?.toEnv(),
     // bindgen (for `-sys` crates) needs the sysroot + tuning on its clang args.
-    'BINDGEN_EXTRA_CLANG_ARGS': [...sysrootArg, ...profile.cFlags].join(' '),
+    'BINDGEN_EXTRA_CLANG_ARGS': [
+      ...sysrootArg,
+      ...profile.cFlags,
+      ...pmFlags,
+    ].join(' '),
   };
 }
