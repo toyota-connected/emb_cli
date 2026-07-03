@@ -36,9 +36,13 @@ void main() {
     expect(env.containsKey('CFLAGS'), isFalse);
   });
 
-  test('carries cpu tuning into the target CFLAGS and bindgen args', () {
+  test('carries the sysroot + cpu tuning into target CFLAGS and bindgen', () {
     final env = cargoEnv(profile(), rust);
-    expect(env['CFLAGS_aarch64_unknown_linux_gnu'], '-mcpu=cortex-a76');
+    // cc-rs C compilation must see the sysroot, not just the cpu tuning.
+    expect(
+      env['CFLAGS_aarch64_unknown_linux_gnu'],
+      '--sysroot=/sysroot -mcpu=cortex-a76',
+    );
     expect(
       env['BINDGEN_EXTRA_CLANG_ARGS'],
       '--sysroot=/sysroot -mcpu=cortex-a76',
@@ -60,18 +64,69 @@ void main() {
     expect(env['PKG_CONFIG_LIBDIR'], '/sysroot/usr/lib/pkgconfig');
   });
 
-  test('maps ldFlags to target-scoped rustc link args only when present', () {
-    expect(
-      cargoEnv(
-        profile(),
+  test(
+    'rustc link args carry the sysroot + the C search paths, then ldFlags',
+    () {
+      // The rustc link step runs through gcc, so it must receive the same
+      // --sysroot and crt/libc search paths the cmake/meson link uses — which
+      // arm-gnu keeps in cFlags, with ldFlags empty. Without this the linker
+      // cannot find crt1.o / -lc.
+      final env = cargoEnv(profile(), rust);
+      expect(
+        env['CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS'],
+        '-C link-arg=--sysroot=/sysroot -C link-arg=-mcpu=cortex-a76',
+      );
+
+      // A realistic Debian-multiarch arm-gnu flag set: the -B/-L crt/libc paths
+      // must reach the linker as link-args.
+      final ma = cargoEnv(
+        profile(
+          cFlags: const [
+            '-mcpu=cortex-a76',
+            '-B/sysroot/usr/lib/aarch64-linux-gnu',
+            '-L/sysroot/usr/lib/aarch64-linux-gnu',
+            '-Wl,-rpath-link,/sysroot/usr/lib/aarch64-linux-gnu',
+          ],
+        ),
         rust,
-      ).containsKey('CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS'),
-      isFalse,
+      );
+      final rustflags = ma['CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS']!;
+      expect(rustflags, contains('-C link-arg=--sysroot=/sysroot'));
+      expect(
+        rustflags,
+        contains('-C link-arg=-B/sysroot/usr/lib/aarch64-linux-gnu'),
+      );
+      expect(
+        rustflags,
+        contains('-C link-arg=-L/sysroot/usr/lib/aarch64-linux-gnu'),
+      );
+
+      // Provider ldFlags (when set, e.g. Yocto) are appended after cFlags.
+      final withLd = cargoEnv(profile(ldFlags: [r'-Wl,-rpath,$ORIGIN']), rust);
+      expect(
+        withLd['CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS'],
+        endsWith(r'-C link-arg=-Wl,-rpath,$ORIGIN'),
+      );
+    },
+  );
+
+  test('omits the sysroot flags when the profile has no sysroot (native)', () {
+    final env = cargoEnv(
+      const CrossProfile(
+        providerName: 'local',
+        targetTriple: 'x86_64-linux-gnu',
+        cc: '/usr/bin/gcc',
+        cxx: '/usr/bin/g++',
+        ar: '/usr/bin/ar',
+        strip: '/usr/bin/strip',
+        targetSysroot: '',
+      ),
+      'x86_64-unknown-linux-gnu',
     );
-    final env = cargoEnv(profile(ldFlags: [r'-Wl,-rpath,$ORIGIN']), rust);
+    expect(env['BINDGEN_EXTRA_CLANG_ARGS'], isNot(contains('--sysroot')));
     expect(
-      env['CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS'],
-      r'-C link-arg=-Wl,-rpath,$ORIGIN',
+      env.containsKey('CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS'),
+      isFalse,
     );
   });
 }
