@@ -157,6 +157,9 @@
     "sandbox",
     "subprocess",
     "subprocesses",
-    "unshare"
+    "unshare",
+    "escrow",
+    "zst",
+    "zstd"
   ]
 }
