@@ -25,11 +25,18 @@ class CasException implements Exception {
 /// re-download-and-compare. The same URL served from a mirror that hashes
 /// identically is a hit, not drift.
 class Cas {
-  /// Roots the CAS at [root]; [httpClient] is injectable for tests.
-  Cas(this.root, {HttpClient? httpClient}) : _http = httpClient ?? HttpClient();
+  /// Roots the CAS at [root]; [httpClient] is injectable for tests. When
+  /// [offline] is set, [ensure] never touches the network: a blob already in
+  /// the cache is returned, and anything else fails instead of downloading.
+  Cas(this.root, {HttpClient? httpClient, this.offline = false})
+    : _http = httpClient ?? HttpClient();
 
   /// The cache root (holds `cas/`, `tmp/`).
   final Directory root;
+
+  /// When true, a cache miss is an error rather than a download.
+  final bool offline;
+
   final HttpClient _http;
 
   Directory get _casDir => Directory(p.join(root.path, 'cas', 'sha256'));
@@ -45,6 +52,13 @@ class Cas {
   Future<File> ensure(String url, {String? expectedSha}) async {
     if (expectedSha != null && blobFor(expectedSha).existsSync()) {
       return blobFor(expectedSha);
+    }
+    if (offline) {
+      throw CasException(
+        'offline: required artifact not cached: $url'
+        '${expectedSha != null ? " (sha256 $expectedSha)" : ""} — '
+        'fetch it online before an offline build',
+      );
     }
     final lock = File(
       p.join(root.path, 'cas', 'locks', '${contentHash([url])}.lock'),
