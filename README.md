@@ -749,14 +749,16 @@ archive.
   closure — including the apt `-dev` set — into the shared store and pins
   `emb.lock`. It also vendors each `build: cargo` module's crates
   (`cargo vendor --locked`, keyed by its `Cargo.lock`) into the store, and with
-  `--app` runs `flutter pub get --enforce-lockfile` to populate `PUB_CACHE`.
-  Then it stops.
+  `--app` runs `flutter pub get --enforce-lockfile` into a store-rooted
+  `PUB_CACHE`. Then it stops. Everything now lives under the shared cache, so
+  one [`emb cache export`](#emb-cache) escrows the whole closure.
 - `emb cross … --build --offline` then builds with all network access denied:
   the content store serves a cached blob or fails closed rather than
-  downloading, the apt path refuses to reach out, and cargo modules build
-  against the vendored crates (`CARGO_HOME` → vendor dir, `CARGO_NET_OFFLINE`,
-  `--offline`) so they never touch the registry. A miss names the missing
-  artifact and points you back at the fetch step.
+  downloading, the apt path refuses to reach out, cargo modules build against
+  the vendored crates (`CARGO_HOME` → vendor dir, `CARGO_NET_OFFLINE`,
+  `--offline`), and the app's `flutter build bundle` reads from the same
+  store-rooted `PUB_CACHE` — so nothing touches a registry. A miss names the
+  missing artifact and points you back at the fetch step.
 
 `--offline` denies emb's own egress and fast-fails cargo, but trusts a build
 subprocess to honor it. `--offline-strict` additionally runs build subprocesses
@@ -850,7 +852,7 @@ emb fetch <project-dir|manifest.yaml> [options]
 | `<project-dir\|manifest>` | **mandatory (positional)** | Project dir or manifest file (same resolution as `emb cross`). |
 | `-t`, `--target <name>` | manifest default | Target to fetch; a `cross.targets` entry or a per-board `.emb/` file. |
 | `-w`, `--workspace <dir>` | resolution order | Workspace root. |
-| `--app <dir>` | — | Also prefetch this Flutter app's pub packages (`flutter pub get --enforce-lockfile`) into `PUB_CACHE`. |
+| `--app <dir>` | — | Also prefetch this Flutter app's pub packages (`flutter pub get --enforce-lockfile`) into the store-rooted `PUB_CACHE`, so they are part of the offline closure the escrow archives. |
 | `--update-lock` | off | Regenerate this target's `emb.lock` entry from the resolved toolchain/sysroot. |
 | `--no-verify` | off | Skip `emb.lock` verification for this resolve. |
 
@@ -912,7 +914,7 @@ every workspace and target. Location resolves as `$EMB_CACHE_DIR`, else
 | `migrate [-w <ws>] [--dry-run]` | Adopt a workspace's existing toolchain/engine trees into the store (moved in place of a re-download), leaving symlinks behind. |
 | `push [<kind>/<key> …] --registry <r> [--repo <r>] [--force] [--dry-run] [--json]` | Upload store entries to an OCI registry as artifacts (via `oras`), so a team/CI shares prebuilt trees. Defaults to every complete entry; skips refs that already exist unless `--force`. |
 | `pull <kind>/<key> … --registry <r> [--repo <r>] [--link <dir>] [--json]` | Download named entries from the registry into the store (extract-staged like a local build); `--link` also symlinks each into `<dir>`. |
-| `export <archive.tar.zst> [--cas-only]` | Package the offline build closure (content-addressed blobs, extracted trees, apt `-dev` set, vendored crates) into one deterministic `.tar.zst` escrow archive. `--cas-only` keeps just the blobs (~half the size; trees re-extract on an offline resolve). See [Offline builds](#offline-builds). |
+| `export <archive.tar.zst> [--cas-only]` | Package the offline build closure (content-addressed blobs, extracted trees, apt `-dev` set, vendored crates, pub packages) into one deterministic `.tar.zst` escrow archive. `--cas-only` keeps just the blobs (~half the size; trees re-extract on an offline resolve). See [Offline builds](#offline-builds). |
 | `import <archive.tar.zst> [--json]` | Restore an escrow archive into the cache, merging with what's there (content-addressed entries are identical, so overlap is safe). |
 
 The OCI registry (`push`/`pull`) is the *live* mirror under your control; an

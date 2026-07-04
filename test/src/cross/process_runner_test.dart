@@ -88,4 +88,36 @@ void main() {
       expect(r.stdout, isNot(contains('line1\n')));
     });
   });
+
+  group('withEnv', () {
+    test('merges extra env (winning) and forwards the other args', () async {
+      Map<String, String>? gotEnv;
+      String? gotCwd;
+      Future<RunResult> inner(
+        String exe,
+        List<String> args, {
+        String? workingDirectory,
+        Map<String, String>? environment,
+        bool includeParentEnvironment = true,
+        bool runInShell = false,
+        ProcessOutputMode output = ProcessOutputMode.capture,
+        String? label,
+      }) async {
+        gotEnv = environment;
+        gotCwd = workingDirectory;
+        return const RunResult(0, '', '');
+      }
+
+      final run = withEnv(inner, {'PUB_CACHE': '/store/pub-cache', 'A': '2'});
+      await run(
+        'flutter',
+        const ['pub', 'get'],
+        workingDirectory: '/app',
+        environment: {'A': '1', 'B': '3'},
+      );
+
+      expect(gotEnv, {'A': '2', 'B': '3', 'PUB_CACHE': '/store/pub-cache'});
+      expect(gotCwd, '/app');
+    });
+  });
 }

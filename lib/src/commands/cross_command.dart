@@ -334,10 +334,16 @@ class CrossCommand extends Command<int> {
       _injectedRunner ?? makeProcessRunner(verbosity: embVerbosity);
 
   /// Builds an [AotBuilder] using the injected factory, else the default wired
-  /// to the verbosity-aware [_runProcess] so AOT output streams at `-v`.
-  AotBuilder _makeAot(Workspace ws, HostInfo host) =>
+  /// to [runProcess] (defaulting to the verbosity-aware [_runProcess] so AOT
+  /// output streams at `-v`). Offline builds pass a runner that injects the
+  /// store `PUB_CACHE` and (under strict) the network namespace.
+  AotBuilder _makeAot(
+    Workspace ws,
+    HostInfo host, {
+    ProcessRunner? runProcess,
+  }) =>
       _aotFactoryInjected?.call(ws, host) ??
-      AotBuilder(ws, host: host, runProcess: _runProcess);
+      AotBuilder(ws, host: host, runProcess: runProcess ?? _runProcess);
 
   /// Progress reporter that draws spinners normally but plain banners at `-v`+,
   /// where a spinner would garble streamed toolchain output. Read fresh so it
@@ -1054,10 +1060,21 @@ class CrossCommand extends Command<int> {
     final appBundle = Directory(
       p.join(buildRoot.path, 'app-bundle-$mode-$arch'),
     );
+    // Offline: build the app against the store-rooted PUB_CACHE (populated by
+    // `emb fetch --app`), and — under strict — inside the network namespace,
+    // so `flutter build bundle` never reaches pub.dev.
+    var appRunner = _runProcess;
+    if (_offlineMode != OfflineMode.off) {
+      appRunner = withEnv(appRunner, {
+        'PUB_CACHE': storePubCacheDir(ensureCacheDir()).path,
+      });
+    }
+    if (_offlineWrap) appRunner = netnsRunner(appRunner);
+
     final progress = _steps.start('Building app bundle ($mode/$arch)');
     final res = await buildAndAssemble(
       workspace: workspace,
-      aot: _makeAot(workspace, host),
+      aot: _makeAot(workspace, host, runProcess: appRunner),
       bundle: _bundleFactory(workspace),
       engine: _engineFactory(workspace),
       appPath: appPath,
