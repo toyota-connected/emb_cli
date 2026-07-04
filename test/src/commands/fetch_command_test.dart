@@ -58,7 +58,27 @@ cross:
     final code = await runner.run(['fetch', manifest.path, '-t', 'local']);
     expect(code, ExitCode.success.code);
     verify(
-      () => logger.info(any(that: contains('nothing to fetch'))),
+      () => logger.info(any(that: contains('no toolchain/sysroot to fetch'))),
     ).called(1);
+  });
+
+  test('--app pointing at a dir without a pubspec exits usage', () async {
+    final manifest = File(p.join(tmp.path, 'app.emb.yaml'))
+      ..writeAsStringSync('''
+cross:
+  provider: arm-gnu
+  image_url: https://example/os.img.xz
+''');
+    final noApp = Directory(p.join(tmp.path, 'notanapp'))..createSync();
+    final code = await runner.run([
+      'fetch',
+      manifest.path,
+      '-t',
+      'local',
+      '--app',
+      noApp.path,
+    ]);
+    expect(code, ExitCode.usage.code);
+    verify(() => logger.err(any(that: contains('no pubspec.yaml')))).called(1);
   });
 }

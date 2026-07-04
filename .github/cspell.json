@@ -139,6 +139,14 @@
     "rpmbuild",
     "soname",
     "sonames",
-    "targz"
+    "targz",
+    "crates",
+    "lockfile",
+    "prefetch",
+    "prefetches",
+    "vendor",
+    "vendored",
+    "vendors",
+    "YYYYMMDDTHHMMSSZ"
   ]
 }

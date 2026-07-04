@@ -495,7 +495,7 @@ emb cross <project-dir|manifest.yaml> [options]
 | `--update-lock` | off | Regenerate this target's `emb.lock` entry from the resolved toolchain/sysroot (accepts an intentional URL / version change). See [Reproducible builds](#reproducible-builds-emblock). |
 | `--no-verify` | off | Skip `emb.lock` verification for this resolve (don't fail on a drifted artifact sha or version). |
 | `--fetch-only` | off | Resolve and materialize the toolchain + sysroot closure (and pin `emb.lock`), then stop before configuring or building — the online acquisition step. Same work as [`emb fetch`](#emb-fetch). See [Offline builds](#offline-builds). |
-| `--offline` | off | Deny all network access: reuse already-cached toolchain/sysroot inputs and fail on a miss (run `--fetch-only` online first). Also builds cargo modules with `CARGO_NET_OFFLINE`. See [Offline builds](#offline-builds). |
+| `--offline` | off | Deny all network access: reuse already-cached toolchain/sysroot inputs and fail on a miss (run `--fetch-only` online first). Cargo modules build against their vendored crates (`CARGO_HOME`/`CARGO_NET_OFFLINE`). See [Offline builds](#offline-builds). |
 | `--host-tools` | off | With `--build`: use the host's `cmake`/`meson` instead of the SDK's, for OE SDKs that pin an old one (e.g. AGL ships cmake 3.16.5). The OE env + toolchain/cross file are unchanged. Also set via `cross.host_build_tools`. |
 | `--install-deps` | off | Install the provider's missing preflight host tools via the host package backend (PackageKit/brew) instead of erroring. Opt-in; needs privileges. Falls back to printing the manual install command when no backend is reachable. |
 | `--dockerfile` | off | Resolve, then emit a `Dockerfile` + `.dockerignore` (into the platform dir) that bake the toolchain + sysroot into an OCI image so CI pulls instead of resolving. arm-gnu only; does not build. See [Toolchain images](#toolchain-images). |
@@ -733,18 +733,23 @@ then build with the network denied. This is what a long-support-window product
 needs — a build that never asks the network for anything it didn't already
 archive.
 
-- [`emb fetch <project> [--target <t>]`](#emb-fetch) (or `emb cross … --fetch-only`)
-  resolves and materializes the toolchain + sysroot closure — including the apt
-  `-dev` set — into the shared store and pins `emb.lock`, then stops.
+- [`emb fetch <project> [--target <t>] [--app <dir>]`](#emb-fetch) (or
+  `emb cross … --fetch-only`) resolves and materializes the toolchain + sysroot
+  closure — including the apt `-dev` set — into the shared store and pins
+  `emb.lock`. It also vendors each `build: cargo` module's crates
+  (`cargo vendor --locked`, keyed by its `Cargo.lock`) into the store, and with
+  `--app` runs `flutter pub get --enforce-lockfile` to populate `PUB_CACHE`.
+  Then it stops.
 - `emb cross … --build --offline` then builds with all network access denied:
   the content store serves a cached blob or fails closed rather than
-  downloading, the apt path refuses to reach out, and cargo modules build with
-  `CARGO_NET_OFFLINE`/`--offline` so they fast-fail instead of hanging. A miss
-  names the missing artifact and points you back at the fetch step.
+  downloading, the apt path refuses to reach out, and cargo modules build
+  against the vendored crates (`CARGO_HOME` → vendor dir, `CARGO_NET_OFFLINE`,
+  `--offline`) so they never touch the registry. A miss names the missing
+  artifact and points you back at the fetch step.
 
 ```sh
-emb fetch . --target rpi5                          # online: pull toolchain + sysroot
-emb cross . --target rpi5 --build --offline         # offline: build, no network
+emb fetch . --target rpi5 --app ./app/my_app        # online: toolchain, sysroot, crates, pub
+emb cross . --target rpi5 --build --offline          # offline: build, no network
 ```
 
 Pin `dev_packages` with `sysroot.snapshot:` (above) so the offline build resolves
@@ -806,9 +811,11 @@ from 7.4 GB to 4.7 GB — image ~6 GB — with all three backends still building
 
 Materialize a cross target's toolchain + sysroot closure into the shared store
 and pin `emb.lock`, then stop — the online acquisition step for an
-[offline build](#offline-builds). It does exactly the resolve half of
-`emb cross` (no configure/build), so `emb cross … --build --offline` afterwards
-needs no network. Native (`local`/`host`) targets need no fetch.
+[offline build](#offline-builds). It resolves the toolchain + sysroot (no
+configure/build), vendors each `build: cargo` module's crates, and with
+`--app` prefetches the app's pub packages — so `emb cross … --build --offline`
+afterwards needs no network. Native (`local`/`host`) targets skip the toolchain
+resolve but still vendor crates and prefetch pub.
 
 ```sh
 emb fetch <project-dir|manifest.yaml> [options]
@@ -819,12 +826,13 @@ emb fetch <project-dir|manifest.yaml> [options]
 | `<project-dir\|manifest>` | **mandatory (positional)** | Project dir or manifest file (same resolution as `emb cross`). |
 | `-t`, `--target <name>` | manifest default | Target to fetch; a `cross.targets` entry or a per-board `.emb/` file. |
 | `-w`, `--workspace <dir>` | resolution order | Workspace root. |
+| `--app <dir>` | — | Also prefetch this Flutter app's pub packages (`flutter pub get --enforce-lockfile`) into `PUB_CACHE`. |
 | `--update-lock` | off | Regenerate this target's `emb.lock` entry from the resolved toolchain/sysroot. |
 | `--no-verify` | off | Skip `emb.lock` verification for this resolve. |
 
 ```sh
-emb fetch . --target rpi5                    # pull toolchain + sysroot, pin emb.lock
-emb cross . --target rpi5 --build --offline   # then build with no network
+emb fetch . --target rpi5 --app ./app/my_app  # toolchain + sysroot + crates + pub
+emb cross . --target rpi5 --build --offline    # then build with no network
 ```
 
 ---
