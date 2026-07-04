@@ -823,7 +823,10 @@ class CrossCommand extends Command<int> {
     // Native keeps the host compiler env; cross neutralizes it.
     final builder = CrossBuilder(
       profile,
-      runProcess: _runProcess,
+      // Under --offline-strict (with isolation available) the whole build tree
+      // — cmake/ninja and any child a build script spawns — runs in a network
+      // namespace, not just the cargo modules.
+      runProcess: _offlineWrap ? netnsRunner(_runProcess) : _runProcess,
       neutralizeHostEnv: !native,
       hostTools: hostTools,
       hostToolBins: hostToolBins,
@@ -1776,23 +1779,21 @@ class CrossCommand extends Command<int> {
         // No rustup — assume the target std is present, else cargo will error.
       }
     }
-    final cargoArgv = [
-      'cargo',
-      'build',
-      '--release',
-      '--target',
-      triple,
-      if (offline) '--offline',
-      if (m.features.isNotEmpty) ...['--features', m.features.join(',')],
-    ];
     // Under --offline-strict (on a host with the capability) the build runs in
     // a network namespace, so a crate build script that tries the network is
     // denied rather than trusted to honor --offline. unshare inherits the cwd
     // and env, so CARGO_HOME/CARGO_NET_OFFLINE still reach cargo.
-    final argv = _offlineWrap ? netnsWrap(cargoArgv) : cargoArgv;
-    final r = await _runProcess(
-      argv.first,
-      argv.sublist(1),
+    final run = _offlineWrap ? netnsRunner(_runProcess) : _runProcess;
+    final r = await run(
+      'cargo',
+      [
+        'build',
+        '--release',
+        '--target',
+        triple,
+        if (offline) '--offline',
+        if (m.features.isNotEmpty) ...['--features', m.features.join(',')],
+      ],
       workingDirectory: src.path,
       environment: env,
       output: ProcessOutputMode.stream,
