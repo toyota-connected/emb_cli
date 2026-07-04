@@ -496,6 +496,7 @@ emb cross <project-dir|manifest.yaml> [options]
 | `--no-verify` | off | Skip `emb.lock` verification for this resolve (don't fail on a drifted artifact sha or version). |
 | `--fetch-only` | off | Resolve and materialize the toolchain + sysroot closure (and pin `emb.lock`), then stop before configuring or building — the online acquisition step. Same work as [`emb fetch`](#emb-fetch). See [Offline builds](#offline-builds). |
 | `--offline` | off | Deny all network access: reuse already-cached toolchain/sysroot inputs and fail on a miss (run `--fetch-only` online first). Cargo modules build against their vendored crates (`CARGO_HOME`/`CARGO_NET_OFFLINE`). See [Offline builds](#offline-builds). |
+| `--offline-strict` | off | Like `--offline`, but also run build subprocesses inside a network namespace, and **refuse to build** when that isolation is unavailable instead of degrading to input-level denial. See [Offline builds](#offline-builds). |
 | `--host-tools` | off | With `--build`: use the host's `cmake`/`meson` instead of the SDK's, for OE SDKs that pin an old one (e.g. AGL ships cmake 3.16.5). The OE env + toolchain/cross file are unchanged. Also set via `cross.host_build_tools`. |
 | `--install-deps` | off | Install the provider's missing preflight host tools via the host package backend (PackageKit/brew) instead of erroring. Opt-in; needs privileges. Falls back to printing the manual install command when no backend is reachable. |
 | `--dockerfile` | off | Resolve, then emit a `Dockerfile` + `.dockerignore` (into the platform dir) that bake the toolchain + sysroot into an OCI image so CI pulls instead of resolving. arm-gnu only; does not build. See [Toolchain images](#toolchain-images). |
@@ -747,9 +748,18 @@ archive.
   `--offline`) so they never touch the registry. A miss names the missing
   artifact and points you back at the fetch step.
 
+`--offline` denies emb's own egress and fast-fails cargo, but trusts a build
+subprocess to honor it. `--offline-strict` additionally runs build subprocesses
+inside a rootless network namespace (`unshare --net`, loopback only), so a build
+script that reaches for the network is denied outright — and it **refuses to
+build** when that isolation is unavailable (common on locked-down CI runners and
+inside containers where unprivileged user namespaces are disabled) rather than
+silently falling back to the weaker guarantee.
+
 ```sh
 emb fetch . --target rpi5 --app ./app/my_app        # online: toolchain, sysroot, crates, pub
 emb cross . --target rpi5 --build --offline          # offline: build, no network
+emb cross . --target rpi5 --build --offline-strict    # ...and sandbox build subprocesses
 ```
 
 Pin `dev_packages` with `sysroot.snapshot:` (above) so the offline build resolves
