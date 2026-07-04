@@ -1,12 +1,16 @@
+import 'dart:convert' show JsonEncoder, jsonDecode;
 import 'dart:io';
 
 import 'package:args/command_runner.dart';
+import 'package:emb_cli/src/cache/cache_archive.dart';
 import 'package:emb_cli/src/cache/cache_dir.dart';
 import 'package:emb_cli/src/cache/oci_transport.dart';
 import 'package:emb_cli/src/cache/store.dart';
+import 'package:emb_cli/src/cross/determinism.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/engine/engine_artifacts.dart';
 import 'package:emb_cli/src/json_output.dart';
+import 'package:emb_cli/src/version.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
 import 'package:mason_logger/mason_logger.dart';
 import 'package:path/path.dart' as p;
@@ -26,6 +30,8 @@ class CacheCommand extends Command<int> {
     );
     addSubcommand(CachePushCommand(logger: logger, environment: environment));
     addSubcommand(CachePullCommand(logger: logger, environment: environment));
+    addSubcommand(CacheExportCommand(logger: logger, environment: environment));
+    addSubcommand(CacheImportCommand(logger: logger, environment: environment));
   }
 
   @override
@@ -594,6 +600,181 @@ int _treeSize(Directory d) {
     }
   }
   return n;
+}
+
+/// `emb cache export` — package the offline build closure into a `.tar.zst`
+/// escrow archive that [CacheImportCommand] restores.
+class CacheExportCommand extends Command<int> {
+  /// Creates the subcommand.
+  CacheExportCommand({
+    required Logger logger,
+    Map<String, String>? environment,
+    ProcessRunner? run,
+  }) : _logger = logger,
+       _env = environment,
+       _run = run ?? defaultProcessRunner {
+    argParser.addFlag(
+      'cas-only',
+      negatable: false,
+      help:
+          'Archive only the content-addressed blobs (roughly half the size; '
+          'the store trees re-extract from them on an offline resolve).',
+    );
+  }
+
+  final Logger _logger;
+  final Map<String, String>? _env;
+  final ProcessRunner _run;
+
+  @override
+  String get name => 'export';
+
+  @override
+  String get description =>
+      'Export the offline build closure to a .tar.zst escrow archive.';
+
+  @override
+  Future<int> run() async {
+    final args = argResults!;
+    if (args.rest.isEmpty) {
+      _logger.err('Usage: emb cache export <archive.tar.zst> [--cas-only]');
+      return ExitCode.usage.code;
+    }
+    final casOnly = args['cas-only'] == true;
+    final root = resolveCacheDir(environment: _env);
+    final present = archiveDirs(
+      casOnly: casOnly,
+    ).where((d) => Directory(p.join(root.path, d)).existsSync()).toList();
+    if (present.isEmpty) {
+      _logger.err('Nothing to export — the cache at ${root.path} is empty.');
+      return ExitCode.unavailable.code;
+    }
+
+    final out = File(args.rest.first);
+    out.parent.createSync(recursive: true);
+    final tmp = Directory.systemTemp.createTempSync('emb_escrow_');
+    try {
+      File(p.join(tmp.path, archiveManifestName)).writeAsStringSync(
+        const JsonEncoder.withIndent('  ').convert(
+          archiveManifest(
+            embVersion: packageVersion,
+            casOnly: casOnly,
+            dirs: present,
+            created: DateTime.now().toUtc().toIso8601String(),
+          ),
+        ),
+      );
+      _logger.info('Exporting ${present.join(", ")} → ${out.path}');
+      final r = await _run(
+        'tar',
+        exportTarArgs(
+          archive: out.absolute.path,
+          root: root.path,
+          dirs: present,
+          manifestDir: tmp.path,
+          epoch: sourceDateEpoch(_env),
+        ),
+        output: ProcessOutputMode.stream,
+        label: 'tar',
+      );
+      if (r.exitCode != 0) {
+        _logger.err('tar failed: ${r.stderr}');
+        return ExitCode.software.code;
+      }
+    } finally {
+      tmp.deleteSync(recursive: true);
+    }
+    final size = out.existsSync() ? out.lengthSync() : 0;
+    _logger.success(
+      'Wrote ${out.path} (${_human(size)}${casOnly ? ", cas-only" : ""}).',
+    );
+    return ExitCode.success.code;
+  }
+}
+
+/// `emb cache import` — restore an escrow archive into the shared cache.
+class CacheImportCommand extends Command<int> {
+  /// Creates the subcommand.
+  CacheImportCommand({
+    required Logger logger,
+    Map<String, String>? environment,
+    ProcessRunner? run,
+  }) : _logger = logger,
+       _env = environment,
+       _run = run ?? defaultProcessRunner {
+    argParser.addFlag(
+      'json',
+      negatable: false,
+      help: 'Emit a machine-readable {schema, command, ok, data} envelope.',
+    );
+  }
+
+  final Logger _logger;
+  final Map<String, String>? _env;
+  final ProcessRunner _run;
+
+  @override
+  String get name => 'import';
+
+  @override
+  String get description =>
+      'Restore an escrow archive (from `emb cache export`) into the cache.';
+
+  @override
+  Future<int> run() async {
+    final args = argResults!;
+    if (args.rest.isEmpty) {
+      _logger.err('Usage: emb cache import <archive.tar.zst>');
+      return ExitCode.usage.code;
+    }
+    final archive = File(args.rest.first);
+    if (!archive.existsSync()) {
+      _logger.err('Archive not found: ${archive.path}');
+      return ExitCode.usage.code;
+    }
+    final root = ensureCacheDir(environment: _env);
+    _logger.info('Importing ${archive.path} → ${root.path}');
+    final r = await _run(
+      'tar',
+      importTarArgs(archive: archive.absolute.path, root: root.path),
+      output: ProcessOutputMode.stream,
+      label: 'tar',
+    );
+    if (r.exitCode != 0) {
+      _logger.err('tar failed: ${r.stderr}');
+      return ExitCode.software.code;
+    }
+
+    // Report the restored manifest; content-addressed entries make the restore
+    // self-verifying, so a missing/garbled manifest is a warning, not a failure.
+    final manifestFile = File(p.join(root.path, archiveManifestName));
+    Map<String, dynamic>? manifest;
+    if (manifestFile.existsSync()) {
+      try {
+        manifest =
+            jsonDecode(manifestFile.readAsStringSync()) as Map<String, dynamic>;
+      } on FormatException {
+        _logger.warn('archive manifest is unreadable; restore may be partial.');
+      }
+    }
+    if (args['json'] == true) {
+      _logger.info(
+        jsonEnvelope(
+          'cache import',
+          ok: true,
+          data: {'cache_dir': root.path, 'manifest': manifest},
+        ),
+      );
+    } else {
+      final dirs = (manifest?['dirs'] as List<dynamic>?)?.join(', ') ?? '?';
+      final by = manifest?['emb_version'];
+      _logger.success(
+        'Imported $dirs into ${root.path}'
+        '${by != null ? " (exported by emb $by)" : ""}.',
+      );
+    }
+    return ExitCode.success.code;
+  }
 }
 
 /// A byte count as a short human string (e.g. `1.4 GiB`).

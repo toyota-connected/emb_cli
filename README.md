@@ -763,7 +763,9 @@ emb cross . --target rpi5 --build --offline-strict    # ...and sandbox build sub
 ```
 
 Pin `dev_packages` with `sysroot.snapshot:` (above) so the offline build resolves
-the same package versions every time.
+the same package versions every time. To keep the closure for the long haul,
+[`emb cache export`](#emb-cache) writes it to a single self-verifying
+`.tar.zst` that `emb cache import` restores on another machine or years later.
 
 #### Toolchain images
 
@@ -898,6 +900,13 @@ every workspace and target. Location resolves as `$EMB_CACHE_DIR`, else
 | `migrate [-w <ws>] [--dry-run]` | Adopt a workspace's existing toolchain/engine trees into the store (moved in place of a re-download), leaving symlinks behind. |
 | `push [<kind>/<key> …] --registry <r> [--repo <r>] [--force] [--dry-run] [--json]` | Upload store entries to an OCI registry as artifacts (via `oras`), so a team/CI shares prebuilt trees. Defaults to every complete entry; skips refs that already exist unless `--force`. |
 | `pull <kind>/<key> … --registry <r> [--repo <r>] [--link <dir>] [--json]` | Download named entries from the registry into the store (extract-staged like a local build); `--link` also symlinks each into `<dir>`. |
+| `export <archive.tar.zst> [--cas-only]` | Package the offline build closure (content-addressed blobs, extracted trees, apt `-dev` set, vendored crates) into one deterministic `.tar.zst` escrow archive. `--cas-only` keeps just the blobs (~half the size; trees re-extract on an offline resolve). See [Offline builds](#offline-builds). |
+| `import <archive.tar.zst> [--json]` | Restore an escrow archive into the cache, merging with what's there (content-addressed entries are identical, so overlap is safe). |
+
+The OCI registry (`push`/`pull`) is the *live* mirror under your control; an
+escrow archive (`export`/`import`) is the *offline* copy — a single file you own
+that reconstructs the closure years later, self-verifying on restore because its
+blobs are content-addressed.
 
 `push`/`pull` speak to an OCI registry through `oras` (one static binary on
 Linux/macOS/Windows, no daemon). Set the registry with `--registry` or
@@ -916,6 +925,8 @@ oras login ghcr.io                   # once, to authenticate
 emb cache push --registry ghcr.io/acme --dry-run   # preview refs
 emb cache pull toolchain/arm-gnu-12.3.rel1-x86_64-aarch64-none-linux-gnu \
   --registry ghcr.io/acme
+emb cache export product-lts-2024.tar.zst    # escrow the whole offline closure
+emb cache import product-lts-2024.tar.zst    # ...restore it on another machine
 ```
 
 ---
