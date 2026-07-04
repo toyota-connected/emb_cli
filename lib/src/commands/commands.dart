@@ -7,6 +7,7 @@ export 'deps_command.dart';
 export 'doctor_command.dart';
 export 'engine_command.dart';
 export 'env_command.dart';
+export 'fetch_command.dart';
 export 'flutter_command.dart';
 export 'matrix_command.dart';
 export 'setup_command.dart';

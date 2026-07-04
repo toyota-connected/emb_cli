@@ -23,6 +23,7 @@ import 'package:emb_cli/src/cross/flatpak_packager.dart';
 import 'package:emb_cli/src/cross/image_publisher.dart';
 import 'package:emb_cli/src/cross/ipk_packager.dart';
 import 'package:emb_cli/src/cross/local_cross_provider.dart';
+import 'package:emb_cli/src/cross/lock_sync.dart';
 import 'package:emb_cli/src/cross/module_stager.dart';
 import 'package:emb_cli/src/cross/overlay_builder.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
@@ -36,7 +37,6 @@ import 'package:emb_cli/src/json_output.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
 import 'package:emb_cli/src/step_reporter.dart';
 import 'package:emb_cli/src/verbosity.dart';
-import 'package:emb_cli/src/version.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
 import 'package:mason_logger/mason_logger.dart';
 import 'package:path/path.dart' as p;
@@ -336,6 +336,11 @@ class CrossCommand extends Command<int> {
   /// Host-tool preflight (missing-tool probe, install hints, opt-in install),
   /// shared with `emb doctor --target`.
   late final Preflight _preflight = Preflight(_logger);
+  late final LockSync _lockSync = LockSync(
+    logger: _logger,
+    runProcess: _runProcess,
+    preflight: _preflight,
+  );
 
   @override
   String get name => 'cross';
@@ -377,26 +382,19 @@ class CrossCommand extends Command<int> {
 
     // Resolve the effective target. `local`/`host` is the native host build;
     // it is the default when selection is required but no --target is given.
-    final targetArg = args['target'] as String?;
-    final effectiveTarget = targetArg ?? project.defaultTarget ?? 'local';
-    final isNative = effectiveTarget == 'local' || effectiveTarget == 'host';
-
-    final Map<dynamic, dynamic> selected;
-    if (isNative) {
-      // Native uses the shared fields (backends / defines / package); the
-      // cross-only fields (image_url, toolchain, cpu_flags) don't apply.
-      selected = project.nativeCross;
-    } else {
-      final ref = project[effectiveTarget];
-      if (ref == null) {
-        _logger.err(
-          'Unknown target "$effectiveTarget". '
-          'Available: ${project.targets.keys.join(", ")}',
-        );
-        return ExitCode.usage.code;
-      }
-      selected = ref.cross;
+    // Native uses the shared fields (backends / defines / package); the
+    // cross-only fields (image_url, toolchain, cpu_flags) don't apply.
+    final selection = project.selectTarget(args['target'] as String?);
+    if (selection == null) {
+      _logger.err(
+        'Unknown target "${args['target']}". '
+        'Available: ${project.targets.keys.join(", ")}',
+      );
+      return ExitCode.usage.code;
     }
+    final effectiveTarget = selection.name;
+    final isNative = selection.isNative;
+    final selected = selection.cross;
 
     final CrossTarget target;
     try {
@@ -546,7 +544,7 @@ class CrossCommand extends Command<int> {
     if (result.lockEntry case final resolved?) {
       final isDir = FileSystemEntity.isDirectorySync(inputPath);
       final projectRoot = isDir ? inputPath : p.dirname(inputPath);
-      if (!_syncLock(
+      if (!_lockSync.sync(
         projectRoot: projectRoot,
         target: lockKey(
           inputPath: inputPath,
@@ -554,7 +552,7 @@ class CrossCommand extends Command<int> {
           target: effectiveTarget,
         ),
         resolved: resolved,
-        env: await _selfPins(workspace),
+        env: await _lockSync.selfPins(workspace),
         updateLock: args['update-lock'] == true,
         verify: args['no-verify'] != true,
       )) {
@@ -2106,91 +2104,6 @@ class CrossCommand extends Command<int> {
       return false;
     }
     return true;
-  }
-
-  /// The host tool versions this resolve ran with, for the lock's root `env`
-  /// self-pins. Each is best-effort: a missing SDK/tool records null rather
-  /// than failing the build.
-  Future<LockEnv> _selfPins(Workspace workspace) async {
-    return LockEnv(
-      embVersion: packageVersion,
-      engineCommit: workspace.engineCommit(),
-      flutterCommit: await _gitHead(workspace.flutterDir),
-      rustcVersion: await _rustcVersion(),
-    );
-  }
-
-  /// The git HEAD commit of [dir], or null when it isn't a checkout / git is
-  /// unavailable.
-  Future<String?> _gitHead(Directory dir) async {
-    if (!dir.existsSync()) return null;
-    if ((await _preflight.missingTools(['git'])).isNotEmpty) return null;
-    final r = await _runProcess('git', ['-C', dir.path, 'rev-parse', 'HEAD']);
-    if (r.exitCode != 0) return null;
-    final out = r.stdout.trim();
-    return out.isEmpty ? null : out;
-  }
-
-  /// The `rustc --version` line (e.g. `rustc 1.79.0 (...)`), or null when rustc
-  /// isn't installed.
-  Future<String?> _rustcVersion() async {
-    if ((await _preflight.missingTools(['rustc'])).isNotEmpty) return null;
-    final r = await _runProcess('rustc', ['--version']);
-    if (r.exitCode != 0) return null;
-    final out = r.stdout.trim();
-    return out.isEmpty ? null : out;
-  }
-
-  /// Reconcile `<projectRoot>/emb.lock` with the freshly [resolved] facts.
-  ///
-  /// Auto-creates the entry when absent (first resolve, pub-style), verifies
-  /// and fails on drift when present, or rewrites it under [updateLock]. The
-  /// root [env] self-pins are attached when (re)writing. Returns false only on
-  /// a verification failure (the caller then exits).
-  bool _syncLock({
-    required String projectRoot,
-    required String target,
-    required LockedTarget resolved,
-    required LockEnv env,
-    required bool updateLock,
-    required bool verify,
-  }) {
-    final lockFile = File(p.join(projectRoot, 'emb.lock'));
-    final EmbLock? existing;
-    try {
-      existing = EmbLock.load(lockFile);
-    } on FormatException catch (e) {
-      _logger.err('emb.lock is malformed: ${e.message}');
-      return false;
-    }
-    final had = existing?.targets[target] != null;
-    final outcome = reconcileLock(
-      existing: existing,
-      target: target,
-      resolved: resolved,
-      updateLock: updateLock,
-      verify: verify,
-    );
-    switch (outcome.action) {
-      case LockAction.wrote:
-        outcome.lock!.withEnv(env).save(lockFile);
-        _logger.info('${had ? "Updated" : "Wrote"} emb.lock ($target).');
-        return true;
-      case LockAction.verified:
-        // Confirm a real match; stay quiet when --no-verify skipped the check
-        // (reconcileLock also reports `verified` in that case).
-        if (verify) _logger.success('emb.lock verified ($target).');
-        return true;
-      case LockAction.drifted:
-        _logger.err('emb.lock drift for "$target":');
-        for (final problem in outcome.problems) {
-          _logger.err('  - $problem');
-        }
-        _logger.err(
-          'Re-run with --update-lock to accept, or --no-verify to skip.',
-        );
-        return false;
-    }
   }
 
   /// Resolve [CrossTarget.launcher] to a compiler-launcher executable, or null.

@@ -471,4 +471,50 @@ cross:
       );
     });
   });
+
+  group('selectTarget', () {
+    CrossProject project({String? defaultTarget}) => CrossProject(
+      id: 'proj',
+      defaultTarget: defaultTarget,
+      nativeCross: const {'provider': 'arm-gnu'},
+      targets: {
+        'pi5': CrossTargetRef(
+          name: 'pi5',
+          cross: const {'provider': 'arm-gnu', 'image_url': 'x'},
+          platform: const {},
+        ),
+      },
+    );
+
+    test('an explicit named target selects its cross map', () {
+      final s = project().selectTarget('pi5')!;
+      expect(s.name, 'pi5');
+      expect(s.isNative, isFalse);
+      expect(s.cross['image_url'], 'x');
+    });
+
+    test('omitting --target uses the manifest default', () {
+      final s = project(defaultTarget: 'pi5').selectTarget(null)!;
+      expect(s.name, 'pi5');
+      expect(s.isNative, isFalse);
+    });
+
+    test('local/host select the native build', () {
+      for (final t in ['local', 'host']) {
+        final s = project().selectTarget(t)!;
+        expect(s.isNative, isTrue);
+        expect(s.cross, project().nativeCross);
+      }
+    });
+
+    test('no default and no --target falls back to native local', () {
+      final s = project().selectTarget(null)!;
+      expect(s.name, 'local');
+      expect(s.isNative, isTrue);
+    });
+
+    test('an unknown named target returns null', () {
+      expect(project().selectTarget('nope'), isNull);
+    });
+  });
 }
