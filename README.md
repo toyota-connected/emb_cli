@@ -494,6 +494,8 @@ emb cross <project-dir|manifest.yaml> [options]
 | `--clean-all` | off | Also remove the downloaded / extracted toolchain + sysroot and the apt / deb caches, then exit. |
 | `--update-lock` | off | Regenerate this target's `emb.lock` entry from the resolved toolchain/sysroot (accepts an intentional URL / version change). See [Reproducible builds](#reproducible-builds-emblock). |
 | `--no-verify` | off | Skip `emb.lock` verification for this resolve (don't fail on a drifted artifact sha or version). |
+| `--fetch-only` | off | Resolve and materialize the toolchain + sysroot closure (and pin `emb.lock`), then stop before configuring or building — the online acquisition step. Same work as [`emb fetch`](#emb-fetch). See [Offline builds](#offline-builds). |
+| `--offline` | off | Deny all network access: reuse already-cached toolchain/sysroot inputs and fail on a miss (run `--fetch-only` online first). Also builds cargo modules with `CARGO_NET_OFFLINE`. See [Offline builds](#offline-builds). |
 | `--host-tools` | off | With `--build`: use the host's `cmake`/`meson` instead of the SDK's, for OE SDKs that pin an old one (e.g. AGL ships cmake 3.16.5). The OE env + toolchain/cross file are unchanged. Also set via `cross.host_build_tools`. |
 | `--install-deps` | off | Install the provider's missing preflight host tools via the host package backend (PackageKit/brew) instead of erroring. Opt-in; needs privileges. Falls back to printing the manual install command when no backend is reachable. |
 | `--dockerfile` | off | Resolve, then emit a `Dockerfile` + `.dockerignore` (into the platform dir) that bake the toolchain + sysroot into an OCI image so CI pulls instead of resolving. arm-gnu only; does not build. See [Toolchain images](#toolchain-images). |
@@ -524,6 +526,7 @@ cross:
   sysroot:
     partition: 2                  # rootfs partition in the image (default 2)
     dev_packages: [libdrm-dev, libegl-dev, libgbm-dev, libinput-dev]
+    snapshot: 2024-06-01          # pin apt resolution to a mirror snapshot (optional)
   augment:                        # libs built from source when the sysroot is too old
     - { pkg: libdisplay-info, min: "0.2.0", url: https://.../libdisplay-info-0.2.0.tar.gz, build: meson, static: true }
   defines:                        # -D<name>=<value> applied to every build
@@ -688,14 +691,28 @@ What each provider pins:
 
 | Provider | Pinned facts |
 |---|---|
-| `arm-gnu` | sha256 of the toolchain tarball and the distro image (byte-exact); a device-sourced sysroot records provenance only — a live host can't be content-pinned. |
+| `arm-gnu` | sha256 of the toolchain tarball and the distro image (byte-exact); the resolved `-dev` package versions + digests; a device-sourced sysroot records provenance only — a live host can't be content-pinned. |
 | `yocto-sdk` | `OECORE_SDK_VERSION`, plus the sha256 of the `populate_sdk` installer when fetched from `sdk_url`. |
 | `yocto-recipe` | the located recipe version + the native gcc version (it downloads nothing, so there is no artifact to sha). |
 
-Drift is reported for: a changed artifact sha (moved URL), a changed resolved /
-derived version, or edited manifest inputs (the content-addressed
-`sysroot_key` / `build_key`). An artifact not re-fetched on a warm cache is
-skipped, so verification fires exactly when bytes are re-materialized.
+The lock also records a root `env:` block — the host tool versions the resolve
+ran with (`emb`, the engine and Flutter commits, `rustc`) — so a rebuild years
+later can tell whether a difference came from a changed tool rather than a
+changed input.
+
+Drift is reported for: a changed artifact sha (moved URL), a changed `-dev`
+package version, a changed resolved / derived version, or edited manifest inputs
+(the content-addressed `sysroot_key` / `build_key`). An artifact not re-fetched
+on a warm cache is skipped, so verification fires exactly when bytes are
+re-materialized.
+
+**Apt snapshots.** By default `dev_packages` resolve against the live mirror, so
+the same names can pull different versions over time. Set `sysroot.snapshot:` to
+a date (`2024-06-01`, or a full `YYYYMMDDTHHMMSSZ` stamp) to pin resolution to a
+[snapshot.debian.org](https://snapshot.debian.org) / snapshot.raspbian.org
+mirror, so a build resolves the same `-dev` versions for the life of the
+product. The date folds into the sysroot store key, so changing it re-extracts;
+a source with no known snapshot service warns and falls back to the live mirror.
 
 ```sh
 emb cross . --target rpi5 --build                 # first run → writes emb.lock
@@ -708,6 +725,30 @@ emb cross . --target rpi5 --build --update-lock    # accept an intentional chang
 > keys its entry by `<manifest-stem>:<target>`, so several loosely co-located
 > `*.emb.yaml` sharing one directory get independent entries in the shared
 > `emb.lock` instead of clobbering one another.
+
+#### Offline builds
+
+Acquisition and building are separate: fetch every input once while online,
+then build with the network denied. This is what a long-support-window product
+needs — a build that never asks the network for anything it didn't already
+archive.
+
+- [`emb fetch <project> [--target <t>]`](#emb-fetch) (or `emb cross … --fetch-only`)
+  resolves and materializes the toolchain + sysroot closure — including the apt
+  `-dev` set — into the shared store and pins `emb.lock`, then stops.
+- `emb cross … --build --offline` then builds with all network access denied:
+  the content store serves a cached blob or fails closed rather than
+  downloading, the apt path refuses to reach out, and cargo modules build with
+  `CARGO_NET_OFFLINE`/`--offline` so they fast-fail instead of hanging. A miss
+  names the missing artifact and points you back at the fetch step.
+
+```sh
+emb fetch . --target rpi5                          # online: pull toolchain + sysroot
+emb cross . --target rpi5 --build --offline         # offline: build, no network
+```
+
+Pin `dev_packages` with `sysroot.snapshot:` (above) so the offline build resolves
+the same package versions every time.
 
 #### Toolchain images
 
@@ -758,6 +799,33 @@ device rootfs's runtime data, bundled apps, docs, kernel/firmware, and target
 executables are dropped, keeping headers, libraries, pkgconfig/cmake metadata,
 and the wayland protocol XMLs. (For the radxa zero3 image this took the sysroot
 from 7.4 GB to 4.7 GB — image ~6 GB — with all three backends still building.)
+
+---
+
+### `emb fetch`
+
+Materialize a cross target's toolchain + sysroot closure into the shared store
+and pin `emb.lock`, then stop — the online acquisition step for an
+[offline build](#offline-builds). It does exactly the resolve half of
+`emb cross` (no configure/build), so `emb cross … --build --offline` afterwards
+needs no network. Native (`local`/`host`) targets need no fetch.
+
+```sh
+emb fetch <project-dir|manifest.yaml> [options]
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `<project-dir\|manifest>` | **mandatory (positional)** | Project dir or manifest file (same resolution as `emb cross`). |
+| `-t`, `--target <name>` | manifest default | Target to fetch; a `cross.targets` entry or a per-board `.emb/` file. |
+| `-w`, `--workspace <dir>` | resolution order | Workspace root. |
+| `--update-lock` | off | Regenerate this target's `emb.lock` entry from the resolved toolchain/sysroot. |
+| `--no-verify` | off | Skip `emb.lock` verification for this resolve. |
+
+```sh
+emb fetch . --target rpi5                    # pull toolchain + sysroot, pin emb.lock
+emb cross . --target rpi5 --build --offline   # then build with no network
+```
 
 ---
 
