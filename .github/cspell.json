@@ -146,6 +146,7 @@
     "prefetches",
     "vendor",
     "vendored",
-    "vendors"
+    "vendors",
+    "YYYYMMDDTHHMMSSZ"
   ]
 }
