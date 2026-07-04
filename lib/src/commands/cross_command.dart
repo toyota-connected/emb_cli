@@ -4,8 +4,10 @@ import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/aot/aot_builder.dart';
 import 'package:emb_cli/src/bundle/bundle_builder.dart';
 import 'package:emb_cli/src/bundle/bundle_pipeline.dart';
+import 'package:emb_cli/src/cache/cache_dir.dart';
 import 'package:emb_cli/src/cross/bundle_audit.dart';
 import 'package:emb_cli/src/cross/cargo_env.dart';
+import 'package:emb_cli/src/cross/cargo_vendor.dart';
 import 'package:emb_cli/src/cross/cross_arch.dart';
 import 'package:emb_cli/src/cross/cross_builder.dart';
 import 'package:emb_cli/src/cross/cross_cache.dart';
@@ -561,9 +563,32 @@ class CrossCommand extends Command<int> {
     }
 
     // --fetch-only: the closure (toolchain + sysroot + apt -dev set) is now
-    // materialized in the store and pinned in emb.lock. Stop before any build
-    // so this can run online, after which the build runs with --offline.
+    // materialized in the store and pinned in emb.lock. Vendor cargo modules
+    // too, then stop before any build so this can run online, after which the
+    // build runs with --offline.
     if (args['fetch-only'] == true) {
+      if (hasCargoModules(target)) {
+        if ((await _preflight.missingTools(['cargo'])).isNotEmpty) {
+          _logger.err('cargo not found on PATH — cannot vendor cargo modules.');
+          await _preflight.logInstallHint(host, ['cargo']);
+          return ExitCode.unavailable.code;
+        }
+        final manifestDir =
+            FileSystemEntity.typeSync(inputPath) == FileSystemEntityType.file
+            ? File(inputPath).parent
+            : Directory(inputPath);
+        final err = await vendorTargetCargo(
+          target: target,
+          manifestDir: manifestDir,
+          storeRoot: ensureCacheDir(),
+          run: _runProcess,
+          onModule: (m) => _logger.info('  module $m: vendored cargo deps'),
+        );
+        if (err != null) {
+          _logger.err('  $err');
+          return ExitCode.software.code;
+        }
+      }
       _logger.success('Fetched cross closure for $effectiveTarget.');
       return ExitCode.success.code;
     }
@@ -1695,6 +1720,15 @@ class CrossCommand extends Command<int> {
       // needed registry/git fetch instead of hanging on a network timeout.
       if (offline) 'CARGO_NET_OFFLINE': '1',
     };
+    // Offline: build against the crates vendored by `emb fetch`. A CARGO_HOME
+    // holding only the vendor config redirects crates-io to the on-disk vendor
+    // dir; without it, `cargo --offline` fails with its own missing crate.
+    if (offline) {
+      final home = CargoVendor(
+        run: _runProcess,
+      ).locate(moduleSrc: src, storeRoot: ensureCacheDir());
+      if (home != null) env['CARGO_HOME'] = home.path;
+    }
     // Best-effort: install the target's std (idempotent; no-op without rustup).
     // Skipped offline — it would reach rustup's dist server.
     if (!offline) {
