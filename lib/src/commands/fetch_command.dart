@@ -257,6 +257,10 @@ class FetchCommand extends Command<int> {
       await _preflight.logInstallHint(host, ['flutter']);
       return ExitCode.unavailable.code;
     }
+    // Into the store-rooted PUB_CACHE, so the packages are part of the same
+    // closure the escrow archives and an offline build reads from.
+    final pubCache = storePubCacheDir(ensureCacheDir())
+      ..createSync(recursive: true);
     final progress = _steps.start(
       'Prefetching pub packages (${p.basename(appDir.path)})',
     );
@@ -264,6 +268,7 @@ class FetchCommand extends Command<int> {
       'flutter',
       ['pub', 'get', '--enforce-lockfile'],
       workingDirectory: appDir.path,
+      environment: {'PUB_CACHE': pubCache.path},
       output: ProcessOutputMode.stream,
       label: 'pub',
     );

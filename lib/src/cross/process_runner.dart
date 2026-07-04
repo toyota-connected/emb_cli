@@ -168,6 +168,31 @@ class _TailBuffer {
   String get text => _lines.join('\n');
 }
 
+/// A [ProcessRunner] that merges [extra] into every call's environment (extra
+/// keys win) before delegating to [inner]. `includeParentEnvironment` stays
+/// true, so this layers over the ambient environment rather than replacing it —
+/// used to point a build's subprocesses at a store-rooted `PUB_CACHE`.
+ProcessRunner withEnv(ProcessRunner inner, Map<String, String> extra) =>
+    (
+      String executable,
+      List<String> arguments, {
+      String? workingDirectory,
+      Map<String, String>? environment,
+      bool includeParentEnvironment = true,
+      bool runInShell = false,
+      ProcessOutputMode output = ProcessOutputMode.capture,
+      String? label,
+    }) => inner(
+      executable,
+      arguments,
+      workingDirectory: workingDirectory,
+      environment: {...?environment, ...extra},
+      includeParentEnvironment: includeParentEnvironment,
+      runInShell: runInShell,
+      output: output,
+      label: label,
+    );
+
 final ProcessRunner _defaultRunner = makeProcessRunner();
 
 /// The default production [ProcessRunner] at [Verbosity.normal]. Used as the

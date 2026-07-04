@@ -15,7 +15,10 @@ void main() {
     });
     test('a full archive keeps the durable dirs', () {
       expect(archiveDirs(casOnly: false), durableCacheDirs);
-      expect(durableCacheDirs, containsAll(['cas', 'store', 'cargo-vendor']));
+      expect(
+        durableCacheDirs,
+        containsAll(['cas', 'store', 'cargo-vendor', 'pub-cache']),
+      );
     });
   });
 

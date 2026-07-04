@@ -20,6 +20,12 @@ Directory resolveCacheDir({Map<String, String>? environment}) {
   return Directory(p.join(home, '.cache', 'emb'));
 }
 
+/// The store-rooted pub cache: `<cache>/pub-cache`. `emb fetch --app`
+/// populates it (offline-buildable pub packages) and an offline build points
+/// `PUB_CACHE` at it, so pub is part of the same closure the escrow archives.
+Directory storePubCacheDir(Directory cacheRoot) =>
+    Directory(p.join(cacheRoot.path, 'pub-cache'));
+
 /// [resolveCacheDir], created (with a marker `README`) if absent.
 Directory ensureCacheDir({Map<String, String>? environment}) {
   final dir = resolveCacheDir(environment: environment)

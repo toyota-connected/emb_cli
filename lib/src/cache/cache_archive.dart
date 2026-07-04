@@ -11,7 +11,7 @@ const archiveManifestName = 'emb-archive.json';
 /// The durable cache subdirectories that make up a build closure, in a stable
 /// order. Excludes transient dirs (`tmp/`, lock dirs), which are added as tar
 /// excludes at pack time.
-const durableCacheDirs = ['cas', 'store', 'apt', 'cargo-vendor'];
+const durableCacheDirs = ['cas', 'store', 'apt', 'cargo-vendor', 'pub-cache'];
 
 /// The cache subdirectories to include for an escrow archive. A `--cas-only`
 /// archive keeps just the content-addressed blobs — roughly half the size,

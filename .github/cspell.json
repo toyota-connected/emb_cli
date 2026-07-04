@@ -159,6 +159,7 @@
     "subprocesses",
     "unshare",
     "escrow",
+    "escrows",
     "zst",
     "zstd"
   ]
