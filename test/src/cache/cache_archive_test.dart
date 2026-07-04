@@ -35,6 +35,31 @@ void main() {
       expect(m['cas_only'], true);
       expect(m['dirs'], ['cas']);
       expect(m['created'], '2024-06-01T00:00:00.000Z');
+      expect(m.containsKey('env_image'), isFalse);
+    });
+
+    test('records the pinned build-environment image when given', () {
+      final m = archiveManifest(
+        embVersion: '0.1.0',
+        casOnly: false,
+        dirs: const ['cas'],
+        created: 't',
+        envImage: 'ghcr.io/acme/emb-cross@sha256:${'a' * 64}',
+      );
+      expect(m['env_image'], 'ghcr.io/acme/emb-cross@sha256:${'a' * 64}');
+    });
+  });
+
+  group('isImageDigestPinned', () {
+    test('true for a digest reference', () {
+      expect(
+        isImageDigestPinned('ghcr.io/acme/emb-cross@sha256:${'a' * 64}'),
+        isTrue,
+      );
+    });
+    test('false for a mutable tag', () {
+      expect(isImageDigestPinned('ghcr.io/acme/emb-cross:latest'), isFalse);
+      expect(isImageDigestPinned('emb-cross'), isFalse);
     });
   });
 

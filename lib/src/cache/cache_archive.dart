@@ -22,21 +22,33 @@ List<String> archiveDirs({required bool casOnly}) =>
     casOnly ? const ['cas'] : durableCacheDirs;
 
 /// The archive's self-describing manifest: schema, the emb version that wrote
-/// it, whether it is cas-only, the included dirs, and an ISO-8601 [created]
-/// stamp. Content-addressed blobs make the archive self-verifying on restore,
-/// so this is provenance rather than a trust anchor.
+/// it, whether it is cas-only, the included dirs, an ISO-8601 [created] stamp,
+/// and — when given — [envImage], a pinned reference to the container image
+/// that reconstructs the *build environment* (emb + toolchain + sysroot, from
+/// `emb cross --dockerfile`). The archive is data; the closure only rebuilds
+/// years later inside a runnable environment, and [envImage] pins which one.
+/// Content-addressed blobs make the data self-verifying on restore, so this is
+/// provenance rather than a trust anchor.
 Map<String, dynamic> archiveManifest({
   required String embVersion,
   required bool casOnly,
   required List<String> dirs,
   required String created,
+  String? envImage,
 }) => {
   'schema': 1,
   'emb_version': embVersion,
   'cas_only': casOnly,
   'dirs': dirs,
   'created': created,
+  if (envImage != null) 'env_image': envImage,
 };
+
+/// Whether [ref] is pinned to a content digest (`name@sha256:<hex>`) rather
+/// than a mutable tag. Only a digest survives as an escrow anchor — a tag can
+/// be re-pushed to point at different bytes, defeating the point of the escrow.
+bool isImageDigestPinned(String ref) =>
+    RegExp(r'@[a-z0-9]+:[0-9a-f]{32,}$').hasMatch(ref);
 
 /// `tar` args to pack [dirs] (relative to [root]) plus the manifest (from
 /// [manifestDir]) into [archive] as a deterministic zstd tarball. Transient

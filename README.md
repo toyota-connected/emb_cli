@@ -914,13 +914,17 @@ every workspace and target. Location resolves as `$EMB_CACHE_DIR`, else
 | `migrate [-w <ws>] [--dry-run]` | Adopt a workspace's existing toolchain/engine trees into the store (moved in place of a re-download), leaving symlinks behind. |
 | `push [<kind>/<key> …] --registry <r> [--repo <r>] [--force] [--dry-run] [--json]` | Upload store entries to an OCI registry as artifacts (via `oras`), so a team/CI shares prebuilt trees. Defaults to every complete entry; skips refs that already exist unless `--force`. |
 | `pull <kind>/<key> … --registry <r> [--repo <r>] [--link <dir>] [--json]` | Download named entries from the registry into the store (extract-staged like a local build); `--link` also symlinks each into `<dir>`. |
-| `export <archive.tar.zst> [--cas-only]` | Package the offline build closure (content-addressed blobs, extracted trees, apt `-dev` set, vendored crates, pub packages) into one deterministic `.tar.zst` escrow archive. `--cas-only` keeps just the blobs (~half the size; trees re-extract on an offline resolve). See [Offline builds](#offline-builds). |
-| `import <archive.tar.zst> [--json]` | Restore an escrow archive into the cache, merging with what's there (content-addressed entries are identical, so overlap is safe). |
+| `export <archive.tar.zst> [--cas-only] [--image <ref>]` | Package the offline build closure (content-addressed blobs, extracted trees, apt `-dev` set, vendored crates, pub packages) into one deterministic `.tar.zst` escrow archive. `--cas-only` keeps just the blobs (~half the size; trees re-extract on an offline resolve). `--image` pins the build-environment image (from `emb cross --dockerfile`) in the manifest — use a digest ref. See [Offline builds](#offline-builds). |
+| `import <archive.tar.zst> [--json]` | Restore an escrow archive into the cache, merging with what's there (content-addressed entries are identical, so overlap is safe); reports the pinned build-environment image, if any. |
 
 The OCI registry (`push`/`pull`) is the *live* mirror under your control; an
 escrow archive (`export`/`import`) is the *offline* copy — a single file you own
 that reconstructs the closure years later, self-verifying on restore because its
-blobs are content-addressed.
+blobs are content-addressed. The archive is *data*, though — years on it still
+needs a runnable environment (emb, the Flutter SDK, a period-appropriate host).
+Pin that with `--image <ref>@sha256:…`, a container image emb can emit via
+[`emb cross --dockerfile`](#toolchain-images), so the escrow references the
+environment that reconstructs the closure, not just the bytes.
 
 `push`/`pull` speak to an OCI registry through `oras` (one static binary on
 Linux/macOS/Windows, no daemon). Set the registry with `--registry` or
