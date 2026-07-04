@@ -39,6 +39,42 @@ void main() {
     });
   });
 
+  group('netnsRunner', () {
+    test(
+      'runs the command through unshare, delegating to the inner runner',
+      () async {
+        String? gotExe;
+        List<String>? gotArgs;
+        String? gotCwd;
+        Future<RunResult> inner(
+          String exe,
+          List<String> args, {
+          String? workingDirectory,
+          Map<String, String>? environment,
+          bool includeParentEnvironment = true,
+          bool runInShell = false,
+          ProcessOutputMode output = ProcessOutputMode.capture,
+          String? label,
+        }) async {
+          gotExe = exe;
+          gotArgs = args;
+          gotCwd = workingDirectory;
+          return const RunResult(0, '', '');
+        }
+
+        await netnsRunner(inner)('cmake', [
+          '--build',
+          '.',
+        ], workingDirectory: '/b');
+        expect(gotExe, 'unshare');
+        // The original command survives at the tail, after the shim.
+        expect(gotArgs, containsAllInOrder(['cmake', '--build', '.']));
+        // Named args pass through.
+        expect(gotCwd, '/b');
+      },
+    );
+  });
+
   group('netnsAvailable', () {
     test('true when the probe exits 0', () async {
       expect(await netnsAvailable(_runner(unshareExit: 0)), isTrue);

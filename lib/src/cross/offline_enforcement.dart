@@ -36,6 +36,34 @@ List<String> netnsWrap(List<String> argv) => [
   ...argv,
 ];
 
+/// A [ProcessRunner] that runs every command through [netnsWrap] before
+/// delegating to [inner] — so a whole build tree (cmake/ninja/cargo and any
+/// child a build script spawns) executes inside one network namespace. Wrap a
+/// build's runner with this when [OfflineEnforcement.wrap] is set.
+ProcessRunner netnsRunner(ProcessRunner inner) =>
+    (
+      String executable,
+      List<String> arguments, {
+      String? workingDirectory,
+      Map<String, String>? environment,
+      bool includeParentEnvironment = true,
+      bool runInShell = false,
+      ProcessOutputMode output = ProcessOutputMode.capture,
+      String? label,
+    }) {
+      final wrapped = netnsWrap([executable, ...arguments]);
+      return inner(
+        wrapped.first,
+        wrapped.sublist(1),
+        workingDirectory: workingDirectory,
+        environment: environment,
+        includeParentEnvironment: includeParentEnvironment,
+        runInShell: runInShell,
+        output: output,
+        label: label,
+      );
+    };
+
 /// Whether the host can create a rootless network namespace — the probe is
 /// `unshare --net --map-root-user true`. False when `unshare` is absent
 /// (non-Linux) or unprivileged user namespaces are disabled (common on locked
