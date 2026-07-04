@@ -235,4 +235,50 @@ cross:
       expect(preflight['missing'], ['rsync']);
     });
   });
+
+  group('--offline-probe', () {
+    late Directory tmp;
+    late String manifest;
+    setUp(() {
+      tmp = Directory.systemTemp.createTempSync('emb_probe_');
+      manifest = p.join(tmp.path, 'app.emb.yaml');
+      File(manifest).writeAsStringSync('''
+id: probe-fixture
+cross:
+  provider: arm-gnu
+  image_url: https://example/os.img.xz
+''');
+    });
+    tearDown(() => tmp.deleteSync(recursive: true));
+
+    Future<int?> probe(List<String> extra, {Logger? logger}) {
+      final log = logger ?? Logger();
+      final runner = CommandRunner<int>('emb', 'test')
+        ..addCommand(DoctorCommand(logger: log, host: _host));
+      return runner.run(['doctor', '--offline-probe', ...extra, manifest]);
+    }
+
+    test('a native target has no closure to fetch and passes', () async {
+      // Native: no toolchain/sysroot resolve, no cargo modules; the only check
+      // is isolation, which is not required without --strict.
+      expect(await probe(['--target', 'local']), ExitCode.success.code);
+    });
+
+    test('an unknown target exits usage', () async {
+      expect(await probe(['--target', 'nope']), ExitCode.usage.code);
+    });
+
+    test('the json envelope carries the probe verdict', () async {
+      final logger = _CaptureLogger();
+      final code = await probe(['--target', 'local', '--json'], logger: logger);
+      expect(code, ExitCode.success.code);
+      final json = jsonDecode(logger.buffer.toString()) as Map<String, dynamic>;
+      expect(json['ok'], true);
+      final probeData =
+          (json['data'] as Map)['offline_probe'] as Map<String, dynamic>;
+      expect(probeData['target'], 'local');
+      expect(probeData['ok'], true);
+      expect(probeData['checks'], isNotEmpty);
+    });
+  });
 }
