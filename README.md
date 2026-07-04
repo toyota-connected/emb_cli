@@ -212,11 +212,21 @@ preflight** — the host tools that target's provider needs (e.g. `tar`/`xz`/
 the manifest at the positional path (default: the current directory). Exit code
 is non-zero when a required tool is missing.
 
+With `--offline-probe --target <name>` it **certifies the target's
+[offline build closure](#offline-builds)** is materialized: it resolves the
+toolchain + sysroot from the store with the network denied, confirms each cargo
+module is vendored, and (under `--strict`) that network isolation is available.
+No build runs — it checks inputs only, so it stays a seconds-scale gate for CI
+to run after `emb fetch`. Exit code is non-zero (with the fix, `emb fetch`) when
+anything is missing.
+
 ```sh
 emb doctor
 emb doctor --json | jq .data.backend
 emb doctor --target rpi5-bookworm examples/cross/pi5.emb.yaml
 emb doctor --target rpi5-bookworm . --json | jq .data.target.preflight
+emb doctor --offline-probe --target rpi5 .          # is the closure ready for an offline build?
+emb doctor --offline-probe --strict --target rpi5 . --json | jq .data.offline_probe
 ```
 
 ---
@@ -763,8 +773,10 @@ emb cross . --target rpi5 --build --offline-strict    # ...and sandbox build sub
 ```
 
 Pin `dev_packages` with `sysroot.snapshot:` (above) so the offline build resolves
-the same package versions every time. To keep the closure for the long haul,
-[`emb cache export`](#emb-cache) writes it to a single self-verifying
+the same package versions every time. In CI, gate on
+[`emb doctor --offline-probe`](#emb-doctor) after the fetch step to prove the
+closure is complete before the network is cut. To keep the closure for the long
+haul, [`emb cache export`](#emb-cache) writes it to a single self-verifying
 `.tar.zst` that `emb cache import` restores on another machine or years later.
 
 #### Toolchain images

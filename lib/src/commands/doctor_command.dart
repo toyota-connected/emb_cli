@@ -1,8 +1,16 @@
+import 'dart:io';
+
 import 'package:args/command_runner.dart';
+import 'package:emb_cli/src/cache/cache_dir.dart';
+import 'package:emb_cli/src/cross/cargo_vendor.dart';
+import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_project.dart';
 import 'package:emb_cli/src/cross/cross_provider.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/cross/local_cross_provider.dart';
+import 'package:emb_cli/src/cross/offline_enforcement.dart';
+import 'package:emb_cli/src/cross/offline_probe.dart';
+import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/engine/engine_artifacts.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/host/preflight.dart';
@@ -11,6 +19,7 @@ import 'package:emb_cli/src/manifest/manifest_loader.dart';
 import 'package:emb_cli/src/pkg/host_provisioner.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
 import 'package:mason_logger/mason_logger.dart';
+import 'package:path/path.dart' as p;
 
 /// {@template doctor_command}
 /// `emb doctor` — report the detected host and which package backend is active.
@@ -43,6 +52,22 @@ class DoctorCommand extends Command<int> {
             'Report a cross target provider preflight (host tools) instead of '
             'the package backend. Resolves the manifest at the positional path '
             '(default: current directory).',
+      )
+      ..addFlag(
+        'offline-probe',
+        negatable: false,
+        help:
+            "Certify a cross target's offline build closure is materialized "
+            '(toolchain, sysroot, vendored crates) without building — a '
+            'seconds-scale gate. Non-zero exit if anything is missing. Pairs '
+            'with --target.',
+      )
+      ..addFlag(
+        'strict',
+        negatable: false,
+        help:
+            'With --offline-probe: also require network isolation (unshare '
+            '--net), matching what `emb cross --offline-strict` needs.',
       );
   }
 
@@ -64,6 +89,14 @@ class DoctorCommand extends Command<int> {
     final host = _host ?? HostInfo.detect();
     final targetArg = argResults?['target'] as String?;
     final json = argResults?['json'] == true;
+    if (argResults?['offline-probe'] == true) {
+      return _runOfflineProbe(
+        host,
+        targetArg,
+        strict: argResults?['strict'] == true,
+        json: json,
+      );
+    }
     if (targetArg != null) {
       return json
           ? _runTargetJson(host, targetArg)
@@ -298,5 +331,154 @@ class DoctorCommand extends Command<int> {
       ),
     );
     return ok ? ExitCode.success.code : ExitCode.unavailable.code;
+  }
+
+  /// `--offline-probe` path: certify a target's offline build closure is
+  /// materialized — resolve the toolchain + sysroot from the store with the
+  /// network denied, confirm each cargo module is vendored, and (under
+  /// [strict]) that network isolation is available. No build runs, so it stays
+  /// fast; a missing input fails with the fix (`emb fetch`).
+  Future<int> _runOfflineProbe(
+    HostInfo host,
+    String? targetArg, {
+    required bool strict,
+    required bool json,
+  }) async {
+    final rest = argResults?.rest ?? const [];
+    final inputPath = rest.isNotEmpty ? rest.first : '.';
+    final CrossProject project;
+    try {
+      final resolved = _project.resolve(inputPath);
+      if (resolved == null) {
+        return _probeError('No emb manifest at $inputPath.', targetArg, json);
+      }
+      project = resolved;
+    } on CrossProjectException catch (e) {
+      return _probeError(e.message, targetArg, json);
+    }
+
+    final selection = project.selectTarget(targetArg);
+    if (selection == null) {
+      return _probeError(
+        'Unknown target "$targetArg". '
+        'Available: ${project.targets.keys.join(", ")}',
+        targetArg,
+        json,
+      );
+    }
+    final CrossTarget target;
+    try {
+      target = CrossTarget.fromMap(selection.cross);
+      // fromMap throws ArgumentError on an unknown provider token.
+      // ignore: avoid_catching_errors
+    } on ArgumentError catch (e) {
+      return _probeError(
+        'Invalid cross: block — ${e.message}',
+        targetArg,
+        json,
+      );
+    }
+
+    final checks = <ProbeCheck>[];
+
+    // 1. Toolchain + sysroot present in the store (offline resolve fails closed
+    //    on a miss). A native target has none to fetch.
+    if (!selection.isNative) {
+      final provider = CrossProvider.forTarget(
+        target,
+        workspace: Workspace.resolve(),
+        host: host,
+        offline: true,
+      );
+      CrossResolveResult result;
+      try {
+        result = await provider.resolve();
+      } on Object catch (e) {
+        result = CrossResolveResult.failed('$e');
+      }
+      checks.add(
+        ProbeCheck(
+          'toolchain + sysroot cached',
+          ok: result.ok,
+          detail: result.ok
+              ? ''
+              : (result.message ?? 'run `emb fetch` online first'),
+        ),
+      );
+    }
+
+    // 2. Each cargo module's crates are vendored.
+    final manifestDir =
+        FileSystemEntity.typeSync(inputPath) == FileSystemEntityType.file
+        ? File(inputPath).parent
+        : Directory(inputPath);
+    for (final m in target.modules.where((m) => m.build == ModuleBuild.cargo)) {
+      final home = CargoVendor().locate(
+        moduleSrc: Directory(p.join(manifestDir.path, m.path)),
+        storeRoot: ensureCacheDir(),
+      );
+      checks.add(
+        ProbeCheck(
+          'cargo ${m.name} vendored',
+          ok: home != null,
+          detail: home != null ? '' : 'run `emb fetch`',
+        ),
+      );
+    }
+
+    // 3. Network isolation — required only under --strict.
+    final iso = await netnsAvailable(defaultProcessRunner);
+    checks.add(
+      ProbeCheck(
+        'network isolation',
+        ok: !strict || iso,
+        detail: iso
+            ? 'available'
+            : strict
+            ? 'unavailable (required by --strict)'
+            : 'unavailable (--offline-strict would refuse)',
+      ),
+    );
+
+    final probe = OfflineProbe(target: selection.name, checks: checks);
+    if (json) {
+      _logger.info(
+        jsonEnvelope(
+          'doctor',
+          ok: probe.ok,
+          data: {'host': _hostData(host), 'offline_probe': probe.toData()},
+        ),
+      );
+      return probe.ok ? ExitCode.success.code : ExitCode.unavailable.code;
+    }
+
+    _logger.info(styleBold.wrap('Offline probe: ${selection.name}'));
+    for (final c in probe.checks) {
+      final detail = c.detail.isNotEmpty ? '  (${c.detail})' : '';
+      _logger.info('  ${c.ok ? "✓" : "✗"} ${c.name}$detail');
+    }
+    if (probe.ok) {
+      _logger.success('Offline build closure is complete.');
+      return ExitCode.success.code;
+    }
+    _logger.err('Offline build closure is incomplete — run `emb fetch`.');
+    return ExitCode.unavailable.code;
+  }
+
+  int _probeError(String message, String? target, bool json) {
+    if (json) {
+      _logger.info(
+        jsonEnvelope(
+          'doctor',
+          ok: false,
+          data: {
+            'offline_probe': {'target': target, 'error': message},
+          },
+        ),
+      );
+    } else {
+      _logger.err(message);
+    }
+    return ExitCode.usage.code;
   }
 }
