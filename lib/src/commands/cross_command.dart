@@ -27,6 +27,7 @@ import 'package:emb_cli/src/cross/ipk_packager.dart';
 import 'package:emb_cli/src/cross/local_cross_provider.dart';
 import 'package:emb_cli/src/cross/lock_sync.dart';
 import 'package:emb_cli/src/cross/module_stager.dart';
+import 'package:emb_cli/src/cross/offline_enforcement.dart';
 import 'package:emb_cli/src/cross/overlay_builder.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/cross/rpm_packager.dart';
@@ -241,6 +242,14 @@ class CrossCommand extends Command<int> {
         negatable: false,
       )
       ..addFlag(
+        'offline-strict',
+        help:
+            'Like --offline, but also run build subprocesses inside a network '
+            'namespace and refuse to build when that isolation is unavailable '
+            '(rather than degrading to input-level denial only).',
+        negatable: false,
+      )
+      ..addFlag(
         'host-tools',
         help:
             "With --build: use the host's cmake/meson instead of the SDK's "
@@ -337,6 +346,12 @@ class CrossCommand extends Command<int> {
 
   /// Host-tool preflight (missing-tool probe, install hints, opt-in install),
   /// shared with `emb doctor --target`.
+  /// The offline denial level for this run, and whether build subprocesses are
+  /// wrapped in a network namespace — resolved in [run] once the host's
+  /// isolation capability is known, then read by the module build.
+  OfflineMode _offlineMode = OfflineMode.off;
+  bool _offlineWrap = false;
+
   late final Preflight _preflight = Preflight(_logger);
   late final LockSync _lockSync = LockSync(
     logger: _logger,
@@ -431,7 +446,14 @@ class CrossCommand extends Command<int> {
 
     final host = _host ?? HostInfo.detect();
     final workspace = Workspace.resolve(override: args['workspace'] as String?);
-    final offline = args['offline'] == true;
+    // --offline-strict implies --offline; it additionally requires a network
+    // namespace around build subprocesses (see the build dispatch below).
+    _offlineMode = args['offline-strict'] == true
+        ? OfflineMode.strict
+        : args['offline'] == true
+        ? OfflineMode.deny
+        : OfflineMode.off;
+    final offline = _offlineMode != OfflineMode.off;
     final provider = isNative
         ? LocalCrossProvider(host)
         : CrossProvider.forTarget(
@@ -645,6 +667,22 @@ class CrossCommand extends Command<int> {
     }
 
     if (args['build'] == true) {
+      // Resolve offline enforcement now that a build (with its subprocesses) is
+      // about to run: strict refuses when a network namespace is unavailable;
+      // deny degrades with a warning. Off is a no-op.
+      final enforcement = await resolveOfflineEnforcement(
+        _offlineMode,
+        _runProcess,
+      );
+      final fatal = enforcement.fatal;
+      if (fatal != null) {
+        _logger.err(fatal);
+        return ExitCode.unavailable.code;
+      }
+      final warning = enforcement.warning;
+      if (warning != null) _logger.warn(warning);
+      _offlineWrap = enforcement.wrap;
+
       if (args['flatpak'] == true && args['app'] == null) {
         _logger.err('--flatpak needs --app (a flatpak bundles the whole app).');
         return ExitCode.usage.code;
@@ -1712,7 +1750,7 @@ class CrossCommand extends Command<int> {
       return null;
     }
     final triple = rustTriple(profile.targetTriple);
-    final offline = argResults!['offline'] == true;
+    final offline = _offlineMode != OfflineMode.off;
     final env = {
       ...cargoEnv(profile, triple),
       'CARGO_TARGET_DIR': buildDir.path,
@@ -1738,16 +1776,23 @@ class CrossCommand extends Command<int> {
         // No rustup — assume the target std is present, else cargo will error.
       }
     }
-    final r = await _runProcess(
+    final cargoArgv = [
       'cargo',
-      [
-        'build',
-        '--release',
-        '--target',
-        triple,
-        if (offline) '--offline',
-        if (m.features.isNotEmpty) ...['--features', m.features.join(',')],
-      ],
+      'build',
+      '--release',
+      '--target',
+      triple,
+      if (offline) '--offline',
+      if (m.features.isNotEmpty) ...['--features', m.features.join(',')],
+    ];
+    // Under --offline-strict (on a host with the capability) the build runs in
+    // a network namespace, so a crate build script that tries the network is
+    // denied rather than trusted to honor --offline. unshare inherits the cwd
+    // and env, so CARGO_HOME/CARGO_NET_OFFLINE still reach cargo.
+    final argv = _offlineWrap ? netnsWrap(cargoArgv) : cargoArgv;
+    final r = await _runProcess(
+      argv.first,
+      argv.sublist(1),
       workingDirectory: src.path,
       environment: env,
       output: ProcessOutputMode.stream,

@@ -147,6 +147,16 @@
     "vendor",
     "vendored",
     "vendors",
-    "YYYYMMDDTHHMMSSZ"
+    "YYYYMMDDTHHMMSSZ",
+    "egress",
+    "isolation",
+    "loopback",
+    "namespace",
+    "namespaces",
+    "rootless",
+    "sandbox",
+    "subprocess",
+    "subprocesses",
+    "unshare"
   ]
 }
