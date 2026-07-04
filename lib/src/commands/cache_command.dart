@@ -613,13 +613,22 @@ class CacheExportCommand extends Command<int> {
   }) : _logger = logger,
        _env = environment,
        _run = run ?? defaultProcessRunner {
-    argParser.addFlag(
-      'cas-only',
-      negatable: false,
-      help:
-          'Archive only the content-addressed blobs (roughly half the size; '
-          'the store trees re-extract from them on an offline resolve).',
-    );
+    argParser
+      ..addFlag(
+        'cas-only',
+        negatable: false,
+        help:
+            'Archive only the content-addressed blobs (roughly half the size; '
+            'the store trees re-extract from them on an offline resolve).',
+      )
+      ..addOption(
+        'image',
+        help:
+            'Pin the build-environment container image (from '
+            '`emb cross --dockerfile`) in the manifest, so a restore knows '
+            'which runnable environment reconstructs the closure. Use a '
+            'digest ref (name@sha256:…); a mutable tag is warned about.',
+      );
   }
 
   final Logger _logger;
@@ -641,6 +650,13 @@ class CacheExportCommand extends Command<int> {
       return ExitCode.usage.code;
     }
     final casOnly = args['cas-only'] == true;
+    final envImage = args['image'] as String?;
+    if (envImage != null && !isImageDigestPinned(envImage)) {
+      _logger.warn(
+        'image "$envImage" is not digest-pinned (name@sha256:…); a mutable '
+        'tag can move, so the escrow may not reconstruct the same environment.',
+      );
+    }
     final root = resolveCacheDir(environment: _env);
     final present = archiveDirs(
       casOnly: casOnly,
@@ -661,6 +677,7 @@ class CacheExportCommand extends Command<int> {
             casOnly: casOnly,
             dirs: present,
             created: DateTime.now().toUtc().toIso8601String(),
+            envImage: envImage,
           ),
         ),
       );
@@ -772,6 +789,10 @@ class CacheImportCommand extends Command<int> {
         'Imported $dirs into ${root.path}'
         '${by != null ? " (exported by emb $by)" : ""}.',
       );
+      final envImage = manifest?['env_image'];
+      if (envImage != null) {
+        _logger.info('  build-environment image: $envImage');
+      }
     }
     return ExitCode.success.code;
   }
