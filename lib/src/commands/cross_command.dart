@@ -122,6 +122,18 @@ class CrossCommand extends Command<int> {
             'Build only the named cross.backends entries. Repeatable; '
             'defaults to every backend in the manifest.',
       )
+      ..addMultiOption(
+        'define',
+        abbr: 'D',
+        splitCommas: false,
+        valueHelp: 'KEY=VALUE',
+        help:
+            'Override a build-system -D define (repeatable), for either a '
+            'CMake or a Meson embedder. Always wins over the manifest: '
+            'cross.defines, any backends entry, and anything an extends '
+            'chain merged in. Embedder configure only (augment and module '
+            'builds keep their own defines).',
+      )
       ..addFlag(
         'deb',
         help:
@@ -419,9 +431,22 @@ class CrossCommand extends Command<int> {
     final isNative = selection.isNative;
     final selected = selection.cross;
 
+    // --define KEY=VALUE overrides: parsed up front (usage error before any
+    // download), then baked into the target itself so buildKey, the backend
+    // matrix, the no-backend build, and --dry-run all see the final values.
+    final Map<String, String> cliDefines;
+    try {
+      cliDefines = CrossTarget.parseDefineOverrides(
+        args['define'] as List<String>,
+      );
+    } on FormatException catch (e) {
+      _logger.err(e.message);
+      return ExitCode.usage.code;
+    }
+
     final CrossTarget target;
     try {
-      target = CrossTarget.fromMap(selected);
+      target = CrossTarget.fromMap(selected).withDefineOverrides(cliDefines);
       // fromMap throws ArgumentError on an unknown provider token.
       // ignore: avoid_catching_errors
     } on ArgumentError catch (e) {

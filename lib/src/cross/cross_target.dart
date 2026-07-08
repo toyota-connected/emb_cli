@@ -775,6 +775,71 @@ class CrossTarget {
     return out;
   }
 
+  /// A copy of this target with [overrides] applied as the last word on the
+  /// build-system `-D` defines: merged onto the shared [defines] *and* onto
+  /// every [backends] entry, so an override beats any manifest combination —
+  /// `cross.defines`, a per-backend define, or anything an `extends` chain
+  /// merged in. Because the target itself is amended, everything downstream
+  /// (`buildKey`, the backend matrix, the no-backend build, `--dry-run`
+  /// reporting) sees the overridden values; in particular the build dir key
+  /// differs from the un-overridden build, so build caches never go stale.
+  ///
+  /// Generator-agnostic: [defines] is emitted as `-Dkey=value` to both CMake
+  /// (`cmake -S`) and Meson (`meson setup`), so an override reaches whichever
+  /// generator the target uses. (`cmakeArgs` is the only CMake-only channel,
+  /// and it is deliberately left untouched here.)
+  ///
+  /// Scope: the embedder configure only. Augment and module builds keep their
+  /// own `defines:` — a feature toggle for the embedder must not leak into a
+  /// third-party package's configure.
+  CrossTarget withDefineOverrides(Map<String, String> overrides) {
+    if (overrides.isEmpty) return this;
+    return CrossTarget(
+      provider: provider,
+      targetTriple: targetTriple,
+      cpuFlags: cpuFlags,
+      toolchainVersion: toolchainVersion,
+      toolchainUrl: toolchainUrl,
+      versionPolicy: versionPolicy,
+      sysroot: sysroot,
+      yoctoBuild: yoctoBuild,
+      machineTuple: machineTuple,
+      recipe: recipe,
+      sdkPath: sdkPath,
+      sdkUrl: sdkUrl,
+      sdkEnvSetup: sdkEnvSetup,
+      augment: augment,
+      modules: modules,
+      generator: generator,
+      launcher: launcher,
+      backends: {
+        for (final e in backends.entries) e.key: {...e.value, ...overrides},
+      },
+      package: package,
+      defines: {...defines, ...overrides},
+      cmakeArgs: cmakeArgs,
+      hostTools: hostTools,
+      hostDevPackages: hostDevPackages,
+    );
+  }
+
+  /// Parse repeated `--define KEY=VALUE` CLI entries into an override map.
+  /// Splits on the first `=` only, so a value may itself contain `=`; an
+  /// empty value is allowed (`-D FOO=` yields `-DFOO=`, CMake's way to unset
+  /// a bool). A missing `=` or an empty key throws a [FormatException]. A
+  /// repeated key keeps the last occurrence.
+  static Map<String, String> parseDefineOverrides(List<String> entries) {
+    final out = <String, String>{};
+    for (final entry in entries) {
+      final i = entry.indexOf('=');
+      if (i <= 0) {
+        throw FormatException('--define expects KEY=VALUE, got "$entry".');
+      }
+      out[entry.substring(0, i)] = entry.substring(i + 1);
+    }
+    return out;
+  }
+
   /// Parse the flat `defines:` block (`{name: value}` → `-Dname=value`).
   static Map<String, String> _parseDefines(Object? value) {
     if (value is! Map) return const {};

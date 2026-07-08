@@ -80,6 +80,110 @@ void main() {
     expect(await run(['cross', pkg.path, '--publish']), ExitCode.usage.code);
   });
 
+  test('a malformed --define fails fast before any resolve', () async {
+    final pkg = pkgWith(
+      'defbad',
+      'id: defbad\ntype: app\ncross:\n  provider: arm-gnu\n'
+          '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n',
+    );
+    expect(
+      await run(['cross', pkg.path, '-D', 'NO_EQUALS']),
+      ExitCode.usage.code,
+    );
+  });
+
+  test('--define overrides plan cleanly through --dry-run', () async {
+    final pkg = pkgWith(
+      'defok',
+      'id: defok\ntype: app\ncross:\n  provider: arm-gnu\n'
+          '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n'
+          '  defines:\n    ENABLE_SENTRY: OFF\n'
+          '  backends:\n    wayland-egl:\n'
+          '      BUILD_BACKEND_WAYLAND_EGL: ON\n'
+          '      ENABLE_SENTRY: OFF\n',
+    );
+    expect(
+      await run(['cross', '--dry-run', pkg.path, '-D', 'ENABLE_SENTRY=ON']),
+      ExitCode.success.code,
+    );
+  });
+
+  test('--define overrides plan cleanly for a meson embedder', () async {
+    final pkg = pkgWith(
+      'defmeson',
+      'id: defmeson\ntype: app\ncross:\n  provider: arm-gnu\n'
+          '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n'
+          '  generator: meson\n'
+          '  defines:\n    backend: drm-gl\n',
+    );
+    expect(
+      await run(['cross', '--dry-run', pkg.path, '-D', 'backend=wayland']),
+      ExitCode.success.code,
+    );
+  });
+
+  test('the glued -DKEY=VALUE form is accepted', () async {
+    final pkg = pkgWith(
+      'defglue',
+      'id: defglue\ntype: app\ncross:\n  provider: arm-gnu\n'
+          '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n',
+    );
+    expect(
+      await run(['cross', '--dry-run', pkg.path, '-DENABLE_SENTRY=ON']),
+      ExitCode.success.code,
+    );
+  });
+
+  test('an empty --define value is accepted (CMake unset-style)', () async {
+    final pkg = pkgWith(
+      'defempty',
+      'id: defempty\ntype: app\ncross:\n  provider: arm-gnu\n'
+          '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n',
+    );
+    expect(
+      await run(['cross', '--dry-run', pkg.path, '-D', 'ENABLE_SENTRY=']),
+      ExitCode.success.code,
+    );
+  });
+
+  test('a value containing = survives (split on first = only)', () async {
+    final pkg = pkgWith(
+      'defeq',
+      'id: defeq\ntype: app\ncross:\n  provider: arm-gnu\n'
+          '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n',
+    );
+    expect(
+      await run([
+        'cross',
+        '--dry-run',
+        pkg.path,
+        '-D',
+        'CMAKE_CXX_FLAGS=-DFOO=1',
+      ]),
+      ExitCode.success.code,
+    );
+  });
+
+  test('repeated --define entries plan cleanly (last wins)', () async {
+    final pkg = pkgWith(
+      'defrepeat',
+      'id: defrepeat\ntype: app\ncross:\n  provider: arm-gnu\n'
+          '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n',
+    );
+    expect(
+      await run([
+        'cross',
+        '--dry-run',
+        pkg.path,
+        '-D',
+        'ENABLE_SENTRY=OFF',
+        '-D',
+        'ENABLE_SENTRY=ON',
+      ]),
+      ExitCode.success.code,
+    );
+  });
+
   test('publish skip probe uses the resolved triple', () async {
     // A manifest that omits `triple` resolves to the arm-gnu default; the
     // skip-on-exists probe must use that resolved triple, not an empty one, or

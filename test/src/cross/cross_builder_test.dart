@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:emb_cli/src/cross/cross_builder.dart';
 import 'package:emb_cli/src/cross/cross_profile.dart';
+import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/cross/overlay_builder.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
@@ -352,5 +353,87 @@ void main() {
       endsWith('build-wayland-egl'),
       endsWith('build-drm-kms-egl'),
     ]);
+  });
+
+  // End-to-end for the override channel: a --define override is baked into the
+  // target's `defines`, and that same map is what the builder emits as `-D`.
+  // These prove the overridden value actually reaches the configure argv — for
+  // BOTH generators, since `defines` is generator-agnostic — and that the
+  // manifest value it replaced is gone.
+  group('withDefineOverrides reaches the configure argv', () {
+    CrossTarget targetWith(String generator) => CrossTarget.fromMap({
+      'provider': 'arm-gnu',
+      'triple': 'aarch64-none-linux-gnu',
+      'generator': generator,
+      'defines': {'ENABLE_SENTRY': 'OFF', 'KEEP': '1'},
+      'backends': {
+        'wayland-egl': {
+          'BUILD_BACKEND_WAYLAND_EGL': 'ON',
+          'ENABLE_SENTRY': 'OFF',
+        },
+      },
+    });
+
+    test('cmake: the override wins and the manifest value is gone', () async {
+      final rec = recorder();
+      final t = targetWith(
+        'cmake',
+      ).withDefineOverrides(const {'ENABLE_SENTRY': 'ON'});
+      final r = await CrossBuilder(_profile, runProcess: rec.run).build(
+        sourceDir: dir('src'),
+        buildDir: dir('b'),
+        generator: t.generator,
+        defines: t.defines,
+      );
+      expect(r.success, isTrue);
+      final cfg = rec.calls.firstWhere(
+        (c) => c.first == 'cmake' && c.contains('-S'),
+      );
+      expect(cfg, contains('-DENABLE_SENTRY=ON'));
+      expect(cfg, isNot(contains('-DENABLE_SENTRY=OFF')));
+      expect(cfg, contains('-DKEEP=1'));
+    });
+
+    test('meson: the same override reaches meson setup', () async {
+      final rec = recorder();
+      final t = targetWith(
+        'meson',
+      ).withDefineOverrides(const {'ENABLE_SENTRY': 'ON'});
+      final r = await CrossBuilder(_profile, runProcess: rec.run).build(
+        sourceDir: dir('src'),
+        buildDir: dir('b'),
+        generator: t.generator,
+        defines: t.defines,
+      );
+      expect(r.success, isTrue);
+      final setup = rec.calls.firstWhere((c) => c.first == 'meson');
+      expect(setup, contains('-DENABLE_SENTRY=ON'));
+      expect(setup, isNot(contains('-DENABLE_SENTRY=OFF')));
+      expect(setup, contains('-DKEEP=1'));
+    });
+
+    test('cmake: an override reaches every backend configure', () async {
+      final rec = recorder();
+      final t = targetWith(
+        'cmake',
+      ).withDefineOverrides(const {'ENABLE_SENTRY': 'ON'});
+      final results = await CrossBuilder(_profile, runProcess: rec.run)
+          .buildBackends(
+            sourceDir: dir('src'),
+            buildRoot: Workspace(tmp).root,
+            generator: t.generator,
+            backends: {
+              for (final e in t.backends.entries)
+                e.key: {...t.defines, ...e.value},
+            },
+          );
+      expect(results.single.success, isTrue);
+      final cfg = rec.calls.firstWhere(
+        (c) => c.first == 'cmake' && c.contains('-S'),
+      );
+      expect(cfg, contains('-DENABLE_SENTRY=ON'));
+      expect(cfg, isNot(contains('-DENABLE_SENTRY=OFF')));
+      expect(cfg, contains('-DBUILD_BACKEND_WAYLAND_EGL=ON'));
+    });
   });
 }
