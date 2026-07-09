@@ -325,10 +325,13 @@ void main() {
       expect((await resolveTarget(a)).ok, isTrue);
       expect((await resolveTarget(b)).ok, isTrue);
 
-      // One shared sysroot-base extraction, referenced by both platform dirs.
+      // One shared sysroot-base extraction in the store, reused as the clone
+      // source for both augment targets. Unlike a no-augment target (which
+      // symlinks its sysroot at the shared base), an augment target gets a
+      // private, writable clone so the augment can be installed *into* the
+      // sysroot and ship in the container image.
       final base = store.list().where((e) => e.kind == 'sysroot-base').toList();
       expect(base, hasLength(1));
-      expect(base.single.liveRefs, 2);
       for (final t in [a, b]) {
         final sr = p.join(
           tmp.path,
@@ -337,10 +340,10 @@ void main() {
           'cross-$_triple-${sysrootKey(t)}',
           'sysroot',
         );
-        expect(
-          Link(sr).targetSync(),
-          store.rootOf('sysroot-base', sysrootBaseKey(t)).absolute.path,
-        );
+        // A real directory (clone), not a symlink into the store.
+        expect(FileSystemEntity.isLinkSync(sr), isFalse);
+        // The shared base tree was copied in, not referenced by symlink.
+        expect(File(p.join(sr, 'etc', 'os-release')).existsSync(), isTrue);
       }
     },
   );
