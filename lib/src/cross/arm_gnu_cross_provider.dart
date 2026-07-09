@@ -408,11 +408,43 @@ class ArmGnuCrossProvider implements CrossProvider {
     } on _SysrootStageException catch (e) {
       return CrossResolveResult.failed(e.message);
     }
-    _store.materialize(
-      kind: 'sysroot-base',
-      key: key,
-      linkPath: sysrootDir.path,
-    );
+    if (target.augment.isEmpty) {
+      _store.materialize(
+        kind: 'sysroot-base',
+        key: key,
+        linkPath: sysrootDir.path,
+      );
+      return null;
+    }
+    // Augments install straight into the sysroot (headers/libs/pkg-config under
+    // its own /usr, found by the backend's normal sysroot search and shipped in
+    // the container image) via OverlayBuilder's stageInto. That needs a
+    // private, writable tree -- not a symlink to the shared immutable base --
+    // so reflink the base in: `cp --reflink=auto` is copy-on-write where the
+    // fs allows (cheap), a plain copy otherwise, so an augment's writes never
+    // touch the shared base's inodes. The sysroot dir is config-keyed, so this
+    // runs once per config; skip when it already exists.
+    if (FileSystemEntity.isLinkSync(sysrootDir.path)) {
+      Link(
+        sysrootDir.path,
+      ).deleteSync(); // stale symlink from a no-augment build
+    }
+    if (!sysrootDir.existsSync()) {
+      sysrootDir.parent.createSync(recursive: true);
+      final base = _store.rootOf('sysroot-base', key);
+      final r = await Process.run('cp', [
+        '--reflink=auto',
+        '-a',
+        '-T',
+        base.path,
+        sysrootDir.path,
+      ]);
+      if (r.exitCode != 0) {
+        return CrossResolveResult.failed(
+          'sysroot clone for augments failed (cp): ${r.stderr}',
+        );
+      }
+    }
     return null;
   }
 

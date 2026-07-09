@@ -62,6 +62,17 @@ class CrossBuilder {
   /// a pkg-config env that searches the overlay before the sysroot.
   final OverlayPaths? _overlay;
 
+  /// The overlay only when it is a *separate* prefix from the sysroot. When
+  /// augments are staged into the sysroot itself its prefix equals the sysroot,
+  /// and there is nothing extra to wire: the sysroot's own CMAKE_SYSROOT +
+  /// pkg-config env already find them. Re-adding the sysroot as a find root
+  /// would in fact break the build — an aarch64 `sysroot/bin/gmake` then
+  /// shadows the host make and CMake tries to run it under qemu.
+  OverlayPaths? get _separateOverlay =>
+      (_overlay != null && _overlay.prefix != profile.targetSysroot)
+      ? _overlay
+      : null;
+
   /// Compiler-cache launcher executable (`ccache`/`sccache`), already resolved
   /// on `PATH`, or null. Applied to CMake as `CMAKE_<LANG>_COMPILER_LAUNCHER`.
   final String? _launcher;
@@ -168,9 +179,9 @@ class CrossBuilder {
       ...profile.buildEnv(),
       // Augment overlay pkg-config: search the overlay's .pc files before the
       // sysroot's (supersedes the profile's PKG_CONFIG_LIBDIR/SYSROOT_DIR).
-      if (_overlay != null) ..._overlay.pkgConfigEnv(profile),
+      if (_separateOverlay case final ov?) ...ov.pkgConfigEnv(profile),
     };
-    if (_overlay case final ov?) {
+    if (_separateOverlay case final ov?) {
       // The augment lives in a per-workspace overlay prefix *outside* the
       // sysroot, so pkg-config's PKG_CONFIG_SYSROOT_DIR wrongly rebases the
       // overlay's own .pc paths under the sysroot. Add the overlay include/lib
@@ -256,9 +267,9 @@ class CrossBuilder {
         // Augment overlay prefix (outside the sysroot): add it as a find root
         // and prefix so find_package/find_library resolve header/config
         // augments (e.g. Vulkan-Headers). CMAKE_SYSROOT stays a find root too.
-        if (_overlay != null) ...[
-          '-DCMAKE_FIND_ROOT_PATH=${_overlay.prefix}',
-          '-DCMAKE_PREFIX_PATH=${_overlay.prefix}',
+        if (_separateOverlay case final ov?) ...[
+          '-DCMAKE_FIND_ROOT_PATH=${ov.prefix}',
+          '-DCMAKE_PREFIX_PATH=${ov.prefix}',
         ],
         for (final e in defines.entries) '-D${e.key}=${e.value}',
         ...cmakeArgs,

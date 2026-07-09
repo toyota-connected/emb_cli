@@ -687,7 +687,10 @@ class CrossCommand extends Command<int> {
         launcher: launcher,
       );
       try {
-        final ov = await overlay.build(target.augment);
+        final ov = await overlay.build(
+          target.augment,
+          stageInto: Directory(profile.targetSysroot),
+        );
         _logger.info('Overlay: ${ov.prefix}');
       } on OverlayBuildException catch (e) {
         _logger.err(e.message);
@@ -834,7 +837,14 @@ class CrossCommand extends Command<int> {
         launcher: launcher,
       );
       try {
-        overlayPaths = await overlay.build(target.augment);
+        // Stage augments into the sysroot itself (not a separate overlay) so
+        // their headers/libs/pkg-config are found by the backend build's normal
+        // sysroot search and ship in the container image. The provider made the
+        // sysroot a private, writable clone when augments are present.
+        overlayPaths = await overlay.build(
+          target.augment,
+          stageInto: Directory(profile.targetSysroot),
+        );
         hostToolBins = overlayPaths.binDirs;
       } on OverlayBuildException catch (e) {
         _logger.err('augment: ${e.message}');
