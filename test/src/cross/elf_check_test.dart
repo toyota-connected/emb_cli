@@ -101,4 +101,26 @@ void main() {
       expect(verifyElfForTriple(f, 'aarch64-none-linux-gnu'), isNull);
     });
   });
+
+  group('parseNeededSonames', () {
+    test('pulls DT_NEEDED sonames in file order', () {
+      const out = '''
+Dynamic section at offset 0x2d88 contains 27 entries:
+  Tag        Type                         Name/Value
+ 0x0000000000000001 (NEEDED)             Shared library: [libihs_shared.so.1]
+ 0x0000000000000001 (NEEDED)             Shared library: [libEGL.so.1]
+ 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]
+ 0x000000000000000e (SONAME)             Library soname: [homescreen]
+''';
+      expect(parseNeededSonames(out), [
+        'libihs_shared.so.1',
+        'libEGL.so.1',
+        'libc.so.6',
+      ]);
+    });
+
+    test('returns empty for output with no NEEDED entries', () {
+      expect(parseNeededSonames('no dynamic section here'), isEmpty);
+    });
+  });
 }

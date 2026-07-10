@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:emb_cli/src/cross/control_archive_packager.dart';
+import 'package:emb_cli/src/cross/elf_check.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:path/path.dart' as p;
 
@@ -193,8 +194,7 @@ class DebPackager extends ControlArchivePackager {
     if (r.exitCode != 0) {
       throw DebPackageException('readelf -d failed: ${r.stderr}');
     }
-    final re = RegExp(r'Shared library:\s*\[([^\]]+)\]');
-    return [for (final m in re.allMatches(r.stdout)) m.group(1)!];
+    return parseNeededSonames(r.stdout);
   }
 
   /// Basenames of the shared-object entries in `dpkg-deb -c` output.
