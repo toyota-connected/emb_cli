@@ -14,8 +14,10 @@
 #
 # Native builds use the HOST's system libraries (install the -dev/-devel
 # packages: libdrm, gbm, egl, gles2, libinput, xkbcommon, libseat, libudev,
-# libdisplay-info >= 0.2.0, wayland + wayland-protocols, vulkan). Validated on
-# Fedora: all six backends build to distinct x86-64 binaries.
+# libdisplay-info >= 0.2.0, wayland + wayland-protocols, vulkan; add libcurl
+# — libcurl4-openssl-dev / libcurl-devel — when BUILD_CRASH_HANDLER is on, for
+# sentry-native's SENTRY_TRANSPORT=curl). Validated on Fedora: all six backends
+# build to distinct x86-64 binaries.
 id: ivi-homescreen
 type: app
 supported_archs: [arm64, x86_64]
@@ -25,6 +27,29 @@ cross:
   provider: arm-gnu              # required to parse; ignored for --target local
   defines:
     DISABLE_PLUGINS: 'ON'        # applied to every backend build
+  augment:
+    # sentry-native (crashpad backend) for the optional native crash handler.
+    # `requires_define:` gates the build on the embedder define, so it only
+    # builds when the crash handler is enabled:
+    #   emb cross all-backends.emb.yaml --target local --build \
+    #     --define BUILD_CRASH_HANDLER=ON
+    # `min:` is the version floor (and the source dir name); extra CMake cache
+    # entries go in `defines:` (not `cmake_args:`). The release .zip bundles the
+    # vendored crashpad/breakpad subtrees and is extracted via unzip. Needs
+    # libcurl (SENTRY_TRANSPORT=curl) — install libcurl4-openssl-dev /
+    # libcurl-devel on the host for a --target local build.
+    - pkg: sentry-native
+      requires_define: BUILD_CRASH_HANDLER
+      min: "0.15.3"
+      url: https://github.com/getsentry/sentry-native/releases/download/0.15.3/sentry-native.zip
+      build: cmake
+      static: true
+      defines:
+        SENTRY_BACKEND: crashpad
+        SENTRY_TRANSPORT: curl
+        SENTRY_BUILD_SHARED_LIBS: 'OFF'
+        SENTRY_BUILD_TESTS: 'OFF'
+        SENTRY_BUILD_EXAMPLES: 'OFF'
   backends:
     wayland-egl:
       BUILD_BACKEND_WAYLAND_EGL: 'ON'

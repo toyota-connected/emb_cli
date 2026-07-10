@@ -51,6 +51,7 @@ cross:
       - libglib2.0-dev
       - wayland-protocols
       - zlib1g-dev
+      - libcurl4-openssl-dev   # sentry-native SENTRY_TRANSPORT=curl (BUILD_CRASH_HANDLER)
 
   augment:
     # bookworm ships libdisplay-info 0.1.1 (< drm-cxx's 0.2.0 floor), so 0.2.0 is

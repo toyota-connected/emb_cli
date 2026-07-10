@@ -150,14 +150,33 @@ class OverlayBuilder {
     }
     final dir = Directory(p.join(src.path, '${lib.pkg}-${lib.minVersion}'));
     if (!dir.existsSync()) {
-      dir.createSync(recursive: true);
-      await _run('tar', [
-        '-xf',
-        tarball.path,
-        '-C',
-        dir.path,
-        '--strip-components=1',
-      ]);
+      if (tarball.path.toLowerCase().endsWith('.zip')) {
+        // GNU `tar` can't read a zip and `unzip` has no `--strip-components`,
+        // so unzip into a staging dir and promote a lone top-level directory to
+        // reproduce the tar path's `--strip-components=1`. Release zips that
+        // bundle vendored subtrees (e.g. sentry-native's crashpad/breakpad) come
+        // this way.
+        final stage = Directory('${dir.path}.unzip');
+        if (stage.existsSync()) stage.deleteSync(recursive: true);
+        stage.createSync(recursive: true);
+        await _run('unzip', ['-q', tarball.path, '-d', stage.path]);
+        final top = stage.listSync();
+        if (top.length == 1 && top.single is Directory) {
+          (top.single as Directory).renameSync(dir.path);
+          stage.deleteSync(recursive: true);
+        } else {
+          stage.renameSync(dir.path);
+        }
+      } else {
+        dir.createSync(recursive: true);
+        await _run('tar', [
+          '-xf',
+          tarball.path,
+          '-C',
+          dir.path,
+          '--strip-components=1',
+        ]);
+      }
     }
     return dir;
   }

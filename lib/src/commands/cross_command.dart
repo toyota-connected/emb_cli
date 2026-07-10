@@ -828,7 +828,23 @@ class CrossCommand extends Command<int> {
     // Native builds use the host's system libraries instead.
     var hostToolBins = const <String>[];
     OverlayPaths? overlayPaths;
-    if (!native && target.augment.isNotEmpty) {
+    // Drop augments whose `requires_define:` gate isn't satisfied by the
+    // effective defines (e.g. sentry-native only when BUILD_CRASH_HANDLER=ON),
+    // so an optional dependency in the manifest doesn't build on every run.
+    final augments = target.augment
+        .where(
+          (a) => CrossTarget.defineSatisfied(a.requiresDefine, target.defines),
+        )
+        .toList();
+    for (final a in target.augment) {
+      if (!augments.contains(a)) {
+        _logger.detail(
+          '  augment       : ${a.pkg} skipped (requires_define: '
+          '${a.requiresDefine})',
+        );
+      }
+    }
+    if (!native && augments.isNotEmpty) {
       final sw = Stopwatch()..start();
       final overlay = OverlayBuilder(
         workspace,
@@ -842,7 +858,7 @@ class CrossCommand extends Command<int> {
         // sysroot search and ship in the container image. The provider made the
         // sysroot a private, writable clone when augments are present.
         overlayPaths = await overlay.build(
-          target.augment,
+          augments,
           stageInto: Directory(profile.targetSysroot),
         );
         hostToolBins = overlayPaths.binDirs;
@@ -853,7 +869,7 @@ class CrossCommand extends Command<int> {
         overlay.close();
       }
       _logger.info(
-        '  augment       : ${target.augment.map((a) => a.pkg).join(", ")} '
+        '  augment       : ${augments.map((a) => a.pkg).join(", ")} '
         'built (${_secs(sw)})',
       );
     }
@@ -942,6 +958,7 @@ class CrossCommand extends Command<int> {
         flatpak: flatpak,
         defaultName: defaultName,
         manifestDir: source,
+        overlayPrefix: overlayPaths?.prefix,
       );
       if (rc != ExitCode.success.code) return rc;
     }
@@ -954,6 +971,7 @@ class CrossCommand extends Command<int> {
         built,
         defaultName,
         source,
+        overlayPaths?.prefix,
       );
       if (rc != ExitCode.success.code) return rc;
     }
@@ -965,6 +983,7 @@ class CrossCommand extends Command<int> {
         built,
         defaultName,
         source,
+        overlayPaths?.prefix,
       );
       if (rc != ExitCode.success.code) return rc;
     }
@@ -976,6 +995,7 @@ class CrossCommand extends Command<int> {
         built,
         defaultName,
         source,
+        overlayPaths?.prefix,
       );
       if (rc != ExitCode.success.code) return rc;
     }
@@ -987,6 +1007,7 @@ class CrossCommand extends Command<int> {
         built,
         defaultName,
         source,
+        overlayPaths?.prefix,
       );
       if (rc != ExitCode.success.code) return rc;
     }
@@ -1080,6 +1101,7 @@ class CrossCommand extends Command<int> {
     required String mode,
     required bool tar,
     required Directory manifestDir,
+    String? overlayPrefix,
     String? deployHost,
     String deployDir = 'ivi-homescreen',
     bool run = false,
@@ -1223,6 +1245,7 @@ class CrossCommand extends Command<int> {
             multi: multi,
             defaultName: defaultName,
             manifestDir: manifestDir,
+            overlayPrefix: overlayPrefix,
           );
           if (rc != ExitCode.success.code) return rc;
         }
@@ -1419,6 +1442,7 @@ class CrossCommand extends Command<int> {
     List<CrossBuildResult> built,
     String defaultName,
     Directory manifestDir,
+    String? overlayPrefix,
   ) async {
     final spec = target.package ?? const PackageSpec();
     final arch = debianArch(profile.targetTriple);
@@ -1429,7 +1453,12 @@ class CrossCommand extends Command<int> {
       Directory(p.join(p.dirname(profile.targetSysroot), 'debs')),
     ];
     // Extra files resolved against the manifest dir → absolute target paths.
-    final ef = _extraFiles(spec, manifestDir);
+    final ef = _extraFiles(
+      spec,
+      manifestDir,
+      overlayPrefix: overlayPrefix,
+      defines: target.defines,
+    );
     // Maintainer scripts (preinst/postinst/prerm/postrm) → DEBIAN/<name>.
     final maintainerScripts = {
       for (final e in spec.scripts.entries)
@@ -1495,12 +1524,18 @@ class CrossCommand extends Command<int> {
     List<CrossBuildResult> built,
     String defaultName,
     Directory manifestDir,
+    String? overlayPrefix,
   ) async {
     final spec = target.package ?? const PackageSpec();
     final arch = spec.ipk?.arch ?? opkgArch(profile.targetTriple);
     final baseName = spec.name ?? defaultName;
     final outDir = Directory(p.join(buildRoot.path, 'dist'));
-    final ef = _extraFiles(spec, manifestDir);
+    final ef = _extraFiles(
+      spec,
+      manifestDir,
+      overlayPrefix: overlayPrefix,
+      defines: target.defines,
+    );
     final maintainerScripts = {
       for (final e in spec.scripts.entries)
         e.key: p.join(manifestDir.path, e.value),
@@ -1558,6 +1593,7 @@ class CrossCommand extends Command<int> {
     List<CrossBuildResult> built,
     String defaultName,
     Directory manifestDir,
+    String? overlayPrefix,
   ) async {
     final spec = target.package ?? const PackageSpec();
     final rpmSpec = spec.rpm;
@@ -1571,7 +1607,12 @@ class CrossCommand extends Command<int> {
     final arch = rpmArch(profile.targetTriple);
     final baseName = spec.name ?? defaultName;
     final outDir = Directory(p.join(buildRoot.path, 'dist'));
-    final ef = _extraFiles(spec, manifestDir);
+    final ef = _extraFiles(
+      spec,
+      manifestDir,
+      overlayPrefix: overlayPrefix,
+      defines: target.defines,
+    );
     final scriptlets = {
       for (final e in spec.scripts.entries)
         e.key: p.join(manifestDir.path, e.value),
@@ -1628,6 +1669,7 @@ class CrossCommand extends Command<int> {
     List<CrossBuildResult> built,
     String defaultName,
     Directory manifestDir,
+    String? overlayPrefix,
   ) async {
     final spec = target.package ?? const PackageSpec();
     if (spec.scripts.isNotEmpty) {
@@ -1639,7 +1681,12 @@ class CrossCommand extends Command<int> {
     final arch = archOfTriple(profile.targetTriple);
     final baseName = spec.name ?? defaultName;
     final outDir = Directory(p.join(buildRoot.path, 'dist'));
-    final ef = _extraFiles(spec, manifestDir);
+    final ef = _extraFiles(
+      spec,
+      manifestDir,
+      overlayPrefix: overlayPrefix,
+      defines: target.defines,
+    );
     final packager = TarballPackager(runProcess: _runProcess);
 
     for (final r in built) {
@@ -1690,6 +1737,7 @@ class CrossCommand extends Command<int> {
     required bool multi,
     required String defaultName,
     required Directory manifestDir,
+    String? overlayPrefix,
   }) async {
     final tag = backend != null ? '$backend: ' : '';
     final spec = target.package ?? const PackageSpec();
@@ -1709,7 +1757,12 @@ class CrossCommand extends Command<int> {
     final icon = iconRel != null
         ? File(p.join(manifestDir.path, iconRel))
         : null;
-    final ef = _extraFiles(spec, manifestDir);
+    final ef = _extraFiles(
+      spec,
+      manifestDir,
+      overlayPrefix: overlayPrefix,
+      defines: target.defines,
+    );
     final meta = FlatpakMetadata(
       appId: appId,
       command: embedder,
@@ -1749,12 +1802,36 @@ class CrossCommand extends Command<int> {
   /// executable and a shared object stays 0644 without spelling it out).
   ({Map<String, String> files, Map<String, String> modes}) _extraFiles(
     PackageSpec spec,
-    Directory manifestDir,
-  ) {
+    Directory manifestDir, {
+    String? overlayPrefix,
+    Map<String, String> defines = const {},
+  }) {
     final files = <String, String>{};
     final modes = <String, String>{};
     for (final e in spec.files.entries) {
-      final src = p.join(manifestDir.path, e.key);
+      // Skip a file gated on an embedder define that isn't satisfied (e.g.
+      // crashpad_handler unless BUILD_CRASH_HANDLER=ON) -- its source may not
+      // even exist because the gated augment that stages it was skipped.
+      if (!CrossTarget.defineSatisfied(spec.fileRequires[e.key], defines)) {
+        continue;
+      }
+      // A source under `overlay/` names an augment-staged artifact (e.g.
+      // `overlay/usr/bin/crashpad_handler`) and resolves against the overlay
+      // prefix; everything else is manifest-relative. The overlay stages into
+      // `<prefix>/usr/...`, so strip the leading `overlay/` segment.
+      final String src;
+      if (e.key == 'overlay' || e.key.startsWith('overlay/')) {
+        if (overlayPrefix == null) {
+          _logger.err(
+            '  package.files: "${e.key}" references the augment overlay, but '
+            'none was built for this target (add an augment or drop the entry)',
+          );
+          continue;
+        }
+        src = p.join(overlayPrefix, e.key.substring('overlay/'.length));
+      } else {
+        src = p.join(manifestDir.path, e.key);
+      }
       files[src] = e.value;
       final f = File(src);
       final mode = spec.fileModes[e.key] ?? (f.existsSync() ? _octal(f) : null);
