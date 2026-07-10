@@ -1185,6 +1185,25 @@ class CrossCommand extends Command<int> {
       await _copyTree(appBundle, outDir);
       try {
         final bin = await runnable.install(binary, outDir);
+        // Ride-along project libraries: copy the embedder's DT_NEEDED shared
+        // objects that resolve inside the backend's build tree (e.g.
+        // libihs_shared) into the runnable's lib/. These are libraries the
+        // embedder links but that no target package provides, so the loader
+        // would not find them on the device. System/sysroot libraries do not
+        // resolve in the build tree and are left to the target's own loader.
+        final staged = await _stageLinkedLibs(
+          binary: bin,
+          buildDir: Directory(r.buildDir),
+          profile: profile,
+          libDir: Directory(p.join(outDir.path, 'lib')),
+        );
+        for (final err in staged.errors) {
+          _logger.err('  ${r.backend ?? ""}: staged lib $err');
+        }
+        if (staged.errors.isNotEmpty) return ExitCode.software.code;
+        for (final soname in staged.staged) {
+          _logger.detail('  ${r.backend ?? ""}: staged lib/$soname');
+        }
         _logger.info(
           '  ${r.backend ?? ""}: runnable → ${outDir.path}  '
           '(run: ./${p.basename(bin.path)} -b .)',
@@ -1331,6 +1350,64 @@ class CrossCommand extends Command<int> {
     if (r.exitCode != 0) {
       throw RunnableBundleException('copy failed: ${r.stderr}');
     }
+  }
+
+  /// Copy [binary]'s `DT_NEEDED` shared libraries that are provided by the
+  /// project's own [buildDir] (rather than the target sysroot) into [libDir],
+  /// following each staged library's own `DT_NEEDED` transitively.
+  ///
+  /// A soname that does not resolve to a file under [buildDir] is a system /
+  /// sysroot library the target's loader already provides, and is skipped. Each
+  /// staged object is verified to match the target triple so a stray host-arch
+  /// build cannot ride along. Returns the staged sonames and any per-lib
+  /// errors.
+  Future<_StagedLibs> _stageLinkedLibs({
+    required File binary,
+    required Directory buildDir,
+    required CrossProfile profile,
+    required Directory libDir,
+  }) async {
+    // Index every *.so* in the build tree by soname (basename); following
+    // symlinks so a soname link (libfoo.so.1) resolves to its real object.
+    final byName = <String, File>{};
+    if (buildDir.existsSync()) {
+      try {
+        for (final e in buildDir.listSync(recursive: true)) {
+          if (e is! File) continue;
+          final base = p.basename(e.path);
+          if (base.contains('.so')) byName.putIfAbsent(base, () => e);
+        }
+      } on FileSystemException {
+        // Broken symlink or unreadable entry mid-walk: index what we can.
+      }
+    }
+
+    final readelf = _readelfFor(profile);
+    final staged = <String>[];
+    final errors = <String>[];
+    final seen = <String>{};
+    final queue = <File>[binary];
+    while (queue.isNotEmpty) {
+      final elf = queue.removeLast();
+      final r = await _runProcess(readelf, ['-d', elf.path]);
+      if (r.exitCode != 0) continue;
+      for (final soname in parseNeededSonames(r.stdout)) {
+        if (!seen.add(soname)) continue;
+        final src = byName[soname];
+        if (src == null) continue; // system/sysroot lib — loader handles it
+        final archErr = verifyElfForTriple(src, profile.targetTriple);
+        if (archErr != null) {
+          errors.add('$soname: $archErr');
+          continue;
+        }
+        libDir.createSync(recursive: true);
+        final dest = File(p.join(libDir.path, soname));
+        src.copySync(dest.path); // copySync follows the symlink to real content
+        staged.add(soname);
+        queue.add(dest); // a staged lib may pull in more in-tree libraries
+      }
+    }
+    return _StagedLibs(staged, errors);
   }
 
   /// Package each successfully-built backend binary into a `.deb` under
@@ -2259,4 +2336,13 @@ class CrossCommand extends Command<int> {
     }
     return exe;
   }
+}
+
+/// Result of staging an embedder's project-built `DT_NEEDED` libraries into a
+/// runnable bundle: the staged sonames and any per-library errors (e.g. an
+/// arch mismatch), collected so the caller can fail the build with all of them.
+class _StagedLibs {
+  const _StagedLibs(this.staged, this.errors);
+  final List<String> staged;
+  final List<String> errors;
 }

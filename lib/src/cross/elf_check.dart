@@ -103,3 +103,14 @@ String? verifyElfForTriple(File file, String triple) {
   }
   return null;
 }
+
+/// Parse the `DT_NEEDED` shared-library sonames out of `readelf -d` output.
+///
+/// Each dynamic-section `NEEDED` entry prints as
+/// `0x… (NEEDED)  Shared library: [libfoo.so.1]`; this pulls the bracketed
+/// sonames in file order. Used both to compute a package's auto-`Depends` and
+/// to decide which project-built libraries ride along in a runnable bundle.
+List<String> parseNeededSonames(String readelfOutput) {
+  final re = RegExp(r'Shared library:\s*\[([^\]]+)\]');
+  return [for (final m in re.allMatches(readelfOutput)) m.group(1)!];
+}
