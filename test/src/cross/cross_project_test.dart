@@ -103,6 +103,32 @@ cross:
       expect(rpi5.family, 'raspberry-pi'); // grouped under the family
     });
 
+    test('shared cross.augment unions into a target that declares its own', () {
+      final f = write('proj.emb.yaml', '''
+id: ivi
+cross:
+  provider: arm-gnu
+  triple: aarch64-linux-gnu
+  augment:
+    - pkg: sentry-native
+      min: '0.15.3'
+      url: s.zip
+      build: cmake
+      requires_define: BUILD_CRASH_HANDLER
+  targets:
+    rpi5:
+      cpu_flags: -mcpu=cortex-a76
+      augment:
+        - {pkg: libdisplay-info, min: '0.2.0', url: di.tar.gz, build: meson}
+''');
+      final rpi5 = CrossProjectResolver().resolve(f.path)!.targets['rpi5']!;
+      // shared [sentry-native] ∪ target [libdisplay-info], base first.
+      expect((rpi5.cross['augment'] as List).map((e) => (e as Map)['pkg']), [
+        'sentry-native',
+        'libdisplay-info',
+      ]);
+    });
+
     test('.emb/ dir unions flat + family files over a shared base', () {
       write('proj/.emb/base.emb.yaml', '''
 id: shared
@@ -240,6 +266,8 @@ cross:
       toolchain_version: 15.2.rel1
       image_url: https://example/trixie.img.xz
       cpu_flags: [-mcpu=cortex-a76]
+      augment:
+        - {pkg: libdisplay-info, min: '0.2.0', url: di.tar.gz, build: meson}
 ''');
     });
     tearDown(() => tmp.deleteSync(recursive: true));
@@ -294,6 +322,43 @@ cross:
         'libgstreamer1.0-dev',
         'libsecret-1-dev',
       ]);
+    });
+
+    test('augment union (base + derived additions, order-preserving)', () {
+      final project = resolveProject('''
+id: ivi-homescreen
+cross:
+  targets:
+    rpi5-trixie:
+      extends: rpi5-trixie
+      augment:
+        - pkg: sentry-native
+          min: '0.15.3'
+          url: sentry.zip
+          build: cmake
+          requires_define: BUILD_CRASH_HANDLER
+''');
+      final augment = project.targets['rpi5-trixie']!.cross['augment'] as List;
+      // board [libdisplay-info] ∪ project [sentry-native]
+      expect(augment.map((e) => (e as Map)['pkg']), [
+        'libdisplay-info',
+        'sentry-native',
+      ]);
+    });
+
+    test('a derived augment for the same pkg replaces the inherited one', () {
+      final project = resolveProject('''
+id: ivi-homescreen
+cross:
+  targets:
+    rpi5-trixie:
+      extends: rpi5-trixie
+      augment:
+        - {pkg: libdisplay-info, min: '0.3.0', url: newer.tar.gz, build: meson}
+''');
+      final augment = project.targets['rpi5-trixie']!.cross['augment'] as List;
+      expect(augment.length, 1);
+      expect((augment.single as Map)['min'], '0.3.0'); // derived wins
     });
 
     test('backends replace (not union) across the layer', () {

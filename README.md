@@ -679,8 +679,9 @@ cross:
 
 The chain collapses **app ⊕ project ⊕ board** with the same merge rules at every
 layer: nested maps deep-merge; `cpu_flags` and `backends` **replace** (each is a
-complete statement); `sysroot.dev_packages` **union** (each layer adds to the
-stack below it). `<dir>` is resolved relative to the extending manifest's project
+complete statement); `sysroot.dev_packages` and `augment` **union** (each layer
+adds to the stack below it; an `augment` entry for a `pkg` already present
+replaces it). `<dir>` is resolved relative to the extending manifest's project
 root (the `.emb/` parent, else the file's directory); cross-project reference
 cycles are rejected. The board library location can be overridden with
 `EMB_BOARDS_DIR` (it otherwise ships with emb).

@@ -283,7 +283,10 @@ class CrossProjectResolver {
       final override = entry.value is Map
           ? Map<String, dynamic>.from(entry.value as Map)
           : const <String, dynamic>{};
-      final merged = _applyExtends({...shared, ...override}, sourcePath);
+      final merged = _applyExtends(
+        _mergeSharedOverride(shared, override),
+        sourcePath,
+      );
       out[name] = CrossTargetRef(
         name: name,
         cross: merged,
@@ -436,7 +439,7 @@ class CrossProjectResolver {
 
   /// Merge the [over] (derived) layer onto [base], with the cross-layer rules:
   /// nested maps deep-merge; `backends` is a complete statement (replace);
-  /// `sysroot.dev_packages` accumulate (union, order-preserving).
+  /// `sysroot.dev_packages` and `augment` accumulate (union, order-preserving).
   Map<String, dynamic> _mergeCross(
     Map<String, dynamic> base,
     Map<String, dynamic> over,
@@ -457,7 +460,50 @@ class CrossProjectResolver {
       }
       (merged['sysroot'] as Map)['dev_packages'] = union;
     }
+    if (base['augment'] is List && over['augment'] is List) {
+      merged['augment'] = _unionAugment(
+        base['augment'] as List,
+        over['augment'] as List,
+      );
+    }
     return merged;
+  }
+
+  /// Shallow-merge a target [override] over the [shared] cross fields, but
+  /// union `augment` (like [_mergeCross]) so an augment declared once in shared
+  /// block (e.g. a `.emb/base.emb.yaml` crash handler) survives a target that
+  /// declares its own, instead of the target's list replacing it.
+  static Map<String, dynamic> _mergeSharedOverride(
+    Map<String, dynamic> shared,
+    Map<String, dynamic> override,
+  ) {
+    final merged = {...shared, ...override};
+    if (shared['augment'] is List && override['augment'] is List) {
+      merged['augment'] = _unionAugment(
+        shared['augment'] as List,
+        override['augment'] as List,
+      );
+    }
+    return merged;
+  }
+
+  /// Union two `augment` lists (base first, order-preserving), with a derived
+  /// entry replacing a base entry that names the same `pkg` and otherwise being
+  /// appended. Lets an inherited augment (e.g. a project layer's crash handler)
+  /// survive a target that also declares its own, instead of being replaced.
+  static List<dynamic> _unionAugment(List<dynamic> base, List<dynamic> over) {
+    final out = <dynamic>[...base];
+    String? pkgOf(dynamic e) => e is Map ? e['pkg']?.toString() : null;
+    for (final e in over) {
+      final pkg = pkgOf(e);
+      final i = pkg == null ? -1 : out.indexWhere((b) => pkgOf(b) == pkg);
+      if (i >= 0) {
+        out[i] = e;
+      } else {
+        out.add(e);
+      }
+    }
+    return out;
   }
 
   /// Board name -> hardware `cross:` map, loaded once from the board library.
@@ -479,7 +525,7 @@ class CrossProjectResolver {
             final override = e.value is Map
                 ? Map<String, dynamic>.from(e.value as Map)
                 : const <String, dynamic>{};
-            out[e.key.toString()] = {...shared, ...override};
+            out[e.key.toString()] = _mergeSharedOverride(shared, override);
           }
         } else {
           final name =
