@@ -1352,20 +1352,19 @@ class CrossCommand extends Command<int> {
     }
   }
 
-  /// Copy [binary]'s `DT_NEEDED` shared libraries that are provided by the
-  /// project's own [buildDir] (rather than the target sysroot) into [libDir],
-  /// following each staged library's own `DT_NEEDED` transitively.
+  /// Resolve [binary]'s `DT_NEEDED` shared libraries that the project's own
+  /// [buildDir] provides (rather than the target sysroot), following each
+  /// resolved library's own `DT_NEEDED` transitively.
   ///
   /// A soname that does not resolve to a file under [buildDir] is a system /
-  /// sysroot library the target's loader already provides, and is skipped. Each
-  /// staged object is verified to match the target triple so a stray host-arch
-  /// build cannot ride along. Returns the staged sonames and any per-lib
-  /// errors.
-  Future<_StagedLibs> _stageLinkedLibs({
+  /// sysroot library the target's loader already provides, and is left out.
+  /// Each object is verified to match the target triple so a stray host-arch
+  /// build cannot ride along. Returns a soname → backing-file map (symlinks
+  /// resolved) and any per-library arch-mismatch errors.
+  Future<({Map<String, File> libs, List<String> errors})> _resolveLinkedLibs({
     required File binary,
     required Directory buildDir,
     required CrossProfile profile,
-    required Directory libDir,
   }) async {
     // Index every *.so* in the build tree by soname (basename); following
     // symlinks so a soname link (libfoo.so.1) resolves to its real object.
@@ -1383,7 +1382,7 @@ class CrossCommand extends Command<int> {
     }
 
     final readelf = _readelfFor(profile);
-    final staged = <String>[];
+    final libs = <String, File>{};
     final errors = <String>[];
     final seen = <String>{};
     final queue = <File>[binary];
@@ -1400,14 +1399,35 @@ class CrossCommand extends Command<int> {
           errors.add('$soname: $archErr');
           continue;
         }
-        libDir.createSync(recursive: true);
-        final dest = File(p.join(libDir.path, soname));
-        src.copySync(dest.path); // copySync follows the symlink to real content
-        staged.add(soname);
-        queue.add(dest); // a staged lib may pull in more in-tree libraries
+        // Resolve the soname symlink to the backing object so consumers ship a
+        // real file under the soname name.
+        libs[soname] = File(src.resolveSymbolicLinksSync());
+        queue.add(src); // a resolved lib may pull in more in-tree libraries
       }
     }
-    return _StagedLibs(staged, errors);
+    return (libs: libs, errors: errors);
+  }
+
+  /// Copy the project libraries [binary] links from [buildDir] into [libDir]
+  /// under their sonames (see [_resolveLinkedLibs]).
+  Future<_StagedLibs> _stageLinkedLibs({
+    required File binary,
+    required Directory buildDir,
+    required CrossProfile profile,
+    required Directory libDir,
+  }) async {
+    final res = await _resolveLinkedLibs(
+      binary: binary,
+      buildDir: buildDir,
+      profile: profile,
+    );
+    final staged = <String>[];
+    res.libs.forEach((soname, real) {
+      libDir.createSync(recursive: true);
+      real.copySync(p.join(libDir.path, soname));
+      staged.add(soname);
+    });
+    return _StagedLibs(staged, res.errors);
   }
 
   /// Package each successfully-built backend binary into a `.deb` under
@@ -1449,6 +1469,31 @@ class CrossCommand extends Command<int> {
         );
         return ExitCode.software.code;
       }
+      // Ship the embedder's project-built DT_NEEDED libraries (e.g.
+      // libihs_shared) that no target package provides: stage each at
+      // /usr/lib/<multiarch>/<soname> so the target loader finds it. Sonames
+      // owned by a base-image package resolve to an auto-Depends instead and
+      // are not staged here; these are the ones with no owning package.
+      final linked = await _resolveLinkedLibs(
+        binary: binary,
+        buildDir: Directory(r.buildDir),
+        profile: profile,
+      );
+      if (linked.errors.isNotEmpty) {
+        for (final e in linked.errors) {
+          _logger.err('  ${r.backend ?? ""}: linked lib $e');
+        }
+        return ExitCode.software.code;
+      }
+      final libDest = '/usr/lib/${debianMultiarch(profile.targetTriple)}';
+      final files = {...ef.files};
+      final modes = {...ef.modes};
+      linked.libs.forEach((soname, real) {
+        files[real.path] = p.join(libDest, soname);
+        modes[real.path] = '0644';
+        _logger.detail('  ${r.backend ?? ""}: deb ships $libDest/$soname');
+      });
+
       final multi = built.length > 1 && r.backend != null;
       final name = multi ? '$baseName-${r.backend}' : baseName;
       final meta = DebMetadata(
@@ -1470,8 +1515,8 @@ class CrossCommand extends Command<int> {
           outDir: outDir,
           sysroot: Directory(profile.targetSysroot),
           debDirs: debDirs,
-          extraFiles: ef.files,
-          fileModes: ef.modes,
+          extraFiles: files,
+          fileModes: modes,
           maintainerScripts: maintainerScripts,
         );
         _logger.info('  ${r.backend ?? ""}: packaged → ${out.path}');
