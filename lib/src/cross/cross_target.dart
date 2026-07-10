@@ -94,6 +94,7 @@ class AugmentLib {
     this.staticLink = true,
     this.defines = const {},
     this.host = false,
+    this.requiresDefine,
   });
 
   factory AugmentLib.fromMap(Map<dynamic, dynamic> map) => AugmentLib(
@@ -108,6 +109,7 @@ class AugmentLib {
         ) ??
         const <String, String>{},
     host: (map['host'] ?? false) as bool,
+    requiresDefine: (map['requires_define'] ?? map['when'])?.toString(),
   );
 
   /// pkg-config module name to probe (and the package to build).
@@ -139,6 +141,14 @@ class AugmentLib {
   /// CMake `find_program`). `static` / `min` / pkg-config probing do not apply;
   /// only `build: cmake` is supported for host tools.
   final bool host;
+
+  /// Optional embedder-define gate (`requires_define:` / `when:`): this augment
+  /// is built only when the named define is satisfied in the effective define
+  /// set (manifest `cross.defines` merged with `--define` overrides). Lets an
+  /// optional dependency (e.g. sentry-native, staged only for
+  /// `BUILD_CRASH_HANDLER=ON`) live in the manifest without building on every
+  /// invocation. Null means always build. See [CrossTarget.defineSatisfied].
+  final String? requiresDefine;
 }
 
 /// How an app-owned [ModuleSpec] is built. Unlike [CrossGenerator] (which
@@ -272,6 +282,7 @@ class PackageSpec {
     this.autoDepends = true,
     this.files = const {},
     this.fileModes = const {},
+    this.fileRequires = const {},
     this.scripts = const {},
     this.flatpak,
     this.ipk,
@@ -279,7 +290,7 @@ class PackageSpec {
   });
 
   factory PackageSpec.fromMap(Map<dynamic, dynamic> map) {
-    final (files, fileModes) = _parseFiles(map['files']);
+    final (files, fileModes, fileRequires) = _parseFiles(map['files']);
     return PackageSpec(
       name: map['name']?.toString(),
       version: (map['version'] ?? '0.0.0').toString(),
@@ -295,6 +306,7 @@ class PackageSpec {
       autoDepends: (map['auto_depends'] ?? true) as bool,
       files: files,
       fileModes: fileModes,
+      fileRequires: fileRequires,
       scripts: (map['scripts'] as Map<dynamic, dynamic>? ?? const {}).map(
         (k, v) => MapEntry(k.toString(), v.toString()),
       ),
@@ -316,12 +328,17 @@ class PackageSpec {
     );
   }
 
-  /// Parse the `files:` block into a `<source>: <dest>` map and a sparse
-  /// `<source>: <mode>` map. An entry value is either a bare dest string, or a
-  /// map `{to|dest: <path>, mode: "0755"}` carrying an explicit octal mode.
-  static (Map<String, String>, Map<String, String>) _parseFiles(Object? raw) {
+  /// Parse the `files:` block into a `<source>: <dest>` map plus sparse
+  /// `<source>: <mode>` and `<source>: <requires_define>` maps. An entry value
+  /// is either a bare dest string, or a map `{to|dest: <path>, mode: "0755",
+  /// requires_define: <gate>}`. `requires_define` (alias `when`) gates the
+  /// file on an embedder define so an optional artifact (e.g. crashpad_handler)
+  /// only ships when its feature is built.
+  static (Map<String, String>, Map<String, String>, Map<String, String>)
+  _parseFiles(Object? raw) {
     final files = <String, String>{};
     final modes = <String, String>{};
+    final requires = <String, String>{};
     if (raw is Map) {
       for (final e in raw.entries) {
         final src = e.key.toString();
@@ -331,12 +348,14 @@ class PackageSpec {
           if (dest != null) files[src] = dest;
           final mode = v['mode']?.toString();
           if (mode != null) modes[src] = mode;
+          final gate = (v['requires_define'] ?? v['when'])?.toString();
+          if (gate != null) requires[src] = gate;
         } else {
           files[src] = v.toString();
         }
       }
     }
-    return (files, modes);
+    return (files, modes, requires);
   }
 
   /// Package name; defaults to the manifest id when unset.
@@ -378,6 +397,12 @@ class PackageSpec {
   /// Sparse — only entries that set a `mode:`. A missing entry means "preserve
   /// the source file's mode".
   final Map<String, String> fileModes;
+
+  /// Embedder-define gates for [files] entries, keyed by the same source path.
+  /// Sparse — only entries that set `requires_define:`/`when:`. A file is
+  /// packaged only when its gate is satisfied by the effective define set; a
+  /// missing entry means "always package". See [CrossTarget.defineSatisfied].
+  final Map<String, String> fileRequires;
 
   /// Debian maintainer scripts, as `<name>: <host script>`, where name is one
   /// of `preinst`, `postinst`, `prerm`, `postrm`. Sources resolve relative to
@@ -838,6 +863,21 @@ class CrossTarget {
       out[entry.substring(0, i)] = entry.substring(i + 1);
     }
     return out;
+  }
+
+  /// Evaluate a `requires_define:` / `when:` gate against an effective define
+  /// map. Returns true (include) when [gate] is null/empty. A bare `NAME`
+  /// includes iff `defines[NAME]` is truthy (CMake-style: on/true/1/yes/y);
+  /// `NAME=VALUE` includes iff `defines[NAME]` equals VALUE exactly. Used to
+  /// gate augment builds and package files on an embedder define.
+  static bool defineSatisfied(String? gate, Map<String, String> defines) {
+    if (gate == null || gate.trim().isEmpty) return true;
+    final i = gate.indexOf('=');
+    if (i > 0) {
+      return defines[gate.substring(0, i).trim()] == gate.substring(i + 1);
+    }
+    final v = defines[gate.trim()]?.trim().toLowerCase();
+    return v == 'on' || v == 'true' || v == '1' || v == 'yes' || v == 'y';
   }
 
   /// Parse the flat `defines:` block (`{name: value}` → `-Dname=value`).

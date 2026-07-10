@@ -117,4 +117,108 @@ void main() {
       );
     });
   });
+
+  group('CrossTarget.defineSatisfied', () {
+    test('a null or blank gate always includes', () {
+      expect(CrossTarget.defineSatisfied(null, const {}), isTrue);
+      expect(CrossTarget.defineSatisfied('', const {}), isTrue);
+      expect(CrossTarget.defineSatisfied('   ', const {}), isTrue);
+    });
+
+    test('a bare name includes only when the define is truthy', () {
+      for (final v in const ['ON', 'on', 'true', 'TRUE', '1', 'yes', 'y']) {
+        expect(
+          CrossTarget.defineSatisfied('BUILD_CRASH_HANDLER', {
+            'BUILD_CRASH_HANDLER': v,
+          }),
+          isTrue,
+          reason: 'value "$v" should read as truthy',
+        );
+      }
+    });
+
+    test('a bare name is excluded when the define is falsy or absent', () {
+      for (final v in const ['OFF', 'off', '0', 'no', '']) {
+        expect(
+          CrossTarget.defineSatisfied('BUILD_CRASH_HANDLER', {
+            'BUILD_CRASH_HANDLER': v,
+          }),
+          isFalse,
+          reason: 'value "$v" should read as falsy',
+        );
+      }
+      expect(
+        CrossTarget.defineSatisfied('BUILD_CRASH_HANDLER', const {}),
+        isFalse,
+      );
+    });
+
+    test('a name=value gate matches the exact value only', () {
+      expect(
+        CrossTarget.defineSatisfied('MODE=release', const {'MODE': 'release'}),
+        isTrue,
+      );
+      expect(
+        CrossTarget.defineSatisfied('MODE=release', const {'MODE': 'debug'}),
+        isFalse,
+      );
+      expect(CrossTarget.defineSatisfied('MODE=release', const {}), isFalse);
+    });
+  });
+
+  group('AugmentLib.fromMap requires_define', () {
+    test('reads requires_define', () {
+      final a = AugmentLib.fromMap(const {
+        'pkg': 'sentry-native',
+        'url': 'https://example/sentry.zip',
+        'build': 'cmake',
+        'requires_define': 'BUILD_CRASH_HANDLER',
+      });
+      expect(a.requiresDefine, 'BUILD_CRASH_HANDLER');
+    });
+
+    test('accepts the when alias', () {
+      final a = AugmentLib.fromMap(const {
+        'pkg': 'foo',
+        'url': 'u',
+        'when': 'ENABLE_FOO',
+      });
+      expect(a.requiresDefine, 'ENABLE_FOO');
+    });
+
+    test('defaults to null so the augment always builds', () {
+      final a = AugmentLib.fromMap(const {'pkg': 'foo', 'url': 'u'});
+      expect(a.requiresDefine, isNull);
+    });
+  });
+
+  group('PackageSpec.fromMap files requires_define', () {
+    test('captures a per-file gate; ungated files stay ungated', () {
+      final spec = PackageSpec.fromMap(const {
+        'files': {
+          'overlay/usr/bin/crashpad_handler': {
+            'to': '/usr/bin/crashpad_handler',
+            'mode': '0755',
+            'requires_define': 'BUILD_CRASH_HANDLER',
+          },
+          'assets/logo.png': {
+            'to': '/usr/share/app/logo.png',
+            'when': 'ENABLE_UI',
+          },
+          'README': '/usr/share/doc/app/README',
+        },
+      });
+      expect(
+        spec.files['overlay/usr/bin/crashpad_handler'],
+        '/usr/bin/crashpad_handler',
+      );
+      expect(spec.fileModes['overlay/usr/bin/crashpad_handler'], '0755');
+      expect(
+        spec.fileRequires['overlay/usr/bin/crashpad_handler'],
+        'BUILD_CRASH_HANDLER',
+      );
+      expect(spec.fileRequires['assets/logo.png'], 'ENABLE_UI');
+      expect(spec.fileRequires.containsKey('README'), isFalse);
+    });
+  });
 }
