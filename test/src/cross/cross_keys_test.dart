@@ -87,6 +87,35 @@ void main() {
       expect(sysrootBaseKey(rpi5), matches(RegExp(r'^[0-9a-f]{12}$')));
     });
 
+    test('a requires_define-gated augment counts only when its gate is on', () {
+      const sentry = {
+        'pkg': 'sentry-native',
+        'min': '0.15.3',
+        'url': 'https://x/sentry.zip',
+        'build': 'cmake',
+        'requires_define': 'BUILD_CRASH_HANDLER',
+      };
+      // Gate unsatisfied (no define) → not staged → key unchanged.
+      final gatedOff = _t(const {
+        'provider': 'arm-gnu',
+        'toolchain_version': '12.3.rel1',
+        'image_url': 'https://example/raspios.img.xz',
+        'cpu_flags': ['-mcpu=cortex-a76'],
+        'augment': [sentry],
+      });
+      expect(sysrootKey(gatedOff), sysrootKey(rpi5));
+      // Gate satisfied → staged → key changes.
+      final gatedOn = _t(const {
+        'provider': 'arm-gnu',
+        'toolchain_version': '12.3.rel1',
+        'image_url': 'https://example/raspios.img.xz',
+        'cpu_flags': ['-mcpu=cortex-a76'],
+        'defines': {'BUILD_CRASH_HANDLER': 'ON'},
+        'augment': [sentry],
+      });
+      expect(sysrootKey(gatedOn), isNot(sysrootKey(rpi5)));
+    });
+
     test('modules change the buildKey but not the sysroot keys', () {
       final withModule = _t(const {
         'provider': 'arm-gnu',
