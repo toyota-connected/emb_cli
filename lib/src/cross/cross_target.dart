@@ -287,6 +287,7 @@ class PackageSpec {
     this.flatpak,
     this.ipk,
     this.rpm,
+    this.bundleLibs = false,
   });
 
   factory PackageSpec.fromMap(Map<dynamic, dynamic> map) {
@@ -325,6 +326,7 @@ class PackageSpec {
               Map<dynamic, dynamic>.from(map['rpm'] as Map),
             )
           : null,
+      bundleLibs: (map['bundle_libs'] ?? false) as bool,
     );
   }
 
@@ -422,6 +424,16 @@ class PackageSpec {
   /// RPM-specific manifest fields (license, release, group). Only consulted by
   /// `--rpm`. The shared `files:`/`scripts:`/`depends:` still apply.
   final RpmPackageSpec? rpm;
+
+  /// When true, `--deb` also ships the binary's **in-tree** `DT_NEEDED` shared
+  /// libraries — the `.so`s built from this project's own tree (not the
+  /// sysroot/system) — into `/usr/lib/<multiarch>/`, walking the closure
+  /// transitively. For a project split across several shared objects (e.g. a
+  /// server executable that loads `libFooServer.so`), the single-binary `.deb`
+  /// would otherwise be unrunnable. Sysroot/system libraries stay out of the
+  /// package — declare those as `depends:` so the target's package manager
+  /// resolves them. (Manifest key `bundle_libs`.)
+  final bool bundleLibs;
 }
 
 /// The `package.ipk:` sub-block — the opkg-specific knobs `--ipk` needs beyond
