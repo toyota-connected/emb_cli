@@ -54,8 +54,13 @@ List<String> _sysrootParts(CrossTarget t) => [
 /// rpi4 vs rpi5 on the same raspios image) share a single extraction.
 String sysrootKey(CrossTarget t) => contentHash([
   ..._sysrootParts(t),
+  // Only augments that will actually be staged count toward the key: a
+  // `requires_define`-gated augment whose gate isn't satisfied (e.g. an
+  // off-by-default crash handler) is not built, so it must not perturb the
+  // sysroot identity or invalidate the shared store entry.
   for (final a in t.augment)
-    'aug:${a.pkg}:${a.minVersion}:${a.url}:${a.build.name}:${a.staticLink}',
+    if (CrossTarget.defineSatisfied(a.requiresDefine, t.defines))
+      'aug:${a.pkg}:${a.minVersion}:${a.url}:${a.build.name}:${a.staticLink}',
 ]);
 
 /// Hash of the **shared sysroot base**: [sysrootKey] without the augment set,
