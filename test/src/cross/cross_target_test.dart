@@ -221,4 +221,19 @@ void main() {
       expect(spec.fileRequires.containsKey('README'), isFalse);
     });
   });
+
+  group('PackageSpec.fromMap bundle_libs', () {
+    test('defaults to false when absent', () {
+      expect(const PackageSpec().bundleLibs, isFalse);
+      expect(PackageSpec.fromMap(const {'bin': 'server'}).bundleLibs, isFalse);
+    });
+
+    test('reads bundle_libs: true', () {
+      final spec = PackageSpec.fromMap(const {
+        'bin': 'server',
+        'bundle_libs': true,
+      });
+      expect(spec.bundleLibs, isTrue);
+    });
+  });
 }

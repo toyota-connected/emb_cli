@@ -208,8 +208,10 @@ class CrossCommand extends Command<int> {
       ..addOption(
         'deploy',
         help:
-            'With --app: rsync each runnable bundle to <user@host> over SSH '
-            '(SSH port/opts reused from cross.sysroot when device-sourced).',
+            'Send the build to <user@host> over SSH. With --app: rsync each '
+            'runnable bundle (SSH port/opts reused from cross.sysroot when '
+            'device-sourced). With --deb: scp each .deb and apt-get install it '
+            '(resolves Depends from the device repos).',
       )
       ..addOption(
         'deploy-dir',
@@ -930,8 +932,9 @@ class CrossCommand extends Command<int> {
     final built = results.where((r) => r.success).toList();
 
     // Assemble a runnable bundle (embedder + engine + assets + libapp).
-    if (deployHost != null && appPath == null) {
-      _logger.err('--deploy needs --app (no runnable bundle to send).');
+    // --deploy targets either an --app bundle (rsync) or a --deb (scp+install).
+    if (deployHost != null && appPath == null && !deb) {
+      _logger.err('--deploy needs --app or --deb (nothing to send).');
       return ExitCode.usage.code;
     }
     if (appPath == null && target.modules.isNotEmpty) {
@@ -972,6 +975,7 @@ class CrossCommand extends Command<int> {
         defaultName,
         source,
         overlayPaths?.prefix,
+        deployHost: deployHost,
       );
       if (rc != ExitCode.success.code) return rc;
     }
@@ -1285,6 +1289,47 @@ class CrossCommand extends Command<int> {
     return ExitCode.success.code;
   }
 
+  /// scp a built `.deb` to [host] and install it with `apt-get`, which
+  /// resolves the package's `Depends:` from the device's own repos. The path
+  /// for `--deb --deploy`. Assumes key-based SSH and non-interactive sudo (or a
+  /// root login) on the target — the test-lab deploy path, not a hardened one.
+  Future<int> _deployDeb(
+    File deb, {
+    required String host,
+    required String bundleArch,
+  }) async {
+    final deployer = Deployer(runProcess: _runProcess);
+    final boardArch = await deployer.remoteArch(host);
+    if (boardArch != null && !archMatches(bundleArch, boardArch)) {
+      _logger.warn(
+        'package arch is $bundleArch but $host reports $boardArch — apt will '
+        'refuse it. Re-build with a matching --target for this board.',
+      );
+    }
+    final remote = '/tmp/${p.basename(deb.path)}';
+    final progress = _steps.start('Deploying → $host');
+    final scp = await _runProcess('scp', [
+      deb.path,
+      '$host:$remote',
+    ], output: ProcessOutputMode.stream);
+    if (scp.exitCode != 0) {
+      progress.fail('scp failed: ${scp.stderr}');
+      return ExitCode.software.code;
+    }
+    // `apt-get install` of a local path (contains '/') installs the file and
+    // pulls its Depends; clean up the staged copy afterwards.
+    final install = await _runProcess('ssh', [
+      host,
+      'sudo apt-get install -y $remote; rc=\$?; rm -f $remote; exit \$rc',
+    ], output: ProcessOutputMode.stream);
+    if (install.exitCode != 0) {
+      progress.fail('apt-get install failed: ${install.stderr}');
+      return ExitCode.software.code;
+    }
+    progress.complete('Installed ${p.basename(deb.path)} on $host');
+    return ExitCode.success.code;
+  }
+
   /// rsync [outDir] to [host]:[destDir] over SSH, then optionally run the
   /// embedder there. SSH port/opts come from a device-sourced [spec].
   Future<int> _deploy(
@@ -1442,8 +1487,9 @@ class CrossCommand extends Command<int> {
     List<CrossBuildResult> built,
     String defaultName,
     Directory manifestDir,
-    String? overlayPrefix,
-  ) async {
+    String? overlayPrefix, {
+    String? deployHost,
+  }) async {
     final spec = target.package ?? const PackageSpec();
     final arch = debianArch(profile.targetTriple);
     final baseName = spec.name ?? defaultName;
@@ -1480,6 +1526,37 @@ class CrossCommand extends Command<int> {
       }
       final multi = built.length > 1 && r.backend != null;
       final name = multi ? '$baseName-${r.backend}' : baseName;
+
+      // bundle_libs: stage the binary's in-tree .so closure into the package
+      // under /usr/lib/<multiarch>/ (a default loader path, so no rpath needed).
+      // Sysroot/system libs are skipped by _stageLinkedLibs and must be covered
+      // by depends:.
+      final extraFiles = {...ef.files};
+      final extraModes = {...ef.modes};
+      if (spec.bundleLibs) {
+        final libStage = Directory(p.join(buildRoot.path, 'deb-libs', name));
+        if (libStage.existsSync()) libStage.deleteSync(recursive: true);
+        libStage.createSync(recursive: true);
+        final staged = await _stageLinkedLibs(
+          binary: binary,
+          buildDir: Directory(r.buildDir),
+          profile: profile,
+          libDir: libStage,
+        );
+        for (final e in staged.errors) {
+          _logger.warn('  bundle_libs: $e');
+        }
+        final mad = debianMultiarch(profile.targetTriple);
+        for (final soname in staged.staged) {
+          extraFiles[p.join(libStage.path, soname)] = '/usr/lib/$mad/$soname';
+        }
+        if (staged.staged.isNotEmpty) {
+          _logger.info(
+            '  bundled libs  : ${staged.staged.join(", ")} → /usr/lib/$mad',
+          );
+        }
+      }
+
       final meta = DebMetadata(
         name: name,
         version: spec.version,
@@ -1499,11 +1576,15 @@ class CrossCommand extends Command<int> {
           outDir: outDir,
           sysroot: Directory(profile.targetSysroot),
           debDirs: debDirs,
-          extraFiles: ef.files,
-          fileModes: ef.modes,
+          extraFiles: extraFiles,
+          fileModes: extraModes,
           maintainerScripts: maintainerScripts,
         );
         _logger.info('  ${r.backend ?? ""}: packaged → ${out.path}');
+        if (deployHost != null) {
+          final rc = await _deployDeb(out, host: deployHost, bundleArch: arch);
+          if (rc != ExitCode.success.code) return rc;
+        }
       } on DebPackageException catch (e) {
         _logger.err('  ${r.backend ?? ""}: ${e.message}');
         return ExitCode.software.code;
