@@ -689,9 +689,13 @@ class CrossCommand extends Command<int> {
         launcher: launcher,
       );
       try {
+        // Native (no sysroot) stages into a separate per-workspace overlay;
+        // cross stages into the sysroot itself. See the augment block in the
+        // build path for the rationale.
+        final native = profile.providerName == 'local';
         final ov = await overlay.build(
           target.augment,
-          stageInto: Directory(profile.targetSysroot),
+          stageInto: native ? null : Directory(profile.targetSysroot),
         );
         _logger.info('Overlay: ${ov.prefix}');
       } on OverlayBuildException catch (e) {
@@ -827,7 +831,8 @@ class CrossCommand extends Command<int> {
     // libdisplay-info >= 0.2.0) into a per-workspace overlay prefix — kept out
     // of the sysroot so the sysroot can be a shared read-only store tree — and
     // layer its include/lib/pkg-config search paths onto the embedder build.
-    // Native builds use the host's system libraries instead.
+    // Native builds stage the same way, into a separate per-workspace overlay
+    // (there is no sysroot to stage into); host-satisfied augments are skipped.
     var hostToolBins = const <String>[];
     OverlayPaths? overlayPaths;
     // Drop augments whose `requires_define:` gate isn't satisfied by the
@@ -846,7 +851,7 @@ class CrossCommand extends Command<int> {
         );
       }
     }
-    if (!native && augments.isNotEmpty) {
+    if (augments.isNotEmpty) {
       final sw = Stopwatch()..start();
       final overlay = OverlayBuilder(
         workspace,
@@ -855,13 +860,18 @@ class CrossCommand extends Command<int> {
         launcher: launcher,
       );
       try {
-        // Stage augments into the sysroot itself (not a separate overlay) so
-        // their headers/libs/pkg-config are found by the backend build's normal
-        // sysroot search and ship in the container image. The provider made the
-        // sysroot a private, writable clone when augments are present.
+        // Cross: stage into the sysroot itself (not a separate overlay) so the
+        // headers/libs/pkg-config are found by the backend build's normal
+        // sysroot search and ship in the container image; the provider made the
+        // sysroot a private, writable clone. Native: there is no sysroot
+        // (targetSysroot is empty, so staging would land in the host /), so
+        // build into a separate per-workspace overlay; the embedder configure
+        // wires it via CMAKE_FIND_ROOT_PATH/CMAKE_PREFIX_PATH so a
+        // find_package(CONFIG) augment (e.g. sentry-native for the crash
+        // handler) resolves without touching the host root.
         overlayPaths = await overlay.build(
           augments,
-          stageInto: Directory(profile.targetSysroot),
+          stageInto: native ? null : Directory(profile.targetSysroot),
         );
         hostToolBins = overlayPaths.binDirs;
       } on OverlayBuildException catch (e) {
