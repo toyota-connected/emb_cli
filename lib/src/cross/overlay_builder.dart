@@ -30,11 +30,18 @@ class OverlayPaths {
 
   /// pkg-config env that searches the overlay first, then the sysroot.
   Map<String, String> pkgConfigEnv(CrossProfile profile) {
-    final base = profile.pkgConfig?.libdir ?? const [];
+    final pc = profile.pkgConfig;
+    // Native build (no sysroot): PREPEND the overlay via PKG_CONFIG_PATH so the
+    // host's default search path — and its system packages (xkbcommon, …) —
+    // still resolve. PKG_CONFIG_LIBDIR would REPLACE that default and hide the
+    // host, which only makes sense for a cross build isolating against a
+    // sysroot.
+    if (pc == null) {
+      return {'PKG_CONFIG_PATH': pkgConfigDirs.join(':')};
+    }
     return {
-      'PKG_CONFIG_LIBDIR': [...pkgConfigDirs, ...base].join(':'),
-      if (profile.pkgConfig != null)
-        'PKG_CONFIG_SYSROOT_DIR': profile.pkgConfig!.sysrootDir,
+      'PKG_CONFIG_LIBDIR': [...pkgConfigDirs, ...pc.libdir].join(':'),
+      'PKG_CONFIG_SYSROOT_DIR': pc.sysrootDir,
     };
   }
 }
