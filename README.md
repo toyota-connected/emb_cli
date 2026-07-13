@@ -40,6 +40,73 @@ deps → repos → Flutter SDK → engine → AOT → ivi-homescreen bundle
 - `git` on `PATH`.
 - Cross-compiling to a device arch is supported **from an x86_64 host**.
 
+### Host packages (Linux)
+
+`emb` shells out to a handful of host tools, and its Linux host-dependency
+backend (PackageKit) is a **native bridge compiled at install time**. What you
+need depends on which emb features you use — install by tier.
+
+> Downloads inside emb use Dart's own HTTPS client (**not** `curl`/`wget`), and
+> `bootstrap.sh` needs only `python3` (stdlib). The Dart SDK, Flutter SDK, and
+> ARM GNU toolchain are fetched by emb — they are not distro packages.
+
+**Tier 1 — install & run emb** (`setup`, `deps`, `sync`, `flutter`, `bundle`,
+`build`). Activating the package pulls in the PackageKit native bridge
+(`libpackagekit_nc.so`), which compiles vendored `sdbus-cpp` — so it needs
+libsystemd headers, a C/C++ toolchain, `cmake`, and `ninja`. Without them
+`emb deps`/`doctor` silently can't drive PackageKit. `git` clones repos and the
+Flutter SDK; the **PackageKit daemon** must be running for host-dep install.
+
+```sh
+# Ubuntu / Debian  (add the PackageKit daemon: `packagekit`)
+sudo apt-get install -y git python3 build-essential cmake ninja-build \
+  libsystemd-dev packagekit
+# Fedora  (PackageKit is usually already present)
+sudo dnf install -y git python3 gcc gcc-c++ make cmake ninja-build \
+  systemd-devel PackageKit
+```
+
+> Already have Dart ≥ 3.10.1? Drop `python3` (it is only for `bootstrap.sh`).
+> `git-lfs` is additionally needed only for repos that carry Git-LFS assets.
+
+**Tier 2 — cross-compile the native embedder** (`emb cross`, `arm-gnu`
+provider). Adds the embedder's C/C++ build tools plus the root-free sysroot
+extraction + Debian `.deb` handling chain: `sfdisk`+`debugfs` keep sysroot
+extraction rootless (else it falls back to `sudo losetup`), `dpkg-deb` extracts
+the sysroot's `-dev` packages, and `hwdata` is needed to rebuild the
+`libdisplay-info` augment.
+
+```sh
+# Ubuntu / Debian
+sudo apt-get install -y meson pkg-config libwayland-bin \
+  tar xz-utils rsync unzip dpkg fdisk e2fsprogs hwdata
+# Fedora
+sudo dnf install -y meson pkgconf-pkg-config wayland-devel \
+  tar xz rsync unzip dpkg util-linux e2fsprogs hwdata
+```
+
+> Per-app graphics/build libraries (EGL, GLES, Wayland, DRM/GBM, …) are **not**
+> listed here — a package's `emb.yaml` declares them and `emb deps` installs
+> them for your distro. `libwayland-bin` / `wayland-devel` here is only for the
+> `wayland-scanner` codegen the embedder build itself runs.
+
+**Tier 3 — optional feature add-ons**
+
+| Feature | Tool(s) | Ubuntu / Debian | Fedora |
+|---|---|---|---|
+| Rust (`build: cargo`) modules | `cargo`, `rustc`, `rustup` | `cargo rustc` (or rustup) | `cargo rust` (or rustup) |
+| `.rpm` packaging (`--rpm`) | `rpmbuild` | `rpm` | `rpm-build` |
+| `.ipk` packaging (`--ipk`) | `opkg-build` | `opkg-utils` † | `opkg-utils` † |
+| `.flatpak` packaging (`--flatpak`) | `flatpak`, `flatpak-builder` | `flatpak flatpak-builder` | `flatpak flatpak-builder` |
+| Deploy over SSH (`--deploy` / `--run`) | `ssh`, `scp`, `rsync` | `openssh-client rsync` | `openssh-clients rsync` |
+| Toolchain images (`--dockerfile` / `--publish`) | `docker` or `podman` (+ `skopeo`) | `docker.io` or `podman` | `podman` |
+| Cache OCI (`cache push` / `pull`) | `oras` | download the static binary † | download the static binary † |
+| `--offline-strict` sandbox | `unshare` | `util-linux` (preinstalled) | `util-linux-core` (preinstalled) |
+| Build launchers (optional) | `ccache` / `sccache` | `ccache` | `ccache` |
+
+† Not in the default distro repos: `opkg-utils` may need EPEL or a source build;
+`oras` is a standalone release binary from [oras.land](https://oras.land).
+
 ---
 
 ## Install
@@ -514,10 +581,19 @@ emb cross <project-dir|manifest.yaml> [options]
 ```sh
 emb cross ./app/ivi-homescreen --dry-run      # plan only, no side effects
 emb cross ./app/ivi-homescreen --build        # toolchain + sysroot + build
+emb -v cross ./app/ivi-homescreen --build     # ...streaming the native build output
 emb cross ./app/ivi-homescreen --build --deb  # ...and package a .deb
 emb cross ./app/ivi-homescreen --clean        # drop build dirs (keep toolchain)
 emb cross ./app/ivi-homescreen --clean-all    # drop everything for this target
 ```
+
+> **Seeing the build.** By default `--build` prints step progress only. Add the
+> global `-v` (`emb -v cross …`) to **stream the native toolchain output live** —
+> the cmake configure and the ninja/meson compile, line-prefixed per step
+> (`[cmake:…]`, `[ninja:…]`) — which is the fastest way to diagnose a failing
+> embedder build. `-vv` additionally logs every shell command and the resolved
+> cross environment (toolchain, sysroot, flags). Being a global flag, `-v` goes
+> **before** `cross`.
 
 Everything is **root-free**: the sysroot is extracted with `debugfs` /
 `dpkg-deb`, and `-dev` packages are resolved against the image's own apt sources
