@@ -1,0 +1,155 @@
+/* @theme emb */
+
+:root {
+  --emb-bg: #0f1720;
+  --emb-panel: #16212e;
+  --emb-fg: #e6edf3;
+  --emb-muted: #8b9bb0;
+  --emb-accent: #35b6ff;
+  --emb-accent2: #7ee787;
+  --emb-line: #26374a;
+  --emb-code-bg: #0b1119;
+}
+
+section {
+  font-family: "Helvetica Neue", Arial, "Segoe UI", sans-serif;
+  background: var(--emb-bg);
+  color: var(--emb-fg);
+  font-size: 24px;
+  padding: 60px 70px;
+  line-height: 1.45;
+}
+
+h1 {
+  color: #ffffff;
+  font-size: 60px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  margin: 0 0 12px;
+}
+
+h2 {
+  color: var(--emb-accent);
+  font-size: 38px;
+  font-weight: 700;
+  margin: 0 0 22px;
+  border-bottom: 2px solid var(--emb-line);
+  padding-bottom: 12px;
+}
+
+h3 { color: var(--emb-accent2); font-size: 26px; margin: 18px 0 6px; }
+
+a { color: var(--emb-accent); text-decoration: none; }
+
+strong { color: #ffffff; }
+em { color: var(--emb-accent2); font-style: normal; }
+
+ul, ol { margin: 6px 0; }
+li { margin: 7px 0; }
+
+code {
+  font-family: "SF Mono", "JetBrains Mono", "Fira Code", Consolas, monospace;
+  background: rgba(53, 182, 255, 0.12);
+  color: #cfe8ff;
+  border-radius: 5px;
+  padding: 1px 7px;
+  font-size: 0.85em;
+}
+
+pre {
+  background: var(--emb-code-bg);
+  border: 1px solid var(--emb-line);
+  border-radius: 10px;
+  padding: 20px 24px;
+  font-size: 19px;
+  line-height: 1.5;
+  overflow: hidden;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.35);
+}
+pre code { background: transparent; color: #d7e2ee; padding: 0; font-size: 1em; }
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 20px;
+  margin: 8px 0;
+}
+th {
+  background: var(--emb-panel);
+  color: var(--emb-accent);
+  text-align: left;
+  padding: 9px 14px;
+  border-bottom: 2px solid var(--emb-accent);
+  font-weight: 700;
+}
+td {
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--emb-line);
+  vertical-align: top;
+}
+tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+
+/* Callout note */
+.note {
+  margin-top: 20px;
+  background: var(--emb-panel);
+  border-left: 4px solid var(--emb-accent2);
+  border-radius: 0 8px 8px 0;
+  padding: 12px 18px;
+  color: var(--emb-muted);
+  font-size: 19px;
+}
+.note code { font-size: 0.9em; }
+
+.subtle { color: var(--emb-muted); font-size: 24px; margin-top: 18px; }
+
+/* Flow banner */
+.flow {
+  background: linear-gradient(90deg, rgba(53,182,255,0.14), rgba(126,231,135,0.10));
+  border: 1px solid var(--emb-line);
+  border-radius: 10px;
+  padding: 18px 22px;
+  text-align: center;
+  font-size: 26px;
+  margin: 6px 0 20px;
+}
+.flow code {
+  background: transparent;
+  color: #ffffff;
+  font-size: 0.92em;
+  font-weight: 600;
+}
+.flow strong { color: var(--emb-accent); }
+.flow em { color: var(--emb-accent2); }
+
+/* Lead (title) slides */
+section.lead {
+  background: radial-gradient(1200px 600px at 30% 0%, #16283a 0%, var(--emb-bg) 60%);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+section.lead h1 { font-size: 88px; }
+section.lead h2 { color: var(--emb-accent); border: none; font-size: 40px; }
+
+/* Section divider slides */
+section.section {
+  background: linear-gradient(135deg, #12202e 0%, #0c1420 100%);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+section.section h2 {
+  color: #ffffff;
+  font-size: 56px;
+  border: none;
+  border-left: 6px solid var(--emb-accent);
+  padding: 6px 0 6px 24px;
+}
+section.section p { color: var(--emb-muted); font-size: 28px; padding-left: 30px; }
+
+/* Pagination */
+section::after {
+  color: var(--emb-muted);
+  font-size: 14px;
+}

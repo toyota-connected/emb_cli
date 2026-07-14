@@ -1,0 +1,5 @@
+# Generated deck outputs — render from emb-training.md
+*.pptx
+*.png
+# LibreOffice/Office lock files
+.~lock.*#
