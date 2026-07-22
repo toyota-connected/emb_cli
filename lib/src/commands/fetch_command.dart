@@ -128,7 +128,9 @@ class FetchCommand extends Command<int> {
     }
     final CrossTarget target;
     try {
-      target = CrossTarget.fromMap(selection.cross);
+      target = CrossTarget.fromMap(
+        selection.cross,
+      ).withResolvedPatches(selection.sourcePath);
       // fromMap throws ArgumentError on an unknown provider token.
       // ignore: avoid_catching_errors
     } on ArgumentError catch (e) {

@@ -65,19 +65,13 @@ class OverlayBuilder {
     ProcessRunner runProcess = defaultProcessRunner,
     HttpClient? httpClient,
     String? launcher,
-    String? patchBase,
-  }) : patchBase = patchBase ?? Directory.current.path,
-       _emitter = emitter,
+  }) : _emitter = emitter,
        _run = runProcess,
        _http = httpClient ?? HttpClient(),
        _launcher = launcher;
 
   final Workspace workspace;
   final CrossProfile profile;
-
-  /// Directory that relative augment patch paths resolve against — the
-  /// directory holding the manifest that declared them.
-  final String patchBase;
   final ToolchainEmitter _emitter;
   final ProcessRunner _run;
   final HttpClient _http;
@@ -169,7 +163,10 @@ class OverlayBuilder {
     // when a patch is edited in place, so stamp the tree with a digest of the
     // series and re-unpack when it no longer matches -- otherwise an edited
     // patch would silently have no effect on the next build.
-    final patches = resolvePatchPaths(lib.patches, patchBase);
+    // Already absolute: CrossTarget.withResolvedPatches rebases them against
+    // the declaring manifest at load, so the paths hashed into the cache keys
+    // and the paths applied here are the same files.
+    final patches = lib.patches;
     final digest = patches.isEmpty ? '' : patchSeriesDigest(patches);
     final stamp = File(p.join(dir.path, '.emb-patch-stamp'));
     if (dir.existsSync() && patches.isNotEmpty) {

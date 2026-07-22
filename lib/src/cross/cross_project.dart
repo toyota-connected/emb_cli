@@ -85,16 +85,27 @@ class CrossProject {
   /// `--target` is omitted this is [defaultTarget], else the native build.
   /// Returns null only when a *named* target isn't defined, so the caller can
   /// report it.
-  ({String name, bool isNative, Map<String, dynamic> cross})? selectTarget(
-    String? targetArg,
-  ) {
+  ({
+    String name,
+    bool isNative,
+    Map<String, dynamic> cross,
+    String? sourcePath,
+  })?
+  selectTarget(String? targetArg) {
     final name = targetArg ?? defaultTarget ?? 'local';
     if (name == 'local' || name == 'host') {
-      return (name: name, isNative: true, cross: nativeCross);
+      // The native block is synthesized from the project, not read from one
+      // manifest, so it has no declaring file to resolve paths against.
+      return (name: name, isNative: true, cross: nativeCross, sourcePath: null);
     }
     final ref = this[name];
     if (ref == null) return null;
-    return (name: name, isNative: false, cross: ref.cross);
+    return (
+      name: name,
+      isNative: false,
+      cross: ref.cross,
+      sourcePath: ref.sourcePath,
+    );
   }
 }
 

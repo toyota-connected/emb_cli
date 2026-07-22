@@ -1,4 +1,6 @@
 import 'package:emb_cli/src/cross/cross_profile.dart';
+import 'package:emb_cli/src/repo/patch_series.dart';
+import 'package:path/path.dart' as p;
 
 /// Which provider sources the toolchain and sysroot(s) for a target.
 enum CrossProviderKind {
@@ -125,6 +127,29 @@ class AugmentLib {
 
   /// Source tarball URL for the version to build.
   final String url;
+
+  /// A copy with relative [patches] rewritten to resolve against the
+  /// directory holding [declaringFile] — the manifest that declared them.
+  ///
+  /// Resolution happens once, at load, because the paths are hashed into the
+  /// cache keys (augmentIdentity in cross_keys.dart) as well as read at fetch
+  /// time. Leaving
+  /// them relative would make the key depend on the working directory the keys
+  /// were computed from rather than on the files that actually get applied.
+  AugmentLib resolvePatchesAgainst(String? declaringFile) {
+    if (patches.isEmpty || declaringFile == null) return this;
+    return AugmentLib(
+      pkg: pkg,
+      minVersion: minVersion,
+      url: url,
+      build: build,
+      staticLink: staticLink,
+      defines: defines,
+      host: host,
+      requiresDefine: requiresDefine,
+      patches: resolvePatchPaths(patches, p.dirname(p.absolute(declaringFile))),
+    );
+  }
 
   /// Patch files applied to the unpacked source, in order, before it is
   /// configured. Paths are relative to the manifest that declared them.
@@ -866,6 +891,40 @@ class CrossTarget {
       },
       package: package,
       defines: {...defines, ...overrides},
+      cmakeArgs: cmakeArgs,
+      hostTools: hostTools,
+      hostDevPackages: hostDevPackages,
+    );
+  }
+
+  /// A copy whose augment patch paths resolve against the manifest at
+  /// [declaringFile]. See [AugmentLib.resolvePatchesAgainst].
+  CrossTarget withResolvedPatches(String? declaringFile) {
+    if (declaringFile == null) return this;
+    if (augment.every((a) => a.patches.isEmpty)) return this;
+    return CrossTarget(
+      provider: provider,
+      targetTriple: targetTriple,
+      cpuFlags: cpuFlags,
+      toolchainVersion: toolchainVersion,
+      toolchainUrl: toolchainUrl,
+      versionPolicy: versionPolicy,
+      sysroot: sysroot,
+      yoctoBuild: yoctoBuild,
+      machineTuple: machineTuple,
+      recipe: recipe,
+      sdkPath: sdkPath,
+      sdkUrl: sdkUrl,
+      sdkEnvSetup: sdkEnvSetup,
+      augment: [
+        for (final a in augment) a.resolvePatchesAgainst(declaringFile),
+      ],
+      modules: modules,
+      generator: generator,
+      launcher: launcher,
+      backends: backends,
+      package: package,
+      defines: defines,
       cmakeArgs: cmakeArgs,
       hostTools: hostTools,
       hostDevPackages: hostDevPackages,

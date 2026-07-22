@@ -308,4 +308,72 @@ void main() {
       expect(k, isNot(augmentOverlayKey(withPatches(const []))));
     });
   });
+
+  group('augment patch resolution', () {
+    late Directory tmp;
+    setUp(() => tmp = Directory.systemTemp.createTempSync('emb_resolve_'));
+    tearDown(() => tmp.deleteSync(recursive: true));
+
+    CrossTarget target(List<String> patches) => _t({
+      'provider': 'arm-gnu',
+      'toolchain_version': '12.3.rel1',
+      'image_url': 'https://example/raspios.img.xz',
+      'augment': [
+        {'pkg': 'filament', 'min': '1.74.0', 'url': 'u', 'patches': patches},
+      ],
+    });
+
+    test('rebases relative paths onto the declaring manifest', () {
+      final resolved = target([
+        'patches/0007.patch',
+      ]).withResolvedPatches('/ws/app/fluorite/emb.yaml');
+      expect(resolved.augment.single.patches, [
+        p.normalize('/ws/app/fluorite/patches/0007.patch'),
+      ]);
+    });
+
+    test('leaves absolute paths and preserves other augment fields', () {
+      final abs = p.join(p.separator, 'etc', '0001.patch');
+      final a = target([
+        abs,
+      ]).withResolvedPatches('/ws/emb.yaml').augment.single;
+      expect(a.patches, [abs]);
+      expect(a.pkg, 'filament');
+      expect(a.minVersion, '1.74.0');
+      expect(a.url, 'u');
+    });
+
+    test('is a no-op without a declaring file or without patches', () {
+      final t = target(['a.patch']);
+      expect(identical(t.withResolvedPatches(null), t), isTrue);
+      final none = target(const []);
+      expect(identical(none.withResolvedPatches('/ws/emb.yaml'), none), isTrue);
+    });
+
+    test('makes the key independent of the working directory', () {
+      // The bug this closes: unresolved relative paths hash to whatever they
+      // point at from the process's cwd, so the key computed at one moment
+      // need not describe the files that later get applied.
+      Directory(p.join(tmp.path, 'a', 'patches')).createSync(recursive: true);
+      Directory(p.join(tmp.path, 'b', 'patches')).createSync(recursive: true);
+      File(
+        p.join(tmp.path, 'a', 'patches', '0007.patch'),
+      ).writeAsStringSync('from a');
+      File(
+        p.join(tmp.path, 'b', 'patches', '0007.patch'),
+      ).writeAsStringSync('from b');
+
+      final fromA = target([
+        'patches/0007.patch',
+      ]).withResolvedPatches(p.join(tmp.path, 'a', 'emb.yaml'));
+      final fromB = target([
+        'patches/0007.patch',
+      ]).withResolvedPatches(p.join(tmp.path, 'b', 'emb.yaml'));
+
+      // Same relative path, different manifests, different contents: the keys
+      // must differ. Unresolved, both would hash the identical string.
+      expect(sysrootKey(fromA), isNot(sysrootKey(fromB)));
+      expect(augmentOverlayKey(fromA), isNot(augmentOverlayKey(fromB)));
+    });
+  });
 }

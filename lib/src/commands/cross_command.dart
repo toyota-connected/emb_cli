@@ -448,7 +448,9 @@ class CrossCommand extends Command<int> {
 
     final CrossTarget target;
     try {
-      target = CrossTarget.fromMap(selected).withDefineOverrides(cliDefines);
+      target = CrossTarget.fromMap(selected)
+          .withResolvedPatches(selection.sourcePath)
+          .withDefineOverrides(cliDefines);
       // fromMap throws ArgumentError on an unknown provider token.
       // ignore: avoid_catching_errors
     } on ArgumentError catch (e) {

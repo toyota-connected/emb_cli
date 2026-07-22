@@ -237,6 +237,8 @@ class DoctorCommand extends Command<int> {
 
     final isNative = targetArg == 'local' || targetArg == 'host';
     final Map<dynamic, dynamic> selected;
+    // Null for the native block, which has no declaring manifest of its own.
+    String? selectedFrom;
     if (isNative) {
       selected = project.nativeCross;
     } else {
@@ -251,11 +253,12 @@ class DoctorCommand extends Command<int> {
         return (null, ExitCode.usage.code);
       }
       selected = ref.cross;
+      selectedFrom = ref.sourcePath;
     }
 
     final CrossTarget target;
     try {
-      target = CrossTarget.fromMap(selected);
+      target = CrossTarget.fromMap(selected).withResolvedPatches(selectedFrom);
       // fromMap throws ArgumentError on an unknown provider token.
       // ignore: avoid_catching_errors
     } on ArgumentError catch (e) {
@@ -368,7 +371,9 @@ class DoctorCommand extends Command<int> {
     }
     final CrossTarget target;
     try {
-      target = CrossTarget.fromMap(selection.cross);
+      target = CrossTarget.fromMap(
+        selection.cross,
+      ).withResolvedPatches(selection.sourcePath);
       // fromMap throws ArgumentError on an unknown provider token.
       // ignore: avoid_catching_errors
     } on ArgumentError catch (e) {
