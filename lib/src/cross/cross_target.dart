@@ -95,6 +95,7 @@ class AugmentLib {
     this.defines = const {},
     this.host = false,
     this.requiresDefine,
+    this.patches = const [],
   });
 
   factory AugmentLib.fromMap(Map<dynamic, dynamic> map) => AugmentLib(
@@ -110,6 +111,9 @@ class AugmentLib {
         const <String, String>{},
     host: (map['host'] ?? false) as bool,
     requiresDefine: (map['requires_define'] ?? map['when'])?.toString(),
+    patches: [
+      for (final e in (map['patches'] as List<dynamic>? ?? const [])) '$e',
+    ],
   );
 
   /// pkg-config module name to probe (and the package to build).
@@ -121,6 +125,14 @@ class AugmentLib {
 
   /// Source tarball URL for the version to build.
   final String url;
+
+  /// Patch files applied to the unpacked source, in order, before it is
+  /// configured. Paths are relative to the manifest that declared them.
+  ///
+  /// Editing a patch in place changes the overlay's contents without changing
+  /// [url] or [minVersion], so the extracted tree is stamped with a digest of
+  /// the series and re-unpacked when that digest moves.
+  final List<String> patches;
 
   /// Build system the package uses.
   final CrossGenerator build;

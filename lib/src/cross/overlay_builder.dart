@@ -5,6 +5,7 @@ import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/cross/toolchain_emitter.dart';
+import 'package:emb_cli/src/repo/patch_series.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
 import 'package:path/path.dart' as p;
 
@@ -64,13 +65,19 @@ class OverlayBuilder {
     ProcessRunner runProcess = defaultProcessRunner,
     HttpClient? httpClient,
     String? launcher,
-  }) : _emitter = emitter,
+    String? patchBase,
+  }) : patchBase = patchBase ?? Directory.current.path,
+       _emitter = emitter,
        _run = runProcess,
        _http = httpClient ?? HttpClient(),
        _launcher = launcher;
 
   final Workspace workspace;
   final CrossProfile profile;
+
+  /// Directory that relative augment patch paths resolve against — the
+  /// directory holding the manifest that declared them.
+  final String patchBase;
   final ToolchainEmitter _emitter;
   final ProcessRunner _run;
   final HttpClient _http;
@@ -156,6 +163,20 @@ class OverlayBuilder {
       await _download(lib.url, tarball);
     }
     final dir = Directory(p.join(src.path, '${lib.pkg}-${lib.minVersion}'));
+
+    // An unpacked tree is reused as-is, which stays correct only while the
+    // patch series that shaped it is unchanged. Neither `url` nor `min` moves
+    // when a patch is edited in place, so stamp the tree with a digest of the
+    // series and re-unpack when it no longer matches -- otherwise an edited
+    // patch would silently have no effect on the next build.
+    final patches = resolvePatchPaths(lib.patches, patchBase);
+    final digest = patches.isEmpty ? '' : patchSeriesDigest(patches);
+    final stamp = File(p.join(dir.path, '.emb-patch-stamp'));
+    if (dir.existsSync() && patches.isNotEmpty) {
+      final stamped = stamp.existsSync() ? stamp.readAsStringSync().trim() : '';
+      if (stamped != digest) dir.deleteSync(recursive: true);
+    }
+
     if (!dir.existsSync()) {
       if (tarball.path.toLowerCase().endsWith('.zip')) {
         // GNU `tar` can't read a zip and `unzip` has no `--strip-components`,
@@ -183,6 +204,24 @@ class OverlayBuilder {
           dir.path,
           '--strip-components=1',
         ]);
+      }
+
+      // Patch the freshly unpacked tree, then stamp it. On failure the tree is
+      // removed so the next run unpacks clean rather than reusing a partially
+      // patched source -- which would still build, silently producing
+      // something that does not match the manifest.
+      if (patches.isNotEmpty) {
+        await applyPatchSeries(
+          runner: (args, {required workingDirectory}) =>
+              Process.run('git', args, workingDirectory: workingDirectory),
+          workDir: dir.path,
+          patches: patches,
+          onto: '${lib.pkg} ${lib.minVersion}',
+          restore: () async {
+            if (dir.existsSync()) dir.deleteSync(recursive: true);
+          },
+        );
+        stamp.writeAsStringSync(digest);
       }
     }
     return dir;

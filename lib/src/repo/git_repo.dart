@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:emb_cli/src/manifest/source_repo.dart';
+import 'package:emb_cli/src/repo/patch_series.dart';
 import 'package:path/path.dart' as p;
 
 /// Runs a git subcommand in [workingDirectory]. Injectable for testing.
@@ -80,10 +81,7 @@ class GitRepo {
       branch: branch,
       rev: rev,
       destName: destName,
-      patches: [
-        for (final patch in patches)
-          p.isAbsolute(patch) ? patch : p.normalize(p.join(base, patch)),
-      ],
+      patches: resolvePatchPaths(patches, base),
     );
   }
 
@@ -194,118 +192,35 @@ class GitRepo {
 
   /// Apply [patches] in order, resolving relative paths against [patchBase].
   ///
-  /// Every file is verified to exist before the first one is applied, so a
-  /// typo in a manifest fails before the worktree is touched rather than
-  /// halfway through the series.
-  ///
-  /// A patch that fails to apply restores the checkout to pristine and
-  /// reports. Leaving a half-patched tree would be worse than failing: it
-  /// generally still builds, silently producing something that does not match
-  /// the manifest.
+  /// Shares its implementation (and therefore its diagnostics) with the
+  /// augment overlay's patch support; see applyPatchSeries.
   Future<void> _applyPatches(
     GitRunner runner,
     String gitFolder,
     Directory? patchBase,
   ) async {
-    final base = patchBase?.path ?? Directory.current.path;
-    final resolved = [
-      for (final patch in patches)
-        p.isAbsolute(patch) ? patch : p.normalize(p.join(base, patch)),
-    ];
-
-    final missing = resolved.where((f) => !File(f).existsSync()).toList();
-    if (missing.isNotEmpty) {
-      throw _GitException(
-        'patch file(s) declared by the manifest do not exist:\n'
-        '${missing.map((f) => "    $f").join("\n")}\n'
-        '  Paths are resolved relative to the manifest that declared them.',
+    try {
+      await applyPatchSeries(
+        runner: runner,
+        workDir: gitFolder,
+        patches: resolvePatchPaths(
+          patches,
+          patchBase?.path ?? Directory.current.path,
+        ),
+        onto: rev ?? branch ?? 'the default branch',
+        restore: () async {
+          await _run(
+            runner,
+            ['reset', '--hard'],
+            gitFolder,
+            allowFailure: true,
+          );
+          await _run(runner, ['clean', '-fd'], gitFolder, allowFailure: true);
+        },
       );
+    } on PatchSeriesException catch (e) {
+      throw _GitException(e.message);
     }
-
-    final at = rev ?? branch ?? 'the default branch';
-
-    for (var i = 0; i < resolved.length; i++) {
-      final patch = resolved[i];
-      final position = 'patch ${i + 1}/${resolved.length}';
-
-      // --check first: it reports the same diagnostics as a real apply but
-      // touches nothing, so a failure here leaves the worktree exactly as the
-      // previous patch left it rather than partially rewritten.
-      final check = await runner([
-        'apply',
-        '--check',
-        '--verbose',
-        patch,
-      ], workingDirectory: gitFolder);
-      if (check.exitCode != 0) {
-        await _restore(runner, gitFolder);
-        throw _GitException(
-          _patchFailure(
-            position,
-            patch,
-            at,
-            check,
-            i,
-            'It does not apply to this tree.',
-          ),
-        );
-      }
-
-      final apply = await runner(['apply', patch], workingDirectory: gitFolder);
-      if (apply.exitCode != 0) {
-        await _restore(runner, gitFolder);
-        throw _GitException(
-          _patchFailure(
-            position,
-            patch,
-            at,
-            apply,
-            i,
-            'It passed --check but failed to apply.',
-          ),
-        );
-      }
-    }
-  }
-
-  /// Return the worktree to pristine after a failed patch, so a later step
-  /// never builds something half-patched that still compiles.
-  Future<void> _restore(GitRunner runner, String gitFolder) async {
-    await _run(runner, ['reset', '--hard'], gitFolder, allowFailure: true);
-    await _run(runner, ['clean', '-fd'], gitFolder, allowFailure: true);
-  }
-
-  /// Build the operator-facing explanation of a patch failure: which patch,
-  /// where it lives, what it was applied onto, what git said, and the most
-  /// likely cause.
-  String _patchFailure(
-    String position,
-    String patch,
-    String at,
-    ProcessResult result,
-    int index,
-    String summary,
-  ) {
-    final detail = [
-      '${result.stderr}'.trim(),
-      '${result.stdout}'.trim(),
-    ].where((s) => s.isNotEmpty).join('\n');
-    final applied = index == 0
-        ? 'none (this was the first patch)'
-        : '$index patch(es) before it';
-    final said = detail.isEmpty
-        ? '      (git produced no output)'
-        : detail.split('\n').map((l) => '      $l').join('\n');
-    return '$position failed: ${p.basename(patch)}\n'
-        '    $summary (git exit ${result.exitCode})\n'
-        '    patch   : $patch\n'
-        '    applied : onto $at, after $applied\n'
-        '    git said:\n'
-        '$said\n'
-        '    The checkout was reset to pristine, so nothing is half-patched.\n'
-        '    Most often this means the patch was authored against a different\n'
-        '    revision than "$at", or an earlier patch in the series already\n'
-        '    changed the same lines.';
   }
 
   /// Check out [ref] (a branch, tag, or commit), tolerating a failing

@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
+import 'package:emb_cli/src/repo/patch_series.dart';
 
 /// Stable short content hash (12 hex chars) of [parts].
 String contentHash(List<String> parts) =>
@@ -60,7 +61,47 @@ String sysrootKey(CrossTarget t) => contentHash([
   // sysroot identity or invalidate the shared store entry.
   for (final a in t.augment)
     if (CrossTarget.defineSatisfied(a.requiresDefine, t.defines))
-      'aug:${a.pkg}:${a.minVersion}:${a.url}:${a.build.name}:${a.staticLink}',
+      'aug:${augmentIdentity(a)}',
+]);
+
+/// An augment's build identity: the fields that change what gets produced,
+/// including a digest of its patch series.
+///
+/// The patch digest is load-bearing. Nothing else here moves when a patch is
+/// edited in place — `url` and `min` stay put — so without it a store entry
+/// built from the previous series would be reused silently. [patchSeriesDigest]
+/// tolerates unreadable paths, so an unresolvable patch still produces a
+/// stable, distinct key rather than throwing during key computation.
+///
+/// Patch paths must already be resolved (see `resolvePatchPaths`); a relative
+/// path here would hash whatever it resolves to from the current directory.
+String augmentIdentity(AugmentLib a) => [
+  a.pkg,
+  a.minVersion,
+  a.url,
+  a.build.name,
+  '${a.staticLink}',
+  if (a.patches.isNotEmpty) 'patches:${patchSeriesDigest(a.patches)}',
+].join(':');
+
+/// Hash naming a cached **augment overlay** — the built artifacts of a
+/// target's augment set, as distinct from the sysroot they layer onto.
+///
+/// Unlike [sysrootBaseKey] and the toolchain key, which are deliberately
+/// augment-independent so one blob serves many variations, this is
+/// augment-specific by construction: it exists to name the overlay itself.
+/// It therefore folds in everything that changes the overlay's contents —
+/// the target triple and cpu flags the libs are compiled for, plus each
+/// staged augment's [augmentIdentity].
+///
+/// Gated augments are excluded on the same reasoning as [sysrootKey]: one that
+/// is not built must not perturb the identity of an overlay that lacks it.
+String augmentOverlayKey(CrossTarget t) => contentHash([
+  'triple:${t.targetTriple ?? ''}',
+  'cpu:${t.cpuFlags.join(" ")}',
+  for (final a in t.augment)
+    if (CrossTarget.defineSatisfied(a.requiresDefine, t.defines))
+      'aug:${augmentIdentity(a)}',
 ]);
 
 /// Hash of the **shared sysroot base**: [sysrootKey] without the augment set,
