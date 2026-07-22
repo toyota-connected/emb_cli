@@ -96,11 +96,20 @@ class SyncCommand extends Command<int> {
 
     final repos = <GitRepo>[];
     for (final m in manifests) {
-      repos.addAll(m.src.map(GitRepo.fromSource));
+      // Patch paths are relative to the manifest that declared them, and
+      // repos from several manifests sync together, so resolve them here
+      // while each manifest's own location is still known.
+      repos.addAll(
+        m.src
+            .map(GitRepo.fromSource)
+            .map((r) => r.resolvePatchesAgainst(m.sourcePath)),
+      );
     }
     // Plus any bare repos.json arrays.
     for (final path in args['repos'] as List<String>) {
-      repos.addAll(_loadReposFile(File(path)));
+      repos.addAll(
+        _loadReposFile(File(path)).map((r) => r.resolvePatchesAgainst(path)),
+      );
     }
 
     // De-duplicate by destination folder name.
