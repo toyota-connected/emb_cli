@@ -273,7 +273,7 @@ void main() {
     });
 
     test('resolved paths are what sync actually looks for on disk', () async {
-      // Ties resolution to behaviour: a patch that exists relative to its
+      // Ties resolution to behavior: a patch that exists relative to its
       // manifest must be found, proving the two halves agree.
       final manifestDir = Directory.systemTemp.createTempSync('emb_resolve_');
       addTearDown(() => manifestDir.deleteSync(recursive: true));
@@ -410,7 +410,7 @@ void main() {
         expect(result.message, contains('patch 1/1 failed'));
         expect(result.message, contains('0007-vulkan.patch'));
         expect(result.message, contains('v1.74.0'));
-        expect(result.message, contains('reset to pristine'));
+        expect(result.message, contains('tree was reset'));
         // Never ran the real apply after --check refused it.
         expect(git.calls, isNot(contains(equals(['apply', patch]))));
       },
