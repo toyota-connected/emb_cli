@@ -118,7 +118,7 @@ class MatrixCommand extends Command<int> {
             Map<String, dynamic>.from(entry.merged),
             file.path,
           );
-          target = CrossTarget.fromMap(resolved);
+          target = CrossTarget.fromMap(resolved).withResolvedPatches(file.path);
           // fromMap throws ArgumentError on an unknown/missing provider token;
           // extends resolution throws CrossProjectException (bad board/ref).
           // ignore: avoid_catching_errors
