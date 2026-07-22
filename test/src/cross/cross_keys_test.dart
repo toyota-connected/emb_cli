@@ -1,5 +1,8 @@
+import 'dart:io';
+
 import 'package:emb_cli/src/cross/cross_keys.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
+import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 CrossTarget _t(Map<dynamic, dynamic> m) => CrossTarget.fromMap(m);
@@ -199,6 +202,110 @@ void main() {
       expect(jun, isNot(sysrootBaseKey(snap(null))));
       expect(jun, isNot(sysrootBaseKey(snap('2024-07-01'))));
       expect(jun, sysrootBaseKey(snap('2024-06-01')));
+    });
+  });
+
+  group('augment patch keying', () {
+    late Directory tmp;
+    setUp(() => tmp = Directory.systemTemp.createTempSync('emb_keys_'));
+    tearDown(() => tmp.deleteSync(recursive: true));
+
+    String patch(String name, String body) {
+      final f = File(p.join(tmp.path, name))..writeAsStringSync(body);
+      return f.path;
+    }
+
+    CrossTarget withPatches(List<String> patches) => _t({
+      'provider': 'arm-gnu',
+      'toolchain_version': '12.3.rel1',
+      'image_url': 'https://example/raspios.img.xz',
+      'cpu_flags': const ['-mcpu=cortex-a76'],
+      'augment': [
+        {
+          'pkg': 'filament',
+          'min': '1.74.0',
+          'url': 'https://example/filament-1.74.0.tar.gz',
+          'build': 'cmake',
+          'patches': patches,
+        },
+      ],
+    });
+
+    test('sysrootKey moves when a patch is edited in place', () {
+      // The staleness this exists to prevent: url and min do not move when a
+      // patch is edited, so without hashing contents a store entry built from
+      // the previous series would be reused silently.
+      final a = patch('0007.patch', 'original');
+      final before = sysrootKey(withPatches([a]));
+      File(a).writeAsStringSync('revised');
+      expect(sysrootKey(withPatches([a])), isNot(before));
+    });
+
+    test('sysrootKey separates a patched augment from an unpatched one', () {
+      final a = patch('0007.patch', 'diff');
+      expect(sysrootKey(withPatches([a])), isNot(sysrootKey(withPatches([]))));
+    });
+
+    test('sysrootBaseKey ignores patches', () {
+      // The base entry stays augment-independent, so one image extraction is
+      // still shared across targets differing only in their augments.
+      final a = patch('0007.patch', 'diff');
+      expect(
+        sysrootBaseKey(withPatches([a])),
+        sysrootBaseKey(withPatches(const [])),
+      );
+    });
+
+    test('augmentOverlayKey separates cpu variants of one augment set', () {
+      final a = patch('0007.patch', 'diff');
+      final base = {
+        'provider': 'arm-gnu',
+        'toolchain_version': '12.3.rel1',
+        'image_url': 'https://example/raspios.img.xz',
+        'augment': [
+          {
+            'pkg': 'filament',
+            'min': '1.74.0',
+            'url': 'u',
+            'patches': [a],
+          },
+        ],
+      };
+      final a76 = _t({
+        ...base,
+        'cpu_flags': const ['-mcpu=cortex-a76'],
+      });
+      final a72 = _t({
+        ...base,
+        'cpu_flags': const ['-mcpu=cortex-a72'],
+      });
+      // An overlay holds compiled objects, so unlike the sysroot base it must
+      // never be shared across cpu variants.
+      expect(augmentOverlayKey(a76), isNot(augmentOverlayKey(a72)));
+    });
+
+    test('augmentOverlayKey moves when a patch is edited in place', () {
+      final a = patch('0007.patch', 'original');
+      final before = augmentOverlayKey(withPatches([a]));
+      File(a).writeAsStringSync('revised');
+      expect(augmentOverlayKey(withPatches([a])), isNot(before));
+    });
+
+    test('augmentOverlayKey is stable for an unchanged series', () {
+      final a = patch('0007.patch', 'diff');
+      expect(
+        augmentOverlayKey(withPatches([a])),
+        augmentOverlayKey(withPatches([a])),
+      );
+    });
+
+    test('a missing patch file still yields a distinct, stable key', () {
+      // Key computation must not throw on an unresolvable path; that failure
+      // belongs to the apply step, which reports it properly.
+      final absent = p.join(tmp.path, 'absent.patch');
+      final k = augmentOverlayKey(withPatches([absent]));
+      expect(k, augmentOverlayKey(withPatches([absent])));
+      expect(k, isNot(augmentOverlayKey(withPatches(const []))));
     });
   });
 }
