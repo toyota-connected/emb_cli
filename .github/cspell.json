@@ -161,6 +161,15 @@
     "escrow",
     "escrows",
     "zst",
-    "zstd"
+    "zstd",
+    "EPEL",
+    "fdisk",
+    "fsprogs",
+    "losetup",
+    "marp",
+    "pios",
+    "sccache",
+    "sfdisk",
+    "stdlib"
   ]
 }
