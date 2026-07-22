@@ -11,6 +11,7 @@ class SourceRepo {
     this.destName,
     this.pubspecPath,
     this.recurseSubmodules = false,
+    this.patches = const [],
   });
 
   factory SourceRepo.fromMap(Map<String, dynamic> map) {
@@ -22,6 +23,9 @@ class SourceRepo {
       pubspecPath: map['pubspec_path'] as String?,
       recurseSubmodules:
           (map['recurse_submodules'] ?? map['submodules'] ?? false) as bool,
+      patches: [
+        for (final e in (map['patches'] as List<dynamic>? ?? const [])) '$e',
+      ],
     );
   }
 
@@ -42,6 +46,17 @@ class SourceRepo {
 
   /// Whether to clone with `--recurse-submodules`.
   final bool recurseSubmodules;
+
+  /// Patch files to `git apply` after checking out [rev]/[branch], in order.
+  ///
+  /// Paths are relative to the manifest that declared them (absolute paths are
+  /// taken as-is), so a manifest stays relocatable and does not depend on the
+  /// directory `emb` happened to be run from.
+  ///
+  /// Re-applying is safe: a sync resets an existing checkout to pristine
+  /// before re-applying the series, so editing a patch in place takes effect
+  /// on the next sync even though [rev] did not change.
+  final List<String> patches;
 
   @override
   String toString() => 'SourceRepo($uri${branch != null ? "#$branch" : ""})';

@@ -14,11 +14,15 @@ class RepoSyncer {
 
   /// Sync every repo in [repos] into [baseFolder]. Each repo's result is
   /// reported via [onResult] as it completes. Returns all results.
+  ///
+  /// [patchBase] is forwarded to [GitRepo.sync] as the directory relative
+  /// patch paths resolve against — the directory holding the manifest.
   Future<List<RepoResult>> syncAll(
     List<GitRepo> repos,
     Directory baseFolder, {
     GitRunner runner = defaultGitRunner,
     void Function(RepoResult result)? onResult,
+    Directory? patchBase,
   }) async {
     baseFolder.createSync(recursive: true);
     final results = <RepoResult>[];
@@ -29,7 +33,11 @@ class RepoSyncer {
         final GitRepo repo;
         if (!iterator.moveNext()) break;
         repo = iterator.current;
-        final result = await repo.sync(baseFolder, runner: runner);
+        final result = await repo.sync(
+          baseFolder,
+          runner: runner,
+          patchBase: patchBase,
+        );
         results.add(result);
         onResult?.call(result);
       }
