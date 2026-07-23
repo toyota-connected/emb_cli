@@ -208,16 +208,24 @@ class OverlayBuilder {
       // patched source -- which would still build, silently producing
       // something that does not match the manifest.
       if (patches.isNotEmpty) {
-        await applyPatchSeries(
-          runner: (args, {required workingDirectory}) =>
-              Process.run('git', args, workingDirectory: workingDirectory),
-          workDir: dir.path,
-          patches: patches,
-          onto: '${lib.pkg} ${lib.minVersion}',
-          restore: () async {
-            if (dir.existsSync()) dir.deleteSync(recursive: true);
-          },
-        );
+        try {
+          await applyPatchSeries(
+            runner: (args, {required workingDirectory}) =>
+                Process.run('git', args, workingDirectory: workingDirectory),
+            workDir: dir.path,
+            patches: patches,
+            onto: '${lib.pkg} ${lib.minVersion}',
+            restore: () async {
+              if (dir.existsSync()) dir.deleteSync(recursive: true);
+            },
+          );
+        } on PatchSeriesException catch (e) {
+          // Convert at the source rather than at each call site: a manifest
+          // error must read as a reported failure, not as an uncaught
+          // exception with a stack trace. Mirrors how GitRepo converts it for
+          // `sync`, and keeps every OverlayBuilder caller consistent.
+          throw OverlayBuildException('${lib.pkg}: ${e.message}');
+        }
         stamp.writeAsStringSync(digest);
       }
     }
