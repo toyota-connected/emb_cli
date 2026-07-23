@@ -1,3 +1,6 @@
 tags:
+  # Shells out to the real git binary rather than a fake runner. Kept as a tag
+  # so it can be excluded where git is unavailable; it runs by default.
+  integration:
   version-verify:
     skip: "Should only be run during pull request. Verifies if version file is updated."

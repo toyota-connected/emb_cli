@@ -8,6 +8,15 @@ import 'package:test/test.dart';
 /// Records git invocations and returns a configurable exit code.
 class _FakeGit {
   final List<List<String>> calls = [];
+
+  /// Calls with the `--git-dir` no-repo sentinel dropped (see patch_series).
+  List<List<String>> get bare => [
+    for (final c in calls)
+      [
+        for (final a in c)
+          if (!a.startsWith('--git-dir=')) a,
+      ],
+  ];
   int Function(List<String> args)? exitFor;
   String Function(List<String> args)? stdoutFor;
 
@@ -294,7 +303,7 @@ void main() {
       final result = await repo.sync(work, runner: git.run);
 
       expect(result.success, isTrue);
-      expect(git.calls.where((c) => c.first == 'apply'), hasLength(2));
+      expect(git.bare.where((c) => c.first == 'apply'), hasLength(2));
     });
   });
 
@@ -335,7 +344,7 @@ void main() {
       final result = await repo.sync(tmp, runner: git.run);
 
       expect(result.success, isTrue);
-      expect(git.calls.where((c) => c.first == 'apply'), isEmpty);
+      expect(git.bare.where((c) => c.first == 'apply'), isEmpty);
     });
 
     test('checks then applies each patch, in declared order', () async {
@@ -350,7 +359,7 @@ void main() {
       final result = await repo.sync(tmp, runner: git.run);
 
       expect(result.success, isTrue);
-      expect(git.calls.where((c) => c.first == 'apply').toList(), [
+      expect(git.bare.where((c) => c.first == 'apply').toList(), [
         ['apply', '--check', '--verbose', first],
         ['apply', first],
         ['apply', '--check', '--verbose', second],
@@ -368,8 +377,8 @@ void main() {
       );
       await repo.sync(tmp, runner: git.run);
 
-      final checkoutAt = git.calls.indexWhere((c) => c.first == 'checkout');
-      final applyAt = git.calls.indexWhere((c) => c.first == 'apply');
+      final checkoutAt = git.bare.indexWhere((c) => c.first == 'checkout');
+      final applyAt = git.bare.indexWhere((c) => c.first == 'apply');
       expect(checkoutAt, isNonNegative);
       expect(applyAt, greaterThan(checkoutAt));
     });
@@ -387,7 +396,7 @@ void main() {
       expect(result.message, contains('do not exist'));
       expect(result.message, contains('nope.patch'));
       // Never ran git apply, and never reset the tree.
-      expect(git.calls.where((c) => c.first == 'apply'), isEmpty);
+      expect(git.bare.where((c) => c.first == 'apply'), isEmpty);
     });
 
     test(
@@ -395,7 +404,7 @@ void main() {
       () async {
         final git = _FakeGit()
           ..exitFor = (args) =>
-              args.first == 'apply' && args.contains('--check') ? 1 : 0;
+              args.contains('apply') && args.contains('--check') ? 1 : 0;
         final patch = patchFile('0007-vulkan.patch');
         final repo = GitRepo(
           uri: 'https://x/y/foo.git',
@@ -412,7 +421,7 @@ void main() {
         expect(result.message, contains('v1.74.0'));
         expect(result.message, contains('tree was reset'));
         // Never ran the real apply after --check refused it.
-        expect(git.calls, isNot(contains(equals(['apply', patch]))));
+        expect(git.bare, isNot(contains(equals(['apply', patch]))));
       },
     );
 
@@ -423,7 +432,7 @@ void main() {
         final bad = patchFile('0002-bad.patch');
         final git = _FakeGit()
           ..exitFor = (args) =>
-              args.first == 'apply' && args.contains(bad) ? 1 : 0;
+              args.contains('apply') && args.contains(bad) ? 1 : 0;
         final repo = GitRepo(
           uri: 'https://x/y/foo.git',
           rev: 'v1',
@@ -445,8 +454,8 @@ void main() {
     test('surfaces git output in the failure message', () async {
       const detail = 'error: patch failed: Foo.cpp:26';
       final git = _FakeGit()
-        ..exitFor = ((args) => args.first == 'apply' ? 1 : 0)
-        ..stdoutFor = ((args) => args.first == 'apply' ? detail : '');
+        ..exitFor = ((args) => args.contains('apply') ? 1 : 0)
+        ..stdoutFor = ((args) => args.contains('apply') ? detail : '');
       final repo = GitRepo(
         uri: 'https://x/y/foo.git',
         rev: 'v1',
