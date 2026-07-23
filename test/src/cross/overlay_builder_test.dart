@@ -161,4 +161,61 @@ void main() {
     );
     ob.close();
   });
+
+  test('a failing augment patch is reported, not thrown as a crash', () async {
+    // A manifest error must surface as an OverlayBuildException the command
+    // already catches. Before this, PatchSeriesException propagated straight
+    // out of cross_command as an uncaught exception with a stack trace.
+    prestage('vulkan-headers-1.4.309');
+
+    // A patch that cannot apply: the file it targets does not exist.
+    final patch = File(p.join(tmp.path, '0001-nope.patch'))
+      ..writeAsStringSync(
+        'diff --git a/absent.txt b/absent.txt\n'
+        '--- a/absent.txt\n'
+        '+++ b/absent.txt\n'
+        '@@ -1 +1 @@\n'
+        '-before\n'
+        '+after\n',
+      );
+
+    final lib = AugmentLib.fromMap({
+      'pkg': 'vulkan-headers',
+      'min': '1.4.309',
+      'url': 'https://x/vulkan-headers-1.4.309.tar.gz',
+      'build': 'cmake',
+      'patches': [patch.path],
+    });
+
+    Future<RunResult> run(
+      String exe,
+      List<String> args, {
+      String? workingDirectory,
+      Map<String, String>? environment,
+      bool includeParentEnvironment = true,
+      bool runInShell = false,
+      ProcessOutputMode output = ProcessOutputMode.capture,
+      String? label,
+    }) async => exe == 'pkg-config'
+        ? const RunResult(1, '', '') // not satisfied, so it gets built
+        : const RunResult(0, '', '');
+
+    final ob = OverlayBuilder(Workspace(tmp), _profile, runProcess: run);
+    await expectLater(
+      ob.build([lib]),
+      throwsA(
+        isA<OverlayBuildException>().having(
+          (e) => e.message,
+          'message',
+          allOf(
+            // Named like every other augment failure, and carrying the
+            // series diagnostic rather than replacing it.
+            startsWith('vulkan-headers: '),
+            contains('0001-nope.patch'),
+          ),
+        ),
+      ),
+    );
+    ob.close();
+  });
 }
