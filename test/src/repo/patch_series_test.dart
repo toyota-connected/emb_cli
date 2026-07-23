@@ -9,6 +9,22 @@ class _FakeGit {
   final List<List<String>> calls = [];
   int Function(List<String> args)? exitFor;
 
+  /// Calls with the `--git-dir` sentinel dropped. That flag forces git out of
+  /// repository-discovery mode and is asserted separately by [noRepoFlags], so
+  /// the ordering assertions stay about the patch arguments.
+  List<List<String>> get bare => [
+    for (final c in calls)
+      [
+        for (final a in c)
+          if (!a.startsWith('--git-dir=')) a,
+      ],
+  ];
+
+  /// One entry per invocation that carried the sentinel.
+  List<String> get noRepoFlags => [
+    for (final c in calls) ...c.where((a) => a.startsWith('--git-dir=')),
+  ];
+
   Future<ProcessResult> run(
     List<String> args, {
     required String workingDirectory,
@@ -105,12 +121,15 @@ void main() {
         patches: [a, b],
         onto: 'v1',
       );
-      expect(git.calls, [
+      expect(git.bare, [
         ['apply', '--check', '--verbose', a],
         ['apply', a],
         ['apply', '--check', '--verbose', b],
         ['apply', b],
       ]);
+      // Every git invocation opts out of repository discovery, so patch paths
+      // resolve against workDir even when it sits inside another repository.
+      expect(git.noRepoFlags, hasLength(4));
     });
 
     test('rejects a missing patch before touching the tree', () async {
@@ -163,7 +182,7 @@ void main() {
       );
       expect(restored, isTrue);
       // --check refused it, so the real apply never ran.
-      expect(git.calls, isNot(contains(equals(['apply', a]))));
+      expect(git.bare, isNot(contains(equals(['apply', a]))));
     });
 
     test('reports which patches preceded a mid-series failure', () async {

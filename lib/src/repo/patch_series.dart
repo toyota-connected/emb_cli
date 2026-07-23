@@ -69,6 +69,14 @@ String patchSeriesDigest(List<String> resolvedPatches) {
 ///
 /// `git apply` operates on files and does not require [workDir] to be a git
 /// repository, so this serves both a checkout and an unpacked tarball.
+///
+/// It is invoked with `--git-dir` pointed at a path that does not exist, which
+/// forces the no-repository mode where patch paths resolve against [workDir].
+/// Without it, a [workDir] that happens to sit inside some *other* repository
+/// -- an unpacked tarball under a workspace directory inside the project repo,
+/// say -- makes git resolve paths against that repository's root instead,
+/// report `Skipped patch ...` for every file, and exit 0. The series would
+/// then be recorded as applied while the tree was never touched.
 Future<void> applyPatchSeries({
   required PatchRunner runner,
   required String workDir,
@@ -95,6 +103,7 @@ Future<void> applyPatchSeries({
     // touches nothing, so a failure here leaves the tree exactly as the
     // previous patch left it rather than partially rewritten.
     final check = await runner([
+      _noRepo(workDir),
       'apply',
       '--check',
       '--verbose',
@@ -107,7 +116,11 @@ Future<void> applyPatchSeries({
       );
     }
 
-    final apply = await runner(['apply', patch], workingDirectory: workDir);
+    final apply = await runner([
+      _noRepo(workDir),
+      'apply',
+      patch,
+    ], workingDirectory: workDir);
     if (apply.exitCode != 0) {
       await restore?.call();
       throw PatchSeriesException(
@@ -123,6 +136,11 @@ Future<void> applyPatchSeries({
     }
   }
 }
+
+/// A `--git-dir` argument naming a path that cannot exist, forcing `git apply`
+/// out of repository-discovery mode. See [applyPatchSeries].
+String _noRepo(String workDir) =>
+    '--git-dir=${p.join(workDir, '.emb-no-repo')}';
 
 /// The operator-facing explanation of a patch failure: which patch, where it
 /// lives, what it was applied onto, what git said, and the likeliest cause.
