@@ -192,6 +192,42 @@ void main() {
     });
   });
 
+  group('AugmentLib.fromMap subdir', () {
+    test('reads subdir', () {
+      final a = AugmentLib.fromMap(const {
+        'pkg': 'ivi-homescreen-shared',
+        'url': 'https://example/ivi.tar.gz',
+        'build': 'cmake',
+        'subdir': 'shared',
+      });
+      expect(a.subdir, 'shared');
+    });
+
+    test('accepts the source_subdir alias', () {
+      final a = AugmentLib.fromMap(const {
+        'pkg': 'foo',
+        'url': 'u',
+        'source_subdir': 'lib/foo',
+      });
+      expect(a.subdir, 'lib/foo');
+    });
+
+    test('defaults to null so the root is configured', () {
+      final a = AugmentLib.fromMap(const {'pkg': 'foo', 'url': 'u'});
+      expect(a.subdir, isNull);
+    });
+
+    test('survives resolvePatchesAgainst', () {
+      final a = AugmentLib.fromMap(const {
+        'pkg': 'foo',
+        'url': 'u',
+        'subdir': 'shared',
+        'patches': ['p/0001.patch'],
+      }).resolvePatchesAgainst('/work/manifest.yaml');
+      expect(a.subdir, 'shared');
+    });
+  });
+
   group('PackageSpec.fromMap files requires_define', () {
     test('captures a per-file gate; ungated files stay ungated', () {
       final spec = PackageSpec.fromMap(const {
