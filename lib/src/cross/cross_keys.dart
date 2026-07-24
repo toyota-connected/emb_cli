@@ -82,6 +82,7 @@ String augmentIdentity(AugmentLib a) => [
   a.build.name,
   '${a.staticLink}',
   if (a.patches.isNotEmpty) 'patches:${patchSeriesDigest(a.patches)}',
+  if (a.subdir != null && a.subdir!.isNotEmpty) 'subdir:${a.subdir}',
 ].join(':');
 
 /// Hash naming a cached **augment overlay** — the built artifacts of a

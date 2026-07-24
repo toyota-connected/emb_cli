@@ -256,6 +256,19 @@ void main() {
       );
     });
 
+    test('augmentIdentity moves when subdir changes', () {
+      // A subdir build produces different artifacts than the root build of the
+      // same tarball, so the overlay must not be reused across the two.
+      const common = {
+        'pkg': 'ivi-homescreen-shared',
+        'url': 'https://example/ivi.tar.gz',
+        'build': 'cmake',
+      };
+      final root = AugmentLib.fromMap(common);
+      final sub = AugmentLib.fromMap({...common, 'subdir': 'shared'});
+      expect(augmentIdentity(sub), isNot(augmentIdentity(root)));
+    });
+
     test('augmentOverlayKey separates cpu variants of one augment set', () {
       final a = patch('0007.patch', 'diff');
       final base = {

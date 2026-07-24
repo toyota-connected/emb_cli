@@ -98,6 +98,7 @@ class AugmentLib {
     this.host = false,
     this.requiresDefine,
     this.patches = const [],
+    this.subdir,
   });
 
   factory AugmentLib.fromMap(Map<dynamic, dynamic> map) => AugmentLib(
@@ -116,6 +117,7 @@ class AugmentLib {
     patches: [
       for (final e in (map['patches'] as List<dynamic>? ?? const [])) '$e',
     ],
+    subdir: (map['subdir'] ?? map['source_subdir'])?.toString(),
   );
 
   /// pkg-config module name to probe (and the package to build).
@@ -148,6 +150,7 @@ class AugmentLib {
       host: host,
       requiresDefine: requiresDefine,
       patches: resolvePatchPaths(patches, p.dirname(p.absolute(declaringFile))),
+      subdir: subdir,
     );
   }
 
@@ -186,6 +189,14 @@ class AugmentLib {
   /// `BUILD_CRASH_HANDLER=ON`) live in the manifest without building on every
   /// invocation. Null means always build. See [CrossTarget.defineSatisfied].
   final String? requiresDefine;
+
+  /// Subdirectory of the unpacked source to configure, instead of its root.
+  /// For a repository whose root build assembles a whole app but which also
+  /// exposes a self-contained library under a subtree (e.g. ivi-homescreen's
+  /// `shared/`, which builds `ihs_shared` standalone). The build runs against
+  /// `<unpacked>/<subdir>`; patches still apply against the unpacked root, so a
+  /// patch path is repo-relative regardless of this. Null means the root.
+  final String? subdir;
 }
 
 /// How an app-owned [ModuleSpec] is built. Unlike [CrossGenerator] (which

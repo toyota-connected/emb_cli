@@ -289,13 +289,20 @@ class OverlayBuilder {
 
   Future<void> _buildCMake(AugmentLib lib, Directory overlay) async {
     final src = await _fetchSource(lib);
+    // Configure a subtree when the augment asks for one (patches still applied
+    // against the unpacked root by _fetchSource). Lets a repository whose root
+    // builds a whole app expose a self-contained library under a subdir.
+    final sub = lib.subdir;
+    final srcDir = sub == null || sub.isEmpty
+        ? src.path
+        : p.join(src.path, sub);
     final bld = _freshBuildDir(src);
     final tc = profile.cmakeToolchainFile;
     final configure = await _run(
       'cmake',
       [
         '-S',
-        src.path,
+        srcDir,
         '-B',
         bld.path,
         if (tc != null) '-DCMAKE_TOOLCHAIN_FILE=$tc',
