@@ -572,6 +572,23 @@ cross:
       }
     });
 
+    test('local carries the native manifest path so its patches resolve', () {
+      final s = CrossProject(
+        id: 'proj',
+        nativeCross: const {'provider': 'arm-gnu'},
+        nativeSourcePath: '/work/.emb/base.emb.yaml',
+        targets: const {},
+      ).selectTarget('local')!;
+      expect(s.isNative, isTrue);
+      expect(s.sourcePath, '/work/.emb/base.emb.yaml');
+    });
+
+    test('local sourcePath is null when nativeCross has no backing file', () {
+      // e.g. an `.emb/` dir without a base manifest.
+      final s = project().selectTarget('local')!;
+      expect(s.sourcePath, isNull);
+    });
+
     test('no default and no --target falls back to native local', () {
       final s = project().selectTarget(null)!;
       expect(s.name, 'local');

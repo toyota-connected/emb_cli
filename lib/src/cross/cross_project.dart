@@ -58,6 +58,7 @@ class CrossProject {
     required this.id,
     required this.targets,
     required this.nativeCross,
+    this.nativeSourcePath,
     this.defaultTarget,
   });
 
@@ -71,6 +72,12 @@ class CrossProject {
   /// The `cross:` fields (sans `targets`) a native `local`/`host` build uses —
   /// the `.emb/base.emb.yaml` block in `.emb/` mode, else the single manifest's.
   final Map<String, dynamic> nativeCross;
+
+  /// The manifest file [nativeCross] was read from, so relative paths it
+  /// declares (e.g. augment `patches:`) resolve against the manifest for the
+  /// native build the same way a board target's do. Null when no backing file
+  /// exists (e.g. an `.emb/` dir without a base manifest).
+  final String? nativeSourcePath;
 
   /// The target to build when `--target` is omitted: a flat single-file
   /// manifest's sole target. Null when selection is required (`cross.targets`
@@ -94,9 +101,15 @@ class CrossProject {
   selectTarget(String? targetArg) {
     final name = targetArg ?? defaultTarget ?? 'local';
     if (name == 'local' || name == 'host') {
-      // The native block is synthesized from the project, not read from one
-      // manifest, so it has no declaring file to resolve paths against.
-      return (name: name, isNative: true, cross: nativeCross, sourcePath: null);
+      // The native block comes from the base manifest (`.emb/base.emb.yaml`, or
+      // the single manifest); carry its path so relative augment `patches:`
+      // resolve against it, exactly as a board target's do.
+      return (
+        name: name,
+        isNative: true,
+        cross: nativeCross,
+        sourcePath: nativeSourcePath,
+      );
     }
     final ref = this[name];
     if (ref == null) return null;
@@ -192,6 +205,7 @@ class CrossProjectResolver {
       id: fallback,
       targets: targets,
       nativeCross: _withoutTargets(cross),
+      nativeSourcePath: sourcePath,
       // A flat file's single target is the default; a cross.targets file
       // requires an explicit --target (else native local).
       defaultTarget: multi ? null : name,
@@ -257,6 +271,7 @@ class CrossProjectResolver {
       id: (baseManifest['id'] as String?) ?? p.basename(embDir.parent.path),
       targets: out,
       nativeCross: _withoutTargets(baseCross),
+      nativeSourcePath: baseFile.existsSync() ? baseFile.path : null,
     );
   }
 
