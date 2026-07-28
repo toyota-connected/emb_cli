@@ -461,10 +461,19 @@ class AotBuilder {
     ];
   }
 
-  /// Optional native_assets.yaml flag (mirrors create_aot.py).
+  /// Optional `--native-assets` flag for the kernel compile.
+  ///
+  /// Flutter emits `native_assets.json`; it was `native_assets.yaml` when
+  /// create_aot.py was written, and probing only for the old name meant the
+  /// flag was never passed. Accept both, newest spelling first.
   List<String> _nativeAssets(String buildDir) {
-    final f = File(p.join(buildDir, 'native_assets.yaml'));
-    return f.existsSync() ? ['--native-assets', f.path] : const [];
+    for (final name in const ['native_assets.json', 'native_assets.yaml']) {
+      final f = File(p.join(buildDir, name));
+      if (f.existsSync()) {
+        return ['--native-assets', f.path];
+      }
+    }
+    return const [];
   }
 
   /// Resolve the gen_snapshot for [arch] from the engine-sdk artifact.
