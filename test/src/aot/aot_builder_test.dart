@@ -198,6 +198,69 @@ void main() {
     });
   }
 
+  // `flutter build bundle` defaults --target-platform to android-arm whatever
+  // the host is. For an app with code assets that means the build hooks run for
+  // Android, and the engine — looking itself up as linux_<arch> at runtime —
+  // finds no matching entry in NativeAssetsManifest.json.
+  ({String exe, List<String> args}) bundleCall(_Recorder rec) =>
+      rec.calls.firstWhere(
+        (c) =>
+            c.args.length > 1 && c.args[0] == 'build' && c.args[1] == 'bundle',
+      );
+
+  test('AOT build targets linux for the requested arch', () async {
+    final ws = Directory(p.join(tmp.path, 'ws'))..createSync();
+    final app = Directory(p.join(tmp.path, 'app'));
+    writeApp(app);
+    writeSdk(ws);
+    final rec = _Recorder(app.path);
+
+    await builder(
+      ws,
+      rec,
+    ).build(appPath: app.path, modes: ['release'], arch: 'arm64');
+
+    expect(
+      bundleCall(rec).args,
+      containsAllInOrder(<String>['--target-platform', 'linux-arm64']),
+    );
+  });
+
+  test('buildAssets targets linux for the requested arch', () async {
+    final ws = Directory(p.join(tmp.path, 'ws'))..createSync();
+    final app = Directory(p.join(tmp.path, 'app'));
+    writeApp(app);
+    writeSdk(ws);
+    final rec = _Recorder(app.path);
+
+    await builder(
+      ws,
+      rec,
+    ).buildAssets(appPath: app.path, mode: 'debug', arch: 'x86_64');
+
+    expect(
+      bundleCall(rec).args,
+      containsAllInOrder(<String>['--target-platform', 'linux-x64']),
+    );
+  });
+
+  test('omits --target-platform where Flutter has no linux target', () async {
+    final ws = Directory(p.join(tmp.path, 'ws'))..createSync();
+    final app = Directory(p.join(tmp.path, 'app'));
+    writeApp(app);
+    writeSdk(ws);
+    final rec = _Recorder(app.path);
+
+    // armv7 has engine artifacts but no Flutter linux-* token; passing one
+    // would be rejected, so the flag is left off rather than guessed.
+    await builder(
+      ws,
+      rec,
+    ).buildAssets(appPath: app.path, mode: 'release', arch: 'armv7hf');
+
+    expect(bundleCall(rec).args, isNot(contains('--target-platform')));
+  });
+
   test('fails cleanly when pubspec has no name', () async {
     final ws = Directory(p.join(tmp.path, 'ws'))..createSync();
     final app = Directory(p.join(tmp.path, 'app'))..createSync();

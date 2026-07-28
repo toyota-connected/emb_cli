@@ -104,20 +104,141 @@ class AotBuilder {
   Future<bool> buildAssets({
     required String appPath,
     required String mode,
+    String? arch,
   }) async {
-    final flag = switch (mode) {
-      'debug' => '--debug',
-      'profile' => '--profile',
-      _ => '--release',
+    // The mode flag and the mode Flutter reports are the same here, unlike the
+    // AOT path below.
+    final flutterMode = switch (mode) {
+      'debug' => 'debug',
+      'profile' => 'profile',
+      _ => 'release',
     };
+    final flag = '--$flutterMode';
+    final app = p.absolute(appPath);
+    final targetArch = arch ?? host.machineArch;
     final r = await runProcess(
       _flutterBin,
-      ['build', 'bundle', flag, ...embVerbosity.flutterArgs],
-      workingDirectory: p.absolute(appPath),
+      [
+        'build',
+        'bundle',
+        flag,
+        ..._targetPlatformArgs(app, targetArch, flutterMode),
+        ...embVerbosity.flutterArgs,
+      ],
+      workingDirectory: app,
       output: ProcessOutputMode.stream,
       label: '$mode:flutter',
     );
     return r.exitCode == 0;
+  }
+
+  /// `--target-platform` for [arch], plus whatever has to exist on disk before
+  /// Flutter will accept it.
+  ///
+  /// [flutterMode] is the mode **Flutter** will run in, which is not always
+  /// emb's mode: the AOT path invokes `flutter build bundle` with no mode flag
+  /// (it wants the assets, and produces the real image via gen_snapshot), so
+  /// Flutter falls back to its own `debug` default. The compiler-config path
+  /// below is keyed on Flutter's mode, so getting this wrong writes the cache
+  /// where Flutter will not look.
+  ///
+  /// `flutter build bundle` defaults `--target-platform` to `android-arm`
+  /// regardless of the host or which platforms are enabled — it is a literal
+  /// default on the argument, not a derived one. For an app with no code assets
+  /// that is harmless, but the build hooks key their output off it: leaving it
+  /// unset produces a `NativeAssetsManifest.json` keyed `android_arm` with the
+  /// libraries under `native_assets/jniLibs/lib/armeabi-v7a/`, which the engine
+  /// — looking itself up as `linux_x64` at runtime — never finds.
+  ///
+  /// Returns an empty list for an arch with no Flutter linux token, leaving the
+  /// previous behavior rather than passing something invalid.
+  List<String> _targetPlatformArgs(
+    String app,
+    String arch,
+    String flutterMode,
+  ) {
+    final token = _flutterLinuxArch(arch);
+    if (token == null) {
+      return const [];
+    }
+    _writeHookCompilerConfig(app, token, flutterMode);
+    return ['--target-platform', 'linux-$token'];
+  }
+
+  /// Flutter's linux arch token, which is NOT the engine-artifact token
+  /// ([EngineArtifacts.engineArch] answers `x86_64` where Flutter says `x64`).
+  /// Null when Flutter has no linux target for the arch (e.g. armv7).
+  static String? _flutterLinuxArch(String arch) {
+    switch (arch.toLowerCase()) {
+      case 'x64':
+      case 'x86_64':
+      case 'amd64':
+        return 'x64';
+      case 'arm64':
+      case 'aarch64':
+        return 'arm64';
+      case 'riscv64':
+        return 'riscv64';
+      default:
+        return null;
+    }
+  }
+
+  /// Write the `CMakeCache.txt` Flutter's linux code-asset path insists on.
+  ///
+  /// `cCompilerConfigLinux` resolves the compiler for build hooks by reading
+  /// the app's CMake cache, so code assets are built with the same toolchain
+  /// as the app's GTK desktop half. An embedder app has no desktop build, so
+  /// that file does not exist and `--target-platform=linux-*` hard-fails with
+  /// "Could not read compiler configurations for build hooks".
+  ///
+  /// Flutter already supports skipping the lookup (`mustMatchAppBuild: false`
+  /// leaves `cmakeDirectory` null) but nothing reaches it from `build bundle`.
+  /// Until that is plumbed through upstream, synthesize the three entries it
+  /// reads. Nothing consumes the values afterwards for an embedder build: the
+  /// hook drives its own compiler, and there is no app-side native code for it
+  /// to have to match.
+  ///
+  /// The path mirrors `_linuxTarget` in flutter_tools:
+  /// `<asset-dir>/linux/<arch>/<mode>/CMakeCache.txt`. Failures here are not
+  /// fatal — if the cache cannot be written, Flutter reports the missing file
+  /// itself, which is a clearer error than anything this could raise.
+  void _writeHookCompilerConfig(String app, String archToken, String mode) {
+    final cxx = _which('clang++');
+    if (cxx == null) {
+      return; // Flutter will report what it could not find.
+    }
+    final dir = Directory(
+      p.join(app, 'build', 'flutter_assets', 'linux', archToken, mode),
+    );
+    try {
+      dir.createSync(recursive: true);
+      File(p.join(dir.path, 'CMakeCache.txt')).writeAsStringSync(
+        'CMAKE_AR:FILEPATH=${_which('ar') ?? '/usr/bin/ar'}\n'
+        'CMAKE_CXX_COMPILER:FILEPATH=$cxx\n'
+        'CMAKE_LINKER:FILEPATH=${_which('ld') ?? '/usr/bin/ld'}\n',
+      );
+    } on FileSystemException {
+      // Non-fatal; see above.
+    }
+  }
+
+  /// First [name] on PATH, or null.
+  static String? _which(String name) {
+    final pathEnv = Platform.environment['PATH'];
+    if (pathEnv == null) {
+      return null;
+    }
+    for (final dir in pathEnv.split(':')) {
+      if (dir.isEmpty) {
+        continue;
+      }
+      final candidate = p.join(dir, name);
+      if (File(candidate).existsSync()) {
+        return candidate;
+      }
+    }
+    return null;
   }
 
   /// Build AOT images for [modes] (default release + profile) of the app at
@@ -151,7 +272,15 @@ class AotBuilder {
       onStep?.call('[$mode] flutter build bundle');
       final bundle = await runProcess(
         _flutterBin,
-        ['build', 'bundle', ...embVerbosity.flutterArgs],
+        [
+          'build',
+          'bundle',
+          // No mode flag: this step only needs the assets, and the AOT image
+          // comes from gen_snapshot below. Flutter therefore runs in its own
+          // default mode, which is what the compiler-config path is keyed on.
+          ..._targetPlatformArgs(app, targetArch, 'debug'),
+          ...embVerbosity.flutterArgs,
+        ],
         workingDirectory: app,
         output: ProcessOutputMode.stream,
         label: '$mode:flutter',
@@ -332,10 +461,19 @@ class AotBuilder {
     ];
   }
 
-  /// Optional native_assets.yaml flag (mirrors create_aot.py).
+  /// Optional `--native-assets` flag for the kernel compile.
+  ///
+  /// Flutter emits `native_assets.json`; it was `native_assets.yaml` when
+  /// create_aot.py was written, and probing only for the old name meant the
+  /// flag was never passed. Accept both, newest spelling first.
   List<String> _nativeAssets(String buildDir) {
-    final f = File(p.join(buildDir, 'native_assets.yaml'));
-    return f.existsSync() ? ['--native-assets', f.path] : const [];
+    for (final name in const ['native_assets.json', 'native_assets.yaml']) {
+      final f = File(p.join(buildDir, name));
+      if (f.existsSync()) {
+        return ['--native-assets', f.path];
+      }
+    }
+    return const [];
   }
 
   /// Resolve the gen_snapshot for [arch] from the engine-sdk artifact.
