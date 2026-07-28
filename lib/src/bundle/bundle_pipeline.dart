@@ -47,7 +47,7 @@ Future<BundleResult> buildAndAssemble({
   if (build) {
     if (mode == 'debug') {
       onStep?.call('flutter build bundle --debug');
-      if (!await aot.buildAssets(appPath: appPath, mode: mode)) {
+      if (!await aot.buildAssets(appPath: appPath, mode: mode, arch: arch)) {
         return const BundleResult(
           success: false,
           message: 'flutter build bundle --debug failed',
