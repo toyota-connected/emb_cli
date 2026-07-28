@@ -102,8 +102,42 @@ class BundleBuilder {
       if (kernelBlob.existsSync()) kernelBlob.deleteSync();
     }
     engineSo.copySync(p.join(libDir.path, 'libflutter_engine.so'));
+    _stageCodeAssets(outAssets, libDir);
 
     return BundleResult(success: true, outputDir: out.path);
+  }
+
+  /// Copy the app's code assets (native assets) into the bundle's `lib/`.
+  ///
+  /// A package with a build hook produces shared libraries that the engine
+  /// resolves through `NativeAssetsManifest.json` at runtime. That manifest
+  /// names each one by bare filename, so resolution goes through the dynamic
+  /// loader's search path — which means the library has to sit next to
+  /// `libflutter_engine.so`, not only inside `flutter_assets/native_assets/`
+  /// where `flutter build bundle` leaves it. Without this the app links against
+  /// nothing at runtime and the `@Native` bindings fail to resolve.
+  ///
+  /// The manifest stays in `flutter_assets` untouched — it is what the engine
+  /// reads to know which library backs which asset id.
+  static void _stageCodeAssets(Directory assets, Directory libDir) {
+    final nativeAssets = Directory(p.join(assets.path, 'native_assets'));
+    if (!nativeAssets.existsSync()) {
+      return;
+    }
+    for (final entity in nativeAssets.listSync(
+      recursive: true,
+      followLinks: false,
+    )) {
+      if (entity is! File) {
+        continue;
+      }
+      // Flattened deliberately: the manifest resolves by bare name, so the
+      // per-OS subdirectory layout underneath means nothing to the loader.
+      final dest = p.join(libDir.path, p.basename(entity.path));
+      if (!File(dest).existsSync()) {
+        entity.copySync(dest);
+      }
+    }
   }
 
   static void _copyDir(Directory src, Directory dst) {

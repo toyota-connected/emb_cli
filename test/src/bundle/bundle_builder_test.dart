@@ -153,6 +153,61 @@ void main() {
     expect(result.success, isTrue);
   });
 
+  test('stages code assets onto the loader path', () {
+    final s = stageInputs();
+    // `flutter build bundle` leaves code assets under
+    // flutter_assets/native_assets/<os>/. NativeAssetsManifest.json names them
+    // by bare filename, so the engine resolves them through the dynamic
+    // loader — they have to end up in lib/ beside libflutter_engine.so.
+    final nativeAssets = Directory(
+      p.join(s.app.path, 'build', 'flutter_assets', 'native_assets', 'linux'),
+    )..createSync(recursive: true);
+    File(p.join(nativeAssets.path, 'libfoo.so')).writeAsStringSync('FOO');
+
+    final out = p.join(tmp.path, 'out');
+    final result = BundleBuilder(Workspace(s.ws)).assemble(
+      appPath: s.app.path,
+      mode: 'release',
+      arch: 'x86_64',
+      outputDir: out,
+    );
+
+    expect(result.success, isTrue);
+    expect(File(p.join(out, 'lib', 'libfoo.so')).readAsStringSync(), 'FOO');
+    // The asset-side copy stays: the manifest that names it lives there too.
+    expect(
+      File(
+        p.join(
+          out,
+          'data',
+          'flutter_assets',
+          'native_assets',
+          'linux',
+          'libfoo.so',
+        ),
+      ).existsSync(),
+      isTrue,
+    );
+  });
+
+  test('assembles an app with no code assets', () {
+    // No native_assets/ directory at all — the common case, and it must not
+    // become a failure now that the bundle looks for one.
+    final s = stageInputs();
+    final out = p.join(tmp.path, 'out');
+    final result = BundleBuilder(Workspace(s.ws)).assemble(
+      appPath: s.app.path,
+      mode: 'release',
+      arch: 'x86_64',
+      outputDir: out,
+    );
+    expect(result.success, isTrue);
+    expect(
+      Directory(p.join(out, 'lib')).listSync().map((e) => p.basename(e.path)),
+      unorderedEquals(<String>['libapp.so', 'libflutter_engine.so']),
+    );
+  });
+
   test('reports each missing input', () {
     final ws = Directory(p.join(tmp.path, 'ws'))..createSync();
     final app = Directory(p.join(tmp.path, 'app'))..createSync();
