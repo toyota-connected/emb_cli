@@ -5,8 +5,8 @@
 /// arm64 / riscv64 from an x86_64 host.
 ///
 /// ```sh
-/// # activate
-/// dart pub global activate --source=path .
+/// # install
+/// dart install .
 ///
 /// # usage
 /// emb --help

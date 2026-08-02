@@ -10,4 +10,4 @@
 # Windows: run `Invoke-Expression (.\bootstrap.ps1 --shellenv)` instead.
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-exec python3 "$root/tool/bootstrap_dart.py" --activate "$root" "$@"
+exec python3 "$root/tool/bootstrap_dart.py" --install "$root" "$@"

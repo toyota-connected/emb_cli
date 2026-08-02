@@ -17,5 +17,5 @@ $py = Get-Command python -ErrorAction SilentlyContinue
 if (-not $py) { $py = Get-Command python3 -ErrorAction SilentlyContinue }
 if (-not $py) { Write-Error 'python (3.6+) is required on PATH'; exit 1 }
 
-& $py.Source (Join-Path $root 'tool\bootstrap_dart.py') --activate $root @args
+& $py.Source (Join-Path $root 'tool\bootstrap_dart.py') --install $root @args
 exit $LASTEXITCODE

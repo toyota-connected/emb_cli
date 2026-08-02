@@ -6,8 +6,8 @@
 ```sh
 # from the package root
 dart pub get
-dart pub global activate --source=path .   # puts `emb` on PATH
-# or run without activating:  dart run bin/emb.dart <command>
+dart install .   # puts `emb` on PATH
+# or run without installing:  dart run bin/emb.dart <command>
 ```
 
 ## 1. Inspect the host

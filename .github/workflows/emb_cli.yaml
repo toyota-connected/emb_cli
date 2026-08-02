@@ -120,7 +120,7 @@ jobs:
         run: dart test test/src/host test/src/pkg
 
       # Exercise the published single-line install on each OS: fetch a cached
-      # Dart SDK, `pub global activate` emb from this checkout (running the
+      # Dart SDK, `dart install` emb from this checkout (running the
       # packagekit_dart/brew_dart/winget_dart native hooks), put it on PATH,
       # and run it.
       - name: 🚀 Single-line install (Unix)
