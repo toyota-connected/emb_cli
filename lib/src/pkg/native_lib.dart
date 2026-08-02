@@ -57,8 +57,8 @@ Future<void> configurePackageKitLibrary() async {
 }
 
 /// Locate the `libpackagekit_nc.so` produced by the `package:hooks` build hook,
-/// which lands under `.dart_tool/hooks_runner/shared/packagekit_dart/build/
-/// <hash>/<cmake-build-dir>/libpackagekit_nc.so` in the consuming project.
+/// which lands under `.dart_tool/hooks_runner/shared/packagekit_dart/build/`
+/// `<hash>/<cmake-build-dir>/libpackagekit_nc.so` in the consuming project.
 ///
 /// Returns the most-recently-built match, or `null` if none is found.
 String? _findHookBuiltLibrary() {

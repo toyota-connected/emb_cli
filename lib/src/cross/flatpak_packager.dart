@@ -74,9 +74,9 @@ class FlatpakPackageException implements Exception {
 ///
 /// Mirrors `DebPackager` in shape — stage, emit metadata, invoke the system
 /// packaging tool — but a flatpak wraps the *whole* app: the bundle tree is
-/// copied to `/app/<appId>`, a launcher wrapper (`exec <embedder> -b
-/// <prefix>`) is installed on `PATH`, and a `.desktop` (+ optional icon) make
-/// it a first-class sandboxed app. Extra files map host paths into the `/app`
+/// copied to `/app/<appId>`, a launcher wrapper (`exec <embedder> -b <prefix>`)
+/// is installed on `PATH`, and a `.desktop` (+ optional icon) make it a
+/// first-class sandboxed app. Extra files map host paths into the `/app`
 /// prefix.
 ///
 /// Needs `flatpak-builder` plus the target runtime/SDK installed on the build

@@ -374,9 +374,9 @@ class CrossProjectResolver {
   /// Resolve a `cross.extends` reference: deep-merge [cross] (the derived
   /// project/app layer) over the resolved base it names. Two forms:
   ///   - `<board>`        — a target in emb's shipped board library (hardware).
-  ///   - `<dir>#<target>` — a target in another emb project at <dir> (the
+  ///   - `<dir>#<target>` — a target in another emb project at `<dir>` (the
   ///                         project layer; e.g. an app extending an
-  ///                         ivi-homescreen target). <dir> is relative to the
+  ///                         ivi-homescreen target). `<dir>` is relative to the
   ///                         extending manifest's project root.
   /// Chains resolve recursively (app -> project -> board). No-op without
   /// `extends`.
@@ -420,8 +420,8 @@ class CrossProjectResolver {
   }
 
   /// The resolved `cross:` of `<dir>#<target>` — a target from another emb
-  /// project at <dir> (relative to the extending manifest's project root). That
-  /// project's own `extends` chain is applied by [resolve].
+  /// project (its `<dir>`, relative to the extending manifest's project root).
+  /// That project's own `extends` chain is applied by [resolve].
   Map<String, dynamic> _projectExtendsBase(String ref, String? sourcePath) {
     final i = ref.lastIndexOf('#');
     final dirRef = ref.substring(0, i);

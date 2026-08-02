@@ -1,0 +1,7 @@
+# The package's example is the singular `example/` dir (ivi-homescreen), per
+# the pub layout convention. `examples/` holds the cross-compile manifest
+# collection wired into CI (`emb matrix examples/cross`) and the docs; it stays
+# browsable on GitHub but is not shipped in the published archive. Pub only
+# recognizes a singular `example/`, so shipping the plural dir trips a layout
+# warning — and the manifests add weight without being package API.
+examples/
