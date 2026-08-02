@@ -5,6 +5,12 @@ description: >-
 version: 0.1.0
 repository: https://github.com/toyota-connected/emb_cli
 issue_tracker: https://github.com/toyota-connected/emb_cli/issues
+topics:
+  - flutter
+  - embedded-linux
+  - cross-compilation
+  - cli
+  - yocto
 
 environment:
   sdk: ">=3.10.1 <4.0.0"

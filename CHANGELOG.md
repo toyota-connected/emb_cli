@@ -14,8 +14,22 @@ Port of `meta-flutter/workspace-automation` to a Dart CLI.
   implicit engine fetch and cross-compile (`x86_64 → arm64/riscv64`).
 - feat: `emb build` — manifest-driven build (`build:` block) over an arch × mode
   matrix.
+- feat: `emb cross` — resolve a manifest `cross:` block into a toolchain +
+  sysroot profile: cross-compile the native embedder for arm64/riscv64 with
+  rootless sysroot extraction and Debian `.deb` handling.
+- feat: `emb fetch` — fetch a cross target's toolchain + sysroot closure into
+  the store: the online acquisition step for an offline build.
+- feat: `emb matrix` — render a CI build matrix from manifest `cross:` blocks.
+- feat: `emb cache` — inspect and reclaim the shared artifact cache.
+- feat: `emb update` — self-update the CLI.
 - feat: `emb setup` — one-shot provision; emits `setup_env.sh`.
 - feat: `emb env` — write `setup_env.sh`.
+- feat: install with `dart install` (Dart 3.10+), or with zero preinstalled
+  toolchain via `bootstrap.sh`/`bootstrap.ps1`, which fetch a pinned Dart SDK
+  and put `emb` on `PATH` in one step.
+- feat: carry native code assets through cross-compiled bundles — stage them
+  onto the loader path, build the Linux asset bundle, and accept
+  `native_assets.json` for the kernel compile.
 - feat: depend on the published `packagekit_dart` `^0.3.2` (hosted, not a path
   dependency).
 - feat: auto-resolve the PackageKit native bridge (`libpackagekit_nc.so`) — from
