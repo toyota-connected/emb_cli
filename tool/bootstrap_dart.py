@@ -187,8 +187,20 @@ def activate(dart, bin_dir, pkg_dir, os_name):
     )
     if code != 0:
         sys.exit("`dart pub global activate` failed (%d)" % code)
+    trigger_native_builds(dart, pkg_dir, env)
     log("done. Ensure these are on PATH:\n  %s\n  %s"
         % (bin_dir, pub_bin_dir(os_name)))
+
+
+def trigger_native_builds(dart, pkg_dir, env):
+    log("building native assets")
+    # runs 'dart run bin/emb.dart doctor' to trigger native asset builds
+    entry = os.path.join(os.path.abspath(pkg_dir), "bin", "emb.dart")
+    subprocess.run(
+        [dart, "run", entry, "doctor"],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=sys.stderr,)
 
 
 def main():
