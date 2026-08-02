@@ -165,6 +165,7 @@
     "EPEL",
     "fdisk",
     "fsprogs",
+    "LOCALAPPDATA",
     "losetup",
     "marp",
     "pios",

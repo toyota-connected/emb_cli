@@ -51,7 +51,7 @@ need depends on which emb features you use — install by tier.
 > ARM GNU toolchain are fetched by emb — they are not distro packages.
 
 **Tier 1 — install & run emb** (`setup`, `deps`, `sync`, `flutter`, `bundle`,
-`build`). Activating the package pulls in the PackageKit native bridge
+`build`). Installing the package pulls in the PackageKit native bridge
 (`libpackagekit_nc.so`), which compiles vendored `sdbus-cpp` — so it needs
 libsystemd headers, a C/C++ toolchain, `cmake`, and `ninja`. Without them
 `emb deps`/`doctor` silently can't drive PackageKit. `git` clones repos and the
@@ -60,10 +60,10 @@ Flutter SDK; the **PackageKit daemon** must be running for host-dep install.
 ```sh
 # Ubuntu / Debian  (add the PackageKit daemon: `packagekit`)
 sudo apt-get install -y git python3 build-essential cmake ninja-build \
-  libsystemd-dev packagekit
+  pkg-config libsystemd-dev packagekit
 # Fedora  (PackageKit is usually already present)
 sudo dnf install -y git python3 gcc gcc-c++ make cmake ninja-build \
-  systemd-devel PackageKit
+  pkgconfig systemd-devel PackageKit
 ```
 
 > Already have Dart ≥ 3.10.1? Drop `python3` (it is only for `bootstrap.sh`).
@@ -139,13 +139,15 @@ A `bootstrap.cmd` wrapper is also provided for CMD users (does not support
 ```sh
 # From the package root:
 dart pub get
-dart pub global activate --source=path .   # puts `emb` on PATH
+dart install .   # puts `emb` on PATH
 
 emb --help
 ```
 
-Make sure the pub-global bin dir (`$PUB_CACHE/bin`, e.g. `~/.pub-cache/bin`) is
-on `PATH`. You can also run without activating:
+Make sure the `dart install` bin dir (`~/.local/state/Dart/install/bin` on
+Linux, `~/Library/Application Support/Dart/install/bin` on macOS,
+`%LOCALAPPDATA%\Dart\install\bin` on Windows) is on `PATH`. You can also run
+without installing:
 
 ```sh
 dart run bin/emb.dart <command>     # from the package root

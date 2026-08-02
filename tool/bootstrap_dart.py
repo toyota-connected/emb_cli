@@ -12,10 +12,13 @@ else goes to stderr.
     DART_BIN=$(python3 tool/bootstrap_dart.py) && export PATH="$DART_BIN:$PATH"
 
     # Fetch Dart AND install emb from this checkout, in one OS-agnostic step:
-    python3 tool/bootstrap_dart.py --activate .
+    python3 tool/bootstrap_dart.py --install .
 
     # Install emb AND put Dart + emb on PATH for this shell, in one step:
-    eval "$(python3 tool/bootstrap_dart.py --activate . --shellenv)"
+    eval "$(python3 tool/bootstrap_dart.py --install . --shellenv)"
+
+    # Or install the published package from pub.dev instead of a checkout:
+    python3 tool/bootstrap_dart.py --install emb_cli --shellenv
 
     # Pin a version for reproducible CI:
     python3 tool/bootstrap_dart.py --version 3.10.1
@@ -160,35 +163,47 @@ def ensure_sdk(args, version, sdk_root, dart):
     log("installed: " + sdk_root)
 
 
-def pub_bin_dir(os_name):
-    """Where `dart pub global activate` installs executable shims.
+def install_bin_dir(os_name):
+    """Where `dart install` places executable shims.
 
-    Honors $PUB_CACHE; otherwise Windows uses %LOCALAPPDATA%\\Pub\\Cache\\bin
-    (the SDK's default there) and Unix uses ~/.pub-cache/bin.
+    Mirrors Dart's getDartDataHome('install'): honors $DART_DATA_HOME;
+    otherwise Windows uses %LOCALAPPDATA%\\Dart\\install\\bin, macOS uses
+    ~/Library/Application Support/Dart/install/bin, and Linux uses
+    $XDG_STATE_HOME/Dart/install/bin (or ~/.local/state/Dart/install/bin).
     """
-    pub = os.environ.get("PUB_CACHE")
-    if pub:
-        return os.path.join(pub, "bin")
-    if os_name == "windows":
+    override = os.environ.get("DART_DATA_HOME")
+    if override:
+        base = override
+    elif os_name == "windows":
         local = os.environ.get("LOCALAPPDATA") or os.path.join(
             os.path.expanduser("~"), "AppData", "Local")
-        return os.path.join(local, "Pub", "Cache", "bin")
-    return os.path.join(os.path.expanduser("~"), ".pub-cache", "bin")
+        base = os.path.join(local, "Dart")
+    elif os_name == "macos":
+        base = os.path.join(os.path.expanduser("~"),
+                            "Library", "Application Support", "Dart")
+    else:
+        state = os.environ.get("XDG_STATE_HOME") or os.path.join(
+            os.path.expanduser("~"), ".local", "state")
+        base = os.path.join(state, "Dart")
+    return os.path.join(base, "install", "bin")
 
 
-def activate(dart, bin_dir, pkg_dir, os_name):
+def install(dart, bin_dir, target, os_name):
     env = dict(os.environ)
     env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
-    log("activating from " + os.path.abspath(pkg_dir))
-    # Keep our stdout clean (only the bin dir) -> send activate output to stderr.
-    code = subprocess.call(
-        [dart, "pub", "global", "activate", "--source", "path", pkg_dir],
-        env=env, stdout=sys.stderr,
-    )
+    # A local dir installs from source (abspath -> unambiguously a path);
+    # anything else passes through as a pub.dev spec, e.g. `emb` or
+    # `emb@^1.0.0` for the published package.
+    if os.path.isdir(target):
+        target = os.path.abspath(target)
+    log("installing " + target)
+    # Keep our stdout clean (only the bin dir) -> send install output to stderr.
+    code = subprocess.call([dart, "install", target], env=env,
+                           stdout=sys.stderr)
     if code != 0:
-        sys.exit("`dart pub global activate` failed (%d)" % code)
+        sys.exit("`dart install` failed (%d)" % code)
     log("done. Ensure these are on PATH:\n  %s\n  %s"
-        % (bin_dir, pub_bin_dir(os_name)))
+        % (bin_dir, install_bin_dir(os_name)))
 
 
 def main():
@@ -208,14 +223,15 @@ def main():
                     help="Target arch (default: this host).")
     ap.add_argument("--cache-dir", default=default_cache,
                     help="SDK cache root (or set $EMB_DART_CACHE).")
-    ap.add_argument("--activate", metavar="PKG_DIR",
-                    help="After fetching, run `dart pub global activate "
-                         "--source path PKG_DIR` (e.g. '.' for emb).")
+    ap.add_argument("--install", dest="install", metavar="PKG",
+                    help="After fetching, run `dart install PKG`: a local "
+                         "directory (e.g. '.' for this checkout) or a pub.dev "
+                         "spec (e.g. 'emb_cli' or 'emb_cli@^1.0.0').")
     ap.add_argument("--force", action="store_true",
                     help="Re-download even if cached.")
     ap.add_argument("--shellenv", action="store_true",
                     help="Emit an eval-able `export PATH=...` (Dart bin + "
-                         "pub-cache bin) on stdout instead of just the bin "
+                         "dart-install bin) on stdout instead of just the bin "
                          "dir. Use as: eval \"$(... --shellenv)\".")
     args = ap.parse_args()
 
@@ -226,15 +242,15 @@ def main():
     dart = os.path.join(bin_dir, "dart.exe" if args.os == "windows" else "dart")
 
     ensure_sdk(args, version, sdk_root, dart)
-    if args.activate:
-        activate(dart, bin_dir, args.activate, args.os)
+    if args.install:
+        install(dart, bin_dir, args.install, args.os)
     if args.shellenv:
-        # Prepend Dart bin + pub-cache bin to PATH. Dart bin first so this SDK
-        # wins until a Flutter SDK (sourced from setup_env.sh) is prepended
+        # Prepend Dart bin + dart-install bin to PATH. Dart bin first so this
+        # SDK wins until a Flutter SDK (sourced from setup_env.sh) is prepended
         # ahead of it. Windows emits PowerShell (`Invoke-Expression`); Unix
         # emits POSIX shell (`eval`). The literal env reference expands in the
         # caller's shell, not here.
-        paths = os.pathsep.join([bin_dir, pub_bin_dir(args.os)])
+        paths = os.pathsep.join([bin_dir, install_bin_dir(args.os)])
         if args.os == "windows":
             print('$env:PATH = "%s%s$env:PATH"' % (paths, os.pathsep))
         else:

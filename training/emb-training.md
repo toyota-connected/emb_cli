@@ -69,7 +69,7 @@ emb --version
 emb doctor                             # host + package-backend health check
 ```
 
-<div class="note">Already have Dart ≥ 3.10.1? <code>dart pub global activate --source=path .</code> puts <code>emb</code> on PATH. Linux native bridge auto-locates; override with <code>PK_NC_LIB=…</code>.</div>
+<div class="note">Already have Dart ≥ 3.10.1? <code>dart install .</code> puts <code>emb</code> on PATH. Linux native bridge auto-locates; override with <code>PK_NC_LIB=…</code>.</div>
 
 ---
 
