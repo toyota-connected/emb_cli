@@ -380,10 +380,11 @@ class PackageSpec {
 
   /// Parse the `files:` block into a `<source>: <dest>` map plus sparse
   /// `<source>: <mode>` and `<source>: <requires_define>` maps. An entry value
-  /// is either a bare dest string, or a map `{to|dest: <path>, mode: "0755",
-  /// requires_define: <gate>}`. `requires_define` (alias `when`) gates the
-  /// file on an embedder define so an optional artifact (e.g. crashpad_handler)
-  /// only ships when its feature is built.
+  /// is either a bare dest string, or a map
+  /// `{to|dest: <path>, mode: "0755", requires_define: <gate>}`.
+  /// `requires_define` (alias `when`) gates the file on an embedder define so
+  /// an optional artifact (e.g. crashpad_handler) only ships when its feature
+  /// is built.
   static (Map<String, String>, Map<String, String>, Map<String, String>)
   _parseFiles(Object? raw) {
     final files = <String, String>{};

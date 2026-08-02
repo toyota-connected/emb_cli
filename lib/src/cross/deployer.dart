@@ -93,8 +93,8 @@ class Deployer {
     );
   }
 
-  /// `tar -czf - -C <local> . | ssh <host> 'mkdir -p <dest> && tar -xzf - -C
-  /// <dest>'` — works on a board with no rsync (just tar + a shell).
+  /// `tar -czf - -C <local> . | ssh <host> 'mkdir -p <dest> && tar -xzf - -C`
+  /// `<dest>'` — works on a board with no rsync (just tar + a shell).
   Future<DeployResult> _pushTar(
     Directory localDir,
     String host,

@@ -58,10 +58,11 @@ class ImagePublishPlan {
   ///
   /// Prefers `skopeo inspect docker://<ref>` when available: it queries any
   /// Registry-v2 endpoint for single- or multi-arch images and works under both
-  /// podman and docker. Without skopeo it falls back to `<tool> manifest
-  /// inspect`, which works on real docker; under podman that fall-back fails
-  /// (podman rejects single images as manifest lists), so the caller simply
-  /// rebuilds — always safe, since the image is content-addressed.
+  /// podman and docker. Without skopeo it falls back to
+  /// `<tool> manifest inspect`, which works on real docker; under podman that
+  /// fall-back fails (podman rejects single images as manifest lists), so the
+  /// caller simply rebuilds — always safe, since the image is
+  /// content-addressed.
   ContainerCmd existsProbe({required bool skopeoAvailable}) => skopeoAvailable
       ? ContainerCmd('skopeo', ['inspect', 'docker://$primaryRef'])
       : ContainerCmd(tool, ['manifest', 'inspect', primaryRef]);
