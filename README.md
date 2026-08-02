@@ -60,10 +60,10 @@ Flutter SDK; the **PackageKit daemon** must be running for host-dep install.
 ```sh
 # Ubuntu / Debian  (add the PackageKit daemon: `packagekit`)
 sudo apt-get install -y git python3 build-essential cmake ninja-build \
-  libsystemd-dev packagekit
+  libsystemd-dev packagekit pkg-config
 # Fedora  (PackageKit is usually already present)
 sudo dnf install -y git python3 gcc gcc-c++ make cmake ninja-build \
-  systemd-devel PackageKit
+  systemd-devel PackageKit pkgconfig
 ```
 
 > Already have Dart ≥ 3.10.1? Drop `python3` (it is only for `bootstrap.sh`).
