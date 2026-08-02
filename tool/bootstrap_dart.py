@@ -17,6 +17,9 @@ else goes to stderr.
     # Install emb AND put Dart + emb on PATH for this shell, in one step:
     eval "$(python3 tool/bootstrap_dart.py --install . --shellenv)"
 
+    # Or install the published package from pub.dev instead of a checkout:
+    python3 tool/bootstrap_dart.py --install emb_cli --shellenv
+
     # Pin a version for reproducible CI:
     python3 tool/bootstrap_dart.py --version 3.10.1
 
@@ -185,11 +188,15 @@ def install_bin_dir(os_name):
     return os.path.join(base, "install", "bin")
 
 
-def install(dart, bin_dir, pkg_dir, os_name):
+def install(dart, bin_dir, target, os_name):
     env = dict(os.environ)
     env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
-    target = os.path.abspath(pkg_dir)  # absolute -> unambiguously a local path
-    log("installing from " + target)
+    # A local dir installs from source (abspath -> unambiguously a path);
+    # anything else passes through as a pub.dev spec, e.g. `emb` or
+    # `emb@^1.0.0` for the published package.
+    if os.path.isdir(target):
+        target = os.path.abspath(target)
+    log("installing " + target)
     # Keep our stdout clean (only the bin dir) -> send install output to stderr.
     code = subprocess.call([dart, "install", target], env=env,
                            stdout=sys.stderr)
@@ -216,9 +223,10 @@ def main():
                     help="Target arch (default: this host).")
     ap.add_argument("--cache-dir", default=default_cache,
                     help="SDK cache root (or set $EMB_DART_CACHE).")
-    ap.add_argument("--install", dest="install", metavar="PKG_DIR",
-                    help="After fetching, run `dart install` on the package "
-                         "at PKG_DIR (e.g. '.' for emb).")
+    ap.add_argument("--install", dest="install", metavar="PKG",
+                    help="After fetching, run `dart install PKG`: a local "
+                         "directory (e.g. '.' for this checkout) or a pub.dev "
+                         "spec (e.g. 'emb_cli' or 'emb_cli@^1.0.0').")
     ap.add_argument("--force", action="store_true",
                     help="Re-download even if cached.")
     ap.add_argument("--shellenv", action="store_true",
