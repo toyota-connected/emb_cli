@@ -10,19 +10,24 @@ import 'package:path/path.dart' as p;
 ///
 /// The package's loader is synchronous and cannot resolve its own location, so
 /// we do it here (async) and hand the path to [setPackagekitLibraryPath] before
-/// the first `PkClient` use. Two layouts are handled:
+/// the first `PkClient` use. Three layouts are handled:
 ///
 ///  1. **Path / vendored dependency** — the `.so` sits in the package itself
 ///     (`<pkg>/build/` or `<pkg>/native/_build/`), found via
 ///     [Isolate.resolvePackageUri].
-///  2. **Hosted (pub.dev) dependency** — the package dir in the pub cache is
-///     read-only, so the `package:hooks` build hook compiles the `.so` into the
-///     *consuming* project's `.dart_tool/hooks_runner/...` output instead. We
-///     locate it there.
+///  2. **Installed app-bundle** — `dart install` links the executable at
+///     `<bundle>/bin/emb` and copies the code asset to `<bundle>/lib/`, so the
+///     `.so` sits at `../lib/` relative to [Platform.resolvedExecutable]. This
+///     is the pub.dev `dart install emb_cli` case, where (1) and (3) find
+///     nothing (an AOT binary has no package config or `.dart_tool`).
+///  3. **Hosted (pub.dev) dependency, run from source** — the package dir in
+///     the pub cache is read-only, so the `package:hooks` build hook compiles
+///     the `.so` into the *consuming* project's `.dart_tool/hooks_runner/...`
+///     output instead. We locate it there.
 ///
 /// No-ops on non-Linux hosts, when `PK_NC_LIB` is already set, or when nothing
-/// is found (e.g. a fully AOT-compiled binary) — in which case the loader's own
-/// env/next-to-exe/system fallbacks still apply.
+/// is found — in which case the loader's own env/next-to-exe/system fallbacks
+/// still apply.
 Future<void> configurePackageKitLibrary() async {
   if (!Platform.isLinux) return;
   if ((Platform.environment['PK_NC_LIB'] ?? '').isNotEmpty) return;
@@ -45,7 +50,15 @@ Future<void> configurePackageKitLibrary() async {
       }
     }
 
-    // (2) The build hook's output under the consuming project's .dart_tool.
+    // (2) An installed `dart install` app-bundle: the asset is copied next to
+    // the executable at <bundle>/lib/. Authoritative for the running binary.
+    final bundled = _findBundledLibrary();
+    if (bundled != null) {
+      setPackagekitLibraryPath(bundled);
+      return;
+    }
+
+    // (3) The build hook's output under the consuming project's .dart_tool.
     final hookBuilt = _findHookBuiltLibrary();
     if (hookBuilt != null) {
       setPackagekitLibraryPath(hookBuilt);
@@ -54,6 +67,23 @@ Future<void> configurePackageKitLibrary() async {
   } on Object {
     // Best-effort only; fall through to the loader's other strategies.
   }
+}
+
+/// Locate the `libpackagekit_nc.so` copied into an installed `dart install`
+/// app-bundle. The executable lives at `<bundle>/bin/emb` and the code asset at
+/// `<bundle>/lib/`, so resolve it relative to [Platform.resolvedExecutable]
+/// (already symlink-resolved). Also probes the exe's own dir as a fallback for
+/// a flatter next-to-exe layout.
+String? _findBundledLibrary() {
+  final exeDir = p.dirname(Platform.resolvedExecutable);
+  for (final c in [
+    p.join(exeDir, '..', 'lib', 'libpackagekit_nc.so'),
+    p.join(exeDir, 'lib', 'libpackagekit_nc.so'),
+    p.join(exeDir, 'libpackagekit_nc.so'),
+  ]) {
+    if (File(c).existsSync()) return p.normalize(c);
+  }
+  return null;
 }
 
 /// Locate the `libpackagekit_nc.so` produced by the `package:hooks` build hook,

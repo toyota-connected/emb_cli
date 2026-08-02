@@ -1,3 +1,12 @@
+# 0.1.1
+
+- fix: locate the PackageKit native bridge (`libpackagekit_nc.so`) when emb is
+  installed from pub.dev via `dart install emb_cli`. The code asset ships in the
+  `dart install` app-bundle's `lib/` next to the executable; the resolver now
+  finds it there (relative to `Platform.resolvedExecutable`). Previously the
+  Linux backend reported "packagekit is not available" unless `PK_NC_LIB` or
+  `LD_LIBRARY_PATH` was set by hand.
+
 # 0.1.0
 
 Port of `meta-flutter/workspace-automation` to a Dart CLI.
