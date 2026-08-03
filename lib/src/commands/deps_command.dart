@@ -2,11 +2,13 @@ import 'dart:io';
 
 import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/deps/dependency_resolver.dart';
+import 'package:emb_cli/src/host/auth_hint.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/host/interactivity.dart';
 import 'package:emb_cli/src/manifest/emb_manifest.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
 import 'package:emb_cli/src/pkg/host_provisioner.dart';
+import 'package:emb_cli/src/pkg/provision_models.dart';
 import 'package:mason_logger/mason_logger.dart';
 
 /// {@template deps_command}
@@ -223,21 +225,39 @@ class DepsCommand extends Command<int> {
       }
 
       // ── Install (single transaction) ────────────────────────────────────
-      final progress = _logger.progress(
-        'Installing ${filtered.missing.length} package(s)',
-      );
+      //
+      // An authorization prompt can appear before the first progress event. A
+      // spinner started now would animate over it and make the password prompt
+      // unreadable -- we have watched exactly that happen to `pkcon`. Defer
+      // the spinner until the backend reports progress, which only happens
+      // once the transaction is authorized and actually running.
+      final count = filtered.missing.length;
+      _logger.info('Installing $count package(s)…');
+      Progress? progress;
       final result = await provisioner.install(
         filtered.missing.toSet(),
-        onProgress: (p) => progress.update(
-          'Installing ${p.label}${p.percent != null ? " (${p.percent}%)" : ""}',
-        ),
+        onProgress: (p) {
+          final pct = p.percent != null ? ' (${p.percent}%)' : '';
+          final line = 'Installing ${p.label}$pct';
+          (progress ??= _logger.progress(line)).update(line);
+        },
       );
       if (result.success) {
-        progress.complete('Installed ${result.installed.length} package(s)');
+        final done = 'Installed ${result.installed.length} package(s)';
+        progress == null ? _logger.success(done) : progress!.complete(done);
         return ExitCode.success.code;
       }
-      progress.fail('Install failed');
+      progress?.fail('Install failed');
+      if (progress == null) _logger.err('Install failed');
       if (result.message != null) _logger.err(result.message);
+      if (result.kind == ProvisionFailure.notAuthorized) {
+        for (final line in authFailureHint(
+          host,
+          interactive: interactivity.interactive,
+        )) {
+          _logger.info(line);
+        }
+      }
       return ExitCode.software.code;
     } finally {
       await provisioner.dispose();

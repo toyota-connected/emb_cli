@@ -6,11 +6,13 @@ import 'package:emb_cli/src/deps/dependency_resolver.dart';
 import 'package:emb_cli/src/engine/engine_artifacts.dart';
 import 'package:emb_cli/src/env/env_script.dart';
 import 'package:emb_cli/src/flutter/flutter_sdk.dart';
+import 'package:emb_cli/src/host/auth_hint.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/host/interactivity.dart';
 import 'package:emb_cli/src/manifest/emb_manifest.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
 import 'package:emb_cli/src/pkg/host_provisioner.dart';
+import 'package:emb_cli/src/pkg/provision_models.dart';
 import 'package:emb_cli/src/repo/git_repo.dart';
 import 'package:emb_cli/src/repo/repo_syncer.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
@@ -256,6 +258,14 @@ class SetupCommand extends Command<int> {
       }
       progress.fail('  Install failed');
       if (result.message != null) _logger.err(result.message);
+      if (result.kind == ProvisionFailure.notAuthorized) {
+        for (final line in authFailureHint(
+          host,
+          interactive: interactivity.interactive,
+        )) {
+          _logger.info(line);
+        }
+      }
       return ExitCode.software.code;
     } finally {
       await provisioner.dispose();

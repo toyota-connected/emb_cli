@@ -12,6 +12,21 @@
   is there to answer, but the converse does not hold.
 - feat: `brew` sets `NONINTERACTIVE=1` when non-interactive. WinGet accepts the
   flag for interface parity but has no equivalent to apply it to.
+- feat: classify install failures. `ProvisionResult.kind` carries a typed
+  `ProvisionFailure` (`notAuthorized`, `unresolved`, `daemonUnavailable`,
+  `other`) derived from the backend's error codes, so the command layer no
+  longer string-matches error text that varies by backend.
+- feat: on an authorization failure, print remediation instead of a raw
+  exception. The advice branches on the interactivity mode, because the daemon
+  reports the same error whether it could not prompt or prompted and was
+  refused.
+- feat: `emb doctor` reports whether you are authorized to install host
+  packages. Its other checks only exercise read-only operations, which need no
+  authorization, so a reachable backend was previously reported green even when
+  `emb deps` could not install anything. The probe never prompts.
+- fix: defer the install spinner until the backend reports progress. An
+  authorization prompt can appear first, and an animating spinner drew over it
+  and made the password prompt unreadable.
 - docs: document authorization, including why polkit cannot prompt under WSL
   and the narrowly scoped polkit rule that works there.
 

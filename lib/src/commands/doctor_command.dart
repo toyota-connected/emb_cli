@@ -12,6 +12,7 @@ import 'package:emb_cli/src/cross/offline_enforcement.dart';
 import 'package:emb_cli/src/cross/offline_probe.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/engine/engine_artifacts.dart';
+import 'package:emb_cli/src/host/auth_probe.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/host/preflight.dart';
 import 'package:emb_cli/src/json_output.dart';
@@ -34,10 +35,12 @@ class DoctorCommand extends Command<int> {
     HostProvisioner Function(HostInfo host)? provisionerFactory,
     ManifestLoader loader = const ManifestLoader(),
     Preflight? preflight,
+    ProcessRunner? processRunner,
   }) : _logger = logger,
        _host = host,
        _provisionerFactory = provisionerFactory ?? HostProvisioner.forHost,
        _project = CrossProjectResolver(loader),
+       _runProcess = processRunner ?? makeProcessRunner(),
        _preflight = preflight ?? Preflight(logger) {
     argParser
       ..addFlag(
@@ -75,6 +78,7 @@ class DoctorCommand extends Command<int> {
   final HostInfo? _host;
   final HostProvisioner Function(HostInfo host) _provisionerFactory;
   final CrossProjectResolver _project;
+  final ProcessRunner _runProcess;
   final Preflight _preflight;
 
   @override
@@ -132,6 +136,23 @@ class DoctorCommand extends Command<int> {
       }
       progress.complete('${provisioner.name} is available');
 
+      // Reachable is not the same as usable. `isAvailable`/`availableUpdates`
+      // only exercise read-only roles, which need no authorization — so a
+      // green backend line said nothing about whether `emb deps` could
+      // actually install. Probe that explicitly. Never prompts.
+      final auth = await probeAuthorization(host, runProcess: _runProcess);
+      switch (auth.status) {
+        case AuthStatus.authorized:
+          _logger.info('  authorized: yes (${auth.detail})');
+        case AuthStatus.authRequired:
+          _logger.warn('  authorized: needs authentication');
+          if (auth.detail != null) _logger.info('    ${auth.detail}');
+        case AuthStatus.denied:
+          _logger.err('  authorized: no (${auth.detail})');
+        case AuthStatus.unknown:
+          _logger.detail('  authorized: unknown (${auth.detail})');
+      }
+
       // Available updates — best-effort and read-only (reflects the backend's
       // last cache refresh; never fails the command).
       final updateCheck = _logger.progress('Checking for available updates');
@@ -175,11 +196,21 @@ class DoctorCommand extends Command<int> {
           updateError = true;
         }
       }
+      final auth = available
+          ? await probeAuthorization(host, runProcess: _runProcess)
+          : null;
       final data = <String, Object?>{
         'host': _hostData(host),
         'backend': {
           'name': provisioner.name,
           'available': available,
+          if (auth != null)
+            'authorization': {
+              'status': auth.status.name,
+              'ready': auth.isReady,
+              if (auth.canPrompt != null) 'canPrompt': auth.canPrompt,
+              if (auth.detail != null) 'detail': auth.detail,
+            },
           if (available)
             'updates': {
               if (updateError)

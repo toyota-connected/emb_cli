@@ -342,6 +342,17 @@ read-only and doesn't refresh). Exit code is non-zero if the backend is
 unavailable; the update check never fails the command. `--json` emits a
 machine-readable `{schema, command, ok, data}` envelope instead of text.
 
+It also reports whether you are **authorized** to install host packages. A
+reachable backend is not the same as a usable one: `doctor`'s other checks
+exercise only read-only operations, which need no authorization, so a green
+backend line previously said nothing about whether `emb deps` could actually
+install anything. The authorization line distinguishes *already authorized*
+(a polkit rule or cached authorization covers you), *needs authentication*
+(you will be prompted — or cannot be, if this shell has no login session), and
+*refused by policy*. The probe never prompts, so running `doctor` cannot pop an
+authentication dialog as a side effect. When `pkcheck` is absent it reports
+`unknown` rather than failing. See [Authorization](#authorization).
+
 With `--target <name>` it instead reports a cross target's **provider
 preflight** — the host tools that target's provider needs (e.g. `tar`/`xz`/
 `rsync` for arm-gnu), each present or missing, with an install hint — resolving

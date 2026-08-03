@@ -116,6 +116,22 @@ class PackageKitProvisioner implements HostProvisioner {
     );
   }
 
+  /// Classify a transaction's error codes into a [ProvisionFailure].
+  ///
+  /// `notAuthorized` wins over anything else present: it is the cause, and the
+  /// rest are usually consequences of the transaction being refused.
+  static ProvisionFailure? _classify(List<PkErrorCode> errors) {
+    if (errors.isEmpty) return ProvisionFailure.other;
+    final codes = errors.map((e) => PkError.fromInt(e.code)).toSet();
+    if (codes.contains(PkError.notAuthorized)) {
+      return ProvisionFailure.notAuthorized;
+    }
+    if (codes.contains(PkError.packageNotFound)) {
+      return ProvisionFailure.unresolved;
+    }
+    return ProvisionFailure.other;
+  }
+
   @override
   Future<ProvisionResult> install(
     Set<String> names, {
@@ -134,6 +150,7 @@ class PackageKitProvisioner implements HostProvisioner {
         message:
             'No installable packages found for: '
             '${res.unresolved.join(", ")}',
+        kind: ProvisionFailure.unresolved,
       );
     }
 
@@ -149,8 +166,10 @@ class PackageKitProvisioner implements HostProvisioner {
         ),
       );
     });
-    final errors = <String>[];
-    final errSub = tx.errors.listen((e) => errors.add(e.details));
+    // Retain the codes, not just the text: PkErrorCode.code is the only stable
+    // signal here, since the message wording varies by backend.
+    final errors = <PkErrorCode>[];
+    final errSub = tx.errors.listen(errors.add);
 
     try {
       final result = await tx.result;
@@ -169,7 +188,19 @@ class PackageKitProvisioner implements HostProvisioner {
       return ProvisionResult(
         installed: const [],
         failed: toGet.toList(),
-        message: errors.isEmpty ? 'Install failed' : errors.join('; '),
+        message: errors.isEmpty
+            ? 'Install failed'
+            : errors.map((e) => e.details).join('; '),
+        kind: _classify(errors),
+      );
+    } on PkServiceUnavailableException catch (e) {
+      await sub.cancel();
+      await errSub.cancel();
+      return ProvisionResult(
+        installed: const [],
+        failed: toGet.toList(),
+        message: '$e',
+        kind: ProvisionFailure.daemonUnavailable,
       );
     } on Object catch (e) {
       await sub.cancel();
@@ -178,6 +209,7 @@ class PackageKitProvisioner implements HostProvisioner {
         installed: const [],
         failed: toGet.toList(),
         message: '$e',
+        kind: _classify(errors),
       );
     }
   }
