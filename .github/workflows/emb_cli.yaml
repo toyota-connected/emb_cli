@@ -231,6 +231,29 @@ jobs:
           });
           RULE
           sudo chmod 644 /etc/polkit-1/rules.d/49-emb-packagekit.rules
+          # polkit watches rules.d, but restarting removes a variable and is
+          # cheap. Sessions are not involved here, so nothing is disturbed.
+          sudo systemctl restart polkit
+          sleep 2
+
+      # Ask polkit directly before blaming emb. If pkcheck reports authorized
+      # and the install still fails, the fault is ours; if pkcheck reports
+      # otherwise, the rule did not apply and this prints the reason.
+      - name: 🔍 Verify polkit accepted the rule
+        run: |
+          echo "user: $(id)"
+          echo "--- rule ---"
+          sudo cat /etc/polkit-1/rules.d/49-emb-packagekit.rules
+          echo "--- polkit ---"
+          systemctl is-active polkit || true
+          pkaction --action-id org.freedesktop.packagekit.package-install \
+            --verbose || true
+          echo "--- pkcheck (no interaction; must not prompt) ---"
+          set +e
+          pkcheck --action-id org.freedesktop.packagekit.package-install \
+            --process $$ </dev/null
+          echo "pkcheck exit=$?"
+          set -e
 
       - name: ✅ Authorized install succeeds unattended
         run: |
