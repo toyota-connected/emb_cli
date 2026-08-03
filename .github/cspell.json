@@ -184,6 +184,7 @@
     "loginctl",
     "logind",
     "packagekitd",
-    "NONINTERACTIVE"
+    "NONINTERACTIVE",
+    "usermod"
   ]
 }
