@@ -185,6 +185,7 @@
     "logind",
     "packagekitd",
     "NONINTERACTIVE",
-    "usermod"
+    "usermod",
+    "debconf"
   ]
 }

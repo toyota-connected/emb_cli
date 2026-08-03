@@ -90,6 +90,13 @@ unattended install, remove, and update to every local administrator, with no
 authentication. Decide whether that is acceptable for your machine. Remove it
 with `sudo rm /etc/polkit-1/rules.d/49-emb-packagekit.rules`.
 
+The three actions listed are what `emb deps` and `emb setup` need. Other
+PackageKit operations map to their own actions with their own policies —
+check any of them with `pkaction --action-id <id> --verbose`. Notably
+`system-sources-refresh` (a cache refresh) needs no authorization at all from a
+login session but does without one, so a rule that works interactively can
+still leave an unattended run denied.
+
 **Escape hatch: run as root.** Works anywhere, but `emb` keeps caches and
 configuration under `$HOME`, and running as root leaves root-owned files there
 that you can no longer modify. Prefer the rule for anything repeated. Note that
@@ -479,9 +486,22 @@ authorization prompt.
 Interactive is the default in every context. Nothing about the environment
 changes it: `CI`, `GITHUB_ACTIONS` and similar variables are deliberately not
 consulted, because a mode that depends on ambient state is invisible in the
-command you typed. Set `EMB_NON_INTERACTIVE=1` to opt out once for a wrapper
-or a workflow-level `env:` block; an explicit `--interactive` still overrides
-it.
+command you typed.
+
+To opt out once — for a wrapper, or a workflow-level `env:` block — set either:
+
+| Variable | Notes |
+|---|---|
+| `EMB_NON_INTERACTIVE=1` | emb's own; outranks the one below |
+| `NONINTERACTIVE=1` | Homebrew's convention, honored for consistency |
+
+An explicit `--interactive` overrides both, and `EMB_NON_INTERACTIVE=0`
+re-enables prompting without disturbing a `NONINTERACTIVE` that other tools
+read.
+
+`DEBIAN_FRONTEND=noninteractive` is *not* consulted. It suppresses the debconf
+package-configuration prompts rather than authorization, and container images
+commonly set it globally for that unrelated reason.
 
 Non-interactive is not an authorization mechanism. It suppresses the prompt; it
 does not grant anything. See [Authorization](#authorization) for how to

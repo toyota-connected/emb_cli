@@ -35,6 +35,57 @@ void main() {
       expect(r.source, InteractivitySource.flag);
     });
 
+    group('NONINTERACTIVE, the shared convention', () {
+      test('is honored', () {
+        final r = Interactivity.resolve(
+          environment: const {'NONINTERACTIVE': '1'},
+        );
+        expect(r.interactive, isFalse);
+        expect(r.source, InteractivitySource.environment);
+        expect(r.describe(), contains('NONINTERACTIVE'));
+      });
+
+      test('is outranked by the emb-specific variable', () {
+        final r = Interactivity.resolve(
+          environment: const {
+            'EMB_NON_INTERACTIVE': '0',
+            'NONINTERACTIVE': '1',
+          },
+        );
+        expect(
+          r.interactive,
+          isTrue,
+          reason:
+              'opting back in to emb must not require unsetting the '
+              'shared variable that other tools read',
+        );
+        expect(r.variable, 'EMB_NON_INTERACTIVE');
+      });
+
+      test('an explicit flag still outranks both', () {
+        final r = Interactivity.resolve(
+          explicit: true,
+          environment: const {
+            'EMB_NON_INTERACTIVE': '1',
+            'NONINTERACTIVE': '1',
+          },
+        );
+        expect(r.interactive, isTrue);
+        expect(r.source, InteractivitySource.flag);
+      });
+
+      // DEBIAN_FRONTEND suppresses debconf's package-configuration prompts,
+      // not authorization, and container images set it globally for that
+      // unrelated reason. Honoring it would surprise.
+      test('DEBIAN_FRONTEND is not consulted', () {
+        final r = Interactivity.resolve(
+          environment: const {'DEBIAN_FRONTEND': 'noninteractive'},
+        );
+        expect(r.interactive, isTrue);
+        expect(r.source, InteractivitySource.fallback);
+      });
+    });
+
     // Regression guard: an earlier revision auto-detected CI and flipped the
     // default. Environment sniffing makes the mode depend on ambient state the
     // operator cannot see in the command they typed. See plan DR-2.
