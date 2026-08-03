@@ -1,5 +1,15 @@
 # Unreleased
 
+- fix: `extends:` now works on an installed `emb`. `dart install` produces a
+  standalone binary that carries no package data files, so `boards/` never
+  reached it and every board name failed with `Known boards: none`. The board
+  library is installed to `<data-home>/emb/boards` and resolved from there.
+- fix: an empty board registry no longer reports `unknown board "<name>"`,
+  which read as a typo and sent people to audit a correct manifest. It now says
+  the library was not found and lists every path tried.
+- feat: `emb boards list` (what is loaded, from which rung, with any version
+  skew) and `emb boards sync` (install the library for a pub.dev install, which
+  has no checkout to copy from).
 - feat: add `--[no-]interactive` to `deps`, `setup`, and `cross`, plus the
   `EMB_NON_INTERACTIVE` environment variable, and honor `NONINTERACTIVE=1`
   (Homebrew's convention) as a secondary. `DEBIAN_FRONTEND` is deliberately

@@ -537,6 +537,121 @@ cross:
     });
   });
 
+  // The bug this layer exists to fix: an AOT-compiled `emb` carries no package
+  // data files, so package_config and the script walk both miss and the
+  // registry comes back empty. The installed data dir is the rung that makes
+  // `extends:` work off a checkout.
+  group('CrossProjectResolver board library discovery', () {
+    late Directory tmp;
+
+    setUp(() => tmp = Directory.systemTemp.createTempSync('emb_boardsdir_'));
+    tearDown(() => tmp.deleteSync(recursive: true));
+
+    /// A data home containing one board, laid out as an install would write it.
+    Directory installedBoards() {
+      final d = Directory(p.join(tmp.path, 'data', 'emb', 'boards'))
+        ..createSync(recursive: true);
+      File(p.join(d.path, 'raspberry-pi.emb.yaml')).writeAsStringSync('''
+id: raspberry-pi
+type: board
+cross:
+  provider: arm-gnu
+  triple: aarch64-none-linux-gnu
+  targets:
+    rpi5-trixie:
+      toolchain_version: 15.2.rel1
+''');
+      return d;
+    }
+
+    File appExtending(String board) =>
+        File(p.join(tmp.path, 'app.emb.yaml'))..writeAsStringSync('''
+id: myapp
+cross:
+  targets:
+    x: {extends: $board}
+''');
+
+    test('rung 3: resolves from the installed data dir', () {
+      installedBoards();
+      final project = CrossProjectResolver(const ManifestLoader(), null, {
+        'HOME': tmp.path,
+        'XDG_DATA_HOME': p.join(tmp.path, 'data'),
+      }).resolve(appExtending('rpi5-trixie').path)!;
+      expect(project.targets['x']!.cross['triple'], 'aarch64-none-linux-gnu');
+    });
+
+    test('EMB_BOARDS_DIR outranks the installed data dir', () {
+      installedBoards();
+      final other = Directory(p.join(tmp.path, 'other'))..createSync();
+      File(p.join(other.path, 'b.emb.yaml')).writeAsStringSync('''
+id: other
+type: board
+cross:
+  provider: arm-gnu
+  triple: OVERRIDE-TRIPLE
+  targets:
+    rpi5-trixie: {}
+''');
+      final project = CrossProjectResolver(const ManifestLoader(), null, {
+        'HOME': tmp.path,
+        'XDG_DATA_HOME': p.join(tmp.path, 'data'),
+        'EMB_BOARDS_DIR': other.path,
+      }).resolve(appExtending('rpi5-trixie').path)!;
+      expect(project.targets['x']!.cross['triple'], 'OVERRIDE-TRIPLE');
+    });
+
+    test('an empty registry says the library is missing, not the name', () {
+      // Regression guard for the reported bug: `Known boards: none.` reads as a
+      // typo'd board name and sends people to audit a manifest that is fine.
+      //
+      // Driven through the override rung: under `dart test` package_config is
+      // set, so rung 4 finds the checkout's own boards/ and the registry is
+      // never genuinely empty here. Pointing at an empty directory reproduces
+      // the state an installed emb is in without faking the resolver.
+      final empty = Directory(p.join(tmp.path, 'empty'))..createSync();
+      expect(
+        () => CrossProjectResolver(
+          const ManifestLoader(),
+          empty,
+        ).resolve(appExtending('rpi5-trixie').path),
+        throwsA(
+          isA<CrossProjectException>().having(
+            (e) => e.message,
+            'message',
+            allOf(
+              contains('board library not found'),
+              contains('Looked in:'),
+              contains('emb boards sync'),
+              isNot(contains('unknown board')),
+            ),
+          ),
+        ),
+      );
+    });
+
+    test('a real miss against a loaded library still names the board', () {
+      installedBoards();
+      expect(
+        () => CrossProjectResolver(const ManifestLoader(), null, {
+          'HOME': tmp.path,
+          'XDG_DATA_HOME': p.join(tmp.path, 'data'),
+        }).resolve(appExtending('no-such-board').path),
+        throwsA(
+          isA<CrossProjectException>().having(
+            (e) => e.message,
+            'message',
+            allOf(
+              contains('unknown board "no-such-board"'),
+              contains('rpi5-trixie'),
+              isNot(contains('not found')),
+            ),
+          ),
+        ),
+      );
+    });
+  });
+
   group('selectTarget', () {
     CrossProject project({String? defaultTarget}) => CrossProject(
       id: 'proj',
