@@ -19,3 +19,7 @@ coverage/
 # Python tooling (tool/)
 __pycache__/
 *.pyc
+
+# Marp render of training/emb-training.md — built by CI, not checked in.
+training/emb-training.html
+training/emb-training.pptx
