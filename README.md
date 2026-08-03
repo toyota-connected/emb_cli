@@ -499,7 +499,7 @@ An explicit `--interactive` overrides both, and `EMB_NON_INTERACTIVE=0`
 re-enables prompting without disturbing a `NONINTERACTIVE` that other tools
 read.
 
-`DEBIAN_FRONTEND=noninteractive` is *not* consulted. It suppresses debconf's
+`DEBIAN_FRONTEND=noninteractive` is *not* consulted. It suppresses the debconf
 package-configuration prompts rather than authorization, and container images
 commonly set it globally for that unrelated reason.
 

@@ -3,7 +3,7 @@
 - feat: add `--[no-]interactive` to `deps`, `setup`, and `cross`, plus the
   `EMB_NON_INTERACTIVE` environment variable, and honor `NONINTERACTIVE=1`
   (Homebrew's convention) as a secondary. `DEBIAN_FRONTEND` is deliberately
-  not consulted: it suppresses debconf's package-configuration prompts rather
+  not consulted: it suppresses the debconf package-configuration prompts rather
   than authorization, and images set it globally for that unrelated reason. Interactive is the unconditional
   default; nothing about the environment changes it, and `CI`-style variables
   are deliberately not consulted. Requires `packagekit_dart` 0.4.0, which sends

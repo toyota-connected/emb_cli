@@ -77,8 +77,8 @@ class Interactivity {
   ///
   /// There is no cross-distro standard for "do not prompt for authorization".
   /// `DEBIAN_FRONTEND=noninteractive` is the best-known neighbor but means
-  /// something else — it suppresses debconf's *package configuration* prompts,
-  /// not authorization — and container images set it globally for that
+  /// something else — it suppresses the debconf *package configuration*
+  /// prompts, not authorization — and container images set it globally for that
   /// unrelated reason, so it is deliberately not consulted. `NONINTERACTIVE`
   /// is Homebrew's, and emb already sets it on the brew backend when running
   /// unattended; honoring it on the way in keeps that symmetric.
