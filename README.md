@@ -922,7 +922,7 @@ cycles are rejected.
 
 `emb` is installed as a standalone compiled binary, which carries no package
 data files — so the board library is installed alongside it rather than
-travelling inside it. It is looked up in this order, **first hit wins** (each
+traveling inside it. It is looked up in this order, **first hit wins** (each
 rung is a whole directory; they are never merged, so a stale installed board
 can't silently shadow a checkout edit):
 
