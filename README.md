@@ -80,6 +80,11 @@ passwordless `sudo` is not the same thing — it is often granted through a
 installed and changes nothing. Check with `id -nG`, and add yourself with
 `sudo usermod -aG wheel "$(id -un)"` (or `sudo` on Debian/Ubuntu) if needed.
 
+`id -nG` is the right check because it reports the groups your *processes*
+carry. `usermod` only edits `/etc/group`; a running session keeps the groups it
+was created with, so log out and back in afterwards — or prefix a single
+command with `sg wheel -c '…'` to test without doing so.
+
 This is a persistent change to system authorization policy: it grants
 unattended install, remove, and update to every local administrator, with no
 authentication. Decide whether that is acceptable for your machine. Remove it
