@@ -552,6 +552,14 @@ class CrossProjectResolver {
   }
 
   /// Board name -> hardware `cross:` map, loaded once from the board library.
+  /// The board names `extends:` can resolve, in load order.
+  ///
+  /// Loads through the same rungs a real resolution would, so `emb boards
+  /// list` reports what `extends:` actually sees rather than what a chosen
+  /// directory happens to contain. Read [boardsProvenance] afterwards for
+  /// which rung won.
+  List<String> boardNames() => _boardRegistry().keys.toList();
+
   Map<String, Map<String, dynamic>> _boardRegistry() {
     if (_boards case final cached?) return cached;
     final out = <String, Map<String, dynamic>>{};

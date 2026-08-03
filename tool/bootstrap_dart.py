@@ -31,6 +31,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import shutil
 import stat
 import subprocess
@@ -188,13 +189,81 @@ def install_bin_dir(os_name):
     return os.path.join(base, "install", "bin")
 
 
+def boards_data_dir(os_name):
+    """Where the board library is installed: <data-home>/emb/boards.
+
+    Must agree with resolveBoardsDir() in lib/src/cross/boards_dir.dart --
+    these are the two halves of one contract, and a mismatch reads to the user
+    as "the install silently did nothing".
+
+    Note this is the *data* home, not the state home install_bin_dir() uses:
+    the boards are installed content, and `emb cache gc` must never be able to
+    reclaim them.
+    """
+    if os_name == "windows":
+        base = os.environ.get("LOCALAPPDATA") or os.path.join(
+            os.path.expanduser("~"), "AppData", "Local")
+    elif os_name == "macos":
+        base = os.path.join(os.path.expanduser("~"),
+                            "Library", "Application Support")
+    else:
+        base = os.environ.get("XDG_DATA_HOME") or os.path.join(
+            os.path.expanduser("~"), ".local", "share")
+    return os.path.join(base, "emb", "boards")
+
+
+def package_version(root):
+    """The `packageVersion` constant from lib/src/version.dart, or None."""
+    path = os.path.join(root, "lib", "src", "version.dart")
+    try:
+        with open(path, "r") as f:
+            m = re.search(r"packageVersion\s*=\s*'([^']+)'", f.read())
+            return m.group(1) if m else None
+    except OSError:
+        return None
+
+
+def install_boards(root, os_name):
+    """Copy <root>/boards/*.emb.yaml into the data dir, with a version stamp.
+
+    `dart install` AOT-compiles a standalone binary that carries no package
+    data files, so boards/ never reaches the installed emb on its own. Without
+    this step `extends:` fails for every board.
+    """
+    src = os.path.join(root, "boards")
+    if not os.path.isdir(src):
+        log("no boards/ in %s -- skipping board library" % root)
+        return
+    names = [n for n in sorted(os.listdir(src)) if n.endswith(".emb.yaml")]
+    if not names:
+        log("boards/ is empty -- skipping board library")
+        return
+
+    dst = boards_data_dir(os_name)
+    try:
+        os.makedirs(dst, exist_ok=True)
+        for n in names:
+            shutil.copy2(os.path.join(src, n), os.path.join(dst, n))
+        version = package_version(root)
+        if version:
+            with open(os.path.join(dst, ".emb-boards-version"), "w") as f:
+                f.write(version + "\n")
+    except OSError as e:
+        # A failed board copy must not fail the install: emb is usable without
+        # boards for everything except `extends:`, and EMB_BOARDS_DIR remains.
+        log("WARNING: could not install the board library to %s: %s" % (dst, e))
+        return
+    log("installed %d board file(s): %s" % (len(names), dst))
+
+
 def install(dart, bin_dir, target, os_name):
     env = dict(os.environ)
     env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
     # A local dir installs from source (abspath -> unambiguously a path);
     # anything else passes through as a pub.dev spec, e.g. `emb` or
     # `emb@^1.0.0` for the published package.
-    if os.path.isdir(target):
+    is_local = os.path.isdir(target)
+    if is_local:
         target = os.path.abspath(target)
     log("installing " + target)
     # Keep our stdout clean (only the bin dir) -> send install output to stderr.
@@ -202,6 +271,13 @@ def install(dart, bin_dir, target, os_name):
                            stdout=sys.stderr)
     if code != 0:
         sys.exit("`dart install` failed (%d)" % code)
+    if is_local:
+        install_boards(target, os_name)
+    else:
+        # A pub.dev install has no checkout to copy from; `emb boards sync`
+        # fetches the library for that path.
+        log("installed from pub.dev -- run `emb boards sync` to install the "
+            "board library that `extends:` needs")
     log("done. Ensure these are on PATH:\n  %s\n  %s"
         % (bin_dir, install_bin_dir(os_name)))
 

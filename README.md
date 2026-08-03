@@ -872,10 +872,10 @@ emb cross . --target rpi5 --build
 
 #### Layered manifests: `extends` (board → project → app)
 
-emb ships a **board library** — hardware/OS definitions for known boards under
-its own `boards/` directory (e.g. `rpi5-bookworm`: triple, toolchain version,
-sysroot image, partition, cpu tuning, the base GUI stack). A manifest pulls one
-in with `cross.extends` so a project never re-spells hardware facts:
+emb ships a **board library** — hardware/OS definitions for known boards
+(e.g. `rpi5-bookworm`: triple, toolchain version, sysroot image, partition, cpu
+tuning, the base GUI stack). A manifest pulls one in with `cross.extends` so a
+project never re-spells hardware facts:
 
 ```yaml
 # ivi-homescreen/.emb/raspberry-pi.emb.yaml — the PROJECT layer
@@ -916,8 +916,40 @@ complete statement); `sysroot.dev_packages` and `augment` **union** (each layer
 adds to the stack below it; an `augment` entry for a `pkg` already present
 replaces it). `<dir>` is resolved relative to the extending manifest's project
 root (the `.emb/` parent, else the file's directory); cross-project reference
-cycles are rejected. The board library location can be overridden with
-`EMB_BOARDS_DIR` (it otherwise ships with emb).
+cycles are rejected.
+
+##### Where the board library lives
+
+`emb` is installed as a standalone compiled binary, which carries no package
+data files — so the board library is installed alongside it rather than
+travelling inside it. It is looked up in this order, **first hit wins** (each
+rung is a whole directory; they are never merged, so a stale installed board
+can't silently shadow a checkout edit):
+
+| # | Location | Applies to |
+|---|---|---|
+| 1 | `$EMB_BOARDS_DIR` | your override — used even if absent, so a wrong path fails loudly |
+| 2 | `$XDG_DATA_HOME/emb/boards`, else `~/.local/share/emb/boards` | an installed emb (Linux) |
+| 2 | `~/Library/Application Support/emb/boards` | an installed emb (macOS) |
+| 2 | `%LOCALAPPDATA%\emb\boards` | an installed emb (Windows) |
+| 3 | the package's `boards/` | `dart run` from a checkout |
+
+`./bootstrap.sh` (and `bootstrap.ps1`) install the library as part of
+`--install .`. For any other install path — notably `dart install emb_cli` from
+pub.dev, where nothing runs afterwards to stage files — fetch it explicitly:
+
+```sh
+emb boards sync              # the tag matching this emb
+emb boards sync --ref main   # or an explicit ref
+emb boards list              # what's loaded, and which rung it came from
+```
+
+`emb boards list` also reports the version stamp written at install time. A
+stamp from a different emb is reported, not enforced — a hand-maintained
+`EMB_BOARDS_DIR` legitimately has none, and that path should never be blocked.
+
+If `extends:` reports that the board library was not found, `emb boards list`
+shows every path that was tried.
 
 #### Reproducible builds (`emb.lock`)
 
