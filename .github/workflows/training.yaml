@@ -1,0 +1,69 @@
+name: training
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/training.yaml"
+      - "training/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/training.yaml"
+      - "training/**"
+
+jobs:
+  # Render the deck from its Marp source.
+  #
+  # The HTML is deliberately not checked in. It was previously, and drifted
+  # silently -- the committed render went three weeks and two source changes
+  # out of date, because regenerating needs a Node toolchain that a Dart
+  # contributor has no other reason to install. Building it here removes the
+  # class of problem: the source is the only thing to review, and the render
+  # is always derived from the commit it is published for.
+  render:
+    name: render deck
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📚 Git Checkout
+        uses: actions/checkout@v7
+
+      - name: 🟢 Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # HTML only. The pptx exporter drives headless Chromium, which is a much
+      # heavier dependency for an artifact nobody consumes from CI; render that
+      # locally when it is needed for a talk.
+      - name: 🎞️ Render HTML
+        working-directory: training
+        run: |
+          npx --yes @marp-team/marp-cli@v4 emb-training.md \
+            --theme emb.css \
+            --allow-local-files \
+            -o emb-training.html
+
+      - name: 🔍 Sanity-check the render
+        working-directory: training
+        run: |
+          test -s emb-training.html || {
+            echo "::error::render produced no output"; exit 1; }
+          # Marp emits one <section> per slide; a render that silently lost the
+          # deck body would still be non-empty, so assert it has slides.
+          slides=$(grep -c "<section" emb-training.html || true)
+          echo "slides rendered: $slides"
+          [ "$slides" -ge 10 ] || {
+            echo "::error::only $slides slides rendered; expected the full deck"
+            exit 1; }
+
+      - name: 📤 Upload deck
+        uses: actions/upload-artifact@v4
+        with:
+          name: emb-training-deck
+          path: training/emb-training.html
+          if-no-files-found: error
