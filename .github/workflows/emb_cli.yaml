@@ -217,6 +217,16 @@ jobs:
       # `sudo`, not `wheel`.
       - name: 🔑 Authorize via polkit rule
         run: |
+          # GitHub grants the runner passwordless sudo through a sudoers file,
+          # not group membership, so it is in neither `sudo` nor `wheel` and
+          # the documented rule would not match it. Put it in the group the
+          # rule targets, so this job exercises the rule users are actually
+          # told to install rather than a CI-only variant. polkit resolves
+          # group membership from nss by uid, so this applies immediately
+          # without re-login.
+          sudo usermod -aG sudo "$(id -un)"
+          getent group sudo
+
           sudo tee /etc/polkit-1/rules.d/49-emb-packagekit.rules >/dev/null <<'RULE'
           polkit.addRule(function(action, subject) {
               var allowed = [

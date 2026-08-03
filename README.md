@@ -74,6 +74,12 @@ polkit.addRule(function(action, subject) {
 });
 ```
 
+The rule only applies if you are actually in one of those groups. Having
+passwordless `sudo` is not the same thing — it is often granted through a
+`sudoers` file with no group membership at all, in which case the rule looks
+installed and changes nothing. Check with `id -nG`, and add yourself with
+`sudo usermod -aG wheel "$(id -un)"` (or `sudo` on Debian/Ubuntu) if needed.
+
 This is a persistent change to system authorization policy: it grants
 unattended install, remove, and update to every local administrator, with no
 authentication. Decide whether that is acceptable for your machine. Remove it

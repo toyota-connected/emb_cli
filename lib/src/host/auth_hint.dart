@@ -25,9 +25,13 @@ List<String> authFailureHint(HostInfo host, {required bool interactive}) {
     '',
     ..._ruleLines,
     '',
-    'That grants unattended install/remove/update to everyone in wheel,',
-    'with no authentication — a persistent change to system policy. It is',
-    'scoped to three actions rather than all of',
+    'The rule only applies if you are in one of those groups — having',
+    'passwordless sudo is not the same thing. Check with:',
+    '      id -nG',
+    '',
+    'That grants unattended install/remove/update to every local',
+    'administrator, with no authentication — a persistent change to system',
+    'policy. It is scoped to three actions rather than all of',
     'org.freedesktop.packagekit.* on purpose.',
   ];
 }

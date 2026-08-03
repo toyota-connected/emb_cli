@@ -72,6 +72,15 @@ void main() {
       expect(text, contains('isInGroup("sudo")'));
     });
 
+    // Installing the rule is not sufficient: passwordless sudo is commonly
+    // granted through a sudoers file with no group membership, and then the
+    // rule looks installed and changes nothing. CI hit exactly this.
+    test('says the rule only applies if you are in the group', () {
+      final text = authFailureHint(_host(), interactive: true).join('\n');
+      expect(text, contains('id -nG'));
+      expect(text, contains('passwordless sudo is not the same'));
+    });
+
     test('states the tradeoff rather than just handing over a rule', () {
       final text = authFailureHint(_host(), interactive: true).join('\n');
       expect(text, contains('wheel'));
