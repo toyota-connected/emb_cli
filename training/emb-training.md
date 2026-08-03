@@ -116,7 +116,7 @@ Global: `-v`/`-vv` verbose · `-q` quiet · `--version`.
 Runs four **skippable** phases → **deps → repos → SDK → engine** → writes `setup_env.sh`.
 
 ```sh
-emb setup --config ../configs --yes            # everything, non-interactive
+emb setup --config ../configs --yes            # everything, no confirmation
 emb setup --config ../configs --skip-deps --skip-sync   # SDK + engine only
 
 . ./setup_env.sh                               # load the env it wrote
@@ -133,7 +133,7 @@ emb setup --config ../configs --skip-deps --skip-sync   # SDK + engine only
 
 | Phase | Command | What it does |
 |---|---|---|
-| **deps** | `emb deps --dry-run` / `--yes` | Coalesce host deps across manifests, install the **missing** union in one transaction (`WhatProvides`-mapped) |
+| **deps** | `emb deps --dry-run` / `--yes` / `--no-interactive` | Coalesce host deps across manifests, install the **missing** union in one transaction (`WhatProvides`-mapped). `--yes` skips emb's prompt; `--no-interactive` stops the package manager prompting for authorization (CI) |
 | **sync** | `emb sync -j 8` | Clone/update source repos into `<workspace>/app` (bounded concurrency) |
 | **flutter** | `emb flutter --flutter-version 3.44.2` | Git-clone the SDK into `<workspace>/flutter`; read engine commit |
 | **engine** | `emb engine --arch arm64 --mode release` | Fetch prebuilt engine artifacts (auto fetch-else-build) |

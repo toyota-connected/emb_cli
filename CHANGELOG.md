@@ -28,7 +28,13 @@
   authorization prompt can appear first, and an animating spinner drew over it
   and made the password prompt unreadable.
 - docs: document authorization, including why polkit cannot prompt under WSL
-  and the narrowly scoped polkit rule that works there.
+  and the narrowly scoped polkit rule that works there, plus what CI needs.
+- fix: the documented polkit rule now matches both `wheel` (Fedora/RHEL/Arch)
+  and `sudo` (Debian/Ubuntu). A `wheel`-only rule silently does nothing on
+  Debian, which is hard to diagnose because the rule looks installed.
+- test: CI job exercising authorization against a real PackageKit daemon —
+  refusal with remediation before the rule is installed, unattended success
+  after, and `EMB_NON_INTERACTIVE` equivalence.
 
 # 0.1.1
 

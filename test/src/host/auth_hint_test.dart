@@ -63,6 +63,15 @@ void main() {
       );
     });
 
+    // The admin group differs by distro: wheel on Fedora/RHEL/Arch, sudo on
+    // Debian/Ubuntu. A wheel-only rule silently does nothing on Debian, which
+    // is the harder failure to diagnose because the rule looks installed.
+    test('the rule covers both admin group conventions', () {
+      final text = authFailureHint(_host(), interactive: true).join('\n');
+      expect(text, contains('isInGroup("wheel")'));
+      expect(text, contains('isInGroup("sudo")'));
+    });
+
     test('states the tradeoff rather than just handing over a rule', () {
       final text = authFailureHint(_host(), interactive: true).join('\n');
       expect(text, contains('wheel'));

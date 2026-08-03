@@ -54,6 +54,9 @@ const _nonInteractiveLines = <String>[
   'ahead of time.',
 ];
 
+// "wheel" on Fedora/RHEL/Arch, "sudo" on Debian/Ubuntu. Checking both keeps
+// one snippet correct everywhere; each is that distro's local admin group, so
+// naming both grants nothing extra on either.
 const _ruleLines = <String>[
   '  # /etc/polkit-1/rules.d/49-emb-packagekit.rules',
   '  polkit.addRule(function(action, subject) {',
@@ -63,7 +66,8 @@ const _ruleLines = <String>[
   '          "org.freedesktop.packagekit.system-update"',
   '      ];',
   '      if (allowed.indexOf(action.id) !== -1 &&',
-  '          subject.isInGroup("wheel")) {',
+  '          (subject.isInGroup("wheel") ||',
+  '           subject.isInGroup("sudo"))) {',
   '          return polkit.Result.YES;',
   '      }',
   '  });',

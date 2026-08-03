@@ -66,14 +66,16 @@ polkit.addRule(function(action, subject) {
         "org.freedesktop.packagekit.package-remove",
         "org.freedesktop.packagekit.system-update"
     ];
-    if (allowed.indexOf(action.id) !== -1 && subject.isInGroup("wheel")) {
+    // "wheel" on Fedora/RHEL/Arch, "sudo" on Debian/Ubuntu.
+    if (allowed.indexOf(action.id) !== -1 &&
+        (subject.isInGroup("wheel") || subject.isInGroup("sudo"))) {
         return polkit.Result.YES;
     }
 });
 ```
 
 This is a persistent change to system authorization policy: it grants
-unattended install, remove, and update to everyone in `wheel`, with no
+unattended install, remove, and update to every local administrator, with no
 authentication. Decide whether that is acceptable for your machine. Remove it
 with `sudo rm /etc/polkit-1/rules.d/49-emb-packagekit.rules`.
 
@@ -86,6 +88,29 @@ path:
 ```sh
 sudo "$(command -v emb)" deps --config ../configs --no-interactive
 ```
+
+#### CI
+
+Two separate things, and conflating them is the usual cause of a confusing CI
+failure:
+
+- **Suppress the prompt.** Pass `--no-interactive`, or set
+  `EMB_NON_INTERACTIVE=1` once at the workflow `env:` level. Nothing is
+  inferred from `CI`, `GITHUB_ACTIONS` or similar — the mode must be stated.
+- **Be authorized.** Non-interactive suppresses the prompt; it does not grant
+  anything. Without authorization the run still fails, just faster and with a
+  clearer message.
+
+On GitHub-hosted runners the steps run as a non-root user with passwordless
+sudo and no logind session, so a prompt could never be answered. Install the
+rule above in a setup step — that keeps the CI path identical to the developer
+path. Running the whole job under `sudo` also works, but leaves root-owned
+files in the runner's home.
+
+In containers you are usually already root and there is often no polkit daemon
+— frequently no PackageKit at all. Provisioning with the distro package
+manager directly (`apt-get install …`) is the right thing there, and is what
+this repository's own workflows do for their build dependencies.
 
 #### WSL
 
