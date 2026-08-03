@@ -1,3 +1,41 @@
+# Unreleased
+
+- feat: add `--[no-]interactive` to `deps`, `setup`, and `cross`, plus the
+  `EMB_NON_INTERACTIVE` environment variable. Interactive is the unconditional
+  default; nothing about the environment changes it, and `CI`-style variables
+  are deliberately not consulted. Requires `packagekit_dart` 0.4.0, which sends
+  the polkit `interactive` hint — without it no `emb deps` could install a
+  package on a stock Fedora/openSUSE desktop unless the caller was root or
+  covered by a permissive polkit rule.
+- feat: decouple `--yes` from interactivity. `--yes` skips emb's own
+  confirmation prompt only; `--no-interactive` implies `--yes` because nobody
+  is there to answer, but the converse does not hold.
+- feat: `brew` sets `NONINTERACTIVE=1` when non-interactive. WinGet accepts the
+  flag for interface parity but has no equivalent to apply it to.
+- feat: classify install failures. `ProvisionResult.kind` carries a typed
+  `ProvisionFailure` (`notAuthorized`, `unresolved`, `daemonUnavailable`,
+  `other`) derived from the backend's error codes, so the command layer no
+  longer string-matches error text that varies by backend.
+- feat: on an authorization failure, print remediation instead of a raw
+  exception. The advice branches on the interactivity mode, because the daemon
+  reports the same error whether it could not prompt or prompted and was
+  refused.
+- feat: `emb doctor` reports whether you are authorized to install host
+  packages. Its other checks only exercise read-only operations, which need no
+  authorization, so a reachable backend was previously reported green even when
+  `emb deps` could not install anything. The probe never prompts.
+- fix: defer the install spinner until the backend reports progress. An
+  authorization prompt can appear first, and an animating spinner drew over it
+  and made the password prompt unreadable.
+- docs: document authorization, including why polkit cannot prompt under WSL
+  and the narrowly scoped polkit rule that works there, plus what CI needs.
+- fix: the documented polkit rule now matches both `wheel` (Fedora/RHEL/Arch)
+  and `sudo` (Debian/Ubuntu). A `wheel`-only rule silently does nothing on
+  Debian, which is hard to diagnose because the rule looks installed.
+- test: CI job exercising authorization against a real PackageKit daemon —
+  refusal with remediation before the rule is installed, unattended success
+  after, and `EMB_NON_INTERACTIVE` equivalence.
+
 # 0.1.1
 
 - fix: locate the PackageKit native bridge (`libpackagekit_nc.so`) when emb is

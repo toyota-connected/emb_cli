@@ -2,10 +2,13 @@ import 'dart:io';
 
 import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/deps/dependency_resolver.dart';
+import 'package:emb_cli/src/host/auth_hint.dart';
 import 'package:emb_cli/src/host/host_info.dart';
+import 'package:emb_cli/src/host/interactivity.dart';
 import 'package:emb_cli/src/manifest/emb_manifest.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
 import 'package:emb_cli/src/pkg/host_provisioner.dart';
+import 'package:emb_cli/src/pkg/provision_models.dart';
 import 'package:mason_logger/mason_logger.dart';
 
 /// {@template deps_command}
@@ -17,11 +20,14 @@ class DepsCommand extends Command<int> {
   DepsCommand({
     required Logger logger,
     HostInfo? host,
-    HostProvisioner Function(HostInfo host)? provisionerFactory,
+    HostProvisioner Function(HostInfo host, {bool interactive})?
+    provisionerFactory,
     ManifestLoader loader = const ManifestLoader(),
+    Map<String, String>? environment,
   }) : _logger = logger,
        _host = host,
        _loader = loader,
+       _environment = environment ?? Platform.environment,
        _provisionerFactory = provisionerFactory ?? HostProvisioner.forHost {
     argParser
       ..addMultiOption(
@@ -57,15 +63,26 @@ class DepsCommand extends Command<int> {
       ..addFlag(
         'yes',
         abbr: 'y',
-        help: 'Skip the confirmation prompt (for CI).',
+        help: 'Skip the confirmation prompt.',
         negatable: false,
+      )
+      // Tri-state on purpose: `null` means "unset", which lets an explicit
+      // --interactive outrank EMB_NON_INTERACTIVE. See Interactivity.resolve.
+      ..addFlag(
+        'interactive',
+        help:
+            'Allow the system package manager to prompt for authorization. '
+            'On by default; pass --no-interactive for unattended runs.',
+        defaultsTo: null,
       );
   }
 
   final Logger _logger;
   final HostInfo? _host;
   final ManifestLoader _loader;
-  final HostProvisioner Function(HostInfo host) _provisionerFactory;
+  final Map<String, String> _environment;
+  final HostProvisioner Function(HostInfo host, {bool interactive})
+  _provisionerFactory;
 
   @override
   String get description =>
@@ -123,7 +140,18 @@ class DepsCommand extends Command<int> {
       return ExitCode.success.code;
     }
 
-    final provisioner = _provisionerFactory(host);
+    final interactivity = Interactivity.resolve(
+      explicit: args.wasParsed('interactive')
+          ? args['interactive'] as bool
+          : null,
+      environment: _environment,
+    );
+    _logger.detail('interactivity: ${interactivity.describe()}');
+
+    final provisioner = _provisionerFactory(
+      host,
+      interactive: interactivity.interactive,
+    );
     try {
       if (!await provisioner.isAvailable()) {
         _logger.err('Package backend "${provisioner.name}" is not available.');
@@ -182,7 +210,10 @@ class DepsCommand extends Command<int> {
         '${filtered.missing.join(", ")}',
       );
 
-      if (!(args['yes'] as bool)) {
+      // --no-interactive implies --yes: there is nobody to answer. The
+      // converse must not hold -- --yes is about the operator's patience,
+      // interactivity is about what the environment can do.
+      if (!(args['yes'] as bool) && interactivity.interactive) {
         final proceed = _logger.confirm(
           'Install ${filtered.missing.length} package(s)?',
           defaultValue: true,
@@ -194,21 +225,39 @@ class DepsCommand extends Command<int> {
       }
 
       // ── Install (single transaction) ────────────────────────────────────
-      final progress = _logger.progress(
-        'Installing ${filtered.missing.length} package(s)',
-      );
+      //
+      // An authorization prompt can appear before the first progress event. A
+      // spinner started now would animate over it and make the password prompt
+      // unreadable -- we have watched exactly that happen to `pkcon`. Defer
+      // the spinner until the backend reports progress, which only happens
+      // once the transaction is authorized and actually running.
+      final count = filtered.missing.length;
+      _logger.info('Installing $count package(s)…');
+      Progress? progress;
       final result = await provisioner.install(
         filtered.missing.toSet(),
-        onProgress: (p) => progress.update(
-          'Installing ${p.label}${p.percent != null ? " (${p.percent}%)" : ""}',
-        ),
+        onProgress: (p) {
+          final pct = p.percent != null ? ' (${p.percent}%)' : '';
+          final line = 'Installing ${p.label}$pct';
+          (progress ??= _logger.progress(line)).update(line);
+        },
       );
       if (result.success) {
-        progress.complete('Installed ${result.installed.length} package(s)');
+        final done = 'Installed ${result.installed.length} package(s)';
+        progress == null ? _logger.success(done) : progress!.complete(done);
         return ExitCode.success.code;
       }
-      progress.fail('Install failed');
+      progress?.fail('Install failed');
+      if (progress == null) _logger.err('Install failed');
       if (result.message != null) _logger.err(result.message);
+      if (result.kind == ProvisionFailure.notAuthorized) {
+        for (final line in authFailureHint(
+          host,
+          interactive: interactivity.interactive,
+        )) {
+          _logger.info(line);
+        }
+      }
       return ExitCode.software.code;
     } finally {
       await provisioner.dispose();

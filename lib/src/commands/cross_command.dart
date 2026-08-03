@@ -35,6 +35,7 @@ import 'package:emb_cli/src/cross/runnable_bundle.dart';
 import 'package:emb_cli/src/cross/tarball_packager.dart';
 import 'package:emb_cli/src/engine/engine_artifacts.dart';
 import 'package:emb_cli/src/host/host_info.dart';
+import 'package:emb_cli/src/host/interactivity.dart';
 import 'package:emb_cli/src/host/preflight.dart';
 import 'package:emb_cli/src/json_output.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
@@ -62,7 +63,9 @@ class CrossCommand extends Command<int> {
     BundleBuilder Function(Workspace ws)? bundleFactory,
     EngineArtifacts Function(Workspace ws)? engineFactory,
     ProcessRunner? processRunner,
+    Map<String, String>? environment,
   }) : _logger = logger,
+       _environment = environment ?? Platform.environment,
        _host = host,
        _project = CrossProjectResolver(loader),
        _aotFactoryInjected = aotFactory,
@@ -280,6 +283,14 @@ class CrossCommand extends Command<int> {
         negatable: false,
       )
       ..addFlag(
+        'interactive',
+        help:
+            'Allow the system package manager to prompt for authorization '
+            'when --install-deps is used. On by default; pass '
+            '--no-interactive for unattended runs.',
+        defaultsTo: null,
+      )
+      ..addFlag(
         'dockerfile',
         help:
             'Resolve, then emit a Dockerfile (+ .dockerignore) that bakes the '
@@ -332,6 +343,7 @@ class CrossCommand extends Command<int> {
   }
 
   final Logger _logger;
+  final Map<String, String> _environment;
   final HostInfo? _host;
   final CrossProjectResolver _project;
   final AotBuilder Function(Workspace ws, HostInfo host)? _aotFactoryInjected;
@@ -557,7 +569,19 @@ class CrossCommand extends Command<int> {
     final missing = await _preflight.missingTools(provider.preflightTools);
     if (missing.isNotEmpty) {
       if (args['install-deps'] == true) {
-        if (!await _preflight.install(host, provider.name, missing)) {
+        final interactivity = Interactivity.resolve(
+          explicit: args.wasParsed('interactive')
+              ? args['interactive'] as bool
+              : null,
+          environment: _environment,
+        );
+        _logger.detail('interactivity: ${interactivity.describe()}');
+        if (!await _preflight.install(
+          host,
+          provider.name,
+          missing,
+          interactive: interactivity.interactive,
+        )) {
           return ExitCode.unavailable.code;
         }
       } else {

@@ -4,6 +4,7 @@
 // those backends not being resolvable off their own OS. Selecting and
 // constructing every backend here keeps that guarantee under test.
 import 'package:emb_cli/src/host/host_info.dart';
+import 'package:emb_cli/src/pkg/_platform/winget_provisioner.dart';
 import 'package:emb_cli/src/pkg/host_provisioner.dart';
 import 'package:test/test.dart';
 
@@ -45,5 +46,40 @@ void main() {
         }
       },
     );
+
+    // The interactivity flag must not silently no-op its way out of one
+    // backend's interface: every backend accepts it in both states, even
+    // where the underlying tool exposes no equivalent (WinGet). Without this,
+    // parity drifts unnoticed because CI only exercises Linux.
+    test('every backend accepts the interactive flag in both states', () {
+      for (final os in HostOs.values) {
+        for (final interactive in const [true, false]) {
+          expect(
+            () => HostProvisioner.forHost(_host(os), interactive: interactive),
+            returnsNormally,
+            reason: '${os.name} must accept interactive: $interactive',
+          );
+        }
+      }
+    });
+
+    test('interactivity does not change backend selection', () {
+      for (final os in HostOs.values) {
+        expect(
+          HostProvisioner.forHost(_host(os), interactive: false).name,
+          HostProvisioner.forHost(_host(os)).name,
+        );
+      }
+    });
+
+    test('defaults to interactive', () {
+      // Guards the default at the selection boundary, so a future signature
+      // change cannot quietly make unattended the default.
+      expect(
+        (HostProvisioner.forHost(_host(HostOs.windows)) as WingetProvisioner)
+            .interactive,
+        isTrue,
+      );
+    });
   });
 }

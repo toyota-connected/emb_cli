@@ -136,3 +136,192 @@ jobs:
         run: |
           Invoke-Expression (.\bootstrap.ps1 --shellenv)
           emb --version
+
+  # Exercise the polkit authorization path against a real PackageKit daemon.
+  #
+  # The rest of the suite mocks the provisioner, so nothing else proves that
+  # `--no-interactive` actually reaches the daemon, or that a denial is
+  # reported as a denial. GitHub runners are a good fixture for this: the
+  # steps run as a non-root user with no logind session, which is exactly the
+  # case where polkit cannot prompt.
+  authorization:
+    name: authorization (real PackageKit)
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📚 Git Checkout
+        uses: actions/checkout@v7
+
+      - name: 🎯 Setup Dart
+        uses: dart-lang/setup-dart@v1
+        with:
+          sdk: "stable"
+
+      - name: 🔧 Install PackageKit and build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            packagekit policykit-1 libsystemd-dev cmake ninja-build
+          sudo systemctl start packagekit || true
+          pkcon --version
+
+      - name: 📦 Install Dependencies
+        run: dart pub get
+
+      - name: 📝 Manifest declaring one host package
+        run: |
+          mkdir -p .ci-configs
+          cat > .ci-configs/ci-probe.json <<'JSON'
+          {
+            "id": "ci-probe",
+            "load": true,
+            "deps": { "linux": { "ubuntu": ["sl"] } }
+          }
+          JSON
+
+      # Before authorizing: the daemon must refuse, and emb must say so
+      # clearly rather than emitting a raw exception. This is the regression
+      # guard for the original bug -- a denial that looked like a crash.
+      - name: 🚫 Unauthorized install is refused, with remediation
+        run: |
+          set +e
+          out=$(dart run bin/emb.dart deps --config .ci-configs \
+                  --no-interactive 2>&1)
+          code=$?
+          set -e
+          echo "$out"
+          if [ "$code" -eq 0 ]; then
+            echo "::error::expected the unauthorized install to fail"
+            exit 1
+          fi
+          echo "$out" | grep -q "polkit.addRule" || {
+            echo "::error::no remediation was printed"; exit 1; }
+          echo "$out" | grep -q "does not grant authorization" || {
+            echo "::error::non-interactive branch of the hint was not used"
+            exit 1; }
+
+      # `doctor` must not report a usable backend while installs are denied.
+      - name: 🩺 doctor reports the authorization state
+        run: |
+          dart run bin/emb.dart doctor --json | tee doctor.json
+          python3 - <<'PY'
+          import json
+          d = json.load(open('doctor.json'))
+          auth = d['data']['backend'].get('authorization')
+          assert auth is not None, 'doctor did not report authorization'
+          assert auth['ready'] is False, f'unexpectedly ready: {auth}'
+          print('authorization before rule:', auth)
+          PY
+
+      # The rule is the documented fix, and CI uses it so the CI path and the
+      # developer path stay identical. On Debian/Ubuntu the admin group is
+      # `sudo`, not `wheel`.
+      - name: 🔑 Authorize via polkit rule
+        run: |
+          # GitHub grants the runner passwordless sudo through a sudoers file,
+          # not group membership, so it is in neither `sudo` nor `wheel` and
+          # the documented rule would not match it. Put it in the group the
+          # rule targets, so this job exercises the rule users are actually
+          # told to install rather than a CI-only variant. polkit resolves
+          # group membership from nss by uid, so this applies immediately
+          # without re-login.
+          sudo usermod -aG sudo "$(id -un)"
+          getent group sudo
+
+          sudo tee /etc/polkit-1/rules.d/49-emb-packagekit.rules >/dev/null <<'RULE'
+          polkit.addRule(function(action, subject) {
+              var allowed = [
+                  "org.freedesktop.packagekit.package-install",
+                  "org.freedesktop.packagekit.package-remove",
+                  "org.freedesktop.packagekit.system-update"
+              ];
+              if (allowed.indexOf(action.id) !== -1 &&
+                  (subject.isInGroup("wheel") || subject.isInGroup("sudo"))) {
+                  return polkit.Result.YES;
+              }
+          });
+          RULE
+          sudo chmod 644 /etc/polkit-1/rules.d/49-emb-packagekit.rules
+          # polkit watches rules.d, but restarting removes a variable and is
+          # cheap. Sessions are not involved here, so nothing is disturbed.
+          sudo systemctl restart polkit
+          sleep 2
+
+      # Ask polkit directly before blaming emb. If pkcheck reports authorized
+      # and the install still fails, the fault is ours; if pkcheck reports
+      # otherwise, the rule did not apply and this prints the reason.
+      - name: 🔍 Verify polkit accepted the rule
+        run: |
+          echo "user: $(id)"
+          echo "--- rule ---"
+          sudo cat /etc/polkit-1/rules.d/49-emb-packagekit.rules
+          echo "--- polkit ---"
+          systemctl is-active polkit || true
+          pkaction --action-id org.freedesktop.packagekit.package-install \
+            --verbose || true
+          echo "--- pkcheck (no interaction; must not prompt) ---"
+          set +e
+          pkcheck --action-id org.freedesktop.packagekit.package-install \
+            --process $$ </dev/null
+          echo "pkcheck exit=$?"
+          set -e
+
+      # pkcheck reports authorized above, so if this still fails the two
+      # callers are being answered differently. Capture the bus so the
+      # CheckAuthorization action id and flags are visible rather than
+      # inferred, and dump both daemons' journals on the way out.
+      - name: ✅ Authorized install succeeds unattended
+        run: |
+          log=/tmp/bus.txt
+          sudo sh -c "exec busctl monitor --system \
+            org.freedesktop.PackageKit > $log 2>&1" &
+          sleep 3
+
+          # `usermod` updates /etc/group, but a process only picks up a
+          # supplementary group when its credentials are established. The
+          # runner agent started before we joined `sudo`, so its children --
+          # including this one -- do not carry it, and polkit's rule does not
+          # match them. `sg` starts the command with the group applied, which
+          # is the equivalent of logging back in.
+          set +e
+          sg sudo -c "dart run bin/emb.dart deps --config .ci-configs \
+            --no-interactive"
+          code=$?
+          set -e
+
+          sleep 2
+          sudo pkill -f "busctl monitor" || true
+          sleep 1
+
+          echo "--- CheckAuthorization as PackageKit asked it ---"
+          grep -A32 "Member=CheckAuthorization" "$log" | head -44 || true
+          echo "--- SetHints as we sent it ---"
+          grep -B2 -A12 "Member=SetHints" "$log" | head -24 || true
+          echo "--- packagekit journal ---"
+          sudo journalctl -u packagekit -n 40 --no-pager || true
+          echo "--- polkit journal ---"
+          sudo journalctl -u polkit -n 40 --no-pager || true
+
+          if [ "$code" -ne 0 ]; then
+            echo "::error::authorized install failed (exit $code)"
+            exit 1
+          fi
+          command -v sl
+
+      - name: 🩺 doctor now reports authorized
+        run: |
+          sg sudo -c "dart run bin/emb.dart doctor --json" \
+            | tee doctor-after.json
+          python3 - <<'PY'
+          import json
+          d = json.load(open('doctor-after.json'))
+          auth = d['data']['backend']['authorization']
+          assert auth['ready'] is True, f'still not authorized: {auth}'
+          print('authorization after rule:', auth)
+          PY
+
+      # EMB_NON_INTERACTIVE must be equivalent to the flag, since workflows are
+      # expected to set it once at the `env:` level rather than per command.
+      - name: 🌍 EMB_NON_INTERACTIVE is equivalent to --no-interactive
+        env:
+          EMB_NON_INTERACTIVE: "1"
+        run: sg sudo -c "dart run bin/emb.dart deps --config .ci-configs"

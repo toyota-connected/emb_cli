@@ -45,12 +45,37 @@ class ProvisionProgress {
   final int? percent;
 }
 
+/// Why an install failed, classified by the backend.
+///
+/// Exists so the command layer can present remediation without string-matching
+/// backend error text: the same denial reads differently across dnf, apt and
+/// zypper, and the text is not a stable interface.
+enum ProvisionFailure {
+  /// The system refused to authorize the operation.
+  ///
+  /// The daemon reports this identically whether it could not prompt or
+  /// prompted and was denied, so the two cannot be distinguished from the
+  /// error alone — the caller must use its own interactivity setting to decide
+  /// what to suggest.
+  notAuthorized,
+
+  /// One or more requested names had no installable package.
+  unresolved,
+
+  /// The backend daemon or CLI was unreachable.
+  daemonUnavailable,
+
+  /// Anything else; consult [ProvisionResult.message].
+  other,
+}
+
 /// The outcome of an `HostProvisioner.install` call.
 class ProvisionResult {
   const ProvisionResult({
     required this.installed,
     this.failed = const [],
     this.message,
+    this.kind,
   });
 
   /// Packages that were successfully installed (or already present).
@@ -61,6 +86,9 @@ class ProvisionResult {
 
   /// Optional human-readable detail (error text on failure).
   final String? message;
+
+  /// Classification of the failure, or null when [success] or unclassified.
+  final ProvisionFailure? kind;
 
   bool get success => failed.isEmpty;
 }

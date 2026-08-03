@@ -13,7 +13,21 @@ import 'package:winget_dart/winget_dart.dart';
 /// (e.g. `Kitware.CMake`). WinGet installs one id per transaction, so the
 /// batch is performed as a sequence of installs with aggregated results.
 class WingetProvisioner implements HostProvisioner {
-  WingetProvisioner({WingetBridge? bridge}) : _bridge = bridge;
+  /// Creates a provisioner.
+  ///
+  /// [interactive] is accepted for interface parity with the other backends
+  /// but currently has no effect. WinGet elevates through UAC, which
+  /// `winget_dart` does not expose a knob for; its `silent` option controls
+  /// the *installer's* UI, not authorization, and is left enabled so
+  /// unattended installs do not stall on a vendor installer window.
+  /// Accepting the flag and ignoring it keeps `HostProvisioner.forHost`
+  /// uniform rather than diverging per platform.
+  WingetProvisioner({WingetBridge? bridge, this.interactive = true})
+    : _bridge = bridge;
+
+  /// Retained for interface parity and asserted by the provisioner contract
+  /// test; see the constructor docs for why it has no effect here.
+  final bool interactive;
 
   final WingetBridge? _bridge;
   WgClient? _client;

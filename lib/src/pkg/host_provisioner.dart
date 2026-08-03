@@ -22,14 +22,19 @@ abstract class HostProvisioner {
   ///
   /// Returns the platform-appropriate backend: PackageKit on Linux, Homebrew
   /// on macOS, WinGet on Windows.
-  static HostProvisioner forHost(HostInfo host) {
+  ///
+  /// [interactive] governs whether the backend may prompt the user to
+  /// authorize a privileged operation. Every backend accepts it, even where
+  /// the underlying tool exposes no equivalent, so the interface does not
+  /// diverge per platform.
+  static HostProvisioner forHost(HostInfo host, {bool interactive = true}) {
     switch (host.os) {
       case HostOs.linux:
-        return PackageKitProvisioner();
+        return PackageKitProvisioner(interactive: interactive);
       case HostOs.macos:
-        return BrewProvisioner();
+        return BrewProvisioner(interactive: interactive);
       case HostOs.windows:
-        return WingetProvisioner();
+        return WingetProvisioner(interactive: interactive);
     }
   }
 

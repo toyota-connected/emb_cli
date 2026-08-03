@@ -8,7 +8,20 @@ import 'package:emb_cli/src/pkg/provision_models.dart';
 /// with bounded concurrency, which is still a single coalesced operation from
 /// the caller's perspective.
 class BrewProvisioner implements HostProvisioner {
-  BrewProvisioner({Brew? brew}) : _brew = brew ?? Brew();
+  /// Creates a provisioner.
+  ///
+  /// When [interactive] is false, `NONINTERACTIVE=1` is set on every `brew`
+  /// invocation, which is Homebrew's own opt-out: it suppresses prompts,
+  /// including the sudo password prompt some formulae trigger, and fails
+  /// instead of waiting. This is the closest analogue to PackageKit's
+  /// `interactive` hint.
+  ///
+  /// An injected [brew] is used as-is; the caller owns its configuration.
+  BrewProvisioner({Brew? brew, bool interactive = true})
+    : _brew = brew ?? Brew(cli: BrewCli(defaultEnv: _envFor(interactive)));
+
+  static Map<String, String> _envFor(bool interactive) =>
+      interactive ? const {} : const {'NONINTERACTIVE': '1'};
 
   final Brew _brew;
   Set<String>? _installedCache;
