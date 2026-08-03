@@ -7,6 +7,7 @@ import 'package:emb_cli/src/engine/engine_artifacts.dart';
 import 'package:emb_cli/src/env/env_script.dart';
 import 'package:emb_cli/src/flutter/flutter_sdk.dart';
 import 'package:emb_cli/src/host/host_info.dart';
+import 'package:emb_cli/src/host/interactivity.dart';
 import 'package:emb_cli/src/manifest/emb_manifest.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
 import 'package:emb_cli/src/pkg/host_provisioner.dart';
@@ -27,12 +28,15 @@ class SetupCommand extends Command<int> {
     required Logger logger,
     HostInfo? host,
     ManifestLoader loader = const ManifestLoader(),
-    HostProvisioner Function(HostInfo host)? provisionerFactory,
+    HostProvisioner Function(HostInfo host, {bool interactive})?
+    provisionerFactory,
     FlutterSdk Function(Workspace ws, HostInfo host)? sdkFactory,
     EngineArtifacts Function(Workspace ws)? engineFactory,
+    Map<String, String>? environment,
   }) : _logger = logger,
        _host = host,
        _loader = loader,
+       _environment = environment ?? Platform.environment,
        _provisionerFactory = provisionerFactory ?? HostProvisioner.forHost,
        _sdkFactory = sdkFactory ?? ((ws, host) => FlutterSdk(ws, host: host)),
        _engineFactory = engineFactory ?? EngineArtifacts.new {
@@ -84,6 +88,13 @@ class SetupCommand extends Command<int> {
         negatable: false,
       )
       ..addFlag(
+        'interactive',
+        help:
+            'Allow the system package manager to prompt for authorization. '
+            'On by default; pass --no-interactive for unattended runs.',
+        defaultsTo: null,
+      )
+      ..addFlag(
         'skip-deps',
         help: 'Skip host dependency install.',
         negatable: false,
@@ -104,7 +115,9 @@ class SetupCommand extends Command<int> {
   final Logger _logger;
   final HostInfo? _host;
   final ManifestLoader _loader;
-  final HostProvisioner Function(HostInfo host) _provisionerFactory;
+  final Map<String, String> _environment;
+  final HostProvisioner Function(HostInfo host, {bool interactive})
+  _provisionerFactory;
   final FlutterSdk Function(Workspace ws, HostInfo host) _sdkFactory;
   final EngineArtifacts Function(Workspace ws) _engineFactory;
 
@@ -144,7 +157,19 @@ class SetupCommand extends Command<int> {
     workspace.ensureAppDir();
 
     if (!(args['skip-deps'] as bool)) {
-      final code = await _deps(host, manifests, yes: args['yes'] as bool);
+      final interactivity = Interactivity.resolve(
+        explicit: args.wasParsed('interactive')
+            ? args['interactive'] as bool
+            : null,
+        environment: _environment,
+      );
+      _logger.detail('interactivity: ${interactivity.describe()}');
+      final code = await _deps(
+        host,
+        manifests,
+        yes: args['yes'] as bool,
+        interactivity: interactivity,
+      );
       if (code != ExitCode.success.code) return code;
     }
     if (!(args['skip-sync'] as bool)) {
@@ -190,6 +215,7 @@ class SetupCommand extends Command<int> {
     HostInfo host,
     List<EmbManifest> manifests, {
     required bool yes,
+    required Interactivity interactivity,
   }) async {
     _logger.info(styleBold.wrap('▸ Dependencies'));
     final coalesced = DependencyResolver(host).coalesce(manifests);
@@ -197,7 +223,10 @@ class SetupCommand extends Command<int> {
       _logger.info('  No applicable host dependencies.');
       return ExitCode.success.code;
     }
-    final provisioner = _provisionerFactory(host);
+    final provisioner = _provisionerFactory(
+      host,
+      interactive: interactivity.interactive,
+    );
     try {
       if (!await provisioner.isAvailable()) {
         _logger.err('  Package backend "${provisioner.name}" unavailable.');
@@ -209,7 +238,9 @@ class SetupCommand extends Command<int> {
         return ExitCode.success.code;
       }
       _logger.info('  Missing (${missing.length}): ${missing.join(", ")}');
+      // --no-interactive implies --yes: nobody is there to answer.
       if (!yes &&
+          interactivity.interactive &&
           !_logger.confirm(
             '  Install ${missing.length} package(s)?',
             defaultValue: true,

@@ -40,6 +40,73 @@ deps → repos → Flutter SDK → engine → AOT → ivi-homescreen bundle
 - `git` on `PATH`.
 - Cross-compiling to a device arch is supported **from an x86_64 host**.
 
+### Authorization
+
+Installing host packages on Linux is gated by polkit. On a stock desktop the
+relevant actions are `auth_admin_keep`, so a non-root `emb deps` must be
+authorized before the daemon will act. By default `emb` asks the daemon to
+prompt you, and on a normal desktop session that is all you need.
+
+Where a prompt cannot be shown — no polkit agent, no logind session, or WSL
+(see below) — the transaction fails immediately with a not-authorized error.
+Two ways to fix that:
+
+**Preferred: authorize the actions you need.** Keeps `emb` unprivileged, which
+is the arrangement PackageKit exists to make possible.
+
+```javascript
+// /etc/polkit-1/rules.d/49-emb-packagekit.rules
+//
+// Scoped to three named actions on purpose. A blanket grant on
+// org.freedesktop.packagekit.* would also cover repository reconfiguration
+// and untrusted-package installs, which is a considerably larger grant.
+polkit.addRule(function(action, subject) {
+    var allowed = [
+        "org.freedesktop.packagekit.package-install",
+        "org.freedesktop.packagekit.package-remove",
+        "org.freedesktop.packagekit.system-update"
+    ];
+    if (allowed.indexOf(action.id) !== -1 && subject.isInGroup("wheel")) {
+        return polkit.Result.YES;
+    }
+});
+```
+
+This is a persistent change to system authorization policy: it grants
+unattended install, remove, and update to everyone in `wheel`, with no
+authentication. Decide whether that is acceptable for your machine. Remove it
+with `sudo rm /etc/polkit-1/rules.d/49-emb-packagekit.rules`.
+
+**Escape hatch: run as root.** Works anywhere, but `emb` keeps caches and
+configuration under `$HOME`, and running as root leaves root-owned files there
+that you can no longer modify. Prefer the rule for anything repeated. Note that
+`sudo` resets `PATH`, so an `emb` installed under `~/.local` needs an absolute
+path:
+
+```sh
+sudo "$(command -v emb)" deps --config ../configs --no-interactive
+```
+
+#### WSL
+
+polkit cannot reliably prompt under WSL. It needs a logind session owned by
+the calling user, and WSL often supplies neither — shells started by tooling
+belong to no session at all, and sessions created via `sudo` are owned by root
+while running your uid. In both cases an authentication agent registers and is
+then never consulted, so the install fails instantly with a not-authorized
+error that looks exactly like a real denial.
+
+Install the polkit rule above. It needs no agent, no session, and no password,
+and it works from any shell. To check whether a session is the problem:
+
+```sh
+loginctl show-session $(loginctl session-status | head -1 | awk '{print $1}') \
+    -p User -p Service -p Class
+```
+
+A usable session reports your own uid, `Service=login`, and `Class=user`. If
+the command errors, the shell has no session and can never be prompted.
+
 ### Host packages (Linux)
 
 `emb` shells out to a handful of host tools, and its Linux host-dependency
@@ -315,7 +382,8 @@ One-shot provision: **deps → repos → Flutter SDK → engine**, then writes
 | `--flutter-version <ref>` | `globals.json` `flutter_version` | Flutter version/tag/branch. |
 | `--arch <arch>` | host arch | Engine arch to prefetch. |
 | `-m`, `--mode <mode>` | `release` | Engine runtime modes to prefetch (repeatable): `release`, `profile`, `debug`. |
-| `-y`, `--yes` | off | Skip the deps confirmation prompt (CI). |
+| `-y`, `--yes` | off | Skip the deps confirmation prompt. |
+| `--[no-]interactive` | on | Allow the system package manager to prompt for authorization during the deps step. `--no-interactive` implies `--yes`. See [Authorization](#authorization). |
 | `--skip-deps` | off | Skip host dependency install. |
 | `--skip-sync` | off | Skip repository sync. |
 | `--skip-flutter` | off | Skip Flutter SDK install. |
@@ -346,12 +414,31 @@ Coalesce host dependencies across all selected manifests, filter to what's
 | `--enable <id>` | — | Force-load the config with this `id` (overrides `load: false`). Repeatable; unmatched ids ignored. |
 | `--disable <id>` | — | Skip the config with this `id` (overrides `load: true`). Repeatable; unmatched ids ignored. |
 | `--dry-run` | off | Resolve and print the install plan without changing the system. |
-| `-y`, `--yes` | off | Skip the confirmation prompt (CI). |
+| `-y`, `--yes` | off | Skip the confirmation prompt. |
+| `--[no-]interactive` | on | Allow the system package manager to prompt for authorization. `--no-interactive` implies `--yes`. |
 
 ```sh
-emb deps --config ../configs --dry-run      # plan only
-emb deps --config ../configs --yes          # install in one transaction
+emb deps --config ../configs --dry-run          # plan only
+emb deps --config ../configs --yes              # install in one transaction
+emb deps --config ../configs --no-interactive   # unattended; never prompts
 ```
+
+`--yes` and `--interactive` are independent. `--yes` skips **emb's own**
+confirmation; `--interactive` governs whether the *system package manager* may
+prompt you to authenticate. `--no-interactive` implies `--yes` because nobody
+is there to answer, but the converse does not hold — `--yes` still allows an
+authorization prompt.
+
+Interactive is the default in every context. Nothing about the environment
+changes it: `CI`, `GITHUB_ACTIONS` and similar variables are deliberately not
+consulted, because a mode that depends on ambient state is invisible in the
+command you typed. Set `EMB_NON_INTERACTIVE=1` to opt out once for a wrapper
+or a workflow-level `env:` block; an explicit `--interactive` still overrides
+it.
+
+Non-interactive is not an authorization mechanism. It suppresses the prompt; it
+does not grant anything. See [Authorization](#authorization) for how to
+actually be authorized.
 
 ---
 
@@ -578,6 +665,7 @@ emb cross <project-dir|manifest.yaml> [options]
 | `--offline-strict` | off | Like `--offline`, but also run build subprocesses inside a network namespace, and **refuse to build** when that isolation is unavailable instead of degrading to input-level denial. See [Offline builds](#offline-builds). |
 | `--host-tools` | off | With `--build`: use the host's `cmake`/`meson` instead of the SDK's, for OE SDKs that pin an old one (e.g. AGL ships cmake 3.16.5). The OE env + toolchain/cross file are unchanged. Also set via `cross.host_build_tools`. |
 | `--install-deps` | off | Install the provider's missing preflight host tools via the host package backend (PackageKit/brew) instead of erroring. Opt-in; needs privileges. Falls back to printing the manual install command when no backend is reachable. |
+| `--[no-]interactive` | on | Allow the system package manager to prompt for authorization when `--install-deps` is used. See [Authorization](#authorization). |
 | `--dockerfile` | off | Resolve, then emit a `Dockerfile` + `.dockerignore` (into the platform dir) that bake the toolchain + sysroot into an OCI image so CI pulls instead of resolving. arm-gnu only; does not build. See [Toolchain images](#toolchain-images). |
 
 ```sh

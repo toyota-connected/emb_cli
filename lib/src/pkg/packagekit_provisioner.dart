@@ -13,7 +13,15 @@ import 'package:packagekit_dart/packagekit_dart.dart';
 /// `libjpeg-turbo-devel`, `go` → `golang`, …) are handled the way
 /// `dnf install` would.
 class PackageKitProvisioner implements HostProvisioner {
-  PackageKitProvisioner();
+  /// Creates a provisioner.
+  ///
+  /// When [interactive] is true (the default), transactions send
+  /// `interactive=true`, letting the daemon ask polkit to prompt for
+  /// authorization. When false they fail fast with a not-authorized error
+  /// rather than blocking on a prompt nobody is there to answer.
+  PackageKitProvisioner({bool interactive = true}) : _interactive = interactive;
+
+  final bool _interactive;
 
   PkClient? _client;
 
@@ -35,10 +43,10 @@ class PackageKitProvisioner implements HostProvisioner {
   /// startup race doesn't make the backend look permanently unavailable.
   Future<PkClient> _connect() async {
     try {
-      return _client ??= await PkClient.connect();
+      return _client ??= await PkClient.connect(interactive: _interactive);
     } on PkServiceUnavailableException {
       await Future<void>.delayed(const Duration(milliseconds: 500));
-      return _client ??= await PkClient.connect();
+      return _client ??= await PkClient.connect(interactive: _interactive);
     }
   }
 

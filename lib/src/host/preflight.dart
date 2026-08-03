@@ -40,14 +40,17 @@ class Preflight {
   /// Install the missing preflight [tools] via [HostProvisioner] (opt-in, with
   /// `--install-deps`). Returns true only when the tools are present after.
   /// Falls back to the manual hint when no backend is reachable.
+  ///
+  /// [interactive] governs whether the backend may prompt for authorization.
   Future<bool> install(
     HostInfo host,
     String providerName,
-    List<String> tools,
-  ) async {
+    List<String> tools, {
+    bool interactive = true,
+  }) async {
     HostProvisioner? provisioner;
     try {
-      provisioner = HostProvisioner.forHost(host);
+      provisioner = HostProvisioner.forHost(host, interactive: interactive);
       // ignore: avoid_catching_errors
     } on UnsupportedError {
       provisioner = null;

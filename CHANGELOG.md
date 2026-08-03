@@ -1,3 +1,20 @@
+# Unreleased
+
+- feat: add `--[no-]interactive` to `deps`, `setup`, and `cross`, plus the
+  `EMB_NON_INTERACTIVE` environment variable. Interactive is the unconditional
+  default; nothing about the environment changes it, and `CI`-style variables
+  are deliberately not consulted. Requires `packagekit_dart` 0.4.0, which sends
+  the polkit `interactive` hint — without it no `emb deps` could install a
+  package on a stock Fedora/openSUSE desktop unless the caller was root or
+  covered by a permissive polkit rule.
+- feat: decouple `--yes` from interactivity. `--yes` skips emb's own
+  confirmation prompt only; `--no-interactive` implies `--yes` because nobody
+  is there to answer, but the converse does not hold.
+- feat: `brew` sets `NONINTERACTIVE=1` when non-interactive. WinGet accepts the
+  flag for interface parity but has no equivalent to apply it to.
+- docs: document authorization, including why polkit cannot prompt under WSL
+  and the narrowly scoped polkit rule that works there.
+
 # 0.1.1
 
 - fix: locate the PackageKit native bridge (`libpackagekit_nc.so`) when emb is
