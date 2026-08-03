@@ -10,6 +10,8 @@ on:
       - ".github/workflows/emb_cli.yaml"
       - "lib/**"
       - "test/**"
+      - "tool/**"
+      - "boards/**"
       - "pubspec.yaml"
   push:
     branches:
@@ -18,6 +20,8 @@ on:
       - ".github/workflows/emb_cli.yaml"
       - "lib/**"
       - "test/**"
+      - "tool/**"
+      - "boards/**"
       - "pubspec.yaml"
 
 jobs:
@@ -325,3 +329,107 @@ jobs:
         env:
           EMB_NON_INTERACTIVE: "1"
         run: sg sudo -c "dart run bin/emb.dart deps --config .ci-configs"
+
+  # Guard the board library against an installed `emb`.
+  #
+  # This is the only job that can catch the class of bug it exists for. In a
+  # checkout, package_config always resolves and the board library always
+  # loads, so the whole suite stays green while `extends:` is broken for every
+  # user who installed emb the documented way. The failure is only reachable
+  # from a compiled binary, which is what this installs.
+  board-library:
+    name: board library (installed emb)
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📚 Git Checkout
+        uses: actions/checkout@v7
+
+      - name: 🎯 Setup Dart
+        uses: dart-lang/setup-dart@v1
+        with:
+          sdk: "stable"
+
+      # `dart install` runs the packagekit_dart build hook.
+      - name: 🔧 Install native build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libsystemd-dev cmake ninja-build
+
+      - name: 📦 Install Dependencies
+        run: dart pub get
+
+      - name: 🔨 Install emb as a compiled binary
+        run: |
+          echo "DART_DATA_HOME=$RUNNER_TEMP/dart" >> "$GITHUB_ENV"
+          DART_DATA_HOME="$RUNNER_TEMP/dart" dart install .
+          test -x "$RUNNER_TEMP/dart/install/bin/emb"
+
+      - name: 📝 A manifest that extends a shipped board
+        run: |
+          mkdir -p "$RUNNER_TEMP/proj"
+          cat > "$RUNNER_TEMP/proj/app.emb.yaml" <<'JSON'
+          id: myapp
+          cross:
+            targets:
+              x: {extends: rpi5-trixie}
+          JSON
+
+      # Before installing the library: the failure must be self-explanatory.
+      # The old message named the board, which read as a typo and sent people
+      # to audit a manifest that was fine.
+      - name: 🚫 Without the library, the diagnostic names the real cause
+        env:
+          XDG_DATA_HOME: ${{ runner.temp }}/none
+          HOME: ${{ runner.temp }}
+        run: |
+          set +e
+          out=$("$RUNNER_TEMP/dart/install/bin/emb" cross \
+                  "$RUNNER_TEMP/proj/app.emb.yaml" --list-targets 2>&1)
+          code=$?
+          set -e
+          echo "$out"
+          [ "$code" -ne 0 ] || { echo "::error::expected a failure"; exit 1; }
+          echo "$out" | grep -q "board library not found" || {
+            echo "::error::did not report a missing library"; exit 1; }
+          echo "$out" | grep -q "n/a: compiled binary" || {
+            echo "::error::did not identify the compiled-binary case"; exit 1; }
+          echo "$out" | grep -q "emb boards sync" || {
+            echo "::error::did not say how to fix it"; exit 1; }
+
+      - name: 🔑 Install the board library the way bootstrap does
+        env:
+          XDG_DATA_HOME: ${{ runner.temp }}/data
+        run: |
+          python3 -c "import sys; sys.path.insert(0,'tool'); \
+            import bootstrap_dart as b; b.install_boards('.', 'linux')"
+          test -s "$RUNNER_TEMP/data/emb/boards/.emb-boards-version"
+
+      - name: ✅ The installed binary resolves the board
+        env:
+          XDG_DATA_HOME: ${{ runner.temp }}/data
+          HOME: ${{ runner.temp }}
+        run: |
+          EMB="$RUNNER_TEMP/dart/install/bin/emb"
+          out=$("$EMB" cross "$RUNNER_TEMP/proj/app.emb.yaml" --list-targets)
+          echo "$out"
+          echo "$out" | grep -q "arm-gnu" || {
+            echo "::error::target did not resolve from the installed library"
+            exit 1; }
+
+          list=$("$EMB" boards list)
+          echo "$list"
+          echo "$list" | grep -q "Source:  installed" || {
+            echo "::error::boards list did not report the installed rung"
+            exit 1; }
+          echo "$list" | grep -q "rpi5-trixie" || {
+            echo "::error::boards list did not show the board"; exit 1; }
+
+      # The full installer path, including install()'s local-checkout branch.
+      - name: 🥾 bootstrap.sh installs the library end to end
+        env:
+          DART_DATA_HOME: ${{ runner.temp }}/dart2
+          XDG_DATA_HOME: ${{ runner.temp }}/data2
+        run: |
+          ./bootstrap.sh --install .
+          ls "$RUNNER_TEMP/data2/emb/boards"
+          test -s "$RUNNER_TEMP/data2/emb/boards/.emb-boards-version"
