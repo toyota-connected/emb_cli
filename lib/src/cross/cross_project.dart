@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:emb_cli/src/cross/boards_dir.dart';
 import 'package:emb_cli/src/cross/cross_arch.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
 import 'package:path/path.dart' as p;
@@ -125,12 +126,18 @@ class CrossProject {
 /// Resolves a project directory, an explicit manifest file, or a bare `.emb/`
 /// directory into a [CrossProject].
 class CrossProjectResolver {
+  /// [environment] is injectable so rung 2/3 resolution is testable without
+  /// depending on whatever the developer happens to have installed. Without
+  /// it a test machine's real board library would leak into any test that
+  /// omits the boards-dir override.
   CrossProjectResolver([
     this._loader = const ManifestLoader(),
     this._boardsDirOverride,
-  ]);
+    Map<String, String>? environment,
+  ]) : _environment = environment ?? Platform.environment;
 
   final ManifestLoader _loader;
+  final Map<String, String> _environment;
 
   /// Where emb's shipped board library lives. Null = auto-discover (env
   /// `EMB_BOARDS_DIR`, then the `boards/` dir of the emb_cli package). Tests
@@ -410,10 +417,22 @@ class CrossProjectResolver {
     final registry = _boardRegistry();
     final base = registry[name];
     if (base == null) {
-      final known = registry.keys.isEmpty ? 'none' : registry.keys.join(', ');
+      final where = sourcePath ?? 'manifest';
+      // An empty registry is a different failure from a misspelled name, and
+      // saying "unknown board" for it sends people to audit a manifest that is
+      // fine. Name the real cause and where we looked.
+      if (registry.isEmpty) {
+        throw CrossProjectException(
+          'extends: board library not found — no boards are loaded '
+          '(in $where).\n'
+          'Looked in: ${_boardsTried.join(", ")}.\n'
+          'Run `emb boards sync`, or set EMB_BOARDS_DIR to an emb '
+          "checkout's boards/.",
+        );
+      }
       throw CrossProjectException(
-        'extends: unknown board "$name" (in ${sourcePath ?? "manifest"}). '
-        'Known boards: $known.',
+        'extends: unknown board "$name" (in $where). '
+        'Known boards: ${registry.keys.join(", ")}.',
       );
     }
     return _applyExtends(base, sourcePath, {...seen, name});
@@ -563,14 +582,69 @@ class CrossProjectResolver {
     return _boards = out;
   }
 
-  /// The board-library directory: an explicit override, then `EMB_BOARDS_DIR`,
-  /// then the `boards/` dir of the emb_cli package (via its package_config),
-  /// then a walk up from the running script.
+  /// Where the board library came from, for `doctor` and error messages.
+  /// Null until [_boardsDir] has run.
+  String? boardsProvenance;
+
+  /// The paths [_boardsDir] considered, in order, for the not-found message.
+  final List<String> _boardsTried = [];
+
+  /// The board-library directory, first hit wins. Rungs are whole-directory
+  /// selections and are deliberately **not** merged: a per-file union would let
+  /// a stale installed board silently shadow a checkout edit, which is worse
+  /// than a clean miss because it is quiet.
+  ///
+  /// 1. constructor override (tests)
+  /// 2. `EMB_BOARDS_DIR` — returned even if absent, so a wrong override fails
+  ///    loudly instead of falling through to something that happens to work
+  /// 3. the installed data dir — what `bootstrap`/`emb boards sync` writes
+  /// 4. the emb_cli package's `boards/` via package_config — `dart run`
+  /// 5. a walk up from the running script — `dart run` fallback
+  ///
+  /// Rungs 4 and 5 stay so an in-checkout run needs no install step. Neither
+  /// resolves for an AOT-compiled `emb`, which is why rung 3 exists.
   Directory? _boardsDir() {
-    if (_boardsDirOverride != null) return _boardsDirOverride;
-    final env = Platform.environment['EMB_BOARDS_DIR'];
-    if (env != null && env.isNotEmpty) return Directory(env);
-    return _discoverBoardsDir();
+    _boardsTried.clear();
+    // Every rung consulted is recorded, including the one that wins: a rung can
+    // resolve to a directory that exists but holds no boards, and the
+    // not-found message has to be able to name it.
+    if (_boardsDirOverride != null) {
+      _boardsTried.add(_boardsDirOverride.path);
+      boardsProvenance = 'constructor override';
+      return _boardsDirOverride;
+    }
+
+    final env = _environment['EMB_BOARDS_DIR'];
+    if (env != null && env.isNotEmpty) {
+      _boardsTried.add(
+        r'$EMB_BOARDS_DIR='
+        '$env',
+      );
+      boardsProvenance = r'$EMB_BOARDS_DIR';
+      return Directory(env);
+    }
+    _boardsTried.add(r'$EMB_BOARDS_DIR (unset)');
+
+    final installed = resolveBoardsDir(environment: _environment);
+    if (installed.existsSync()) {
+      _boardsTried.add(installed.path);
+      boardsProvenance = 'installed (${installed.path})';
+      return installed;
+    }
+    _boardsTried.add('${installed.path} (absent)');
+
+    final discovered = _discoverBoardsDir();
+    if (discovered != null) {
+      boardsProvenance = 'package/script relative (${discovered.path})';
+      return discovered;
+    }
+    _boardsTried.add(
+      Platform.packageConfig == null
+          ? '<package>/boards (n/a: compiled binary)'
+          : '<package>/boards (absent)',
+    );
+    boardsProvenance = 'not found';
+    return null;
   }
 
   Directory? _discoverBoardsDir() {
