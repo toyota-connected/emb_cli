@@ -276,8 +276,15 @@ jobs:
             org.freedesktop.PackageKit > $log 2>&1" &
           sleep 3
 
+          # `usermod` updates /etc/group, but a process only picks up a
+          # supplementary group when its credentials are established. The
+          # runner agent started before we joined `sudo`, so its children --
+          # including this one -- do not carry it, and polkit's rule does not
+          # match them. `sg` starts the command with the group applied, which
+          # is the equivalent of logging back in.
           set +e
-          dart run bin/emb.dart deps --config .ci-configs --no-interactive
+          sg sudo -c "dart run bin/emb.dart deps --config .ci-configs \
+            --no-interactive"
           code=$?
           set -e
 
@@ -302,7 +309,8 @@ jobs:
 
       - name: 🩺 doctor now reports authorized
         run: |
-          dart run bin/emb.dart doctor --json | tee doctor-after.json
+          sg sudo -c "dart run bin/emb.dart doctor --json" \
+            | tee doctor-after.json
           python3 - <<'PY'
           import json
           d = json.load(open('doctor-after.json'))
@@ -316,4 +324,4 @@ jobs:
       - name: 🌍 EMB_NON_INTERACTIVE is equivalent to --no-interactive
         env:
           EMB_NON_INTERACTIVE: "1"
-        run: dart run bin/emb.dart deps --config .ci-configs
+        run: sg sudo -c "dart run bin/emb.dart deps --config .ci-configs"
