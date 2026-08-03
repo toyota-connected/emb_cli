@@ -26,9 +26,17 @@ class BoardsCommand extends Command<int> {
     required Logger logger,
     HttpClient? httpClient,
     Map<String, String>? environment,
+    Uri? apiBase,
   }) {
     addSubcommand(BoardsListCommand(logger: logger, environment: environment));
-    addSubcommand(BoardsSyncCommand(logger: logger, httpClient: httpClient));
+    addSubcommand(
+      BoardsSyncCommand(
+        logger: logger,
+        httpClient: httpClient,
+        environment: environment,
+        apiBase: apiBase,
+      ),
+    );
   }
 
   @override
@@ -97,9 +105,15 @@ class BoardsListCommand extends Command<int> {
 /// `emb boards sync` — download the board library into the data dir.
 class BoardsSyncCommand extends Command<int> {
   /// Creates the command.
-  BoardsSyncCommand({required Logger logger, HttpClient? httpClient})
-    : _logger = logger,
-      _http = httpClient ?? HttpClient() {
+  BoardsSyncCommand({
+    required Logger logger,
+    HttpClient? httpClient,
+    Map<String, String>? environment,
+    Uri? apiBase,
+  }) : _logger = logger,
+       _http = httpClient ?? HttpClient(),
+       _environment = environment ?? Platform.environment,
+       _apiBase = apiBase ?? Uri.https('api.github.com', '/') {
     argParser.addOption(
       'ref',
       help:
@@ -110,6 +124,11 @@ class BoardsSyncCommand extends Command<int> {
 
   final Logger _logger;
   final HttpClient _http;
+  final Map<String, String> _environment;
+
+  /// Base of the contents API. Overridable so the fetch path can be tested
+  /// against a local server instead of reaching GitHub.
+  final Uri _apiBase;
 
   @override
   String get description =>
@@ -121,7 +140,7 @@ class BoardsSyncCommand extends Command<int> {
   @override
   Future<int> run() async {
     final ref = (argResults?['ref'] as String?) ?? 'v$packageVersion';
-    final dest = resolveBoardsDir();
+    final dest = resolveBoardsDir(environment: _environment);
 
     // An explicit, user-invoked network step on purpose. Fetching lazily on an
     // `extends:` miss would put the network behind parse-only operations and
@@ -168,10 +187,9 @@ class BoardsSyncCommand extends Command<int> {
 
   /// The `boards/*.emb.yaml` entries at [ref], via the GitHub contents API.
   Future<List<({String name, Uri url})>> _listBoards(String ref) async {
-    final api = Uri.https(
-      'api.github.com',
-      '/repos/$_repoSlug/contents/boards',
-      {'ref': ref},
+    final api = _apiBase.replace(
+      path: '/repos/$_repoSlug/contents/boards',
+      queryParameters: {'ref': ref},
     );
     final decoded = jsonDecode(utf8.decode(await _get(api)));
     if (decoded is! List) {
