@@ -265,9 +265,39 @@ jobs:
           echo "pkcheck exit=$?"
           set -e
 
+      # pkcheck reports authorized above, so if this still fails the two
+      # callers are being answered differently. Capture the bus so the
+      # CheckAuthorization action id and flags are visible rather than
+      # inferred, and dump both daemons' journals on the way out.
       - name: ✅ Authorized install succeeds unattended
         run: |
+          log=/tmp/bus.txt
+          sudo sh -c "exec busctl monitor --system \
+            org.freedesktop.PackageKit > $log 2>&1" &
+          sleep 3
+
+          set +e
           dart run bin/emb.dart deps --config .ci-configs --no-interactive
+          code=$?
+          set -e
+
+          sleep 2
+          sudo pkill -f "busctl monitor" || true
+          sleep 1
+
+          echo "--- CheckAuthorization as PackageKit asked it ---"
+          grep -A32 "Member=CheckAuthorization" "$log" | head -44 || true
+          echo "--- SetHints as we sent it ---"
+          grep -B2 -A12 "Member=SetHints" "$log" | head -24 || true
+          echo "--- packagekit journal ---"
+          sudo journalctl -u packagekit -n 40 --no-pager || true
+          echo "--- polkit journal ---"
+          sudo journalctl -u polkit -n 40 --no-pager || true
+
+          if [ "$code" -ne 0 ]; then
+            echo "::error::authorized install failed (exit $code)"
+            exit 1
+          fi
           command -v sl
 
       - name: 🩺 doctor now reports authorized
