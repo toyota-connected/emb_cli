@@ -396,6 +396,13 @@ install anything. The authorization line distinguishes *already authorized*
 authentication dialog as a side effect. When `pkcheck` is absent it reports
 `unknown` rather than failing. See [Authorization](#authorization).
 
+It also reports the **board library** `extends:` resolves against: which rung
+it came from, the install path, how many boards loaded, and whether the version
+stamp matches this emb. An emb with no board library looks entirely healthy
+until a manifest uses `extends:`, so it is worth surfacing here rather than at
+the point of failure. See
+[Where the board library lives](#where-the-board-library-lives).
+
 With `--target <name>` it instead reports a cross target's **provider
 preflight** — the host tools that target's provider needs (e.g. `tar`/`xz`/
 `rsync` for arm-gnu), each present or missing, with an install hint — resolving

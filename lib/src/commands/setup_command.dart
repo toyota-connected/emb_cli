@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:args/command_runner.dart';
+import 'package:emb_cli/src/commands/positional_args.dart';
 import 'package:emb_cli/src/deps/dependency_resolver.dart';
 import 'package:emb_cli/src/engine/engine_artifacts.dart';
 import 'package:emb_cli/src/env/env_script.dart';
@@ -132,6 +133,7 @@ class SetupCommand extends Command<int> {
 
   @override
   Future<int> run() async {
+    rejectPositionals(this);
     final args = argResults!;
     final host = _host ?? HostInfo.detect();
     final workspace = Workspace.resolve(override: args['workspace'] as String?);

@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/cache/cache_dir.dart';
+import 'package:emb_cli/src/cross/boards_dir.dart';
 import 'package:emb_cli/src/cross/cargo_vendor.dart';
 import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_project.dart';
@@ -18,6 +19,7 @@ import 'package:emb_cli/src/host/preflight.dart';
 import 'package:emb_cli/src/json_output.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
 import 'package:emb_cli/src/pkg/host_provisioner.dart';
+import 'package:emb_cli/src/version.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
 import 'package:mason_logger/mason_logger.dart';
 import 'package:path/path.dart' as p;
@@ -36,7 +38,9 @@ class DoctorCommand extends Command<int> {
     ManifestLoader loader = const ManifestLoader(),
     Preflight? preflight,
     ProcessRunner? processRunner,
+    Map<String, String>? environment,
   }) : _logger = logger,
+       _environment = environment ?? Platform.environment,
        _host = host,
        _provisionerFactory = provisionerFactory ?? HostProvisioner.forHost,
        _project = CrossProjectResolver(loader),
@@ -79,6 +83,7 @@ class DoctorCommand extends Command<int> {
   final HostProvisioner Function(HostInfo host) _provisionerFactory;
   final CrossProjectResolver _project;
   final ProcessRunner _runProcess;
+  final Map<String, String> _environment;
   final Preflight _preflight;
 
   @override
@@ -177,7 +182,49 @@ class DoctorCommand extends Command<int> {
       await provisioner.dispose();
     }
 
+    _reportBoardLibrary();
     return ExitCode.success.code;
+  }
+
+  /// The board library `extends:` resolves against.
+  ///
+  /// A reachable emb with no board library is the same shape of false green
+  /// the authorization probe exists for: everything looks fine until a
+  /// manifest uses `extends:`, and the failure surfaces far from here.
+  void _reportBoardLibrary() {
+    final resolver = CrossProjectResolver(
+      const ManifestLoader(),
+      null,
+      _environment,
+    );
+    final names = resolver.boardNames();
+    final installed = resolveBoardsDir(environment: _environment);
+
+    _logger
+      ..info('')
+      ..info(styleBold.wrap('Board library'))
+      ..info('  source:    ${resolver.boardsProvenance ?? "not found"}')
+      ..info('  installed: ${installed.path}');
+
+    if (names.isEmpty) {
+      _logger
+        ..warn('  boards:    none — `extends:` will fail')
+        ..info('  fix:       run `emb boards sync`');
+      return;
+    }
+    _logger.info('  boards:    ${names.length}');
+
+    // Skew is reported, never enforced: a hand-maintained EMB_BOARDS_DIR
+    // legitimately has no stamp and that path must not be blocked.
+    final stamp = installed.existsSync() ? readBoardsStamp(installed) : null;
+    if (stamp != null && stamp != packageVersion) {
+      _logger.warn(
+        '  version:   $stamp, but emb is $packageVersion — '
+        'run `emb boards sync`',
+      );
+    } else if (stamp != null) {
+      _logger.info('  version:   $stamp');
+    }
   }
 
   /// The `--json` path: compute the same host/backend facts without the text
@@ -199,8 +246,28 @@ class DoctorCommand extends Command<int> {
       final auth = available
           ? await probeAuthorization(host, runProcess: _runProcess)
           : null;
+      final boardsResolver = CrossProjectResolver(
+        const ManifestLoader(),
+        null,
+        _environment,
+      );
+      final boardNames = boardsResolver.boardNames();
+      final boardsInstalled = resolveBoardsDir(environment: _environment);
+      final boardsStamp = boardsInstalled.existsSync()
+          ? readBoardsStamp(boardsInstalled)
+          : null;
       final data = <String, Object?>{
         'host': _hostData(host),
+        'boards': {
+          'source': boardsResolver.boardsProvenance,
+          'installed': boardsInstalled.path,
+          'count': boardNames.length,
+          'names': boardNames,
+          if (boardsStamp != null) ...{
+            'version': boardsStamp,
+            'skewed': boardsStamp != packageVersion,
+          },
+        },
         'backend': {
           'name': provisioner.name,
           'available': available,
