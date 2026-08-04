@@ -1,4 +1,4 @@
-# Unreleased
+# 0.2.0
 
 - feat: `emb doctor` reports the board library — resolved source rung, install
   path, board count, and any version skew, in both the text and `--json`
