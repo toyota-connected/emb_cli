@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:args/command_runner.dart';
+import 'package:emb_cli/src/commands/positional_args.dart';
 import 'package:emb_cli/src/deps/dependency_resolver.dart';
 import 'package:emb_cli/src/host/auth_hint.dart';
 import 'package:emb_cli/src/host/host_info.dart';
@@ -93,6 +94,7 @@ class DepsCommand extends Command<int> {
 
   @override
   Future<int> run() async {
+    rejectPositionals(this);
     final args = argResults!;
     final host = _host ?? HostInfo.detect();
 

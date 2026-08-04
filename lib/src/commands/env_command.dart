@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:args/command_runner.dart';
+import 'package:emb_cli/src/commands/positional_args.dart';
 import 'package:emb_cli/src/env/env_script.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
@@ -53,6 +54,7 @@ class EnvCommand extends Command<int> {
 
   @override
   Future<int> run() async {
+    rejectPositionals(this);
     final args = argResults!;
     final host = _host ?? HostInfo.detect();
     final workspace = Workspace.resolve(override: args['workspace'] as String?);

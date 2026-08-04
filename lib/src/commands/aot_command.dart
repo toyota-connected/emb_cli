@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/aot/aot_builder.dart';
+import 'package:emb_cli/src/commands/positional_args.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
 import 'package:mason_logger/mason_logger.dart';
@@ -74,6 +75,7 @@ class AotCommand extends Command<int> {
 
   @override
   Future<int> run() async {
+    rejectPositionals(this);
     final args = argResults!;
     final host = _host ?? HostInfo.detect();
     final workspace = Workspace.resolve(override: args['workspace'] as String?);

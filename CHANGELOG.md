@@ -1,5 +1,15 @@
 # Unreleased
 
+- feat: `emb doctor` reports the board library — resolved source rung, install
+  path, board count, and any version skew, in both the text and `--json`
+  output. A reachable emb with no board library is the same false green the
+  authorization probe exists for: nothing looks wrong until a manifest uses
+  `extends:`.
+- fix: commands that take no positional arguments now reject stray ones
+  instead of silently discarding them. `emb sync boards` ran the repository
+  sync and reported "No source repositories found to sync", with no hint that
+  `boards` had been dropped; it now names the stray argument and suggests
+  `emb boards sync`.
 - fix: `extends:` now works on an installed `emb`. `dart install` produces a
   standalone binary that carries no package data files, so `boards/` never
   reached it and every board name failed with `Known boards: none`. The board

@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/command_runner.dart';
+import 'package:emb_cli/src/commands/positional_args.dart';
 import 'package:emb_cli/src/version.dart';
 import 'package:mason_logger/mason_logger.dart';
 import 'package:pub_updater/pub_updater.dart';
@@ -28,6 +29,7 @@ class UpdateCommand extends Command<int> {
 
   @override
   Future<int> run() async {
+    rejectPositionals(this);
     final updateCheckProgress = _logger.progress('Checking for updates');
     late final String latestVersion;
     try {
