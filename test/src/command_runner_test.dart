@@ -19,7 +19,7 @@ class _MockPubUpdater extends Mock implements PubUpdater {}
 // Deliberately far ahead of any real packageVersion. It used to be '0.0.0',
 // which is *older* than what emb ships -- the "shows update message when newer
 // version exists" test passed only because the check compared for inequality
-// rather than ordering, so it asserted the bug rather than the behaviour.
+// rather than ordering, so it asserted the bug rather than the behavior.
 const latestVersion = '99.9.9';
 
 /// An older published version: an unreleased build is ahead of pub.dev, which
