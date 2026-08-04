@@ -1,5 +1,12 @@
 # 0.2.0
 
+- fix: the update notice is no longer printed under `--json`. It is written to
+  stdout, so it landed after the envelope and made the output unparseable for
+  exactly the callers who asked for machine-readable output.
+- fix: only a *newer* published version is offered as an update. The check
+  compared for inequality, so any unreleased build — every developer on main,
+  and every release branch before its publish — was told to "update" to the
+  older published version.
 - feat: `emb doctor` reports the board library — resolved source rung, install
   path, board count, and any version skew, in both the text and `--json`
   output. A reachable emb with no board library is the same false green the
