@@ -16,7 +16,15 @@ class _MockProgress extends Mock implements Progress {}
 
 class _MockPubUpdater extends Mock implements PubUpdater {}
 
-const latestVersion = '0.0.0';
+// Deliberately far ahead of any real packageVersion. It used to be '0.0.0',
+// which is *older* than what emb ships -- the "shows update message when newer
+// version exists" test passed only because the check compared for inequality
+// rather than ordering, so it asserted the bug rather than the behavior.
+const latestVersion = '99.9.9';
+
+/// An older published version: an unreleased build is ahead of pub.dev, which
+/// is every developer on main and every release branch before its publish.
+const olderVersion = '0.0.1';
 
 final updatePrompt =
     '''
@@ -58,6 +66,31 @@ void main() {
       final result = await commandRunner.run(['--version']);
       expect(result, equals(ExitCode.success.code));
       verify(() => logger.info(updatePrompt)).called(1);
+    });
+
+    // Regression guard: an unreleased build is *ahead* of pub.dev, so telling
+    // the user to "update" to the older published version is backwards. This
+    // is what CI hit on the 0.2.0 release branch.
+    test('does not offer an update to an older published version', () async {
+      when(
+        () => pubUpdater.getLatestVersion(any()),
+      ).thenAnswer((_) async => olderVersion);
+
+      final result = await commandRunner.run(['--version']);
+      expect(result, equals(ExitCode.success.code));
+      verifyNever(() => logger.info(any(that: contains('Update available'))));
+    });
+
+    // The notice goes to stdout, so under --json it lands after the envelope
+    // and makes the output unparseable for exactly the callers who asked for
+    // machine-readable output.
+    test('does not print the update notice under --json', () async {
+      when(
+        () => pubUpdater.getLatestVersion(any()),
+      ).thenAnswer((_) async => latestVersion);
+
+      await commandRunner.run(['doctor', '--json']);
+      verifyNever(() => logger.info(updatePrompt));
     });
 
     test('Does not show update message when the shell calls the '

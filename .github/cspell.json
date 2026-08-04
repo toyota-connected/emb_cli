@@ -186,6 +186,7 @@
     "packagekitd",
     "NONINTERACTIVE",
     "usermod",
-    "debconf"
+    "debconf",
+    "unparseable"
   ]
 }

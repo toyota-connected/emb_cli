@@ -7,6 +7,7 @@ import 'package:emb_cli/src/commands/commands.dart';
 import 'package:emb_cli/src/verbosity.dart';
 import 'package:emb_cli/src/version.dart';
 import 'package:mason_logger/mason_logger.dart';
+import 'package:pub_semver/pub_semver.dart';
 import 'package:pub_updater/pub_updater.dart';
 
 const executableName = 'emb';
@@ -203,8 +204,14 @@ class EmbCliCommandRunner extends CompletionCommandRunner<int> {
       exitCode = await super.runCommand(topLevelResults);
     }
 
-    // Check for updates
-    if (topLevelResults.command?.name != UpdateCommand.commandName) {
+    // Check for updates. Never under `--json`: the notice is written to
+    // stdout, so it would land after the envelope and make the output
+    // unparseable for exactly the callers who asked for machine-readable
+    // output.
+    final sub = topLevelResults.command;
+    final wantsJson =
+        sub != null && sub.options.contains('json') && sub['json'] == true;
+    if (sub?.name != UpdateCommand.commandName && !wantsJson) {
       await _checkForUpdates();
     }
 
@@ -217,8 +224,11 @@ class EmbCliCommandRunner extends CompletionCommandRunner<int> {
   Future<void> _checkForUpdates() async {
     try {
       final latestVersion = await _pubUpdater.getLatestVersion(packageName);
-      final isUpToDate = packageVersion == latestVersion;
-      if (!isUpToDate) {
+      // Only a *newer* published version is an update. Comparing for equality
+      // told anyone running an unreleased build to "update" to the older
+      // published one — which is every developer on main, and every release
+      // branch between the version bump and the publish.
+      if (Version.parse(latestVersion) > Version.parse(packageVersion)) {
         _logger
           ..info('')
           ..info('''
