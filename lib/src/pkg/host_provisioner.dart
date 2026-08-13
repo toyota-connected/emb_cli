@@ -1,4 +1,5 @@
 import 'package:emb_cli/src/host/host_info.dart';
+import 'package:emb_cli/src/pkg/_platform/apk_provisioner.dart';
 import 'package:emb_cli/src/pkg/_platform/brew_provisioner.dart';
 import 'package:emb_cli/src/pkg/_platform/winget_provisioner.dart';
 import 'package:emb_cli/src/pkg/packagekit_provisioner.dart';
@@ -20,8 +21,8 @@ abstract class HostProvisioner {
 
   /// Select the provisioner for [host].
   ///
-  /// Returns the platform-appropriate backend: PackageKit on Linux, Homebrew
-  /// on macOS, WinGet on Windows.
+  /// Returns the platform-appropriate backend: `apk` on Alpine (no systemd),
+  /// PackageKit on other Linux, Homebrew on macOS, WinGet on Windows.
   ///
   /// [interactive] governs whether the backend may prompt the user to
   /// authorize a privileged operation. Every backend accepts it, even where
@@ -30,6 +31,11 @@ abstract class HostProvisioner {
   static HostProvisioner forHost(HostInfo host, {bool interactive = true}) {
     switch (host.os) {
       case HostOs.linux:
+        // Alpine (musl/OpenRC) has no systemd/PackageKit — drive apk directly,
+        // which also needs none of the sd-bus native bridge.
+        if (host.hostType == 'alpine') {
+          return ApkProvisioner(interactive: interactive);
+        }
         return PackageKitProvisioner(interactive: interactive);
       case HostOs.macos:
         return BrewProvisioner(interactive: interactive);
