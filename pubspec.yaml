@@ -2,7 +2,7 @@ name: emb_cli
 description: >-
   Flutter Embedder CLI: provision an embedded-Linux Flutter workspace and build
   ivi-homescreen bundles (cross-compiled AOT for arm64/riscv64).
-version: 0.3.1
+version: 0.3.2
 repository: https://github.com/toyota-connected/emb_cli
 issue_tracker: https://github.com/toyota-connected/emb_cli/issues
 topics:
