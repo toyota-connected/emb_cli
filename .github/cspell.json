@@ -187,6 +187,7 @@
     "NONINTERACTIVE",
     "usermod",
     "debconf",
-    "unparseable"
+    "unparseable",
+    "readelf"
   ]
 }
