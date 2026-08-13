@@ -25,7 +25,7 @@ class PatchSeriesException implements Exception {
 /// Resolve [patches] against [baseDir], leaving absolute entries alone.
 List<String> resolvePatchPaths(List<String> patches, String baseDir) => [
   for (final patch in patches)
-    p.isAbsolute(patch) ? patch : p.normalize(p.join(baseDir, patch)),
+    if (p.isAbsolute(patch)) patch else p.normalize(p.join(baseDir, patch)),
 ];
 
 /// A digest over a patch series' *contents*, for cache keys and stamps.

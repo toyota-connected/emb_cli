@@ -112,58 +112,54 @@ void main() {
     setUp(() => tmp = Directory.systemTemp.createTempSync('emb_escrow_'));
     tearDown(() => tmp.deleteSync(recursive: true));
 
-    test(
-      'a blob survives export then import into a fresh cache',
-      () async {
-        final srcRoot = Directory(p.join(tmp.path, 'src'))..createSync();
-        File(p.join(srcRoot.path, 'cas', 'sha256', 'ab', 'blob'))
-          ..createSync(recursive: true)
-          ..writeAsStringSync('payload');
-        // A transient lock that must be excluded.
-        File(p.join(srcRoot.path, 'cas', 'locks', 'x.lock'))
-          ..createSync(recursive: true)
-          ..writeAsStringSync('');
-        final manifestDir = Directory(p.join(tmp.path, 'mf'))..createSync();
+    test('a blob survives export then import into a fresh cache', () async {
+      final srcRoot = Directory(p.join(tmp.path, 'src'))..createSync();
+      File(p.join(srcRoot.path, 'cas', 'sha256', 'ab', 'blob'))
+        ..createSync(recursive: true)
+        ..writeAsStringSync('payload');
+      // A transient lock that must be excluded.
+      File(p.join(srcRoot.path, 'cas', 'locks', 'x.lock'))
+        ..createSync(recursive: true)
+        ..writeAsStringSync('');
+      final manifestDir = Directory(p.join(tmp.path, 'mf'))..createSync();
+      File(
+        p.join(manifestDir.path, archiveManifestName),
+      ).writeAsStringSync('{}');
+      final archive = p.join(tmp.path, 'closure.tar.zst');
+
+      final export = await defaultProcessRunner(
+        'tar',
+        exportTarArgs(
+          archive: archive,
+          root: srcRoot.path,
+          dirs: const ['cas'],
+          manifestDir: manifestDir.path,
+        ),
+      );
+      expect(export.exitCode, 0, reason: export.stderr);
+
+      final dstRoot = Directory(p.join(tmp.path, 'dst'))..createSync();
+      final import = await defaultProcessRunner(
+        'tar',
+        importTarArgs(archive: archive, root: dstRoot.path),
+      );
+      expect(import.exitCode, 0, reason: import.stderr);
+
+      expect(
         File(
-          p.join(manifestDir.path, archiveManifestName),
-        ).writeAsStringSync('{}');
-        final archive = p.join(tmp.path, 'closure.tar.zst');
-
-        final export = await defaultProcessRunner(
-          'tar',
-          exportTarArgs(
-            archive: archive,
-            root: srcRoot.path,
-            dirs: const ['cas'],
-            manifestDir: manifestDir.path,
-          ),
-        );
-        expect(export.exitCode, 0, reason: export.stderr);
-
-        final dstRoot = Directory(p.join(tmp.path, 'dst'))..createSync();
-        final import = await defaultProcessRunner(
-          'tar',
-          importTarArgs(archive: archive, root: dstRoot.path),
-        );
-        expect(import.exitCode, 0, reason: import.stderr);
-
-        expect(
-          File(
-            p.join(dstRoot.path, 'cas', 'sha256', 'ab', 'blob'),
-          ).readAsStringSync(),
-          'payload',
-        );
-        // The excluded lock did not travel.
-        expect(
-          Directory(p.join(dstRoot.path, 'cas', 'locks')).existsSync(),
-          isFalse,
-        );
-        expect(
-          File(p.join(dstRoot.path, archiveManifestName)).existsSync(),
-          isTrue,
-        );
-      },
-      skip: _haveZstd ? false : 'zstd not installed',
-    );
+          p.join(dstRoot.path, 'cas', 'sha256', 'ab', 'blob'),
+        ).readAsStringSync(),
+        'payload',
+      );
+      // The excluded lock did not travel.
+      expect(
+        Directory(p.join(dstRoot.path, 'cas', 'locks')).existsSync(),
+        isFalse,
+      );
+      expect(
+        File(p.join(dstRoot.path, archiveManifestName)).existsSync(),
+        isTrue,
+      );
+    }, skip: _haveZstd ? false : 'zstd not installed');
   });
 }
