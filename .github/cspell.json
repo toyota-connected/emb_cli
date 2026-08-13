@@ -197,6 +197,8 @@
     "atexit",
     "mallinfo",
     "execinfo",
-    "gnueabihf"
+    "gnueabihf",
+    "libunwind",
+    "softfp"
   ]
 }
