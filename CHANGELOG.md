@@ -1,3 +1,20 @@
+# 0.3.2
+
+- feat: build the Flutter engine for riscv64 and armv7hf, in both glibc and musl.
+  The single source-build recipe now produces a green, C-ABI-clean engine for all
+  seven arch/libc combinations in scope — x86_64, arm64, riscv64, and armv7hf,
+  each in glibc and musl — every one validated with a from-scratch build.
+  armv7hf selects hard float (its gnueabihf sysroot is hard-float, but gn defaults
+  arm to softfp); riscv64 applies the gn-riscv and swiftshader-llvm-16 patches (its
+  Reactor JIT needs llvm-16); and musl targets add a compiler-rt builtins fallback
+  and turn off the glibc-only mallinfo/execinfo assumptions in swiftshader's
+  vendored LLVM.
+- fix: correct the 0.3.1 note that an x86_64-musl target is unsupported. When the
+  build uses a custom target toolchain, the engine's gn already builds host tools
+  with the glibc host toolchain, so an x86_64-musl target builds like any other —
+  it only needs the same complete musl sysroot (libc++, libunwind, gcc) the other
+  musl targets do.
+
 # 0.3.1
 
 - feat: build the Flutter engine for musl targets. The source build now handles

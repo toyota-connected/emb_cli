@@ -194,6 +194,9 @@
     "execinfo",
     "libstdc",
     "cxa",
-    "atexit"
+    "atexit",
+    "mallinfo",
+    "execinfo",
+    "gnueabihf"
   ]
 }
