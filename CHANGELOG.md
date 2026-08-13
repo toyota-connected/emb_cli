@@ -1,3 +1,21 @@
+# 0.3.1
+
+- feat: build the Flutter engine for musl targets. The source build now handles
+  a musl libc target — routing the in-tree libc++ to its native musl path,
+  fixing the flatbuffers and swiftshader glibc assumptions, dropping the glibc
+  execinfo backtrace, and applying its patch series with plain `patch` so it
+  reaches nested engine DEPS repos. Validated with a from-scratch arm64-musl
+  build whose `libflutter_engine.so` loads and runs a Dart app headless in an
+  Alpine arm64 container, within 2.3% of the published glibc engine for the same
+  commit. musl targets must be embedded architectures (arm64/riscv/armv7): an
+  x86_64-musl target collides with the x86_64 host toolchain.
+- fix: the engine ABI gate no longer false-fails a clean musl engine. Rule 6
+  treated libc's `__cxa_atexit` / `__cxa_finalize` / `__cxa_thread_atexit_impl`
+  as a libstdc++/libc++abi dependency, but those are the C runtime's
+  static-destructor registration, provided by libc itself. The earlier glibc fix
+  filtered version-tagged symbols, but musl carries no symbol version, so a clean
+  musl engine tripped the rule. A genuine undefined `__cxa_throw` still fires.
+
 # 0.3.0
 
 - feat: build the Flutter engine from source when no prebuilt is published. When
