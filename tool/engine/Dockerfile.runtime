@@ -1,0 +1,38 @@
+# emb engine *runtime* image (consume) — any host.
+# Minimal glibc + a Dart SDK + emb +
+# a pinned Linux Flutter SDK, so `emb aot`/`bundle` for a Linux target run inside
+# it on a non-Linux host (gen_snapshot is a Linux x86_64 binary). The project,
+# workspace, and cache are mounted at run time; only the toolchain is baked.
+#
+# podman build -f tool/engine/Dockerfile.runtime \
+# --build-arg FLUTTER_VERSION=3.44.2 -t emb-engine-runtime .
+# # emb routes to this image automatically on a non-Linux host; or:
+# podman run --rm -e EMB_IN_CONTAINER=1 \
+# -v "$PWD:$PWD" -v "$EMB_CACHE_DIR:$EMB_CACHE_DIR" -w "$PWD" \
+# emb-engine-runtime emb bundle --app-path./app --arch arm64 --build --exec-native
+FROM debian:bookworm-slim
+
+ARG EMB_REPO=https://github.com/toyota-connected/emb_cli.git
+ARG EMB_REF=main
+ARG FLUTTER_VERSION=stable
+ENV DEBIAN_FRONTEND=noninteractive
+
+# gen_snapshot ships its own loader, so the runtime floor is small.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+ git curl ca-certificates python3 unzip xz-utils \
+ && rm -rf /var/lib/apt/lists/*
+
+# emb + a pinned Dart SDK; persist on PATH (see Dockerfile.builder for why).
+RUN git clone --depth 1 --branch "${EMB_REF}" "${EMB_REPO}" /opt/emb_cli \
+ && cd /opt/emb_cli \
+ && eval "$(python3 tool/bootstrap_dart.py --install . --shellenv)" \
+ && ln -sf "$(command -v dart)" /usr/local/bin/dart \
+ && ln -sf "$(command -v emb)" /usr/local/bin/emb \
+ && emb --version
+
+# A Linux Flutter SDK at /emb/flutter — the workspace's own SDK is host-arch on
+# a Mac/Windows host, so a Linux frontend_server/dart must live in the image.
+ENV FLUTTER_WORKSPACE=/emb
+RUN emb flutter -w /emb --flutter-version "${FLUTTER_VERSION}"
+
+WORKDIR /emb

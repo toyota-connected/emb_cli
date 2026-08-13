@@ -4,8 +4,10 @@ import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/aot/aot_builder.dart';
 import 'package:emb_cli/src/bundle/bundle_builder.dart';
 import 'package:emb_cli/src/bundle/bundle_pipeline.dart';
+import 'package:emb_cli/src/cache/cache_dir.dart';
 import 'package:emb_cli/src/commands/positional_args.dart';
 import 'package:emb_cli/src/engine/engine_artifacts.dart';
+import 'package:emb_cli/src/exec/container_reentry.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
 import 'package:mason_logger/mason_logger.dart';
@@ -22,10 +24,12 @@ class BundleCommand extends Command<int> {
     HostInfo? host,
     BundleBuilder Function(Workspace ws)? bundleFactory,
     AotBuilder Function(Workspace ws, HostInfo host)? aotFactory,
+    ContainerReentry? reentry,
   }) : _logger = logger,
        _host = host,
        _bundleFactory = bundleFactory ?? BundleBuilder.new,
-       _aotFactory = aotFactory ?? ((ws, host) => AotBuilder(ws, host: host)) {
+       _aotFactory = aotFactory ?? ((ws, host) => AotBuilder(ws, host: host)),
+       _reentry = reentry {
     argParser
       ..addOption(
         'app-path',
@@ -61,6 +65,14 @@ class BundleCommand extends Command<int> {
         'build',
         help: 'Run `emb aot` first to (re)build flutter_assets + libapp.so.',
         negatable: false,
+      )
+      ..addFlag(
+        'exec-native',
+        help:
+            'Run directly instead of routing through a container (set '
+            'automatically inside the container; recursion guard).',
+        negatable: false,
+        hide: true,
       );
   }
 
@@ -68,6 +80,7 @@ class BundleCommand extends Command<int> {
   final HostInfo? _host;
   final BundleBuilder Function(Workspace ws) _bundleFactory;
   final AotBuilder Function(Workspace ws, HostInfo host) _aotFactory;
+  final ContainerReentry? _reentry;
 
   @override
   String get description =>
@@ -91,9 +104,40 @@ class BundleCommand extends Command<int> {
       return ExitCode.usage.code;
     }
 
+    // A Linux-target bundle needs the Linux-x86_64 toolchain (gen_snapshot);
+    // on a non-Linux/non-x86_64 host, route through the runtime container.
+    final explicitOutput = args['output'] as String?;
+    final reentry = _reentry ?? ContainerReentry(host: host);
+    final routed = await reentry.maybeRun(
+      forceNative: args['exec-native'] as bool,
+      workdir: workspace.root.path,
+      mounts: ContainerReentry.mountsFor([
+        workspace.root.path,
+        Directory(appPath).absolute.path,
+        ensureCacheDir().path,
+        if (explicitOutput != null) Directory(explicitOutput).parent.path,
+      ]),
+      embArgs: [
+        'bundle',
+        '--app-path',
+        Directory(appPath).absolute.path,
+        '-w',
+        workspace.root.path,
+        '--mode',
+        mode,
+        '--arch',
+        arch,
+        if (args['build'] as bool) '--build',
+        if (explicitOutput != null) ...[
+          '--output',
+          Directory(explicitOutput).absolute.path,
+        ],
+      ],
+    );
+    if (routed != null) return routed;
+
     final output =
-        (args['output'] as String?) ??
-        defaultBundleOutput(workspace, appPath, mode, arch);
+        explicitOutput ?? defaultBundleOutput(workspace, appPath, mode, arch);
 
     final progress = _logger.progress('Bundle $mode/$arch');
     final result = await buildAndAssemble(
@@ -113,7 +157,7 @@ class BundleCommand extends Command<int> {
       progress.fail('Bundle failed');
       if (result.message != null) _logger.err(result.message);
       for (final m in result.missing) {
-        _logger.err('  - $m');
+        _logger.err(' - $m');
       }
       return ExitCode.software.code;
     }

@@ -4,7 +4,9 @@ import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/aot/aot_builder.dart';
 import 'package:emb_cli/src/bundle/bundle_builder.dart';
 import 'package:emb_cli/src/bundle/bundle_pipeline.dart';
+import 'package:emb_cli/src/cache/cache_dir.dart';
 import 'package:emb_cli/src/engine/engine_artifacts.dart';
+import 'package:emb_cli/src/exec/container_reentry.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
@@ -25,9 +27,11 @@ class BuildCommand extends Command<int> {
     AotBuilder Function(Workspace ws, HostInfo host)? aotFactory,
     BundleBuilder Function(Workspace ws)? bundleFactory,
     EngineArtifacts Function(Workspace ws)? engineFactory,
+    ContainerReentry? reentry,
   }) : _logger = logger,
        _host = host,
        _loader = loader,
+       _reentry = reentry,
        _aotFactory = aotFactory ?? ((ws, host) => AotBuilder(ws, host: host)),
        _bundleFactory = bundleFactory ?? BundleBuilder.new,
        _engineFactory = engineFactory ?? EngineArtifacts.new {
@@ -51,12 +55,21 @@ class BuildCommand extends Command<int> {
         'no-build',
         help: 'Assemble from existing artifacts; skip compiling.',
         negatable: false,
+      )
+      ..addFlag(
+        'exec-native',
+        help:
+            'Run directly instead of routing through a container (set '
+            'automatically inside the container; recursion guard).',
+        negatable: false,
+        hide: true,
       );
   }
 
   final Logger _logger;
   final HostInfo? _host;
   final ManifestLoader _loader;
+  final ContainerReentry? _reentry;
   final AotBuilder Function(Workspace ws, HostInfo host) _aotFactory;
   final BundleBuilder Function(Workspace ws) _bundleFactory;
   final EngineArtifacts Function(Workspace ws) _engineFactory;
@@ -109,6 +122,31 @@ class BuildCommand extends Command<int> {
       return ExitCode.usage.code;
     }
 
+    // The whole matrix compiles via the Linux-x86_64 toolchain; on a non-Linux
+    // / non-x86_64 host, route the whole `emb build` through the runtime
+    // container once. Re-pass the raw --arch/--mode so the manifest matrix
+    // resolves identically inside (don't substitute the host-arch fallback).
+    final reentry = _reentry ?? ContainerReentry(host: host);
+    final routed = await reentry.maybeRun(
+      forceNative: args['exec-native'] as bool,
+      workdir: workspace.root.path,
+      mounts: ContainerReentry.mountsFor([
+        workspace.root.path,
+        pkgDir.absolute.path,
+        ensureCacheDir().path,
+      ]),
+      embArgs: [
+        'build',
+        pkgDir.absolute.path,
+        '-w',
+        workspace.root.path,
+        for (final a in args['arch'] as List<String>) ...['--arch', a],
+        for (final m in args['mode'] as List<String>) ...['--mode', m],
+        if (args['no-build'] as bool) '--no-build',
+      ],
+    );
+    if (routed != null) return routed;
+
     _logger.info(
       styleBold.wrap(
         'Building ${manifest.id}: '
@@ -145,9 +183,9 @@ class BuildCommand extends Command<int> {
         } else {
           failures++;
           progress.fail('$mode/$arch failed');
-          if (result.message != null) _logger.err('    ${result.message}');
+          if (result.message != null) _logger.err(' ${result.message}');
           for (final m in result.missing) {
-            _logger.err('    - $m');
+            _logger.err(' - $m');
           }
         }
       }

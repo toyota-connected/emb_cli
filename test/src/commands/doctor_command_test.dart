@@ -2,7 +2,9 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:args/command_runner.dart';
+import 'package:emb_cli/src/cache/store.dart';
 import 'package:emb_cli/src/commands/doctor_command.dart';
+import 'package:emb_cli/src/engine/engine_builder.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/host/preflight.dart';
 import 'package:emb_cli/src/pkg/host_provisioner.dart';
@@ -279,6 +281,59 @@ cross:
       expect(probeData['target'], 'local');
       expect(probeData['ok'], true);
       expect(probeData['checks'], isNotEmpty);
+    });
+  });
+
+  group('--offline-probe --engine-commit', () {
+    late Directory tmp;
+    setUp(() => tmp = Directory.systemTemp.createTempSync('emb_engine_probe_'));
+    tearDown(() => tmp.deleteSync(recursive: true));
+
+    Future<int?> probe(List<String> extra, {Logger? logger}) {
+      final log = logger ?? Logger();
+      final runner = CommandRunner<int>('emb', 'test')
+        ..addCommand(
+          DoctorCommand(
+            logger: log,
+            host: _host,
+            environment: {'EMB_CACHE_DIR': tmp.path},
+          ),
+        );
+      return runner.run([
+        'doctor',
+        '--offline-probe',
+        '--engine-commit',
+        'abc',
+        ...extra,
+      ]);
+    }
+
+    void seedClosure() {
+      Store(
+        Directory(tmp.path),
+      ).rootOf(EngineBuilder.srcKind, 'abc').createSync(recursive: true);
+    }
+
+    test('missing closure is unavailable', () async {
+      expect(await probe(const []), ExitCode.unavailable.code);
+    });
+
+    test('a materialized closure passes (non-strict)', () async {
+      seedClosure();
+      expect(await probe(const []), ExitCode.success.code);
+    });
+
+    test('the json envelope carries the engine verdict', () async {
+      seedClosure();
+      final logger = _CaptureLogger();
+      final code = await probe(const ['--json'], logger: logger);
+      expect(code, ExitCode.success.code);
+      final json = jsonDecode(logger.buffer.toString()) as Map<String, dynamic>;
+      expect(json['ok'], true);
+      final probeData =
+          (json['data'] as Map)['offline_probe'] as Map<String, dynamic>;
+      expect(probeData['target'], 'engine:abc');
+      expect(probeData['ok'], true);
     });
   });
 }

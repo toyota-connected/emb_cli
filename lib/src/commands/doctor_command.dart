@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/cache/cache_dir.dart';
+import 'package:emb_cli/src/cache/store.dart';
 import 'package:emb_cli/src/cross/boards_dir.dart';
 import 'package:emb_cli/src/cross/cargo_vendor.dart';
 import 'package:emb_cli/src/cross/cross_profile.dart';
@@ -13,6 +14,7 @@ import 'package:emb_cli/src/cross/offline_enforcement.dart';
 import 'package:emb_cli/src/cross/offline_probe.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/engine/engine_artifacts.dart';
+import 'package:emb_cli/src/engine/engine_offline_probe.dart';
 import 'package:emb_cli/src/host/auth_probe.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/host/preflight.dart';
@@ -75,6 +77,13 @@ class DoctorCommand extends Command<int> {
         help:
             'With --offline-probe: also require network isolation (unshare '
             '--net), matching what `emb cross --offline-strict` needs.',
+      )
+      ..addOption(
+        'engine-commit',
+        help:
+            'With --offline-probe: certify the Flutter engine source closure '
+            '(engine-src) for this commit is materialized, instead of a cross '
+            'target. Non-zero exit if missing.',
       );
   }
 
@@ -99,6 +108,15 @@ class DoctorCommand extends Command<int> {
     final targetArg = argResults?['target'] as String?;
     final json = argResults?['json'] == true;
     if (argResults?['offline-probe'] == true) {
+      final engineCommit = argResults?['engine-commit'] as String?;
+      if (engineCommit != null) {
+        return _runEngineOfflineProbe(
+          host,
+          engineCommit,
+          strict: argResults?['strict'] == true,
+          json: json,
+        );
+      }
       return _runOfflineProbe(
         host,
         targetArg,
@@ -115,22 +133,22 @@ class DoctorCommand extends Command<int> {
 
     _logger
       ..info(styleBold.wrap('Host'))
-      ..info('  os:        ${host.os.name}')
+      ..info(' os: ${host.os.name}')
       ..info(
-        '  arch:      ${host.machineArch} (flutter: ${host.flutterArch}, '
+        ' arch: ${host.machineArch} (flutter: ${host.flutterArch}, '
         'engine: ${EngineArtifacts.engineArchForHost(host)})',
       )
-      ..info('  host type: ${host.hostType}')
-      ..info('  version:   ${host.versionId}');
+      ..info(' host type: ${host.hostType}')
+      ..info(' version: ${host.versionId}');
     if (host.prettyName != null) {
-      _logger.info('  release:   ${host.prettyName}');
+      _logger.info(' release: ${host.prettyName}');
     }
 
     final provisioner = _provisionerFactory(host);
     _logger
       ..info('')
       ..info(styleBold.wrap('Package backend'))
-      ..info('  selected:  ${provisioner.name}');
+      ..info(' selected: ${provisioner.name}');
 
     final progress = _logger.progress('Checking ${provisioner.name}');
     try {
@@ -148,14 +166,14 @@ class DoctorCommand extends Command<int> {
       final auth = await probeAuthorization(host, runProcess: _runProcess);
       switch (auth.status) {
         case AuthStatus.authorized:
-          _logger.info('  authorized: yes (${auth.detail})');
+          _logger.info(' authorized: yes (${auth.detail})');
         case AuthStatus.authRequired:
-          _logger.warn('  authorized: needs authentication');
-          if (auth.detail != null) _logger.info('    ${auth.detail}');
+          _logger.warn(' authorized: needs authentication');
+          if (auth.detail != null) _logger.info(' ${auth.detail}');
         case AuthStatus.denied:
-          _logger.err('  authorized: no (${auth.detail})');
+          _logger.err(' authorized: no (${auth.detail})');
         case AuthStatus.unknown:
-          _logger.detail('  authorized: unknown (${auth.detail})');
+          _logger.detail(' authorized: unknown (${auth.detail})');
       }
 
       // Available updates — best-effort and read-only (reflects the backend's
@@ -173,7 +191,7 @@ class DoctorCommand extends Command<int> {
           final n = updates.length;
           updateCheck.complete('$n update${n == 1 ? "" : "s"} available');
           final preview = updates.take(6).join(', ');
-          _logger.info('  $preview${n > 6 ? ", …" : ""}');
+          _logger.info(' $preview${n > 6 ? ", …" : ""}');
         }
       } on Object {
         updateCheck.fail('update check failed');
@@ -203,27 +221,27 @@ class DoctorCommand extends Command<int> {
     _logger
       ..info('')
       ..info(styleBold.wrap('Board library'))
-      ..info('  source:    ${resolver.boardsProvenance ?? "not found"}')
-      ..info('  installed: ${installed.path}');
+      ..info(' source: ${resolver.boardsProvenance ?? "not found"}')
+      ..info(' installed: ${installed.path}');
 
     if (names.isEmpty) {
       _logger
-        ..warn('  boards:    none — `extends:` will fail')
-        ..info('  fix:       run `emb boards sync`');
+        ..warn(' boards: none — `extends:` will fail')
+        ..info(' fix: run `emb boards sync`');
       return;
     }
-    _logger.info('  boards:    ${names.length}');
+    _logger.info(' boards: ${names.length}');
 
     // Skew is reported, never enforced: a hand-maintained EMB_BOARDS_DIR
     // legitimately has no stamp and that path must not be blocked.
     final stamp = installed.existsSync() ? readBoardsStamp(installed) : null;
     if (stamp != null && stamp != packageVersion) {
       _logger.warn(
-        '  version:   $stamp, but emb is $packageVersion — '
+        ' version: $stamp, but emb is $packageVersion — '
         'run `emb boards sync`',
       );
     } else if (stamp != null) {
-      _logger.info('  version:   $stamp');
+      _logger.info(' version: $stamp');
     }
   }
 
@@ -384,7 +402,7 @@ class DoctorCommand extends Command<int> {
     _logger
       ..info(styleBold.wrap('Target $targetArg (${provider.name})'))
       ..info(
-        '  preflight: '
+        ' preflight: '
         '${missing.isEmpty ? "ok" : "MISSING ${missing.join(", ")}"}',
       );
     if (missing.isNotEmpty) {
@@ -485,7 +503,7 @@ class DoctorCommand extends Command<int> {
     final checks = <ProbeCheck>[];
 
     // 1. Toolchain + sysroot present in the store (offline resolve fails closed
-    //    on a miss). A native target has none to fetch.
+    // on a miss). A native target has none to fetch.
     if (!selection.isNative) {
       final provider = CrossProvider.forTarget(
         target,
@@ -557,14 +575,75 @@ class DoctorCommand extends Command<int> {
 
     _logger.info(styleBold.wrap('Offline probe: ${selection.name}'));
     for (final c in probe.checks) {
-      final detail = c.detail.isNotEmpty ? '  (${c.detail})' : '';
-      _logger.info('  ${c.ok ? "✓" : "✗"} ${c.name}$detail');
+      final detail = c.detail.isNotEmpty ? ' (${c.detail})' : '';
+      _logger.info(' ${c.ok ? "✓" : "✗"} ${c.name}$detail');
     }
     if (probe.ok) {
       _logger.success('Offline build closure is complete.');
       return ExitCode.success.code;
     }
     _logger.err('Offline build closure is incomplete — run `emb fetch`.');
+    return ExitCode.unavailable.code;
+  }
+
+  /// `--offline-probe --engine-commit <sha>` path: certify the engine source
+  /// closure (`engine-src/<commit>`) is materialized, and (under [strict]) that
+  /// network isolation is available. No build runs — a seconds-scale CI gate to
+  /// run after `emb engine fetch`.
+  Future<int> _runEngineOfflineProbe(
+    HostInfo host,
+    String commit, {
+    required bool strict,
+    required bool json,
+  }) async {
+    final result = await EngineOfflineProbe(
+      store: Store(ensureCacheDir(environment: _environment)),
+    ).probe(commit: commit, strict: strict);
+
+    final isolationOk = result.isolationOk ?? false;
+    final checks = <ProbeCheck>[
+      ProbeCheck(
+        'engine-src closure cached',
+        ok: result.closureReady,
+        detail: result.closureReady
+            ? ''
+            : 'run `emb engine fetch` online first',
+      ),
+      ProbeCheck(
+        'network isolation',
+        ok: !strict || isolationOk,
+        detail: isolationOk
+            ? 'available'
+            : strict
+            ? 'unavailable (required by --strict)'
+            : 'unavailable (--offline-strict would refuse)',
+      ),
+    ];
+
+    final probe = OfflineProbe(target: 'engine:$commit', checks: checks);
+    if (json) {
+      _logger.info(
+        jsonEnvelope(
+          'doctor',
+          ok: probe.ok,
+          data: {'host': _hostData(host), 'offline_probe': probe.toData()},
+        ),
+      );
+      return probe.ok ? ExitCode.success.code : ExitCode.unavailable.code;
+    }
+
+    _logger.info(styleBold.wrap('Offline probe: engine $commit'));
+    for (final c in probe.checks) {
+      final detail = c.detail.isNotEmpty ? ' (${c.detail})' : '';
+      _logger.info(' ${c.ok ? "✓" : "✗"} ${c.name}$detail');
+    }
+    if (probe.ok) {
+      _logger.success('Engine offline build closure is complete.');
+      return ExitCode.success.code;
+    }
+    _logger.err(
+      'Engine offline closure is incomplete — run `emb engine fetch`.',
+    );
     return ExitCode.unavailable.code;
   }
 
