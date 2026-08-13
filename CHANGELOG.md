@@ -2,7 +2,7 @@
 
 - chore: require `packagekit_dart` 0.5.0 and `winget_dart` 0.4.0, which migrate
   their native build hooks to the `hooks` 2.x native-assets API (and drop the
-  unused `native_toolchain_c`). No behaviour change for emb — both
+  unused `native_toolchain_c`). No behavior change for emb — both
   host-provisioner backends build the same native bridge and still degrade
   cleanly when their toolchain is absent. emb already required Dart 3.10, which
   hooks 2.x needs.
