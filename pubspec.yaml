@@ -22,7 +22,7 @@ dependencies:
   # each one's native build hook no-ops off its own OS, and forHost() only
   # instantiates the matching backend at runtime. See lib/src/pkg/_platform/.
   brew_dart: ^0.3.0
-  cli_completion: ^0.5.0
+  cli_completion: ">=0.5.0 <0.7.0"
   crypto: ^3.0.0
   mason_logger: ">=0.2.16 <0.4.0"
   # Linux (PackageKit) host-provisioner backend.
