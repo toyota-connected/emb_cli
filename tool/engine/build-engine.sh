@@ -148,9 +148,10 @@ build_phase() {
     # swiftshader vendors an LLVM whose Linux config.h assumes glibc — turn off
     # the features musl lacks (mallinfo/mallinfo2, and execinfo.h backtrace) in
     # whichever copy this engine ships (llvm-subzero and/or the older llvm-10.0).
+    local ssd='flutter/third_party/swiftshader/third_party'
     for scfg in \
-      'flutter/third_party/swiftshader/third_party/llvm-subzero/build/Linux/include/llvm/Config/config.h' \
-      'flutter/third_party/swiftshader/third_party/llvm-10.0/configs/linux/include/llvm/Config/config.h'; do
+      "$ssd"/llvm-subzero/build/Linux/include/llvm/Config/config.h \
+      "$ssd"/llvm-*/configs/linux/include/llvm/Config/config.h; do
       [ -f "$scfg" ] && sed -i -E \
         's@^#define (HAVE_MALLINFO2?|HAVE_BACKTRACE|HAVE_EXECINFO_H) 1$@/* #undef \1 */@' \
         "$scfg"
@@ -193,6 +194,20 @@ build_phase() {
     fi
   done
 
+  # musl compiler-rt fallback: the bundled clang ships builtins only for -gnu
+  # triples. clang resolves most musl targets to their -gnu builtins, but some
+  # (riscv64) find nothing and fail to link; point the missing musl per-target
+  # runtime dir at the -gnu one so the builtins/crt resolve.
+  if [ "$libc" = musl ]; then
+    local gnutriple rtbase
+    gnutriple="${triple/musl/gnu}"   # e.g. ...-linux-musl -> ...-linux-gnu
+    rtbase=$(ls -d "$clang_root"/lib/clang/*/lib 2>/dev/null | head -n1 || true)
+    if [ -n "$rtbase" ] && [ -d "$rtbase/$gnutriple" ] && \
+       [ ! -e "$rtbase/$triple" ]; then
+      ln -sfn "$gnutriple" "$rtbase/$triple"
+    fi
+  fi
+
   local -a gnargs=(
     --runtime-mode="$mode" --embedder-for-target --no-build-embedder-examples
     --disable-desktop-embeddings
@@ -211,6 +226,11 @@ build_phase() {
   # passes through any caller-supplied raw gn args.
   [ -n "${EMB_GN_ARGS:-}" ] && gnargs+=(--gn-args="$EMB_GN_ARGS")
   [ "$libc" = musl ] && gnargs+=(--no-backtrace)
+
+  # armv7hf is hard-float: the triple/sysroot are gnueabihf, but gn defaults arm
+  # to softfp, which then looks for the hard-float sysroot's nonexistent
+  # gnu/stubs-soft.h. Select hard float to match.
+  [ "$arch" = armv7hf ] && gnargs+=(--arm-float-abi hard)
 
   log "gn ($mode/$arch/$libc cpu=$linux_cpu ${EMB_NO_LTO:+ no-lto})"
   ./flutter/tools/gn "${gnargs[@]}"
