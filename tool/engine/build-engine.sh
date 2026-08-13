@@ -107,7 +107,66 @@ build_phase() {
   fi
   if [ -n "${EMB_PATCH_DIR:-}" ]; then
     log "applying patch series from $EMB_PATCH_DIR"
-    for p in "$EMB_PATCH_DIR"/*.patch; do [ -e "$p" ] && git apply "$p"; done
+    # An optional `series` file gives per-patch apply dirs ("<patch> <subdir>",
+    # blanks/#comments ignored), mirroring OE's patchdir= — the musl libc++/dart
+    # patches live under flutter/third_party. Without a series, patches apply at
+    # the engine-src root.
+    # Plain `patch`, not `git apply`: engine DEPS pull subtrees like
+    # flutter/third_party/dart in as nested git repos that the outer tree
+    # ignores, and `git apply` silently refuses to touch files under them. GNU
+    # patch has no such boundary. Idempotent: a patch that reverse-applies
+    # cleanly is already in, so skip it (safe to re-run / incremental checkout).
+    if [ -f "$EMB_PATCH_DIR/series" ]; then
+      while read -r pf pdir _; do
+        [ -z "$pf" ] && continue
+        case "$pf" in \#*) continue ;; esac
+        local pd="${pdir:-.}"
+        if patch -p1 -d "$pd" -R --dry-run --force \
+             < "$EMB_PATCH_DIR/$pf" >/dev/null 2>&1; then
+          log "  skip $pf (already applied)"
+          continue
+        fi
+        log "  apply $pf${pdir:+ (in $pdir)}"
+        patch -p1 -d "$pd" --force --no-backup-if-mismatch < "$EMB_PATCH_DIR/$pf"
+      done < "$EMB_PATCH_DIR/series"
+    else
+      for p in "$EMB_PATCH_DIR"/*.patch; do
+        [ -e "$p" ] || continue
+        patch -p1 --force --no-backup-if-mismatch < "$p" || true
+      done
+    fi
+  fi
+
+  # musl target tweaks (mirror meta-flutter's flutter-engine recipe): honor the
+  # overridden --target-sysroot instead of the bundled Debian one, and drop the
+  # glibc-only mallinfo define swiftshader's vendored LLVM assumes.
+  if [ "$libc" = musl ]; then
+    log "musl: default-sysroot off + swiftshader mallinfo fix"
+    [ -f build/config/sysroot.gni ] && sed -i \
+      's|use_default_linux_sysroot = true|use_default_linux_sysroot = false|g' \
+      build/config/sysroot.gni
+    # swiftshader vendors an LLVM whose Linux config.h assumes glibc — turn off
+    # the features musl lacks (mallinfo/mallinfo2, and execinfo.h backtrace) in
+    # whichever copy this engine ships (llvm-subzero and/or the older llvm-10.0).
+    for scfg in \
+      'flutter/third_party/swiftshader/third_party/llvm-subzero/build/Linux/include/llvm/Config/config.h' \
+      'flutter/third_party/swiftshader/third_party/llvm-10.0/configs/linux/include/llvm/Config/config.h'; do
+      [ -f "$scfg" ] && sed -i -E \
+        's@^#define (HAVE_MALLINFO2?|HAVE_BACKTRACE|HAVE_EXECINFO_H) 1$@/* #undef \1 */@' \
+        "$scfg"
+    done
+    # The custom target toolchain (from --target-toolchain) compiles with its own
+    # BUILD.gn, which does not pick up extra_cflags_cc — so inject the musl compile
+    # defines straight into its commands: tell in-tree libc++ it is on musl (it
+    # then selects its native musl locale path, no libc++ patch needed), and force
+    # flatbuffers off its locale-independent path (it keys on _XOPEN_VERSION>=700,
+    # which musl advertises without providing strtoll_l/strtoull_l). Normalize any
+    # prior injection back to the bare anchor first, so re-runs are deterministic.
+    ctc='build/toolchain/custom/BUILD.gn'
+    if [ -f "$ctc" ]; then
+      sed -i -E 's|\$sysroot_flags[^{]* \{\{defines\}\}|$sysroot_flags {{defines}}|g' "$ctc"
+      sed -i 's|\$sysroot_flags {{defines}}|$sysroot_flags -D_LIBCPP_HAS_MUSL_LIBC -DFLATBUFFERS_LOCALE_INDEPENDENT=0 {{defines}}|g' "$ctc"
+    fi
   fi
 
   local outdir="out/linux_${mode}_${linux_cpu}"
@@ -136,6 +195,7 @@ build_phase() {
 
   local -a gnargs=(
     --runtime-mode="$mode" --embedder-for-target --no-build-embedder-examples
+    --disable-desktop-embeddings
     --no-goma --no-rbe --no-stripped --no-enable-unittests
     --no-dart-version-git-info --linux-cpu "$linux_cpu" --target-os linux
     --target-sysroot "$sysroot" --target-toolchain "$clang_root"
@@ -143,9 +203,14 @@ build_phase() {
   )
 
   # EMB_NO_LTO makes the release link far lighter (a memory-constrained
-  # validation; production keeps LTO). EMB_GN_ARGS injects raw gn args.
+  # validation; production keeps LTO).
   [ -n "${EMB_NO_LTO:-}" ] && gnargs+=(--no-lto)
+
+  # musl has no glibc execinfo backtrace. The libc++ musl define is injected into
+  # the custom toolchain above (extra_cflags_cc does not reach it). EMB_GN_ARGS
+  # passes through any caller-supplied raw gn args.
   [ -n "${EMB_GN_ARGS:-}" ] && gnargs+=(--gn-args="$EMB_GN_ARGS")
+  [ "$libc" = musl ] && gnargs+=(--no-backtrace)
 
   log "gn ($mode/$arch/$libc cpu=$linux_cpu ${EMB_NO_LTO:+ no-lto})"
   ./flutter/tools/gn "${gnargs[@]}"

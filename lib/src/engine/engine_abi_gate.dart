@@ -43,8 +43,14 @@ class EngineAbiGate {
   static final RegExp _muslLibc = RegExp(r'ld-musl-|libc\.musl-');
   static final RegExp _glibcLibc = RegExp(r'libc\.so\.6');
   static final RegExp _exportedCxx = RegExp('^_Z');
+  // The `__cxa_atexit` / `__cxa_finalize` / `__cxa_thread_atexit(_impl)` family
+  // is the C runtime's static-destructor registration, provided by libc itself
+  // (both glibc and musl) — not a libstdc++/libc++abi dependency — so exclude
+  // it. musl carries no symbol version, so the @GLIBC_ filter below cannot
+  // catch it; this name-based exclusion covers both libcs.
   static final RegExp _externCxx = RegExp(
-    '^(?:__cxa_|__cxxabiv1|__gxx_personality|_ZSt|_ZNSt|_Zna|_Znw|_ZdlPv)',
+    '^(?:__cxa_(?!atexit|finalize|thread_atexit)'
+    '|__cxxabiv1|__gxx_personality|_ZSt|_ZNSt|_Zna|_Znw|_ZdlPv)',
   );
   static final Map<String, RegExp> _machineFor = {
     'x86_64': RegExp('X86-64'),

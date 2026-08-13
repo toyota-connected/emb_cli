@@ -160,4 +160,41 @@ void main() {
     );
     expect(v, isEmpty);
   });
+
+  test('the unversioned libc __cxa_atexit family does not trip rule 6 (musl), '
+      'but a real libc++abi symbol still does', () async {
+    const musl = ToolchainProfile(
+      os: TargetOs.linux,
+      libc: Libc.musl,
+      sysrootId: 'alpine',
+    );
+    // musl carries no symbol version, so __cxa_atexit / __cxa_finalize /
+    // __cxa_thread_atexit_impl (libc's static-destructor registration) arrive
+    // unversioned — they must not be mistaken for a C++ ABI dependency.
+    final libc = EngineAbiGate(
+      runProcess: _canned(
+        header: 'ELF Header:\n  Machine: AArch64',
+        dynamicSection: ' (NEEDED) Shared library: [libc.musl-aarch64.so.1]',
+        defined: '0000000000012345 T FlutterEngineRun',
+        undefined:
+            '                 U __cxa_atexit\n'
+            '                 U __cxa_finalize\n'
+            '                 U __cxa_thread_atexit_impl',
+      ),
+    );
+    final quiet = await libc.verify(so, profile: musl, arch: 'arm64');
+    expect(quiet.where((x) => x.rule == 6), isEmpty);
+
+    // A genuine unversioned libc++abi dependency must still fire rule 6.
+    final bad = EngineAbiGate(
+      runProcess: _canned(
+        header: 'ELF Header:\n  Machine: AArch64',
+        dynamicSection: ' (NEEDED) Shared library: [libc.musl-aarch64.so.1]',
+        defined: '0000000000012345 T FlutterEngineRun',
+        undefined: '                 U __cxa_throw',
+      ),
+    );
+    final loud = await bad.verify(so, profile: musl, arch: 'arm64');
+    expect(loud.map((x) => x.rule), contains(6));
+  });
 }
