@@ -193,6 +193,7 @@
     "swiftshader",
     "execinfo",
     "libstdc",
-    "cxa"
+    "cxa",
+    "atexit"
   ]
 }
