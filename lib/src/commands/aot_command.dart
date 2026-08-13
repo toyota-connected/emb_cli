@@ -2,7 +2,9 @@ import 'dart:io';
 
 import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/aot/aot_builder.dart';
+import 'package:emb_cli/src/cache/cache_dir.dart';
 import 'package:emb_cli/src/commands/positional_args.dart';
+import 'package:emb_cli/src/exec/container_reentry.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
 import 'package:mason_logger/mason_logger.dart';
@@ -18,8 +20,10 @@ class AotCommand extends Command<int> {
     HostInfo? host,
     AotBuilder Function(Workspace ws, HostInfo host, String? glibcSysroot)?
     builderFactory,
+    ContainerReentry? reentry,
   }) : _logger = logger,
        _host = host,
+       _reentry = reentry,
        _builderFactory =
            builderFactory ??
            ((ws, host, sysroot) =>
@@ -58,11 +62,20 @@ class AotCommand extends Command<int> {
         help:
             'Directory with ld-linux + libc to run gen_snapshot under '
             "(defaults to the artifact's bundled clang_x64/lib64).",
+      )
+      ..addFlag(
+        'exec-native',
+        help:
+            'Run directly instead of routing through a container (set '
+            'automatically inside the container; recursion guard).',
+        negatable: false,
+        hide: true,
       );
   }
 
   final Logger _logger;
   final HostInfo? _host;
+  final ContainerReentry? _reentry;
   final AotBuilder Function(Workspace ws, HostInfo host, String? glibcSysroot)
   _builderFactory;
 
@@ -87,6 +100,35 @@ class AotCommand extends Command<int> {
       return ExitCode.usage.code;
     }
 
+    // The AOT step runs the Linux-x86_64 gen_snapshot; on a non-Linux/non-x86_64
+    // host, route through the runtime container.
+    final genSnapshot = args['gen-snapshot'] as String?;
+    final glibcSysroot = args['glibc-sysroot'] as String?;
+    final reentry = _reentry ?? ContainerReentry(host: host);
+    final routed = await reentry.maybeRun(
+      forceNative: args['exec-native'] as bool,
+      workdir: workspace.root.path,
+      mounts: ContainerReentry.mountsFor([
+        workspace.root.path,
+        Directory(appPath).absolute.path,
+        ensureCacheDir().path,
+        if (genSnapshot != null) File(genSnapshot).parent.path,
+        if (glibcSysroot != null) glibcSysroot,
+      ]),
+      embArgs: [
+        'aot',
+        '--app-path',
+        Directory(appPath).absolute.path,
+        '-w',
+        workspace.root.path,
+        for (final m in args['mode'] as List<String>) ...['--mode', m],
+        if (arch != null) ...['--arch', arch],
+        if (genSnapshot != null) ...['--gen-snapshot', genSnapshot],
+        if (glibcSysroot != null) ...['--glibc-sysroot', glibcSysroot],
+      ],
+    );
+    if (routed != null) return routed;
+
     final builder = _builderFactory(
       workspace,
       host,
@@ -102,9 +144,9 @@ class AotCommand extends Command<int> {
 
     for (final m in result.modes) {
       if (m.success) {
-        _logger.info(lightGreen.wrap('  ${m.mode}: ${m.output}'));
+        _logger.info(lightGreen.wrap(' ${m.mode}: ${m.output}'));
       } else {
-        _logger.err('  ${m.mode}: ${m.message}');
+        _logger.err(' ${m.mode}: ${m.message}');
       }
     }
     return result.success ? ExitCode.success.code : ExitCode.software.code;
