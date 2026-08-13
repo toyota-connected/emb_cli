@@ -188,6 +188,12 @@
     "usermod",
     "debconf",
     "unparseable",
-    "readelf"
+    "readelf",
+    "flatbuffers",
+    "swiftshader",
+    "execinfo",
+    "libstdc",
+    "cxa",
+    "atexit"
   ]
 }
