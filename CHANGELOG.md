@@ -1,3 +1,34 @@
+# 0.3.0
+
+- feat: build the Flutter engine from source when no prebuilt is published. When
+  `emb engine` finds no published engine SDK for a `(commit, arch, mode)`, it can
+  now build one on demand as an opt-in augment, producing a drop-in artifact that
+  `aot`/`bundle` consume unchanged. A fail-closed ABI gate (readelf/nm) verifies
+  the built `libflutter_engine.so` is a self-contained, C-ABI-clean drop-in
+  before it is staged. The single `tool/engine/build-engine.sh` recipe — a
+  fetch/build split mirroring Yocto's `do_fetch`/`do_compile`, with
+  `--offline`/`--offline-strict` enforcement — is shared by emb,
+  meta-flutter/flutter-engine CI, and a Yocto recipe, so the orchestration is not
+  triplicated.
+- feat: route Linux/x86_64 `aot`/`build`/`bundle` into a glibc container on a
+  host that cannot run them natively (non-Linux or non-x86_64), re-entering emb
+  with `--exec-native` behind an `EMB_IN_CONTAINER` guard so the inner run does
+  not recurse.
+- feat: `emb doctor --offline-probe --engine-commit <sha>` certifies that a
+  fetched engine source closure can build with the network denied — the local
+  analog of a Yocto `do_compile` sandbox — with the verdict carried in the
+  `--json` envelope for CI.
+- feat: add an Alpine `apk` host-dependency backend and a musl `-dev` sysroot
+  provider. Alpine uses apk and OpenRC, not PackageKit/systemd, so host
+  provisioning drives `apk` directly — no D-Bus, no systemd, no native bridge —
+  and the musl cross sysroot is built from apk packages, the musl analog of the
+  Debian dpkg path.
+- feat: require `packagekit_dart` 0.4.3, whose build hook now skips the native
+  bridge cleanly when cmake/ninja/libsystemd are absent. Without it, installing
+  emb aborted in that hook on Alpine, minimal images, and any non-systemd host —
+  even though emb never uses the PackageKit backend there — which is what the
+  engine builder/runtime container images rely on.
+
 # 0.2.0
 
 - fix: the update notice is no longer printed under `--json`. It is written to
