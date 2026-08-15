@@ -46,6 +46,36 @@ void main() {
       },
     );
 
+    // The skip-on-exists fast path probes the primary (content-addressed) tag.
+    // Any other tag is mutable, so existence says nothing about what it points
+    // at -- a stale one exists, keeps the content probe matching, and keeps the
+    // skip firing, so the name is never corrected and every consumer of it gets
+    // an older image. Comparing digests is what closes that, and needs a probe
+    // that reports one.
+    test('digestProbe reports a digest for any ref, not just the primary', () {
+      final p = plan(tags: ['abc123', 'bookworm']);
+      final probe = p.digestProbe(p.refs()[1], skopeoAvailable: true);
+      expect(probe.exe, 'skopeo');
+      expect(probe.args, [
+        'inspect',
+        '--format',
+        '{{.Digest}}',
+        'docker://ghcr.io/org/emb-cross-aarch64-none-linux-gnu:bookworm',
+      ]);
+    });
+
+    test('digestProbe falls back to the container tool without skopeo', () {
+      final p = plan(tags: ['abc123', 'bookworm']);
+      final probe = p.digestProbe(p.refs()[1], skopeoAvailable: false);
+      expect(probe.exe, 'docker');
+      expect(probe.args, [
+        'manifest',
+        'inspect',
+        '--verbose',
+        'ghcr.io/org/emb-cross-aarch64-none-linux-gnu:bookworm',
+      ]);
+    });
+
     test('build tags every ref and ends with the context dir', () {
       final cmd = plan(tags: ['abc123', 'latest']).build();
       expect(cmd.exe, 'docker');

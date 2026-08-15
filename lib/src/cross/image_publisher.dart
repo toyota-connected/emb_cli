@@ -67,6 +67,24 @@ class ImagePublishPlan {
       ? ContainerCmd('skopeo', ['inspect', 'docker://$primaryRef'])
       : ContainerCmd(tool, ['manifest', 'inspect', primaryRef]);
 
+  /// Prints just the digest of [ref], for comparing two tags.
+  ///
+  /// Existence is not enough to decide a publish can be skipped. The primary
+  /// tag is content-addressed and so answers "has this content been
+  /// published"; any other tag is mutable and answers only "does this name
+  /// exist". A mutable tag left pointing at an older image exists, matches no
+  /// probe, and quietly serves stale content to everything that consumes it by
+  /// name -- which is what the skip has to rule out.
+  ContainerCmd digestProbe(String ref, {required bool skopeoAvailable}) =>
+      skopeoAvailable
+      ? ContainerCmd('skopeo', [
+          'inspect',
+          '--format',
+          '{{.Digest}}',
+          'docker://$ref',
+        ])
+      : ContainerCmd(tool, ['manifest', 'inspect', '--verbose', ref]);
+
   /// `<tool> build -t <ref> [-t <ref> …] <contextDir>`.
   ContainerCmd build() => ContainerCmd(tool, [
     'build',
