@@ -76,6 +76,27 @@ class CrossCache {
     }
   }
 
+  /// Whether the registry already holds every [selectors] entry.
+  ///
+  /// This is what makes "already published" answerable. The image carries no
+  /// toolchain -- its dockerignore is `*` and it copies nothing -- so a
+  /// consuming build gets one from this cache or resolves it from scratch. An
+  /// image that exists therefore says nothing on its own about whether a build
+  /// has work to do.
+  ///
+  /// False on any transport error, deliberately: an unreadable registry is a
+  /// reason to do the work, not to assume it has been done.
+  Future<bool> hasAll(Iterable<CacheSelector> selectors) async {
+    for (final s in selectors) {
+      try {
+        if (!await _transport.exists(refFor(s))) return false;
+      } on Object {
+        return false;
+      }
+    }
+    return true;
+  }
+
   /// Push each locally-resolved [selectors] entry to the registry (skipped when
   /// the ref already exists). Call after a resolve has populated the store; a
   /// push failure is logged but does not fail the caller.

@@ -555,14 +555,39 @@ class CrossCommand extends Command<int> {
         args['force'] != true &&
         args['push'] != false &&
         provider.name == 'arm-gnu') {
-      if (await _publishedAlready(
-        target,
-        triple: provider.triple,
-        image: publishImage!,
-        toolOverride: args['container-tool'] as String?,
-        requestedTags: args['tag'] as List<String>,
-      )) {
+      // The image is only half of what a consuming build needs. It carries no
+      // toolchain -- its dockerignore is `*` and it copies nothing -- so the
+      // sysroot base and toolchain reach a build through the shared cache
+      // instead. Skipping on the image alone leaves that cache empty, and
+      // leaves it empty permanently: the push that would fill it lives after
+      // the resolve this skip is avoiding, so every consuming build re-resolves
+      // from scratch forever while the image keeps looking up to date.
+      final fastPathCache = CrossCache.fromEnv(
+        environment: Platform.environment,
+        run: _runProcess,
+        logger: _logger,
+      );
+      final fastPathSelectors = provider.cacheSelectors();
+      final cacheReady =
+          fastPathCache == null ||
+          fastPathSelectors.isEmpty ||
+          await fastPathCache.hasAll(fastPathSelectors);
+
+      if (cacheReady &&
+          await _publishedAlready(
+            target,
+            triple: provider.triple,
+            image: publishImage!,
+            toolOverride: args['container-tool'] as String?,
+            requestedTags: args['tag'] as List<String>,
+          )) {
         return ExitCode.success.code;
+      }
+      if (!cacheReady) {
+        _logger.info(
+          'shared cache is missing artifacts a build would need — '
+          'resolving so they can be published.',
+        );
       }
     }
 
