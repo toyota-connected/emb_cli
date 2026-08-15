@@ -1,3 +1,16 @@
+# 0.3.4
+
+- fix(cross): `--publish` no longer skips a publish that would move a mutable
+  tag. The skip-on-exists fast path probed only the content-addressed tag and
+  returned before applying the others, so whatever `--tag <name>` pointed at
+  when it was last really pushed, it kept pointing at — the content tag still
+  existed, so the skip kept firing, so the push that would move the name never
+  ran. Anything consuming the image by that name got an older one indefinitely.
+  The skip now compares digests and fires only when every requested tag already
+  resolves to the content tag; a digest that cannot be read counts as a reason
+  to republish rather than as a match. The first publish after a tag has
+  drifted does a full resolve — that is the run that repairs it.
+
 # 0.3.3
 
 - chore: require `packagekit_dart` 0.5.0 and `winget_dart` 0.4.0, which migrate
