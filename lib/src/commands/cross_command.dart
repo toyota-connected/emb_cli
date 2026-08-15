@@ -560,6 +560,7 @@ class CrossCommand extends Command<int> {
         triple: provider.triple,
         image: publishImage!,
         toolOverride: args['container-tool'] as String?,
+        requestedTags: args['tag'] as List<String>,
       )) {
         return ExitCode.success.code;
       }
@@ -2441,6 +2442,7 @@ class CrossCommand extends Command<int> {
     required String triple,
     required String image,
     required String? toolOverride,
+    required List<String> requestedTags,
   }) async {
     final tool = await _resolveContainerTool(toolOverride);
     if (tool == null) return false; // the full path reports the tool error
@@ -2460,14 +2462,64 @@ class CrossCommand extends Command<int> {
       imagePrefix: image,
       tags: [imageTag],
     );
-    if (await _refExists(
-      plan,
-      skopeoAvailable: await _hasExecutable('skopeo'),
-    )) {
-      _logger.info('${plan.primaryRef} already published — skipping resolve.');
-      return true;
+    final skopeo = await _hasExecutable('skopeo');
+    if (!await _refExists(plan, skopeoAvailable: skopeo)) {
+      return false;
     }
-    return false;
+
+    // The content is published. That is not sufficient: every other tag the
+    // caller asked for is mutable, and skipping here is what leaves one of
+    // them pointing at an older image forever -- the content tag keeps
+    // matching, so the skip keeps firing, and the stale name is never
+    // corrected. Anything consuming the image by that name gets the old one.
+    //
+    // So compare digests rather than existence. A tag that is missing, points
+    // elsewhere, or cannot be read means the publish still has work to do, and
+    // the full path below applies every tag.
+    final wanted = await _refDigest(
+      plan,
+      plan.primaryRef,
+      skopeoAvailable: skopeo,
+    );
+    for (final tag in requestedTags.where((t) => t != imageTag)) {
+      final ref = '$image:$tag';
+      final actual = await _refDigest(plan, ref, skopeoAvailable: skopeo);
+      if (wanted == null || actual != wanted) {
+        _logger.info(
+          '$ref does not point at ${plan.primaryRef} — '
+          'republishing to move it.',
+        );
+        return false;
+      }
+    }
+
+    _logger.info('${plan.primaryRef} already published — skipping resolve.');
+    return true;
+  }
+
+  /// The digest [ref] resolves to, or null when it cannot be read.
+  ///
+  /// Null is deliberately not "they differ" at the call site: it is treated as
+  /// a reason to republish, because a skip that cannot verify what it is
+  /// skipping is the failure this exists to prevent.
+  Future<String?> _refDigest(
+    ImagePublishPlan plan,
+    String ref, {
+    required bool skopeoAvailable,
+  }) async {
+    final probe = plan.digestProbe(ref, skopeoAvailable: skopeoAvailable);
+    try {
+      final r = await _runProcess(probe.exe, probe.args);
+      if (r.exitCode != 0) return null;
+      final out = (r.stdout as String?) ?? '';
+      // skopeo --format prints the digest alone; `manifest inspect --verbose`
+      // embeds it in JSON, so take the first sha256 either way rather than
+      // parsing two shapes.
+      final match = RegExp('sha256:[0-9a-f]{64}').firstMatch(out);
+      return match?.group(0);
+    } on ProcessException {
+      return null;
+    }
   }
 
   /// Whether the plan's primary ref already exists in the registry (the probe
