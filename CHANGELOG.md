@@ -1,3 +1,38 @@
+# 0.3.5
+
+- fix(cross): `--publish` no longer skips a publish that leaves the shared cache
+  empty. The fast path decided there was nothing to do from the image alone, but
+  the image carries no toolchain — its dockerignore is `*` and it copies nothing
+  — so the sysroot base and toolchain reach a consuming build through the shared
+  cache instead. Skipping on the image alone left that cache empty permanently:
+  the push that fills it runs only after a resolve populates the local store,
+  and the resolve is exactly what the skip avoids, so the image kept looking up
+  to date and the skip kept firing. The fast path now requires both halves, and
+  a transport error counts as not-ready — an unreadable registry is a reason to
+  do the work, not to assume it has been done.
+
+- fix(cache): the shared-cache push works at all. Every push had failed since
+  the transport was written, with `absolute file path detected` from `oras
+  push`: the layer is a temp file this process has just written, so its path is
+  absolute by construction. The failure was invisible because the push is
+  best-effort — it warned, the build carried on, everything stayed green, and
+  the cache the transport exists to fill stayed empty.
+
+- fix(cache): the pushed layer can be pulled again. The path handed to `oras
+  push` becomes the artifact's title, and `oras pull` uses it to decide where
+  to write, so an absolute one asks every consumer to write outside its working
+  directory and is refused. The first attempt at the previous fix disabled the
+  push-side validation, which moved the failure downstream and made it worse:
+  the artifacts reached the registry and could not be pulled at all. The layer
+  is now pushed under its bare filename, with `oras` run from its own directory,
+  so the title is relative and the artifact pulls anywhere — no flag on either
+  side.
+
+Together these are one bug in three parts: the shared cache had never been
+written to. Measured on ivi-homescreen, every consuming build re-resolved its
+toolchain from scratch — 91.8s on rpi4, 108.8s on rpi5, 97.3s on rpi-zero-2w,
+per job, roughly forty minutes of runner time per run.
+
 # 0.3.4
 
 - fix(cross): `--publish` no longer skips a publish that would move a mutable
