@@ -30,6 +30,13 @@ the thing it keys was built with, so two different trees can share one entry.
 
 # 0.3.5
 
+Tagged, never published: pub.dev goes 0.3.4 straight to 0.3.6, so there is no
+0.3.5 to install. Everything below first reached pub.dev in 0.3.6, which
+contains this tag in full — nothing here was lost. It will not be published
+after the fact either, since it predates the two cache-key fixes in 0.3.6 and
+would only offer a version whose `sysrootKey` still shares one sysroot across
+cpu variants.
+
 - fix(cross): `--publish` no longer skips a publish that leaves the shared cache
   empty. The fast path decided there was nothing to do from the image alone, but
   the image carries no toolchain — its dockerignore is `*` and it copies nothing
