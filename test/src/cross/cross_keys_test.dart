@@ -34,6 +34,57 @@ void main() {
       expect(buildKey(rpi5), isNot(buildKey(rpi4)));
     });
 
+    test('cpu-only variants split the sysrootKey once an augment stages', () {
+      // The augments install into the sysroot and are compiled with the
+      // target's cpu flags, so from that point the tree is cpu-specific even
+      // though the image behind it is not. Sharing the key here hands an
+      // a76-tuned lib to an a72 board.
+      const aug = [
+        {'pkg': 'libdisplay-info', 'min': '0.2.0', 'url': 'u'},
+      ];
+      final a76 = _t(const {
+        'provider': 'arm-gnu',
+        'toolchain_version': '12.3.rel1',
+        'image_url': 'https://example/raspios.img.xz',
+        'cpu_flags': ['-mcpu=cortex-a76'],
+        'augment': aug,
+      });
+      final a72 = _t(const {
+        'provider': 'arm-gnu',
+        'toolchain_version': '12.3.rel1',
+        'image_url': 'https://example/raspios.img.xz',
+        'cpu_flags': ['-mcpu=cortex-a72'],
+        'augment': aug,
+      });
+      expect(sysrootKey(a76), isNot(sysrootKey(a72)));
+      // The extraction underneath still costs one download for both.
+      expect(sysrootBaseKey(a76), sysrootBaseKey(a72));
+    });
+
+    test('a host-only augment does not split cpu variants', () {
+      // A `host: true` augment builds for the build machine and installs to
+      // host-tools, never into the sysroot, so it leaves nothing cpu-specific
+      // in the tree and must not cost a private copy per board.
+      const aug = [
+        {'pkg': 'wayland-cxx-scanner', 'url': 'u', 'host': true},
+      ];
+      final a76 = _t(const {
+        'provider': 'arm-gnu',
+        'toolchain_version': '12.3.rel1',
+        'image_url': 'https://example/raspios.img.xz',
+        'cpu_flags': ['-mcpu=cortex-a76'],
+        'augment': aug,
+      });
+      final a72 = _t(const {
+        'provider': 'arm-gnu',
+        'toolchain_version': '12.3.rel1',
+        'image_url': 'https://example/raspios.img.xz',
+        'cpu_flags': ['-mcpu=cortex-a72'],
+        'augment': aug,
+      });
+      expect(sysrootKey(a76), sysrootKey(a72));
+    });
+
     test('a different image yields a different sysrootKey', () {
       expect(sysrootKey(radxa), isNot(sysrootKey(rpi5)));
     });
