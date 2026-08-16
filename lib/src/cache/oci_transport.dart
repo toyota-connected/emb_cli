@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:emb_cli/src/cross/cross_keys.dart' show contentHash;
 import 'package:emb_cli/src/cross/process_runner.dart';
+import 'package:path/path.dart' as p;
 
 /// Media type for a store-entry tree packaged as one gzip tar layer.
 const cacheLayerMediaType = 'application/vnd.emb.cache.layer.v1.tar+gzip';
@@ -89,20 +90,21 @@ class OrasTransport implements OciTransport {
       [
         'push',
         ref,
-        // oras refuses an absolute file path unless told the caller meant it,
-        // because the path becomes the artifact's title annotation and a
-        // consumer pulling it would otherwise be handed something that writes
-        // outside its own directory. Here the layer is a temp file this process
-        // just wrote and the puller only ever reads it back as a blob, so the
-        // path is incidental -- and without this every push fails, which is
-        // why the cache this transport exists to fill has always been empty.
-        '--disable-path-validation',
-        '${layer.path}:$cacheLayerMediaType',
+        // The bare filename, with oras run from the layer's own directory.
+        //
+        // The path given here becomes the artifact's title, and `oras pull`
+        // uses that title to decide where to write -- so an absolute one asks
+        // every consumer to write outside its working directory, which oras
+        // refuses. Pushing a relative name is what makes the artifact pullable
+        // anywhere, and is what its path validation is steering callers toward
+        // rather than an obstacle to route around.
+        '${p.basename(layer.path)}:$cacheLayerMediaType',
         for (final e in annotations.entries) ...[
           '--annotation',
           '${e.key}=${e.value}',
         ],
       ],
+      workingDirectory: layer.parent.path,
       output: ProcessOutputMode.stream,
       label: 'oras:push',
     );

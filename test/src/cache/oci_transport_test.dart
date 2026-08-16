@@ -28,7 +28,11 @@ void main() {
 
   group('OrasTransport', () {
     late List<List<String>> calls;
-    setUp(() => calls = []);
+    late List<String?> workingDirs;
+    setUp(() {
+      calls = [];
+      workingDirs = [];
+    });
 
     // A fake ProcessRunner recording argv and returning [code]/[stderr].
     ProcessRunner faker(int code, {String stderr = ''}) =>
@@ -43,6 +47,7 @@ void main() {
           label,
         }) async {
           calls.add([exe, ...args]);
+          workingDirs.add(workingDirectory);
           return RunResult(code, '', stderr);
         };
 
@@ -59,23 +64,37 @@ void main() {
       ).push('reg/repo:t', layer, annotations: {'k': 'v'});
       final argv = calls.single;
       expect(argv.take(3), ['oras', 'push', 'reg/repo:t']);
-      expect(argv, contains('${layer.path}:$cacheLayerMediaType'));
+      // The bare name, not layer.path: the title travels with the artifact and
+      // a pull writes to it, so an absolute one is unpullable.
+      expect(argv, contains('${p.basename(layer.path)}:$cacheLayerMediaType'));
       expect(argv, containsAllInOrder(['--annotation', 'k=v']));
     });
 
-    // The layer is a temp file this process just wrote, so its path is
-    // absolute and oras refuses that by default -- it becomes the artifact's
-    // title annotation, and a consumer could be handed something that writes
-    // outside its own directory. Here the puller only ever reads the blob back,
-    // so the path is incidental. Without the flag every push fails, which is
-    // why the cache this transport fills had always been empty.
+    // The path pushed becomes the artifact's title, and `oras pull` uses that
+    // title to decide where to write. An absolute one therefore asks every
+    // consumer to write outside its working directory, which oras refuses --
+    // so the layer is pushed by bare name, from its own directory. Disabling
+    // the validation instead makes the push succeed and every pull fail, which
+    // is worse than the original failure because it is further from the cause.
     test(
-      'push allows the absolute layer path oras would otherwise reject',
+      'push sends a relative title so a pull can land it anywhere',
       () async {
-        final layer = File(p.join(Directory.systemTemp.path, 'x.tar.gz'));
+        final dir = Directory.systemTemp.createTempSync('emb_push_t_');
+        addTearDown(() => dir.deleteSync(recursive: true));
+        final layer = File(p.join(dir.path, 'x.tar.gz'))
+          ..writeAsStringSync('x');
         expect(p.isAbsolute(layer.path), isTrue, reason: 'the case under test');
+
         await OrasTransport(run: faker(0)).push('reg/repo:t', layer);
-        expect(calls.single, contains('--disable-path-validation'));
+
+        expect(calls.single, contains('x.tar.gz:$cacheLayerMediaType'));
+        expect(
+          calls.single.any((a) => a.contains(dir.path)),
+          isFalse,
+          reason: 'an absolute path in the title is what breaks the pull',
+        );
+        expect(calls.single, isNot(contains('--disable-path-validation')));
+        expect(workingDirs.single, dir.path);
       },
     );
 
