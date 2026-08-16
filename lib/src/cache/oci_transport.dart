@@ -89,6 +89,14 @@ class OrasTransport implements OciTransport {
       [
         'push',
         ref,
+        // oras refuses an absolute file path unless told the caller meant it,
+        // because the path becomes the artifact's title annotation and a
+        // consumer pulling it would otherwise be handed something that writes
+        // outside its own directory. Here the layer is a temp file this process
+        // just wrote and the puller only ever reads it back as a blob, so the
+        // path is incidental -- and without this every push fails, which is
+        // why the cache this transport exists to fill has always been empty.
+        '--disable-path-validation',
         '${layer.path}:$cacheLayerMediaType',
         for (final e in annotations.entries) ...[
           '--annotation',
