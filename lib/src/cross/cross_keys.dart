@@ -50,19 +50,43 @@ List<String> _sysrootParts(CrossTarget t) => [
 
 /// Hash of the inputs that determine a target's **toolchain + sysroot**:
 /// provider, toolchain version/policy, the sysroot source (image/device +
-/// partition + dev packages) and the augment set. Deliberately excludes
-/// `cpu_flags`/`backends`/`defines`, so cpu-only variants of one board (e.g.
-/// rpi4 vs rpi5 on the same raspios image) share a single extraction.
-String sysrootKey(CrossTarget t) => contentHash([
-  ..._sysrootParts(t),
+/// partition + dev packages) and the augment set. Excludes
+/// `backends`/`defines`, and excludes `cpu_flags` for as long as the tree holds
+/// nothing compiled — cpu-only variants of one board (e.g. rpi4 vs rpi5 on the
+/// same raspios image) then share a single extraction.
+///
+/// A staged augment ends that. Augments install into the sysroot itself
+/// (OverlayBuilder's `stageInto`), and they are compiled with the target's
+/// `cpu_flags`, so the moment one is staged the tree contains objects built for
+/// a specific cpu while the key naming it does not say which. rpi5 (a76), rpi4
+/// (a72) and rpi-zero-2w (a53) share one raspios image and therefore one key:
+/// prepare any of them and the rest reuse a sysroot holding augments tuned for
+/// whichever went first. Nothing detects it — the wrong instructions surface as
+/// SIGILL on the board, a long way from the build that chose them.
+///
+/// So `cpu_flags` join the key exactly when something compiled lands in the
+/// tree. `host: true` augments do not count: they build for the build machine
+/// and install to the workspace's `host-tools`, never into the sysroot.
+///
+/// This costs a private sysroot per cpu variant instead of one shared across
+/// them, which is what the provider's reflink copy of the shared base is for.
+/// [sysrootBaseKey] is unchanged, so the expensive part — the image download
+/// and extraction — stays shared regardless.
+String sysrootKey(CrossTarget t) {
   // Only augments that will actually be staged count toward the key: a
   // `requires_define`-gated augment whose gate isn't satisfied (e.g. an
   // off-by-default crash handler) is not built, so it must not perturb the
   // sysroot identity or invalidate the shared store entry.
-  for (final a in t.augment)
-    if (CrossTarget.defineSatisfied(a.requiresDefine, t.defines))
-      'aug:${augmentIdentity(a)}',
-]);
+  final staged = [
+    for (final a in t.augment)
+      if (CrossTarget.defineSatisfied(a.requiresDefine, t.defines)) a,
+  ];
+  return contentHash([
+    ..._sysrootParts(t),
+    if (staged.any((a) => !a.host)) 'cpu:${t.cpuFlags.join(" ")}',
+    for (final a in staged) 'aug:${augmentIdentity(a)}',
+  ]);
+}
 
 /// An augment's build identity: the fields that change what gets produced,
 /// including a digest of its patch series.
