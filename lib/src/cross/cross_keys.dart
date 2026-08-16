@@ -97,13 +97,40 @@ String augmentIdentity(AugmentLib a) => [
 ///
 /// Gated augments are excluded on the same reasoning as [sysrootKey]: one that
 /// is not built must not perturb the identity of an overlay that lacks it.
-String augmentOverlayKey(CrossTarget t) => contentHash([
-  'triple:${t.targetTriple ?? ''}',
-  'cpu:${t.cpuFlags.join(" ")}',
-  for (final a in t.augment)
-    if (CrossTarget.defineSatisfied(a.requiresDefine, t.defines))
-      'aug:${augmentIdentity(a)}',
-]);
+///
+/// Two inputs beyond the augment set itself, both of which have to be here
+/// before this key can name a blob that crosses machines:
+///
+/// The **sysroot**, because a target-side augment is compiled and linked
+/// against one — its glibc, its headers, its libraries. Two targets can share a
+/// triple, cpu flags and augment list and still differ in sysroot: a bookworm
+/// and a trixie variant of one board is the ordinary case, not a contrived one.
+/// Without this they hash the same, and the first one built wins for both.
+/// [sysrootBaseKey] rather than [sysrootKey], which folds the augment set in
+/// again and would be circular here.
+///
+/// The **host architecture**, but only when the set contains a `host: true`
+/// augment. Those produce build-machine binaries — emb's own
+/// wayland-cxx-scanner is one — so an overlay built on an x86_64 runner holds
+/// x86_64 executables that an aarch64 host cannot run. Folding it in
+/// unconditionally would split the cache for overlays that hold no host
+/// binaries at all, so it is conditional on there being one.
+///
+/// [hostArch] is the build machine's `machineArch`. It is only read when a host
+/// augment is staged; pass it whenever this key might name a shared artifact.
+String augmentOverlayKey(CrossTarget t, {String hostArch = ''}) {
+  final staged = [
+    for (final a in t.augment)
+      if (CrossTarget.defineSatisfied(a.requiresDefine, t.defines)) a,
+  ];
+  return contentHash([
+    'triple:${t.targetTriple ?? ''}',
+    'cpu:${t.cpuFlags.join(" ")}',
+    'sysroot:${sysrootBaseKey(t)}',
+    if (staged.any((a) => a.host)) 'host:$hostArch',
+    for (final a in staged) 'aug:${augmentIdentity(a)}',
+  ]);
+}
 
 /// Hash of the **shared sysroot base**: [sysrootKey] without the augment set,
 /// since augments build into a separate per-workspace overlay prefix rather
