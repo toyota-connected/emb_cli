@@ -1,3 +1,33 @@
+# 0.3.6
+
+Two cache-key corrections. Both are about a key that does not name everything
+the thing it keys was built with, so two different trees can share one entry.
+
+- fix(cross): `sysrootKey` folds in `cpu_flags` once an augment stages into the
+  sysroot. Omitting them is right while a sysroot is only an extracted image --
+  cpu-only variants of one board then share a single extraction -- and stops
+  being right the moment an augment installs into it, because augments are
+  compiled with the target's cpu flags. rpi5 (a76), rpi4 (a72) and
+  rpi-zero-2w (a53) share one raspios image and so one key: prepare any of
+  them and the other two reused a sysroot whose augments were tuned for
+  whichever went first, with nothing detecting it. The wrong instructions
+  surface as an illegal-instruction fault on the board, a long way from the
+  build that chose them.
+  `host: true` augments do not count -- they install to the workspace's host
+  tools, never the sysroot -- and `sysrootBaseKey` is untouched, so the
+  expensive half, the image download and extraction, stays shared as before.
+
+- fix(cross): `augmentOverlayKey` folds in the sysroot and, where it matters,
+  the host architecture. It hashed the target triple, cpu flags and augment
+  set, which lets two overlays holding different binaries share a key: a
+  bookworm and a trixie variant of one board match on all three and are kept
+  apart today only by their differing augment lists. A `host: true` augment
+  produces build-machine binaries, so an overlay built on x86_64 is unusable
+  from an aarch64 host; that input is folded in only when the staged set
+  contains such an augment, so a target-only overlay stays shared across hosts.
+  Nothing consumes this key yet, so it is a correction ahead of use rather than
+  a behavior change.
+
 # 0.3.5
 
 - fix(cross): `--publish` no longer skips a publish that leaves the shared cache
