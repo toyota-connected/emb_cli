@@ -297,6 +297,66 @@ void main() {
       expect(augmentOverlayKey(a76), isNot(augmentOverlayKey(a72)));
     });
 
+    test('augmentOverlayKey separates sysroots that share an augment set', () {
+      // The bookworm/trixie case, which is ordinary rather than contrived: one
+      // board, one triple, one augment list, two sysroots. An overlay holds
+      // libs compiled and linked against a specific one, so sharing a key
+      // between them serves whichever was built first to both.
+      final common = {
+        'provider': 'arm-gnu',
+        'toolchain_version': '12.3.rel1',
+        'augment': [
+          {'pkg': 'libdisplay-info', 'min': '0.2.0', 'url': 'u'},
+        ],
+      };
+      final bookworm = _t({
+        ...common,
+        'image_url': 'https://example/raspios-bookworm.img.xz',
+      });
+      final trixie = _t({
+        ...common,
+        'image_url': 'https://example/raspios-trixie.img.xz',
+      });
+      expect(augmentOverlayKey(bookworm), isNot(augmentOverlayKey(trixie)));
+    });
+
+    test(
+      'augmentOverlayKey separates hosts only when a host augment is staged',
+      () {
+        // A `host: true` augment builds a build-machine binary, so one key
+        // across an x86_64 and an aarch64 runner would hand one of them an
+        // executable it cannot run. A target-only overlay has no such
+        // exposure and must not be split, or every host rebuilds artifacts
+        // it could have shared.
+        final base = {
+          'provider': 'arm-gnu',
+          'toolchain_version': '12.3.rel1',
+          'image_url': 'https://example/raspios.img.xz',
+        };
+        final targetOnly = _t({
+          ...base,
+          'augment': [
+            {'pkg': 'libdisplay-info', 'min': '0.2.0', 'url': 'u'},
+          ],
+        });
+        expect(
+          augmentOverlayKey(targetOnly, hostArch: 'x86_64'),
+          augmentOverlayKey(targetOnly, hostArch: 'aarch64'),
+        );
+
+        final withHostTool = _t({
+          ...base,
+          'augment': [
+            {'pkg': 'wayland-cxx-scanner', 'url': 'u', 'host': true},
+          ],
+        });
+        expect(
+          augmentOverlayKey(withHostTool, hostArch: 'x86_64'),
+          isNot(augmentOverlayKey(withHostTool, hostArch: 'aarch64')),
+        );
+      },
+    );
+
     test('augmentOverlayKey moves when a patch is edited in place', () {
       final a = patch('0007.patch', 'original');
       final before = augmentOverlayKey(withPatches([a]));
