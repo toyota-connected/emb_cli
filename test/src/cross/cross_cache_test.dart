@@ -11,8 +11,13 @@ import 'package:test/test.dart';
 
 /// In-memory [OciTransport]: records pushes and serves a canned layer on pull.
 class _FakeTransport implements OciTransport {
-  _FakeTransport({this.existsResult = false, this.layer});
+  _FakeTransport({
+    this.existsResult = false,
+    this.layer,
+    this.existsThrows = false,
+  });
 
+  final bool existsThrows;
   final bool existsResult;
   final File? layer;
   final List<String> pushedRefs = [];
@@ -21,7 +26,10 @@ class _FakeTransport implements OciTransport {
   String get tool => 'fake';
 
   @override
-  Future<bool> exists(String ref) async => existsResult;
+  Future<bool> exists(String ref) async {
+    if (existsThrows) throw OciTransportException('unreachable: $ref');
+    return existsResult;
+  }
 
   @override
   Future<void> push(
@@ -95,6 +103,37 @@ void main() {
       cc.refFor(_sel(t)),
       cacheRef('reg.example/x', 'emb-cache', 'sysroot-base', sysrootBaseKey(t)),
     );
+  });
+
+  // "Already published" has to mean a consuming build has no work to do. The
+  // image carries no toolchain -- its dockerignore is `*` -- so the sysroot
+  // base and toolchain reach a build through this cache. An image that exists
+  // while the cache is empty means every build re-resolves from scratch, and
+  // stays that way: the push that fills the cache comes after the resolve the
+  // skip is avoiding.
+  test('hasAll is false when the registry is missing an artifact', () async {
+    final t = _target();
+    final cc = cache(Store(tmp), _FakeTransport());
+    expect(await cc.hasAll([_sel(t)]), isFalse);
+  });
+
+  test('hasAll is true once every artifact is in the registry', () async {
+    final t = _target();
+    final cc = cache(Store(tmp), _FakeTransport(existsResult: true));
+    expect(await cc.hasAll([_sel(t)]), isTrue);
+  });
+
+  // An unreadable registry is a reason to do the work, not to assume it has
+  // been done -- the same reasoning as the digest probe in the image fast path.
+  test('hasAll is false when the registry cannot be reached', () async {
+    final t = _target();
+    final cc = cache(Store(tmp), _FakeTransport(existsThrows: true));
+    expect(await cc.hasAll([_sel(t)]), isFalse);
+  });
+
+  test('hasAll is vacuously true with nothing to check', () async {
+    final cc = cache(Store(tmp), _FakeTransport());
+    expect(await cc.hasAll(const []), isTrue);
   });
 
   test('push skips when the ref already exists', () async {
