@@ -29,16 +29,28 @@ Future<BundleResult> buildAndAssemble({
 }) async {
   // 1. Ensure the engine SDK for (mode, arch) is staged FIRST — it provides
   //    both the gen_snapshot the AOT step needs and the icudtl/engine the
-  //    assembly needs. Fetch when the staged bundle is missing.
+  //    assembly needs. Fetch when the staged bundle is missing OR was staged
+  //    from a different engine commit (workspace Flutter updated since last
+  //    run).
   if (engine != null) {
-    final engineDir = bundle.engineBundleDir(mode, arch).path;
-    final icu = File(p.join(engineDir, 'data', 'icudtl.dat'));
-    if (!icu.existsSync()) {
-      final commit = workspace.engineCommit();
-      if (commit != null) {
+    final commit = workspace.engineCommit();
+    if (commit != null) {
+      final engineDir = bundle.engineBundleDir(mode, arch).path;
+      final stamp = File(p.join(engineDir, '.engine_commit'));
+      final staledCommit = stamp.existsSync()
+          ? stamp.readAsStringSync().trim()
+          : null;
+      if (staledCommit != commit) {
         final token = EngineArtifacts.engineArch(arch);
         onStep?.call('fetching engine ($mode/$token)');
-        await engine.fetch(runtime: mode, arch: token, commit: commit);
+        final result = await engine.fetch(
+          runtime: mode,
+          arch: token,
+          commit: commit,
+        );
+        if (result.ok) {
+          stamp.writeAsStringSync(commit);
+        }
       }
     }
   }
