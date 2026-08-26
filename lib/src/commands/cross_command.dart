@@ -1519,7 +1519,10 @@ class CrossCommand extends Command<int> {
     final queue = <File>[binary];
     while (queue.isNotEmpty) {
       final elf = queue.removeLast();
-      final r = await _runProcess(readelf, ['-d', elf.path]);
+      final r = await _runProcess(readelf, [
+        '-d',
+        elf.path,
+      ], environment: profile.buildEnv());
       if (r.exitCode != 0) continue;
       for (final soname in parseNeededSonames(r.stdout)) {
         if (!seen.add(soname)) continue;
@@ -1574,7 +1577,7 @@ class CrossCommand extends Command<int> {
     };
     final packager = DebPackager(
       readelf: _readelfFor(profile),
-      runProcess: _runProcess,
+      runProcess: withEnv(_runProcess, profile.buildEnv()),
     );
 
     for (final r in built) {
