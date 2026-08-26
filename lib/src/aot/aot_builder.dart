@@ -321,7 +321,10 @@ class AotBuilder {
           AotModeResult(
             mode: mode,
             success: false,
-            message: _withTail('kernel snapshot failed', kernel.stderr),
+            message: _withTail(
+              'kernel snapshot failed',
+              kernel.stderr.isNotEmpty ? kernel.stderr : kernel.stdout,
+            ),
           ),
         );
         continue;
@@ -419,7 +422,8 @@ class AotBuilder {
       '--target-os',
       'linux',
       '--packages',
-      p.join(app, '.dart_tool', 'package_config.json'),
+      _packageConfigPath(app) ??
+          p.join(app, '.dart_tool', 'package_config.json'),
       '--output-dill',
       p.join(buildDir, 'app.dill'),
       '--depfile',
@@ -436,6 +440,22 @@ class AotBuilder {
       output: ProcessOutputMode.stream,
       label: '$mode:kernel',
     );
+  }
+
+  /// Locates `package_config.json` by walking up from [app].
+  ///
+  /// In a Flutter workspace the file lives at the workspace root's
+  /// `.dart_tool/`, not the member package's directory. Walking up mirrors how
+  /// the Dart SDK itself resolves package configs at runtime.
+  static String? _packageConfigPath(String app) {
+    var dir = Directory(app);
+    while (true) {
+      final candidate = p.join(dir.path, '.dart_tool', 'package_config.json');
+      if (File(candidate).existsSync()) return candidate;
+      final parent = dir.parent;
+      if (parent.path == dir.path) return null;
+      dir = parent;
+    }
   }
 
   /// Appends a trimmed stderr [tail] to a failure [message] when present, so an
