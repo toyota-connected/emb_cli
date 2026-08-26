@@ -43,6 +43,10 @@ class YoctoSdkCrossProvider implements CrossProvider {
   /// fetches nothing, so this stays empty (the SDK version still pins it).
   final List<LockedArtifact> _artifacts = [];
 
+  /// Set when a download attempt fails, so the caller can include the reason
+  /// in the user-facing error rather than just "no environment-setup-* found".
+  String? _downloadError;
+
   @override
   String get name => 'yocto-sdk';
 
@@ -73,9 +77,10 @@ class YoctoSdkCrossProvider implements CrossProvider {
   Future<CrossResolveResult> resolve() async {
     final envSetup = await _resolveEnvSetup();
     if (envSetup == null) {
-      return const CrossResolveResult.unavailable(
-        'no environment-setup-* found — set cross.sdk_path to an installed '
-        'SDK, cross.sdk_url to a populate_sdk installer, or '
+      final detail = _downloadError != null ? ' ($_downloadError)' : '';
+      return CrossResolveResult.unavailable(
+        'no environment-setup-* found$detail — set cross.sdk_path to an '
+        'installed SDK, cross.sdk_url to a populate_sdk installer, or '
         'cross.sdk_env_setup directly',
       );
     }
@@ -216,13 +221,16 @@ class YoctoSdkCrossProvider implements CrossProvider {
 
     // -y: non-interactive; -d: target dir. The installer relocates the SDK's
     // baked-in paths to the chosen prefix on first run.
-    final run = await Process.run('sh', [
-      installer.path,
-      '-y',
-      '-d',
-      prefix.path,
-    ]);
-    if (run.exitCode != 0) return null;
+    // Run the installer directly (not via `sh`) so the shebang is honoured;
+    // OE SDK installers are bash scripts and fail silently under dash.
+    final run = await Process.run(installer.path, ['-y', '-d', prefix.path]);
+    if (run.exitCode != 0) {
+      final stderr = (run.stderr as String).trim();
+      _downloadError =
+          'SDK installer failed (exit ${run.exitCode})'
+          '${stderr.isNotEmpty ? ": $stderr" : ""}';
+      return null;
+    }
     return prefix;
   }
 
@@ -241,19 +249,85 @@ class YoctoSdkCrossProvider implements CrossProvider {
   }
 
   Future<bool> _download(String url, File dest) async {
+    final artPath = _parseArtifactoryPath(url);
+    if (artPath != null) {
+      return _downloadViaJFrog(artPath.$1, artPath.$2, dest);
+    }
     try {
       final req = await _http.getUrl(Uri.parse(url));
       req.followRedirects = true;
       final resp = await req.close();
       if (resp.statusCode != 200) {
         await resp.drain<void>();
+        _downloadError = 'HTTP ${resp.statusCode} downloading $url';
         return false;
       }
       await resp.pipe(dest.openWrite());
       return true;
-    } on Object {
+    } on Object catch (e) {
+      _downloadError = 'connection error downloading $url: $e';
       return false;
     }
+  }
+
+  /// Download an Artifactory file using the JFrog CLI (`jf rt dl`), which
+  /// reads auth from the default configured server (`jf config add`).
+  ///
+  /// [repoPath] is the `<repo>/<path>` portion after `/artifactory/` in the
+  /// URL; the JFrog CLI resolves it against whatever server is configured as
+  /// the default.
+  Future<bool> _downloadViaJFrog(
+    String baseUrl,
+    String repoPath,
+    File dest,
+  ) async {
+    final ProcessResult jfCheck;
+    try {
+      jfCheck = await Process.run('jf', ['--version']);
+    } on ProcessException {
+      _downloadError =
+          'jf (JFrog CLI) not found — install it and run `jf config add` '
+          'to set up credentials, then retry';
+      return false;
+    }
+    if (jfCheck.exitCode != 0) {
+      _downloadError =
+          'jf (JFrog CLI) not found — install it and run `jf config add` '
+          'to set up credentials, then retry';
+      return false;
+    }
+    final result = await Process.run('jf', [
+      'rt',
+      'dl',
+      '--flat',
+      repoPath,
+      '${dest.parent.path}/',
+    ]);
+    if (result.exitCode != 0) {
+      final stderr = (result.stderr as String).trim();
+      _downloadError =
+          'jf rt dl failed (exit ${result.exitCode})'
+          '${stderr.isNotEmpty ? ": $stderr" : ""}';
+      return false;
+    }
+    return true;
+  }
+
+  /// Parse an Artifactory URL into `(baseUrl, repoPath)`.
+  ///
+  /// `https://host/artifactory/repo/a/b/file.sh`
+  /// → `('https://host/artifactory', 'repo/a/b/file.sh')`
+  ///
+  /// Returns null when the URL has no `/artifactory/` segment.
+  static (String, String)? _parseArtifactoryPath(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return null;
+    final segments = uri.pathSegments;
+    final artIdx = segments.indexOf('artifactory');
+    if (artIdx < 0 || artIdx >= segments.length - 1) return null;
+    final basePath = '/${segments.sublist(0, artIdx + 1).join('/')}';
+    final repoPath = segments.sublist(artIdx + 1).join('/');
+    return ('${uri.scheme}://${uri.host}$basePath', repoPath);
   }
 
   /// Source [envSetup] in a clean shell and capture the resulting environment.
