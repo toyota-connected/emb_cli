@@ -104,7 +104,7 @@ class OverlayBuilder {
       // not cross-compiled into the sysroot. They have no pkg-config presence,
       // so skip the sysroot satisfied check.
       if (lib.host) {
-        final hostBin = await _buildCMakeHost(lib);
+        final hostBin = await _buildHostTool(lib);
         if (!binDirs.contains(hostBin)) binDirs.add(hostBin);
         continue;
       }
@@ -358,12 +358,12 @@ class OverlayBuilder {
   /// prepend to the cross build's PATH. Deliberately passes no cross toolchain
   /// file and no `profile.buildEnv()` — the tool must run on the build machine,
   /// so it uses the host compiler and the inherited host environment.
+  Future<String> _buildHostTool(AugmentLib lib) => switch (lib.build) {
+    CrossGenerator.cmake => _buildCMakeHost(lib),
+    CrossGenerator.meson => _buildMesonHost(lib),
+  };
+
   Future<String> _buildCMakeHost(AugmentLib lib) async {
-    if (lib.build != CrossGenerator.cmake) {
-      throw OverlayBuildException(
-        '${lib.pkg}: host: true currently supports build: cmake only',
-      );
-    }
     final src = await _fetchSource(lib);
     final bld = _freshBuildDir(src);
     final hostTools = workspace.ensurePlatformDir('host-tools');
@@ -395,6 +395,44 @@ class OverlayBuilder {
       await _run(
         'cmake',
         ['--install', bld.path],
+        environment: {'DESTDIR': hostTools.path},
+        output: ProcessOutputMode.stream,
+      ),
+    );
+    return p.join(hostTools.path, 'usr', 'bin');
+  }
+
+  Future<String> _buildMesonHost(AugmentLib lib) async {
+    final src = await _fetchSource(lib);
+    final bld = _freshBuildDir(src);
+    final hostTools = workspace.ensurePlatformDir('host-tools');
+    _check(
+      lib,
+      'meson setup (host)',
+      await _run('meson', [
+        'setup',
+        bld.path,
+        src.path,
+        '--prefix',
+        '/usr',
+        '--libdir',
+        'lib',
+        '--buildtype',
+        'release',
+        for (final e in lib.defines.entries) '-D${e.key}=${e.value}',
+      ], output: ProcessOutputMode.stream),
+    );
+    _check(
+      lib,
+      'ninja (host)',
+      await _run('ninja', ['-C', bld.path], output: ProcessOutputMode.stream),
+    );
+    _check(
+      lib,
+      'ninja install (host)',
+      await _run(
+        'ninja',
+        ['-C', bld.path, 'install'],
         environment: {'DESTDIR': hostTools.path},
         output: ProcessOutputMode.stream,
       ),

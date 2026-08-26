@@ -32,6 +32,17 @@ AugmentLib _lib({String build = 'meson', bool static = true}) =>
       'static': static,
     });
 
+AugmentLib _hostLib({String build = 'cmake'}) {
+  final pkg = build == 'meson' ? 'wayland' : 'wayland-cxx-scanner';
+  return AugmentLib.fromMap({
+    'pkg': pkg,
+    'min': '1.0.0',
+    'url': 'https://x/$pkg-1.0.0.tar.gz',
+    'build': build,
+    'host': true,
+  });
+}
+
 void main() {
   late Directory tmp;
   setUp(() => tmp = Directory.systemTemp.createTempSync('emb_overlay_'));
@@ -161,6 +172,108 @@ void main() {
     );
     ob.close();
   });
+
+  test(
+    'host: true cmake builds without cross env and returns host-tools bin',
+    () async {
+      prestage('wayland-cxx-scanner-1.0.0');
+      final calls = <List<String>>[];
+      final envs = <Map<String, String>?>[];
+      Future<RunResult> run(
+        String exe,
+        List<String> args, {
+        String? workingDirectory,
+        Map<String, String>? environment,
+        bool includeParentEnvironment = true,
+        bool runInShell = false,
+        ProcessOutputMode output = ProcessOutputMode.capture,
+        String? label,
+      }) async {
+        calls.add([exe, ...args]);
+        envs.add(environment);
+        return const RunResult(0, '', '');
+      }
+
+      final ob = OverlayBuilder(Workspace(tmp), _profile, runProcess: run);
+      final paths = await ob.build([_hostLib()]);
+      ob.close();
+
+      // No pkg-config probe for host tools.
+      expect(calls.any((c) => c.first == 'pkg-config'), isFalse);
+      // cmake configure must not carry a cross toolchain file.
+      final cfgIdx = calls.indexWhere(
+        (c) => c.first == 'cmake' && c.contains('-S'),
+      );
+      expect(
+        calls[cfgIdx].join(' '),
+        isNot(contains('-DCMAKE_TOOLCHAIN_FILE')),
+      );
+      // configure and build steps pass no environment
+      // (host compiler, not cross).
+      expect(envs[cfgIdx], isNull);
+      final buildIdx = calls.indexWhere(
+        (c) => c.first == 'cmake' && c.contains('--build'),
+      );
+      expect(envs[buildIdx], isNull);
+      // Install step uses DESTDIR pointing at the host-tools workspace dir.
+      final instIdx = calls.indexWhere(
+        (c) => c.first == 'cmake' && c.contains('--install'),
+      );
+      expect(envs[instIdx]!['DESTDIR'], contains('host-tools'));
+      // binDirs advertises the host-tools bin path.
+      expect(paths.binDirs, hasLength(1));
+      expect(paths.binDirs.single, endsWith(p.join('usr', 'bin')));
+      expect(paths.binDirs.single, contains('host-tools'));
+    },
+  );
+
+  test(
+    'host: true meson builds without cross file or cross env (G-08)',
+    () async {
+      prestage('wayland-1.0.0');
+      final calls = <List<String>>[];
+      final envs = <Map<String, String>?>[];
+      Future<RunResult> run(
+        String exe,
+        List<String> args, {
+        String? workingDirectory,
+        Map<String, String>? environment,
+        bool includeParentEnvironment = true,
+        bool runInShell = false,
+        ProcessOutputMode output = ProcessOutputMode.capture,
+        String? label,
+      }) async {
+        calls.add([exe, ...args]);
+        envs.add(environment);
+        return const RunResult(0, '', '');
+      }
+
+      final ob = OverlayBuilder(Workspace(tmp), _profile, runProcess: run);
+      final paths = await ob.build([_hostLib(build: 'meson')]);
+      ob.close();
+
+      // No pkg-config probe for host tools.
+      expect(calls.any((c) => c.first == 'pkg-config'), isFalse);
+      // meson setup must not carry a --cross-file.
+      final setupIdx = calls.indexWhere((c) => c.first == 'meson');
+      expect(calls[setupIdx].join(' '), isNot(contains('--cross-file')));
+      // setup and build steps pass no environment (host compiler, not cross).
+      expect(envs[setupIdx], isNull);
+      final buildIdx = calls.indexWhere(
+        (c) => c.first == 'ninja' && !c.contains('install'),
+      );
+      expect(envs[buildIdx], isNull);
+      // Install step uses DESTDIR pointing at the host-tools workspace dir.
+      final instIdx = calls.indexWhere(
+        (c) => c.first == 'ninja' && c.contains('install'),
+      );
+      expect(envs[instIdx]!['DESTDIR'], contains('host-tools'));
+      // binDirs advertises the host-tools bin path.
+      expect(paths.binDirs, hasLength(1));
+      expect(paths.binDirs.single, endsWith(p.join('usr', 'bin')));
+      expect(paths.binDirs.single, contains('host-tools'));
+    },
+  );
 
   test('a failing augment patch is reported, not thrown as a crash', () async {
     // A manifest error must surface as an OverlayBuildException the command
