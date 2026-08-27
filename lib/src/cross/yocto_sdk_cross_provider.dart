@@ -75,6 +75,8 @@ class YoctoSdkCrossProvider implements CrossProvider {
 
   @override
   Future<CrossResolveResult> resolve() async {
+    _downloadError = null;
+    _artifacts.clear();
     final envSetup = await _resolveEnvSetup();
     if (envSetup == null) {
       final detail = _downloadError != null ? ' ($_downloadError)' : '';
@@ -251,7 +253,9 @@ class YoctoSdkCrossProvider implements CrossProvider {
   Future<bool> _download(String url, File dest) async {
     final artPath = _parseArtifactoryPath(url);
     if (artPath != null) {
-      return _downloadViaJFrog(artPath.$1, artPath.$2, dest);
+      final jfResult = await _downloadViaJFrog(artPath.$1, artPath.$2, dest);
+      if (jfResult != null) return jfResult;
+      // jf not installed — fall through to plain HTTP
     }
     try {
       final req = await _http.getUrl(Uri.parse(url));
@@ -270,36 +274,45 @@ class YoctoSdkCrossProvider implements CrossProvider {
     }
   }
 
-  /// Download an Artifactory file using the JFrog CLI (`jf rt dl`), which
-  /// reads auth from the default configured server (`jf config add`).
+  /// Download an Artifactory file using the JFrog CLI (`jf rt dl`).
   ///
-  /// [repoPath] is the `<repo>/<path>` portion after `/artifactory/` in the
-  /// URL; the JFrog CLI resolves it against whatever server is configured as
-  /// the default.
-  Future<bool> _downloadViaJFrog(
+  /// Resolves the correct `--server-id` by matching [baseUrl]'s authority
+  /// against configured servers from `jf config show`, so the right
+  /// credentials are used even when multiple servers are configured.
+  ///
+  /// Returns `true`/`false` on success/failure, or `null` if jf is not
+  /// installed (caller should fall back to plain HTTP).
+  Future<bool?> _downloadViaJFrog(
     String baseUrl,
     String repoPath,
     File dest,
   ) async {
-    final ProcessResult jfCheck;
     try {
-      jfCheck = await Process.run('jf', ['--version']);
+      final check = await Process.run('jf', ['--version']);
+      if (check.exitCode != 0) return null;
     } on ProcessException {
-      _downloadError =
-          'jf (JFrog CLI) not found — install it and run `jf config add` '
-          'to set up credentials, then retry';
-      return false;
+      return null;
     }
-    if (jfCheck.exitCode != 0) {
-      _downloadError =
-          'jf (JFrog CLI) not found — install it and run `jf config add` '
-          'to set up credentials, then retry';
-      return false;
-    }
+
+    final configResult = await Process.run('jf', ['config', 'show']);
+    if (configResult.exitCode != 0) return null;
+    final servers = _parseJFrogServers(configResult.stdout as String);
+    final baseAuthority = Uri.parse(baseUrl).authority;
+    final server = servers.firstWhere(
+      (s) =>
+          Uri.tryParse(s['Artifactory URL'] ?? '')?.authority == baseAuthority,
+      orElse: () => {},
+    );
+    final serverId = server['Server ID'];
+    if (serverId == null) return null;
+
     final result = await Process.run('jf', [
       'rt',
       'dl',
       '--flat',
+      '--fail-no-op',
+      '--server-id',
+      serverId,
       repoPath,
       '${dest.parent.path}/',
     ]);
@@ -310,7 +323,35 @@ class YoctoSdkCrossProvider implements CrossProvider {
           '${stderr.isNotEmpty ? ": $stderr" : ""}';
       return false;
     }
+    if (!dest.existsSync()) {
+      _downloadError =
+          'jf rt dl succeeded but ${dest.path} was not created'
+          ' — artifact name in repository may differ from URL basename';
+      return false;
+    }
     return true;
+  }
+
+  /// Parse `jf config show` stdout into server records keyed by field name.
+  ///
+  /// Each record contains fields like `Server ID`, `Artifactory URL`,
+  /// `Default`, etc.
+  static List<Map<String, String>> _parseJFrogServers(String output) {
+    final servers = <Map<String, String>>[];
+    Map<String, String>? current;
+    final lineRe = RegExp(r'^([^:]+):\s+(.+)$');
+    for (final line in output.split('\n')) {
+      final m = lineRe.firstMatch(line.trim());
+      if (m == null) continue;
+      final key = m.group(1)!.trim();
+      final value = m.group(2)!.trim();
+      if (key == 'Server ID') {
+        current = {};
+        servers.add(current);
+      }
+      current?[key] = value;
+    }
+    return servers;
   }
 
   /// Parse an Artifactory URL into `(baseUrl, repoPath)`.
@@ -327,7 +368,7 @@ class YoctoSdkCrossProvider implements CrossProvider {
     if (artIdx < 0 || artIdx >= segments.length - 1) return null;
     final basePath = '/${segments.sublist(0, artIdx + 1).join('/')}';
     final repoPath = segments.sublist(artIdx + 1).join('/');
-    return ('${uri.scheme}://${uri.host}$basePath', repoPath);
+    return ('${uri.scheme}://${uri.authority}$basePath', repoPath);
   }
 
   /// Source [envSetup] in a clean shell and capture the resulting environment.
