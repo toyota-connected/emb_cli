@@ -37,16 +37,17 @@ Future<BundleResult> buildAndAssemble({
     if (commit != null) {
       final engineDir = bundle.engineBundleDir(mode, arch).path;
       final stamp = File(p.join(engineDir, '.engine_commit'));
-      final staledCommit = stamp.existsSync()
+      final stampedCommit = stamp.existsSync()
           ? stamp.readAsStringSync().trim()
           : null;
-      if (staledCommit != commit) {
+      if (stampedCommit != commit) {
         final token = EngineArtifacts.engineArch(arch);
         onStep?.call('fetching engine ($mode/$token)');
         final result = await engine.fetch(
           runtime: mode,
           arch: token,
           commit: commit,
+          clean: true,
         );
         if (result.ok) {
           stamp.writeAsStringSync(commit);
