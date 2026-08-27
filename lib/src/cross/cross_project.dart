@@ -175,6 +175,56 @@ class CrossProjectResolver {
     return _single(m.raw, fallback: m.id, sourcePath: m.sourcePath);
   }
 
+  /// Merge an app-owned manifest layer over a project target's resolved
+  /// `cross:` block.
+  ///
+  /// `emb cross <project> --app <dir>` builds the embedder from `<project>`
+  /// and the Flutter app from `<dir>`. The project supplies the board profile
+  /// every one of its apps shares; this lets one app add what only *it* needs
+  /// — a `-dev` package its Dart build hooks link against, say — without every
+  /// consumer of that board carrying it.
+  ///
+  /// [appDir] is read the same way a project is (`.emb/`, `emb.yaml`, or
+  /// `pubspec.yaml` with an `emb:` key), so an app layer is written exactly
+  /// like the project layer it overlays, including `extends`. The app's target
+  /// named [targetName] wins where the two disagree; `dev_packages` accumulate
+  /// rather than replace, per [_mergeCross].
+  ///
+  /// Returns [cross] unchanged when [appDir] has no manifest, or none naming
+  /// [targetName] — an app with nothing extra to say costs nothing.
+  Map<String, dynamic> applyAppLayer({
+    required Map<String, dynamic> cross,
+    required String appDir,
+    required String targetName,
+  }) {
+    final CrossProject? app;
+    try {
+      app = resolve(appDir);
+    } on CrossProjectException {
+      // A malformed app manifest must not take down a build whose project
+      // manifest is fine; the app layer is additive by design.
+      return cross;
+    }
+    if (app == null) return cross;
+    final ref = app[targetName];
+    if (ref == null) return cross;
+    return _mergeCross(cross, ref.cross);
+  }
+
+  /// The source path of [appDir]'s layer for [targetName], or null when it has
+  /// none. Lets a caller resolve the app layer's relative `patches:` against
+  /// the manifest that declared them rather than the project's.
+  String? appLayerSourcePath({
+    required String appDir,
+    required String targetName,
+  }) {
+    try {
+      return resolve(appDir)?[targetName]?.sourcePath;
+    } on CrossProjectException {
+      return null;
+    }
+  }
+
   /// Resolve the `extends` chain of a single, already intra-file-merged
   /// `cross:` [block] (the shared fields ⊕ one target's override, with no
   /// `targets` key), returning the map ready for `CrossTarget.fromMap`. A
