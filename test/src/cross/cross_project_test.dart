@@ -52,6 +52,146 @@ void main() {
     setUp(() => tmp = Directory.systemTemp.createTempSync('emb_proj_'));
     tearDown(() => tmp.deleteSync(recursive: true));
 
+    group('applyAppLayer', () {
+      late Directory appDir;
+      setUp(() => appDir = Directory.systemTemp.createTempSync('emb_app_'));
+      tearDown(() => appDir.deleteSync(recursive: true));
+
+      void writeApp(String relPath, String body) {
+        final f = File(p.join(appDir.path, relPath));
+        f.parent.createSync(recursive: true);
+        f.writeAsStringSync(body);
+      }
+
+      Map<String, dynamic> projectCross() => {
+        'provider': 'arm-gnu',
+        'triple': 'aarch64-none-linux-gnu',
+        'sysroot': {
+          'partition': 2,
+          'dev_packages': ['libdrm-dev', 'libglib2.0-dev'],
+        },
+      };
+
+      // The point of the layer: one app adds what only it needs, and the
+      // board's own stack is kept rather than replaced.
+      test('app dev_packages accumulate onto the project stack', () {
+        writeApp('.emb/raspberry-pi.emb.yaml', '''
+id: my-app
+type: app
+cross:
+  targets:
+    rpi5-trixie:
+      sysroot:
+        dev_packages:
+          - libflatpak-dev
+''');
+        final merged = CrossProjectResolver().applyAppLayer(
+          cross: projectCross(),
+          appDir: appDir.path,
+          targetName: 'rpi5-trixie',
+        );
+        final sysroot = merged['sysroot']! as Map;
+        expect(sysroot['dev_packages'], [
+          'libdrm-dev',
+          'libglib2.0-dev',
+          'libflatpak-dev',
+        ]);
+        expect(sysroot['partition'], 2, reason: 'project fields survive');
+        expect(merged['provider'], 'arm-gnu');
+      });
+
+      test('an app scalar wins over the project', () {
+        writeApp('.emb/raspberry-pi.emb.yaml', '''
+id: my-app
+cross:
+  targets:
+    rpi5-trixie:
+      sysroot:
+        snapshot: 2026-04-22
+''');
+        final merged = CrossProjectResolver().applyAppLayer(
+          cross: projectCross(),
+          appDir: appDir.path,
+          targetName: 'rpi5-trixie',
+        );
+        expect((merged['sysroot']! as Map)['snapshot'], '2026-04-22');
+      });
+
+      test('a target the app does not name is untouched', () {
+        writeApp('.emb/raspberry-pi.emb.yaml', '''
+id: my-app
+cross:
+  targets:
+    rpi4-trixie:
+      sysroot: {dev_packages: [libflatpak-dev]}
+''');
+        final merged = CrossProjectResolver().applyAppLayer(
+          cross: projectCross(),
+          appDir: appDir.path,
+          targetName: 'rpi5-trixie',
+        );
+        expect((merged['sysroot']! as Map)['dev_packages'], [
+          'libdrm-dev',
+          'libglib2.0-dev',
+        ]);
+      });
+
+      test('an app with no manifest costs nothing', () {
+        final merged = CrossProjectResolver().applyAppLayer(
+          cross: projectCross(),
+          appDir: appDir.path,
+          targetName: 'rpi5-trixie',
+        );
+        expect(merged, projectCross());
+      });
+
+      // An app layer is additive; a broken one must not take down a build
+      // whose project manifest is fine.
+      test('a malformed app manifest is ignored, not fatal', () {
+        writeApp('.emb/raspberry-pi.emb.yaml', 'cross:\n  extends: no-such\n');
+        final merged = CrossProjectResolver().applyAppLayer(
+          cross: projectCross(),
+          appDir: appDir.path,
+          targetName: 'rpi5-trixie',
+        );
+        expect(merged, projectCross());
+      });
+
+      test('emb.yaml at the app root works as well as .emb/', () {
+        writeApp('emb.yaml', '''
+id: my-app
+cross:
+  targets:
+    rpi5-trixie:
+      sysroot: {dev_packages: [libflatpak-dev]}
+''');
+        final merged = CrossProjectResolver().applyAppLayer(
+          cross: projectCross(),
+          appDir: appDir.path,
+          targetName: 'rpi5-trixie',
+        );
+        expect(
+          (merged['sysroot']! as Map)['dev_packages'],
+          contains('libflatpak-dev'),
+        );
+      });
+
+      test('appLayerSourcePath names the file the layer came from', () {
+        writeApp('.emb/raspberry-pi.emb.yaml', '''
+id: my-app
+cross:
+  targets:
+    rpi5-trixie:
+      sysroot: {dev_packages: [libflatpak-dev]}
+''');
+        final src = CrossProjectResolver().appLayerSourcePath(
+          appDir: appDir.path,
+          targetName: 'rpi5-trixie',
+        );
+        expect(src, endsWith('raspberry-pi.emb.yaml'));
+      });
+    });
+
     File write(String relPath, String body) {
       final f = File(p.join(tmp.path, relPath));
       f.parent.createSync(recursive: true);

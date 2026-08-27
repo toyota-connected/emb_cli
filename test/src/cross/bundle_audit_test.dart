@@ -51,6 +51,59 @@ void main() {
     expect(a.ok, isTrue, reason: a.strays.toString());
   });
 
+  // The bundler flattens flutter_assets/native_assets into lib/ because the
+  // manifest resolves those by bare name. Without allowing them the audit
+  // rejects files emb itself just placed.
+  test('a staged code asset is allowed', () {
+    put('libapp.so');
+    put('libflatpak_nc.so');
+    final a = auditBundleLib(
+      lib,
+      triple: triple,
+      moduleArtifacts: const [],
+      codeAssets: const ['libflatpak_nc.so'],
+    );
+    expect(a.ok, isTrue, reason: a.strays.toString());
+  });
+
+  test('code assets and module artifacts are both allowed together', () {
+    put('libflatpak_nc.so');
+    put('libfoo.so');
+    final a = auditBundleLib(
+      lib,
+      triple: triple,
+      moduleArtifacts: const ['libfoo.so'],
+      codeAssets: const ['libflatpak_nc.so'],
+    );
+    expect(a.ok, isTrue, reason: a.strays.toString());
+  });
+
+  // Allowing them by name must not weaken the check that caught host-built
+  // native assets in a cross bundle in the first place.
+  test('a staged code asset is still arch-checked', () {
+    put('libflatpak_nc.so', eMachine: 0x3E); // x86-64 in an aarch64 bundle
+    final a = auditBundleLib(
+      lib,
+      triple: triple,
+      moduleArtifacts: const [],
+      codeAssets: const ['libflatpak_nc.so'],
+    );
+    expect(a.strays, isEmpty);
+    expect(a.archMismatches, hasLength(1));
+    expect(a.ok, isFalse);
+  });
+
+  test('a library not among the staged assets is still a stray', () {
+    put('libsomethingelse.so');
+    final a = auditBundleLib(
+      lib,
+      triple: triple,
+      moduleArtifacts: const [],
+      codeAssets: const ['libflatpak_nc.so'],
+    );
+    expect(a.strays, ['libsomethingelse.so']);
+  });
+
   test('an undeclared stray library is flagged', () {
     put('libapp.so');
     put('libstdc++.so.6');
