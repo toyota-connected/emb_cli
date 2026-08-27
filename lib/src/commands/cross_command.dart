@@ -443,7 +443,26 @@ class CrossCommand extends Command<int> {
     }
     final effectiveTarget = selection.name;
     final isNative = selection.isNative;
-    final selected = selection.cross;
+
+    // An `--app` may carry its own `.emb/` layer, merged over the project's.
+    // The project owns the board profile its apps share; this is where one app
+    // states what only it needs — a `-dev` package its Dart build hooks link
+    // against — without every consumer of that board carrying it. Native
+    // builds use the host toolchain and have no sysroot to add to.
+    final appDirArg = args['app'] as String?;
+    final selected = (appDirArg == null || isNative)
+        ? selection.cross
+        : _project.applyAppLayer(
+            cross: selection.cross,
+            appDir: appDirArg,
+            targetName: effectiveTarget,
+          );
+    final appLayerSource = (appDirArg == null || isNative)
+        ? null
+        : _project.appLayerSourcePath(
+            appDir: appDirArg,
+            targetName: effectiveTarget,
+          );
 
     // --define KEY=VALUE overrides: parsed up front (usage error before any
     // download), then baked into the target itself so buildKey, the backend
@@ -461,7 +480,7 @@ class CrossCommand extends Command<int> {
     final CrossTarget target;
     try {
       target = CrossTarget.fromMap(selected)
-          .withResolvedPatches(selection.sourcePath)
+          .withResolvedPatches(appLayerSource ?? selection.sourcePath)
           .withDefineOverrides(cliDefines);
       // fromMap throws ArgumentError on an unknown provider token.
       // ignore: avoid_catching_errors
@@ -1152,6 +1171,209 @@ class CrossCommand extends Command<int> {
     return '${n.toStringAsFixed(i == 0 || n >= 100 ? 0 : 1)}${units[i]}';
   }
 
+  /// The environment that points code-asset build hooks at the cross
+  /// toolchain.
+  ///
+  /// Two kinds of hook need telling, by different means:
+  ///
+  ///   * a hook that drives CMake itself (`flatpak_dart`, `appstream_dart`)
+  ///     calls plain `cmake`, which since 3.21 reads `CMAKE_TOOLCHAIN_FILE`
+  ///     from the environment. The profile's generated toolchain file already
+  ///     names the compilers, `CMAKE_SYSROOT` and the cpu flags, and
+  ///     `CMAKE_SYSROOT` is enough for `pkg_check_modules` to resolve against
+  ///     the sysroot rather than the host — so that one variable is the whole
+  ///     fix, with no wrapper on PATH.
+  ///
+  ///   * a hook built on `native_toolchain_c` takes its compiler from
+  ///     `CCompilerConfig`, which the patched SDK builds from
+  ///     `FLUTTER_HOOK_CC`/`_AR`/`_LD`. That config carries **only paths**,
+  ///     with nowhere for `--target`, `--sysroot` or the profile's flags, so
+  ///     those point at wrappers that bake them in.
+  ///
+  /// Write wrapper scripts naming the cross toolchain for code-asset build
+  /// hooks, and return the environment that points the SDK at them.
+  ///
+  /// A hook's compiler comes from `CCompilerConfig`, which carries **only
+  /// paths** — there is nowhere in it for `--target`, `--sysroot`, or the rest
+  /// of a cross profile's flags. So the flags go into wrappers, the same trick
+  /// the CMake toolchain file uses for the embedder half.
+  ///
+  /// Needs an SDK that reads `FLUTTER_HOOK_CC`/`_AR`/`_LD` (meta-flutter's
+  /// `0001-flutter_tools-let-a-caller-supply-the-code-asset-tool.patch`).
+  /// Without it these are ignored, a hook resolves a *host* compiler, and
+  /// `auditBundleLib` later rejects the wrong-architecture library — so
+  /// [_warnIfSdkIgnoresHookToolchain] says so up front instead.
+  Map<String, String> _writeHookToolchain(
+    CrossProfile profile,
+    Directory buildRoot,
+  ) {
+    final dir = Directory(p.join(buildRoot.path, 'hook-toolchain'))
+      ..createSync(recursive: true);
+
+    String q(String s) => "'${s.replaceAll("'", r"'\''")}'";
+    String flags(List<String> f) => f.map(q).join(' ');
+
+    // --sysroot explicitly: profile.cFlags carries -B/-L/-I and rpath-link but
+    // not this, and without it the linker cannot rebase the absolute paths
+    // inside the sysroot's own libc.so linker script —
+    // "cannot find /lib/aarch64-linux-gnu/libm.so.6". The CMake toolchain file
+    // gets this for free from CMAKE_SYSROOT; a wrapper has to say it.
+    final sysroot = profile.targetSysroot.isEmpty
+        ? ''
+        : '${q('--sysroot=${profile.targetSysroot}')} ';
+    final cf = sysroot + flags(profile.cFlags);
+    final lf = flags(profile.ldFlags);
+
+    // Named `-gcc`/`-g++` rather than `cc`/`cxx` on purpose. CCompilerConfig
+    // carries a C compiler, an archiver and a linker — no C++ driver — so a
+    // hook that drives a CMake project (which needs CMAKE_CXX_COMPILER) has to
+    // derive one, and the only handle it has is the compiler's own name. The
+    // gcc→g++ substitution is the same inference flutter_tools makes in
+    // reverse when it reads CMAKE_CXX_COMPILER out of a CMake cache.
+    File wrapper(String name, String tool, String extraFlags) {
+      final f = File(p.join(dir.path, name))
+        ..writeAsStringSync(
+          '#!/bin/sh\n'
+          'for arg in "\$@"; do\n'
+          '    if [ "\$arg" = "-c" ]; then\n'
+          '        exec ${q(tool)} $cf "\$@"\n'
+          '    fi\n'
+          'done\n'
+          'exec ${q(tool)} $cf $extraFlags "\$@"\n',
+        );
+      return f;
+    }
+
+    // native_toolchain_c compiles *and* links through the compiler and never
+    // execs a linker, so both flag sets have to reach this one wrapper. Link
+    // flags on a compile-only call make clang emit "linker input unused",
+    // fatal for a hook built with -Werror — so add ldFlags only when this is
+    // not a `-c` invocation.
+    final ccFile = wrapper('emb-hook-gcc', profile.cc, lf);
+    final cxxFile = wrapper('emb-hook-g++', profile.cxx, lf);
+
+    // Invoked directly as `ar rc <lib> <objects>`.
+    final arFile = File(p.join(dir.path, 'emb-hook-ar'))
+      ..writeAsStringSync('#!/bin/sh\nexec ${q(profile.ar)} "\$@"\n');
+
+    // CCompilerConfig requires a linker even though the C builder links
+    // through the compiler driver. Give it the real one rather than a stub.
+    final ldFile = File(p.join(dir.path, 'emb-hook-ld'))
+      ..writeAsStringSync('#!/bin/sh\nexec ${q(_linkerFor(profile))} "\$@"\n');
+
+    // A `cmake` wrapper on PATH, the same shape meta-flutter's
+    // flutter-app-native.bbclass uses. A hook that drives a CMake project
+    // (appstream_dart, flatpak_dart) calls plain `cmake`, and the toolchain
+    // cannot reach it any other way: a hook runs with an environment the runner
+    // controls, so an exported CMAKE_TOOLCHAIN_FILE is dropped — but PATH
+    // survives, which is what makes wrapping the tool work.
+    //
+    // Injected on configure only. `cmake --build` must not be given -D
+    // arguments, and the bbclass draws the same distinction.
+    final realCmake = _which('cmake');
+    final toolchain = profile.cmakeToolchainFile;
+    if (realCmake != null && toolchain != null) {
+      final pkg = profile.pkgConfig?.toEnv() ?? const <String, String>{};
+      final exports = pkg.entries
+          .map((e) => 'export ${e.key}=${q(e.value)}\n')
+          .join();
+      File(p.join(dir.path, 'cmake'))
+        ..writeAsStringSync(
+          '#!/bin/sh\n'
+          '$exports'
+          'configuring=true\n'
+          'for arg in "\$@"; do\n'
+          '    if [ "\$arg" = "--build" ]; then configuring=false; fi\n'
+          'done\n'
+          'ARGS=""\n'
+          'if [ "\$configuring" = "true" ]; then\n'
+          '    ARGS=${q('-DCMAKE_TOOLCHAIN_FILE=$toolchain')}\n'
+          'fi\n'
+          'exec ${q(realCmake)} \$ARGS "\$@"\n',
+        )
+        ..parent;
+      Process.runSync('chmod', ['+x', p.join(dir.path, 'cmake')]);
+    }
+
+    for (final f in [ccFile, cxxFile, arFile, ldFile]) {
+      Process.runSync('chmod', ['+x', f.path]);
+    }
+    // Only the FLUTTER_HOOK_* trio. Anything else set here would not reach a
+    // hook: the runner gives hooks an environment it controls, so a
+    // CMAKE_TOOLCHAIN_FILE or PKG_CONFIG_* exported here is silently dropped —
+    // measured, not assumed. What survives is what the SDK reads itself and
+    // passes on through the hook's config file.
+    // PATH, so the cmake wrapper is found; arbitrary variables would not
+    // survive, but PATH does.
+    final path = Platform.environment['PATH'];
+    return {
+      'FLUTTER_HOOK_CC': ccFile.path,
+      'FLUTTER_HOOK_AR': arFile.path,
+      'FLUTTER_HOOK_LD': ldFile.path,
+      'PATH': path == null ? dir.path : '${dir.path}:$path',
+    };
+  }
+
+  /// Bare filenames of the code assets `flutter build bundle` produced for
+  /// this bundle — the set the bundler flattens into `lib/`.
+  static List<String> _stagedCodeAssetNames(Directory appBundle) {
+    final dir = Directory(
+      p.join(appBundle.path, 'data', 'flutter_assets', 'native_assets'),
+    );
+    if (!dir.existsSync()) return const [];
+    try {
+      return [
+        for (final e in dir.listSync(recursive: true, followLinks: false))
+          if (e is File) p.basename(e.path),
+      ];
+    } on FileSystemException {
+      return const [];
+    }
+  }
+
+  /// First [name] on PATH, or null.
+  static String? _which(String name) {
+    final r = Process.runSync('sh', ['-c', 'command -v $name']);
+    if (r.exitCode != 0) return null;
+    final out = (r.stdout as String).trim();
+    return out.isEmpty ? null : out;
+  }
+
+  /// The cross linker. A profile names a compiler and an archiver but no
+  /// linker; every toolchain that ships one puts it beside the compiler.
+  /// Falls back to the compiler driver, which links correctly anyway.
+  static String _linkerFor(CrossProfile profile) {
+    final base = p
+        .basename(profile.cc)
+        .replaceAll(RegExp(r'-(gcc|clang)$'), '');
+    final ld = p.join(p.dirname(profile.cc), '$base-ld');
+    return File(ld).existsSync() ? ld : profile.cc;
+  }
+
+  /// Warn when the SDK predates the hook-toolchain patch, naming the cause up
+  /// front rather than letting it surface later as an arch mismatch.
+  void _warnIfSdkIgnoresHookToolchain(Workspace workspace) {
+    final f = File(
+      p.join(
+        workspace.flutterDir.path,
+        'packages/flutter_tools/lib/src/isolated/native_assets/linux/'
+        'native_assets.dart',
+      ),
+    );
+    if (!f.existsSync()) return;
+    try {
+      if (f.readAsStringSync().contains('FLUTTER_HOOK_CC')) return;
+    } on FileSystemException {
+      return;
+    }
+    _logger.warn(
+      '  hook toolchain: this Flutter SDK does not read FLUTTER_HOOK_CC, so '
+      'code-asset hooks will resolve a host compiler and produce '
+      "wrong-architecture libraries. Apply meta-flutter's "
+      '0001-flutter_tools-let-a-caller-supply-the-code-asset-tool.patch.',
+    );
+  }
+
   /// Build [appPath] for the target arch, then assemble a runnable bundle per
   /// built backend — the embedder binary beside the engine + flutter_assets +
   /// icudtl + libapp — under `<buildRoot>/runnable[-<backend>]`.
@@ -1187,6 +1409,12 @@ class CrossCommand extends Command<int> {
     // `emb fetch --app`), and — under strict — inside the network namespace,
     // so `flutter build bundle` never reaches pub.dev.
     var appRunner = _runProcess;
+    // Point code-asset build hooks at the cross toolchain. Without this a hook
+    // compiles for the build host and the bundle audit below rejects it.
+    if (!native) {
+      _warnIfSdkIgnoresHookToolchain(workspace);
+      appRunner = withEnv(appRunner, _writeHookToolchain(profile, buildRoot));
+    }
     if (_offlineMode != OfflineMode.off) {
       appRunner = withEnv(appRunner, {
         'PUB_CACHE': storePubCacheDir(ensureCacheDir()).path,
@@ -1239,6 +1467,9 @@ class CrossCommand extends Command<int> {
       Directory(p.join(appBundle.path, 'lib')),
       triple: profile.targetTriple,
       moduleArtifacts: target.modules.expand((m) => m.artifacts),
+      // What the stager copied in, read back from the same place it copied
+      // from, so the two cannot drift.
+      codeAssets: _stagedCodeAssetNames(appBundle),
     );
     if (!audit.ok) {
       for (final m in audit.archMismatches) {
