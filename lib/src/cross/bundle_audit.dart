@@ -25,15 +25,27 @@ class BundleLibAudit {
   bool get ok => strays.isEmpty && archMismatches.isEmpty;
 }
 
-/// Audit [libDir] against what a bundle for [triple] may contain: only the
-/// engine, the app image, and the [moduleArtifacts] declared by the build
+/// Audit [libDir] against what a bundle for [triple] may contain: the engine,
+/// the app image, the [moduleArtifacts] declared by the build, and the
+/// [codeAssets] the stager copied out of `flutter_assets/native_assets`
 /// (matched by soname or a versioned/symlink alias, the same way the stager
 /// names them). Every non-symlink ELF is additionally checked for the target
 /// arch. A missing directory audits as clean.
+///
+/// [codeAssets] exists because the bundler puts those libraries in `lib/`
+/// itself — the manifest resolves them by bare name, so they have to sit beside
+/// the engine — and without naming them here the audit rejects files emb just
+/// finished placing. They are not declared in a manifest: upstream Flutter
+/// generates them from the build and records them in
+/// `NativeAssetsManifest.json`, and a hand-written list would have to track
+/// every dependency that happens to ship a build hook. The arch check still
+/// applies to them, which is the part that matters — a host-built native asset
+/// in a cross bundle is exactly the bug this audit exists to catch.
 BundleLibAudit auditBundleLib(
   Directory libDir, {
   required String triple,
   required Iterable<String> moduleArtifacts,
+  Iterable<String> codeAssets = const [],
 }) {
   final strays = <String>[];
   final archMismatches = <String>[];
@@ -41,7 +53,7 @@ BundleLibAudit auditBundleLib(
     return const BundleLibAudit(strays: [], archMismatches: []);
   }
 
-  final sonames = moduleArtifacts.toSet();
+  final sonames = {...moduleArtifacts, ...codeAssets};
   bool allowed(String name) =>
       _baseLibNames.contains(name) ||
       sonames.any((s) => name == s || name.startsWith('$s.'));
