@@ -53,6 +53,42 @@ import 'package:path/path.dart' as p;
 /// This is the consumer that turns the cross layer into a usable command; the
 /// per-backend configure/build hangs off the resolved profile.
 /// {@endtemplate}
+/// Bundle-relative rpath, applied to every cross build unless a manifest
+/// overrides it.
+///
+/// A bundle stages the engine, the app image, the embedder's shared library and
+/// any Dart code assets into `lib/` beside the executable — a fixed layout (see
+/// `auditBundleLib`, which reads exactly that directory). Without this the
+/// binary carries absolute build-host paths and dies on the device with
+/// "cannot open shared object file"; the build host's checkout is not there.
+///
+/// `BUILD_WITH_INSTALL_RPATH` because a bundle is assembled straight out of the
+/// build tree and never `cmake --install`ed, so the build-tree rpath ships.
+/// Both entries are needed: the executable sits at the bundle root and reaches
+/// libraries via `$ORIGIN/lib`, while a library already inside `lib/` reaches
+/// its siblings via `$ORIGIN`.
+///
+/// This is exact for the layouts that keep the tree together — the runnable
+/// bundle (and so an rsync `--deploy`) and the flatpak, which copies the bundle
+/// intact to `/app/<appId>`. It does *not* describe the distro packages, which
+/// split the binary to `install_dir` (`/usr/bin`) and the libraries to
+/// `/usr/lib/<multiarch>`; there the entries simply resolve to nothing and the
+/// loader finds the libraries on its default search path, so the rpath is inert
+/// rather than wrong. A board that needs something else states its own
+/// `CMAKE_INSTALL_RPATH`, which wins (see [mergeBackendDefines]).
+const Map<String, String> rpathDefines = {
+  'CMAKE_BUILD_WITH_INSTALL_RPATH': 'ON',
+  'CMAKE_INSTALL_RPATH': r'$ORIGIN/lib:$ORIGIN',
+};
+
+/// One backend's cache entries: the [rpathDefines] defaults, under the target's
+/// shared `cross.defines`, under the backend's own entry. Later wins, so a
+/// manifest that states an rpath of its own keeps it.
+Map<String, String> mergeBackendDefines(
+  Map<String, String> targetDefines,
+  Map<String, String> backendDefines,
+) => {...rpathDefines, ...targetDefines, ...backendDefines};
+
 class CrossCommand extends Command<int> {
   /// {@macro cross_command}
   CrossCommand({
@@ -891,11 +927,12 @@ class CrossCommand extends Command<int> {
     final launcher = await _resolveLauncher(target);
 
     // --backend filters the matrix (validated in run()); merge shared
-    // cross.defines into each backend (a backend define wins on a clash).
+    // cross.defines into each backend (a backend define wins on a clash), over
+    // the bundle-relative rpath defaults.
     final backends = {
       for (final e in target.backends.entries)
         if (selectedBackends.isEmpty || selectedBackends.contains(e.key))
-          e.key: {...target.defines, ...e.value},
+          e.key: mergeBackendDefines(target.defines, e.value),
     };
 
     // Build any augment libraries the sysroot doesn't already satisfy (e.g.
