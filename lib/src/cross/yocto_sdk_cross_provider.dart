@@ -200,13 +200,12 @@ class YoctoSdkCrossProvider implements CrossProvider {
     final sdkDir = workspace.ensurePlatformDir(
       'yocto-sdk-${sysrootKey(target)}',
     );
-    final name = p.basenameWithoutExtension(Uri.parse(url).path);
+    final urlUri = Uri.parse(url);
+    final name = p.basenameWithoutExtension(urlUri.path);
     final prefix = Directory(p.join(sdkDir.path, name));
     if (_globEnvSetup(prefix) != null) return prefix; // already installed
 
-    final installer = File(
-      p.join(sdkDir.path, p.basename(Uri.parse(url).path)),
-    );
+    final installer = File(p.join(sdkDir.path, p.basename(urlUri.path)));
     if (!installer.existsSync()) {
       if (!await _download(url, installer)) return null;
     }
@@ -227,10 +226,7 @@ class YoctoSdkCrossProvider implements CrossProvider {
     // OE SDK installers are bash scripts and fail silently under dash.
     final run = await Process.run(installer.path, ['-y', '-d', prefix.path]);
     if (run.exitCode != 0) {
-      final stderr = (run.stderr as String).trim();
-      _downloadError =
-          'SDK installer failed (exit ${run.exitCode})'
-          '${stderr.isNotEmpty ? ": $stderr" : ""}';
+      _downloadError = _failMsg('SDK installer failed', run);
       return null;
     }
     return prefix;
@@ -276,28 +272,26 @@ class YoctoSdkCrossProvider implements CrossProvider {
 
   /// Download an Artifactory file using the JFrog CLI (`jf rt dl`).
   ///
-  /// Resolves the correct `--server-id` by matching [baseUrl]'s authority
-  /// against configured servers from `jf config show`, so the right
-  /// credentials are used even when multiple servers are configured.
+  /// Resolves the correct `--server-id` by matching [baseAuthority] against
+  /// configured servers from `jf config show`, so the right credentials are
+  /// used even when multiple servers are configured.
   ///
-  /// Returns `true`/`false` on success/failure, or `null` if jf is not
-  /// installed (caller should fall back to plain HTTP).
+  /// Returns `true`/`false` on success/failure, or `null` when jf cannot be
+  /// used (not installed, config unavailable, or no server matches the URL
+  /// authority — caller should fall back to plain HTTP).
   Future<bool?> _downloadViaJFrog(
-    String baseUrl,
+    String baseAuthority,
     String repoPath,
     File dest,
   ) async {
+    final ProcessResult configResult;
     try {
-      final check = await Process.run('jf', ['--version']);
-      if (check.exitCode != 0) return null;
+      configResult = await Process.run('jf', ['config', 'show']);
+      if (configResult.exitCode != 0) return null;
     } on ProcessException {
       return null;
     }
-
-    final configResult = await Process.run('jf', ['config', 'show']);
-    if (configResult.exitCode != 0) return null;
     final servers = _parseJFrogServers(configResult.stdout as String);
-    final baseAuthority = Uri.parse(baseUrl).authority;
     final server = servers.firstWhere(
       (s) =>
           Uri.tryParse(s['Artifactory URL'] ?? '')?.authority == baseAuthority,
@@ -317,10 +311,7 @@ class YoctoSdkCrossProvider implements CrossProvider {
       '${dest.parent.path}/',
     ]);
     if (result.exitCode != 0) {
-      final stderr = (result.stderr as String).trim();
-      _downloadError =
-          'jf rt dl failed (exit ${result.exitCode})'
-          '${stderr.isNotEmpty ? ": $stderr" : ""}';
+      _downloadError = _failMsg('jf rt dl failed', result);
       return false;
     }
     if (!dest.existsSync()) {
@@ -330,6 +321,11 @@ class YoctoSdkCrossProvider implements CrossProvider {
       return false;
     }
     return true;
+  }
+
+  static String _failMsg(String label, ProcessResult r) {
+    final s = (r.stderr as String).trim();
+    return '$label (exit ${r.exitCode})${s.isNotEmpty ? ": $s" : ""}';
   }
 
   /// Parse `jf config show` stdout into server records keyed by field name.
@@ -344,7 +340,7 @@ class YoctoSdkCrossProvider implements CrossProvider {
       final m = lineRe.firstMatch(line.trim());
       if (m == null) continue;
       final key = m.group(1)!.trim();
-      final value = m.group(2)!.trim();
+      final value = m.group(2)!;
       if (key == 'Server ID') {
         current = {};
         servers.add(current);
@@ -354,10 +350,10 @@ class YoctoSdkCrossProvider implements CrossProvider {
     return servers;
   }
 
-  /// Parse an Artifactory URL into `(baseUrl, repoPath)`.
+  /// Parse an Artifactory URL into `(authority, repoPath)`.
   ///
   /// `https://host/artifactory/repo/a/b/file.sh`
-  /// → `('https://host/artifactory', 'repo/a/b/file.sh')`
+  /// → `('host', 'repo/a/b/file.sh')`
   ///
   /// Returns null when the URL has no `/artifactory/` segment.
   static (String, String)? _parseArtifactoryPath(String url) {
@@ -366,9 +362,7 @@ class YoctoSdkCrossProvider implements CrossProvider {
     final segments = uri.pathSegments;
     final artIdx = segments.indexOf('artifactory');
     if (artIdx < 0 || artIdx >= segments.length - 1) return null;
-    final basePath = '/${segments.sublist(0, artIdx + 1).join('/')}';
-    final repoPath = segments.sublist(artIdx + 1).join('/');
-    return ('${uri.scheme}://${uri.authority}$basePath', repoPath);
+    return (uri.authority, segments.sublist(artIdx + 1).join('/'));
   }
 
   /// Source [envSetup] in a clean shell and capture the resulting environment.
