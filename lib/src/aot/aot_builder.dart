@@ -422,8 +422,7 @@ class AotBuilder {
       '--target-os',
       'linux',
       '--packages',
-      _packageConfigPath(app) ??
-          p.join(app, '.dart_tool', 'package_config.json'),
+      _packageConfigPath(app),
       '--output-dill',
       p.join(buildDir, 'app.dill'),
       '--depfile',
@@ -447,15 +446,28 @@ class AotBuilder {
   /// In a Flutter workspace the file lives at the workspace root's
   /// `.dart_tool/`, not the member package's directory. Walking up mirrors how
   /// the Dart SDK itself resolves package configs at runtime.
-  static String? _packageConfigPath(String app) {
+  ///
+  /// Throws [StateError] if no `package_config.json` is found; the file is
+  /// required for the kernel compiler to resolve imports.
+  static String _packageConfigPath(String app) {
     var dir = Directory(app);
     while (true) {
       final candidate = p.join(dir.path, '.dart_tool', 'package_config.json');
       if (File(candidate).existsSync()) return candidate;
       final parent = dir.parent;
-      if (parent.path == dir.path) return null;
+      if (parent.path == dir.path) break;
       dir = parent;
+      if (File(p.join(dir.path, 'pubspec.yaml')).existsSync()) {
+        // Nearest ancestor with pubspec.yaml is the workspace root.
+        // Check it once and stop regardless of outcome.
+        final rooted = p.join(dir.path, '.dart_tool', 'package_config.json');
+        if (File(rooted).existsSync()) return rooted;
+        break;
+      }
     }
+    throw StateError(
+      'package_config.json not found for $app — run "flutter pub get" first',
+    );
   }
 
   /// Appends a trimmed stderr [tail] to a failure [message] when present, so an

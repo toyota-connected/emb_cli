@@ -72,6 +72,11 @@ void main() {
   void writeApp(Directory app, {String name = 'myapp'}) {
     app.createSync(recursive: true);
     File(p.join(app.path, 'pubspec.yaml')).writeAsStringSync('name: $name\n');
+    final dartTool = Directory(p.join(app.path, '.dart_tool'))
+      ..createSync(recursive: true);
+    File(
+      p.join(dartTool.path, 'package_config.json'),
+    ).writeAsStringSync('{"configVersion":2,"packages":[]}\n');
   }
 
   // Create a fake new-scheme SDK cache so the builder picks dartaotruntime +
