@@ -46,7 +46,7 @@ class YoctoSdkCrossProvider implements CrossProvider {
 
   /// Set when a download attempt fails, so the caller can include the reason
   /// in the user-facing error rather than just "no environment-setup-* found".
-  String? _downloadError;
+  String? _failureDetail;
 
   @override
   String get name => 'yocto-sdk';
@@ -76,11 +76,11 @@ class YoctoSdkCrossProvider implements CrossProvider {
 
   @override
   Future<CrossResolveResult> resolve() async {
-    _downloadError = null;
+    _failureDetail = null;
     _artifacts.clear();
     final envSetup = await _resolveEnvSetup();
     if (envSetup == null) {
-      final detail = _downloadError != null ? ' ($_downloadError)' : '';
+      final detail = _failureDetail != null ? ' ($_failureDetail)' : '';
       return CrossResolveResult.unavailable(
         'no environment-setup-* found$detail — set cross.sdk_path to an '
         'installed SDK, cross.sdk_url to a populate_sdk installer, or '
@@ -223,17 +223,17 @@ class YoctoSdkCrossProvider implements CrossProvider {
 
     // -y: non-interactive; -d: target dir. The installer relocates the SDK's
     // baked-in paths to the chosen prefix on first run.
-    // Run the installer directly (not via `sh`) so the shebang is honoured;
+    // Run the installer directly (not via `sh`) so the shebang is honored;
     // OE SDK installers are bash scripts and fail silently under dash.
     final ProcessResult run;
     try {
       run = await Process.run(installer.path, ['-y', '-d', prefix.path]);
     } on ProcessException catch (e) {
-      _downloadError = 'cannot execute ${installer.path}: ${e.message}';
+      _failureDetail = 'cannot execute ${installer.path}: ${e.message}';
       return null;
     }
     if (run.exitCode != 0) {
-      _downloadError = _failMsg('SDK installer failed', run);
+      _failureDetail = _failMsg('SDK installer failed', run);
       return null;
     }
     return prefix;
@@ -267,7 +267,7 @@ class YoctoSdkCrossProvider implements CrossProvider {
       final resp = await req.close();
       if (resp.statusCode != 200) {
         await resp.drain<void>();
-        _downloadError = 'HTTP ${resp.statusCode} downloading $url';
+        _failureDetail = 'HTTP ${resp.statusCode} downloading $url';
         return false;
       }
       await resp.pipe(part.openWrite());
@@ -275,7 +275,7 @@ class YoctoSdkCrossProvider implements CrossProvider {
       return true;
     } on Object catch (e) {
       if (part.existsSync()) part.deleteSync();
-      _downloadError = 'connection error downloading $url: $e';
+      _failureDetail = 'connection error downloading $url: $e';
       return false;
     }
   }
@@ -309,7 +309,7 @@ class YoctoSdkCrossProvider implements CrossProvider {
     );
     final serverId = server['Server ID'];
     if (serverId == null) {
-      _downloadError =
+      _failureDetail =
           'no jf server configured for $baseAuthority — run `jf c add`';
       return null;
     }
@@ -325,11 +325,11 @@ class YoctoSdkCrossProvider implements CrossProvider {
       '${dest.parent.path}/',
     ]);
     if (result.exitCode != 0) {
-      _downloadError = _failMsg('jf rt dl failed', result);
+      _failureDetail = _failMsg('jf rt dl failed', result);
       return false;
     }
     if (!dest.existsSync()) {
-      _downloadError =
+      _failureDetail =
           'jf rt dl succeeded but ${dest.path} was not created'
           ' — artifact name in repository may differ from URL basename';
       return false;
