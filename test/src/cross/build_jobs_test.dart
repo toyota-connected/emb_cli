@@ -39,9 +39,9 @@ void main() {
       // can finish. Elsewhere there is nothing to bound against.
       if (!File('/proc/meminfo').existsSync()) return;
       final memTotalKb = int.parse(
-        RegExp(r'MemTotal:\s+(\d+)')
-            .firstMatch(File('/proc/meminfo').readAsStringSync())!
-            .group(1)!,
+        RegExp(
+          r'MemTotal:\s+(\d+)',
+        ).firstMatch(File('/proc/meminfo').readAsStringSync())!.group(1)!,
       );
       final byMemory = (memTotalKb ~/ (1024 * 1024)) ~/ 4;
       if (byMemory < 1) return;
