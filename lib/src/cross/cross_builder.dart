@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:emb_cli/src/cross/build_jobs.dart';
 import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/overlay_builder.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
@@ -286,7 +287,7 @@ class CrossBuilder {
     }
     final compile = await _run(
       cmakeExe,
-      ['--build', build.path, '--parallel'],
+      ['--build', build.path, '--parallel', '${cmakeBuildJobs()}'],
       environment: _env(),
       output: ProcessOutputMode.stream,
     );
