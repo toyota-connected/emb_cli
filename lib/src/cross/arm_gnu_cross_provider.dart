@@ -188,8 +188,17 @@ class ArmGnuCrossProvider implements CrossProvider {
     // (`usr/lib/<multiarch>`) and the arch-specific `bits/` headers under
     // `usr/include/<multiarch>`, but the `*-none-linux-gnu` toolchain only
     // searches `usr/lib`/`lib` and `usr/include`. Point it at the multiarch
-    // dirs: `-B` for the crt startup objects, `-L` for libraries, `-I` for the
-    // `bits/wordsize.h` / `bits/libc-header-start.h` headers.
+    // dirs: `-B` for the crt startup objects, `-L` for libraries, and
+    // `-isystem` for the `bits/wordsize.h` / `bits/libc-header-start.h`
+    // headers.
+    //
+    // `-isystem` rather than `-I` because this is a system header directory and
+    // must rank below a project's own headers. As `-I` it outranks every
+    // `-isystem` CMake emits for a SYSTEM include directory, so a project that
+    // vendors a library the sysroot also provides gets the sysroot's copy: a
+    // build of the Firebase C++ SDK picks up the sysroot's OpenSSL
+    // `opensslconf.h` from inside BoringSSL's own `base.h` and dies on
+    // "OPENSSL_API_COMPAT expresses an impossible API compatibility level".
     final maLib = p.join(sysrootDir.path, 'usr', 'lib', _multiarch);
     final maLib2 = p.join(sysrootDir.path, 'lib', _multiarch);
     final maInc = p.join(sysrootDir.path, 'usr', 'include', _multiarch);
@@ -198,7 +207,7 @@ class ArmGnuCrossProvider implements CrossProvider {
       '-B$maLib',
       '-L$maLib',
       '-L$maLib2',
-      '-I$maInc',
+      '-isystem$maInc',
       // Let ld resolve the indirect (DT_NEEDED) deps of shared libs on the link
       // line (e.g. libinput.so -> libevdev/libwacom/libmtdev) from the
       // multiarch dirs; `-L` only drives direct `-l` resolution.

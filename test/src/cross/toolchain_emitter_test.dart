@@ -49,6 +49,43 @@ void main() {
     expect(text, isNot(contains('qemu-aarch64-static')));
   });
 
+  // The sysroot's multiarch include is a system header directory and reaches
+  // the compiler as -isystem, so a project's own headers outrank it. Meson
+  // keeps compile and link args separate: the crt/library search flags belong
+  // in both, the include flags only in the compile args.
+  test('emitMeson keeps include flags out of the link args', () {
+    final path = emitter.emitMeson(
+      outDir: tmp,
+      triple: 'aarch64-none-linux-gnu',
+      crossBin: '/tc/bin',
+      sysroot: '/sr',
+      cpuFlags: [
+        '-mcpu=cortex-a76',
+        '-B/sr/usr/lib/aarch64-linux-gnu',
+        '-L/sr/usr/lib/aarch64-linux-gnu',
+        '-isystem/sr/usr/include/aarch64-linux-gnu',
+        '-I/sr/opt/include',
+      ],
+    );
+    final text = File(path).readAsStringSync();
+    String lineStartingWith(String prefix) => text
+        .split('\n')
+        .firstWhere((l) => l.startsWith(prefix), orElse: () => '');
+
+    final compileArgs = lineStartingWith('c_args = ');
+    final linkArgs = lineStartingWith('c_link_args = ');
+    expect(compileArgs, isNotEmpty);
+    expect(linkArgs, isNotEmpty);
+
+    expect(compileArgs, contains('-isystem/sr/usr/include/aarch64-linux-gnu'));
+    expect(compileArgs, contains('-I/sr/opt/include'));
+    // Both include forms are compile-only; -B and -L are not.
+    expect(linkArgs, isNot(contains('-isystem')));
+    expect(linkArgs, isNot(contains('-I/sr/opt/include')));
+    expect(linkArgs, contains('-B/sr/usr/lib/aarch64-linux-gnu'));
+    expect(linkArgs, contains('-L/sr/usr/lib/aarch64-linux-gnu'));
+  });
+
   test('derives system processor / cpu_family from the triple (riscv64)', () {
     const triple = 'riscv64-unknown-linux-gnu';
     final cmake = File(
