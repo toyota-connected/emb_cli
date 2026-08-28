@@ -69,9 +69,17 @@ void main() {
   AotBuilder builder(Directory ws, _Recorder rec, {HostInfo host = _host}) =>
       AotBuilder(Workspace(ws), host: host, runProcess: rec.run);
 
-  void writeApp(Directory app, {String name = 'myapp'}) {
+  void writeApp(Directory app, {String name = 'myapp', bool config = true}) {
     app.createSync(recursive: true);
     File(p.join(app.path, 'pubspec.yaml')).writeAsStringSync('name: $name\n');
+    // A real app has had `flutter pub get` run on it, so either it or its
+    // workspace root owns a package_config.json. Tests that exercise the
+    // missing-config path opt out.
+    if (config) {
+      File(p.join(app.path, '.dart_tool', 'package_config.json'))
+        ..createSync(recursive: true)
+        ..writeAsStringSync('{"configVersion":2,"packages":[]}');
+    }
   }
 
   // Create a fake new-scheme SDK cache so the builder picks dartaotruntime +
@@ -259,6 +267,128 @@ void main() {
     ).buildAssets(appPath: app.path, mode: 'release', arch: 'armv7hf');
 
     expect(bundleCall(rec).args, isNot(contains('--target-platform')));
+  });
+
+  group('package_config resolution', () {
+    /// The `--packages` value the kernel step was invoked with.
+    String? packagesArg(_Recorder rec) {
+      for (final c in rec.calls) {
+        final i = c.args.indexOf('--packages');
+        if (i != -1 && i + 1 < c.args.length) return c.args[i + 1];
+      }
+      return null;
+    }
+
+    void writeConfig(Directory dir) =>
+        File(p.join(dir.path, '.dart_tool', 'package_config.json'))
+          ..createSync(recursive: true)
+          ..writeAsStringSync('{"configVersion":2,"packages":[]}');
+
+    // A pub workspace resolves once at the root; members get a .dart_tool with
+    // no config of their own. The app's parent here is the library package, not
+    // the root -- the packages/<pkg>/example shape flutterfire, plus_plugins and
+    // FirebaseUI-Flutter all use.
+    test('finds the config at the pub workspace root', () async {
+      final ws = Directory(p.join(tmp.path, 'ws'))..createSync();
+      writeSdk(ws);
+      final root = Directory(p.join(tmp.path, 'repo'))..createSync();
+      File(p.join(root.path, 'pubspec.yaml')).writeAsStringSync(
+        'name: repo_root\nworkspace:\n  - packages/lib/example\n',
+      );
+      writeConfig(root);
+      final lib = Directory(p.join(root.path, 'packages', 'lib'))
+        ..createSync(recursive: true);
+      File(p.join(lib.path, 'pubspec.yaml')).writeAsStringSync('name: lib\n');
+      final app = Directory(p.join(lib.path, 'example'));
+      writeApp(app, config: false);
+      File(
+        p.join(app.path, 'pubspec.yaml'),
+      ).writeAsStringSync('name: myapp\nresolution: workspace\n');
+
+      final rec = _Recorder(app.path);
+      final result = await builder(
+        ws,
+        rec,
+      ).build(appPath: app.path, modes: const ['release']);
+
+      expect(result.success, isTrue, reason: result.modes.first.message);
+      expect(
+        packagesArg(rec),
+        p.join(root.path, '.dart_tool', 'package_config.json'),
+      );
+    });
+
+    // The walk must not climb past the workspace root into an unrelated config
+    // -- a stray ~/.dart_tool/package_config.json would otherwise be handed to
+    // --packages and produce a compile error pointing nowhere near the cause.
+    test(
+      'stops at the pub workspace root rather than taking a stray',
+      () async {
+        final ws = Directory(p.join(tmp.path, 'ws'))..createSync();
+        writeSdk(ws);
+        final stray = Directory(p.join(tmp.path, 'stray'))..createSync();
+        writeConfig(stray);
+        final root = Directory(p.join(stray.path, 'repo'))..createSync();
+        File(
+          p.join(root.path, 'pubspec.yaml'),
+        ).writeAsStringSync('name: repo_root\nworkspace:\n  - app\n');
+        final app = Directory(p.join(root.path, 'app'));
+        writeApp(app, config: false);
+
+        final rec = _Recorder(app.path);
+        final result = await builder(
+          ws,
+          rec,
+        ).build(appPath: app.path, modes: const ['release']);
+
+        expect(result.success, isFalse);
+        expect(
+          result.modes.first.message,
+          contains('no .dart_tool/package_config.json'),
+        );
+        expect(
+          packagesArg(rec),
+          isNull,
+          reason: 'the stray config above the root must never be used',
+        );
+      },
+    );
+
+    test('a missing config is reported, not thrown', () async {
+      final ws = Directory(p.join(tmp.path, 'ws'))..createSync();
+      writeSdk(ws);
+      final app = Directory(p.join(tmp.path, 'lonely', 'app'));
+      writeApp(app, config: false);
+
+      final rec = _Recorder(app.path);
+      final result = await builder(
+        ws,
+        rec,
+      ).build(appPath: app.path, modes: const ['release']);
+
+      expect(result.success, isFalse);
+      expect(result.modes.first.message, contains('flutter pub get'));
+    });
+
+    test('an app that owns its config uses it', () async {
+      final ws = Directory(p.join(tmp.path, 'ws'))..createSync();
+      writeSdk(ws);
+      final app = Directory(p.join(tmp.path, 'solo'));
+      writeApp(app);
+      writeConfig(app);
+
+      final rec = _Recorder(app.path);
+      final result = await builder(
+        ws,
+        rec,
+      ).build(appPath: app.path, modes: const ['release']);
+
+      expect(result.success, isTrue, reason: result.modes.first.message);
+      expect(
+        packagesArg(rec),
+        p.join(app.path, '.dart_tool', 'package_config.json'),
+      );
+    });
   });
 
   test('fails cleanly when pubspec has no name', () async {

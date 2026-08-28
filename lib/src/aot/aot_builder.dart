@@ -308,6 +308,24 @@ class AotBuilder {
         continue;
       }
 
+      // Resolved before the compile rather than inside the argument list: a
+      // missing package config is a reported failure naming the thing to do,
+      // not an uncaught throw, and not a compile whose real cause surfaces as
+      // "No 'main' method found".
+      final packageConfig = _packageConfig(app);
+      if (packageConfig == null) {
+        results.add(
+          AotModeResult(
+            mode: mode,
+            success: false,
+            message:
+                'no .dart_tool/package_config.json for $app (searched up to '
+                'the workspace root) — run "flutter pub get" first',
+          ),
+        );
+        continue;
+      }
+
       onStep?.call('[$mode] kernel snapshot');
       final kernel = await _kernelSnapshot(
         app: app,
@@ -315,13 +333,19 @@ class AotBuilder {
         mode: mode,
         buildDir: buildDir,
         newScheme: newScheme,
+        packageConfig: packageConfig,
       );
       if (kernel.exitCode != 0) {
         results.add(
           AotModeResult(
             mode: mode,
             success: false,
-            message: _withTail('kernel snapshot failed', kernel.stderr),
+            // The frontend writes diagnostics to stdout as often as stderr, so
+            // an empty stderr must not swallow the reason.
+            message: _withTail(
+              'kernel snapshot failed',
+              kernel.stderr.isNotEmpty ? kernel.stderr : kernel.stdout,
+            ),
           ),
         );
         continue;
@@ -381,6 +405,7 @@ class AotBuilder {
     required String mode,
     required String buildDir,
     required bool newScheme,
+    required String packageConfig,
   }) async {
     final dartRuntime = newScheme
         ? p.join(_dartSdkBin, 'dartaotruntime')
@@ -419,7 +444,7 @@ class AotBuilder {
       '--target-os',
       'linux',
       '--packages',
-      p.join(app, '.dart_tool', 'package_config.json'),
+      packageConfig,
       '--output-dill',
       p.join(buildDir, 'app.dill'),
       '--depfile',
@@ -444,6 +469,57 @@ class AotBuilder {
   String _withTail(String message, String tail) {
     final t = tail.trim();
     return t.isEmpty ? message : '$message\n$t';
+  }
+
+  /// The package config to compile [app] against, or null when there is none.
+  ///
+  /// A pub *workspace* (`resolution: workspace`) resolves once at the workspace
+  /// root and writes a single `.dart_tool/package_config.json` there; its member
+  /// packages get a `.dart_tool/` with no config of their own. An app inside a
+  /// monorepo therefore has to look upward for it, the way pub and the analyzer
+  /// do -- the FirebaseUI-Flutter examples are each a workspace member, and
+  /// against an app-local path every one of them fails to compile with
+  /// "No 'main' method found", the unreadable package config being reported
+  /// only afterwards.
+  ///
+  /// The walk is bounded, so it cannot wander into an unrelated config -- a
+  /// stray `~/.dart_tool/package_config.json` left by a `dart pub get` in
+  /// `$HOME` would otherwise be handed to `--packages` and produce a compile
+  /// error pointing nowhere near the real problem. It stops at whichever comes
+  /// first:
+  ///
+  /// * the **pub workspace root**, the ancestor whose `pubspec.yaml` declares a
+  ///   `workspace:` list. That is the marker pub itself uses; "nearest ancestor
+  ///   with a pubspec.yaml" is not, because in the common `packages/<pkg>/
+  ///   example` layout the app's parent is the library package, one level below
+  ///   the root that owns the config.
+  /// * the **emb workspace root**, for an app that is not in a pub workspace at
+  ///   all.
+  /// * the filesystem root.
+  String? _packageConfig(String app) {
+    final appDir = p.absolute(app);
+    final embRoot = p.absolute(workspace.root.path);
+    for (var dir = appDir; ; dir = p.dirname(dir)) {
+      final candidate = p.join(dir, '.dart_tool', 'package_config.json');
+      if (File(candidate).existsSync()) return candidate;
+      if (_declaresPubWorkspace(dir)) return null;
+      if (dir == embRoot || p.dirname(dir) == dir) return null;
+    }
+  }
+
+  /// Whether [dir]'s `pubspec.yaml` declares a `workspace:` member list, which
+  /// is what makes it a pub workspace root.
+  static bool _declaresPubWorkspace(String dir) {
+    final pubspec = File(p.join(dir, 'pubspec.yaml'));
+    if (!pubspec.existsSync()) return false;
+    try {
+      final doc = loadYaml(pubspec.readAsStringSync());
+      return doc is YamlMap && doc['workspace'] != null;
+    } on YamlException {
+      // A pubspec we cannot parse is not a reason to fail the build here; the
+      // walk simply does not treat it as a boundary.
+      return false;
+    }
   }
 
   /// Optional dart_plugin_registrant source flags (mirrors create_aot.py).
