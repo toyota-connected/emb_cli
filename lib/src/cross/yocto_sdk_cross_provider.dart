@@ -322,7 +322,7 @@ class YoctoSdkCrossProvider implements CrossProvider {
       '--server-id',
       serverId,
       repoPath,
-      '${dest.parent.path}/',
+      '${dest.parent.path}${p.separator}',
     ]);
     if (result.exitCode != 0) {
       _failureDetail = _failMsg('jf rt dl failed', result);
