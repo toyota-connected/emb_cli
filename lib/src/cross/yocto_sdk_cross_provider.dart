@@ -9,6 +9,7 @@ import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/cross/emb_lock.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
+import 'package:meta/meta.dart';
 import 'package:path/path.dart' as p;
 
 /// Resolves a relocatable Yocto SDK (`populate_sdk` output) into a
@@ -224,7 +225,13 @@ class YoctoSdkCrossProvider implements CrossProvider {
     // baked-in paths to the chosen prefix on first run.
     // Run the installer directly (not via `sh`) so the shebang is honoured;
     // OE SDK installers are bash scripts and fail silently under dash.
-    final run = await Process.run(installer.path, ['-y', '-d', prefix.path]);
+    final ProcessResult run;
+    try {
+      run = await Process.run(installer.path, ['-y', '-d', prefix.path]);
+    } on ProcessException catch (e) {
+      _downloadError = 'cannot execute ${installer.path}: ${e.message}';
+      return null;
+    }
     if (run.exitCode != 0) {
       _downloadError = _failMsg('SDK installer failed', run);
       return null;
@@ -247,12 +254,13 @@ class YoctoSdkCrossProvider implements CrossProvider {
   }
 
   Future<bool> _download(String url, File dest) async {
-    final artPath = _parseArtifactoryPath(url);
+    final artPath = parseArtifactoryPath(url);
     if (artPath != null) {
       final jfResult = await _downloadViaJFrog(artPath.$1, artPath.$2, dest);
       if (jfResult != null) return jfResult;
       // jf not installed — fall through to plain HTTP
     }
+    final part = File('${dest.path}.part');
     try {
       final req = await _http.getUrl(Uri.parse(url));
       req.followRedirects = true;
@@ -262,9 +270,11 @@ class YoctoSdkCrossProvider implements CrossProvider {
         _downloadError = 'HTTP ${resp.statusCode} downloading $url';
         return false;
       }
-      await resp.pipe(dest.openWrite());
+      await resp.pipe(part.openWrite());
+      part.renameSync(dest.path);
       return true;
     } on Object catch (e) {
+      if (part.existsSync()) part.deleteSync();
       _downloadError = 'connection error downloading $url: $e';
       return false;
     }
@@ -291,14 +301,18 @@ class YoctoSdkCrossProvider implements CrossProvider {
     } on ProcessException {
       return null;
     }
-    final servers = _parseJFrogServers(configResult.stdout as String);
+    final servers = parseJFrogServers(configResult.stdout as String);
     final server = servers.firstWhere(
       (s) =>
           Uri.tryParse(s['Artifactory URL'] ?? '')?.authority == baseAuthority,
       orElse: () => {},
     );
     final serverId = server['Server ID'];
-    if (serverId == null) return null;
+    if (serverId == null) {
+      _downloadError =
+          'no jf server configured for $baseAuthority — run `jf c add`';
+      return null;
+    }
 
     final result = await Process.run('jf', [
       'rt',
@@ -332,7 +346,8 @@ class YoctoSdkCrossProvider implements CrossProvider {
   ///
   /// Each record contains fields like `Server ID`, `Artifactory URL`,
   /// `Default`, etc.
-  static List<Map<String, String>> _parseJFrogServers(String output) {
+  @visibleForTesting
+  static List<Map<String, String>> parseJFrogServers(String output) {
     final servers = <Map<String, String>>[];
     Map<String, String>? current;
     final lineRe = RegExp(r'^([^:]+):\s+(.+)$');
@@ -355,14 +370,23 @@ class YoctoSdkCrossProvider implements CrossProvider {
   /// `https://host/artifactory/repo/a/b/file.sh`
   /// → `('host', 'repo/a/b/file.sh')`
   ///
+  /// `https://host/artifactory/api/download/repo/a/b/file.sh`
+  /// → `('host', 'repo/a/b/file.sh')`  (api/download prefix stripped)
+  ///
   /// Returns null when the URL has no `/artifactory/` segment.
-  static (String, String)? _parseArtifactoryPath(String url) {
+  @visibleForTesting
+  static (String, String)? parseArtifactoryPath(String url) {
     final uri = Uri.tryParse(url);
     if (uri == null) return null;
     final segments = uri.pathSegments;
     final artIdx = segments.indexOf('artifactory');
     if (artIdx < 0 || artIdx >= segments.length - 1) return null;
-    return (uri.authority, segments.sublist(artIdx + 1).join('/'));
+    var rest = segments.sublist(artIdx + 1).where((s) => s.isNotEmpty).toList();
+    if (rest.length > 2 && rest[0] == 'api' && rest[1] == 'download') {
+      rest = rest.sublist(2);
+    }
+    if (rest.isEmpty) return null;
+    return (uri.authority, rest.join('/'));
   }
 
   /// Source [envSetup] in a clean shell and capture the resulting environment.

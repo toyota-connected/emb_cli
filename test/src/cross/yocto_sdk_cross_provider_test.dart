@@ -132,4 +132,112 @@ export CMAKE_TOOLCHAIN_FILE="\$OECORE_NATIVE_SYSROOT/usr/share/cmake/OEToolchain
     provider.close();
     expect(r.status, CrossResolveStatus.unavailable);
   });
+
+  group('parseArtifactoryPath', () {
+    test('plain artifactory URL', () {
+      final r = YoctoSdkCrossProvider.parseArtifactoryPath(
+        'https://artifacts.example.com/artifactory/my-repo/path/to/sdk.sh',
+      );
+      expect(r, ('artifacts.example.com', 'my-repo/path/to/sdk.sh'));
+    });
+
+    test('api/download URL strips prefix', () {
+      final r = YoctoSdkCrossProvider.parseArtifactoryPath(
+        'https://artifacts.example.com/artifactory/api/download/my-repo/path/to/sdk.sh',
+      );
+      expect(r, ('artifacts.example.com', 'my-repo/path/to/sdk.sh'));
+    });
+
+    test('URL with port preserves authority', () {
+      final r = YoctoSdkCrossProvider.parseArtifactoryPath(
+        'https://artifacts.example.com:8081/artifactory/my-repo/sdk.sh',
+      );
+      expect(r, ('artifacts.example.com:8081', 'my-repo/sdk.sh'));
+    });
+
+    test('no /artifactory/ segment returns null', () {
+      expect(
+        YoctoSdkCrossProvider.parseArtifactoryPath(
+          'https://example.com/releases/sdk.sh',
+        ),
+        isNull,
+      );
+    });
+
+    test('/artifactory/ with no path after it returns null', () {
+      expect(
+        YoctoSdkCrossProvider.parseArtifactoryPath(
+          'https://artifacts.example.com/artifactory/',
+        ),
+        isNull,
+      );
+    });
+  });
+
+  group('parseJFrogServers', () {
+    // Realistic `jf config show` output with two configured servers.
+    const multiServerOutput = '''
+Server ID:          prod-server
+Artifactory URL:    https://artifacts.example.com/artifactory
+Access URL:         https://artifacts.example.com/access
+User:               ci-bot
+Password/API key:   ***
+Default:            true
+
+Server ID:          staging
+Artifactory URL:    https://staging.example.com/artifactory
+Access URL:         https://staging.example.com/access
+User:               ci-bot
+Password/API key:   ***
+Default:            false
+''';
+
+    test('parses two servers', () {
+      final servers = YoctoSdkCrossProvider.parseJFrogServers(
+        multiServerOutput,
+      );
+      expect(servers, hasLength(2));
+    });
+
+    test('first server fields', () {
+      final servers = YoctoSdkCrossProvider.parseJFrogServers(
+        multiServerOutput,
+      );
+      expect(servers[0]['Server ID'], 'prod-server');
+      expect(
+        servers[0]['Artifactory URL'],
+        'https://artifacts.example.com/artifactory',
+      );
+      expect(servers[0]['Default'], 'true');
+    });
+
+    test('second server fields', () {
+      final servers = YoctoSdkCrossProvider.parseJFrogServers(
+        multiServerOutput,
+      );
+      expect(servers[1]['Server ID'], 'staging');
+      expect(
+        servers[1]['Artifactory URL'],
+        'https://staging.example.com/artifactory',
+      );
+      expect(servers[1]['Default'], 'false');
+    });
+
+    test('empty output returns empty list', () {
+      expect(YoctoSdkCrossProvider.parseJFrogServers(''), isEmpty);
+    });
+
+    test('authority matching against Artifactory URL', () {
+      final servers = YoctoSdkCrossProvider.parseJFrogServers(
+        multiServerOutput,
+      );
+      final match = servers.firstWhere(
+        (s) =>
+            Uri.tryParse(s['Artifactory URL'] ?? '')?.authority ==
+            'artifacts.example.com',
+        orElse: () => {},
+      );
+      expect(match['Server ID'], 'prod-server');
+    });
+  });
 }
