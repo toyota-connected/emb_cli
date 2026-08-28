@@ -1245,6 +1245,61 @@ class CrossCommand extends Command<int> {
   /// Without it these are ignored, a hook resolves a *host* compiler, and
   /// `auditBundleLib` later rejects the wrong-architecture library — so
   /// [_warnIfSdkIgnoresHookToolchain] says so up front instead.
+  /// A `cmake` wrapper for native builds, naming the overlay augments were
+  /// installed into.
+  ///
+  /// Cross builds get this implicitly: their toolchain file sets
+  /// `CMAKE_SYSROOT`, and `find_package` searches it. A native build has no
+  /// toolchain file, so without this a hook that calls
+  /// `find_package(<pkg> CONFIG)` misses an augment `emb` installed moments
+  /// earlier — silently, since a hook that degrades rather than fails then
+  /// produces a library with the augment's contribution simply absent.
+  ///
+  /// A wrapper on PATH rather than an exported variable, for the same reason
+  /// [_writeHookToolchain] uses one: the hook runner replaces the environment,
+  /// so an exported `CMAKE_PREFIX_PATH` never arrives. PATH does.
+  ///
+  /// Injected before the caller's own arguments, so a hook passing its own
+  /// `-DCMAKE_PREFIX_PATH` still wins — CMake takes the last definition.
+  ///
+  /// Returns null when there is nothing to say: no overlay, or no `cmake`.
+  Map<String, String>? _writeHookOverlayPrefix(
+    CrossProfile profile,
+    Directory buildRoot,
+    Workspace workspace,
+  ) {
+    final realCmake = _which('cmake');
+    if (realCmake == null) return null;
+
+    // Augments install with CMAKE_INSTALL_PREFIX=/usr inside the overlay, so
+    // the prefix to search is <overlay>/usr.
+    final overlay = workspace.platformDir('overlay-${profile.targetTriple}');
+    final prefix = Directory(p.join(overlay.path, 'usr'));
+    if (!prefix.existsSync()) return null;
+
+    final dir = Directory(p.join(buildRoot.path, 'hook-toolchain'))
+      ..createSync(recursive: true);
+
+    String q(String s) => "'${s.replaceAll("'", r"'\''")}'";
+
+    File(p.join(dir.path, 'cmake')).writeAsStringSync(
+      '#!/bin/sh\n'
+      'configuring=true\n'
+      'for arg in "\$@"; do\n'
+      '    if [ "\$arg" = "--build" ]; then configuring=false; fi\n'
+      'done\n'
+      'ARGS=""\n'
+      'if [ "\$configuring" = "true" ]; then\n'
+      '    ARGS=${q('-DCMAKE_PREFIX_PATH=${prefix.path}')}\n'
+      'fi\n'
+      'exec ${q(realCmake)} \$ARGS "\$@"\n',
+    );
+    Process.runSync('chmod', ['+x', p.join(dir.path, 'cmake')]);
+
+    final path = Platform.environment['PATH'];
+    return {'PATH': path == null ? dir.path : '${dir.path}:$path'};
+  }
+
   Map<String, String> _writeHookToolchain(
     CrossProfile profile,
     Directory buildRoot,
@@ -1453,9 +1508,17 @@ class CrossCommand extends Command<int> {
     var appRunner = _runProcess;
     // Point code-asset build hooks at the cross toolchain. Without this a hook
     // compiles for the build host and the bundle audit below rejects it.
+    //
+    // A native build wants the host compiler, so it gets no compiler wrappers.
+    // It still needs to be told where augments were installed, though: that
+    // travels in the same `cmake` wrapper, and dropping the whole thing left a
+    // hook's find_package() unable to see an overlay emb had just built for it.
     if (!native) {
       _warnIfSdkIgnoresHookToolchain(workspace);
       appRunner = withEnv(appRunner, _writeHookToolchain(profile, buildRoot));
+    } else {
+      final overlayEnv = _writeHookOverlayPrefix(profile, buildRoot, workspace);
+      if (overlayEnv != null) appRunner = withEnv(appRunner, overlayEnv);
     }
     if (_offlineMode != OfflineMode.off) {
       appRunner = withEnv(appRunner, {
