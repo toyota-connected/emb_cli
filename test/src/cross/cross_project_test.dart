@@ -162,14 +162,22 @@ cross:
       build: cmake
 ''');
         final merged = CrossProjectResolver().applyAppLayer(
-          cross: {'defines': <String, dynamic>{'DISABLE_PLUGINS': 'ON'}},
+          cross: {
+            'defines': <String, dynamic>{'DISABLE_PLUGINS': 'ON'},
+          },
           appDir: appDir.path,
           targetName: 'local',
           native: true,
         );
         expect((merged['defines']! as Map)['DISABLE_PLUGINS'], 'OFF');
-        expect((merged['augment']! as List).single, isA<Map<dynamic, dynamic>>()
-            .having((m) => m['pkg'], 'pkg', 'firebase-cpp-sdk'));
+        expect(
+          (merged['augment']! as List).single,
+          isA<Map<dynamic, dynamic>>().having(
+            (m) => m['pkg'],
+            'pkg',
+            'firebase-cpp-sdk',
+          ),
+        );
       });
 
       test('a board target does not pick up the app base block', () {
@@ -188,7 +196,9 @@ cross:
       });
 
       test('native with no app base block costs nothing', () {
-        final base = {'defines': <String, dynamic>{'DISABLE_PLUGINS': 'ON'}};
+        final base = {
+          'defines': <String, dynamic>{'DISABLE_PLUGINS': 'ON'},
+        };
         final merged = CrossProjectResolver().applyAppLayer(
           cross: base,
           appDir: appDir.path,
