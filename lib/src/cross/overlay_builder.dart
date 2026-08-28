@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
+import 'package:emb_cli/src/cross/build_jobs.dart';
 import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
@@ -331,7 +332,7 @@ class OverlayBuilder {
       'cmake build',
       await _run(
         'cmake',
-        ['--build', bld.path, '--parallel'],
+        ['--build', bld.path, '--parallel', '${cmakeBuildJobs()}'],
         environment: profile.buildEnv(),
         output: ProcessOutputMode.stream,
       ),
@@ -387,6 +388,7 @@ class OverlayBuilder {
         '--build',
         bld.path,
         '--parallel',
+        '${cmakeBuildJobs()}',
       ], output: ProcessOutputMode.stream),
     );
     _check(
