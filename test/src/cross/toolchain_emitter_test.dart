@@ -77,10 +77,7 @@ void main() {
     expect(compileArgs, isNotEmpty);
     expect(linkArgs, isNotEmpty);
 
-    expect(
-      compileArgs,
-      contains('-isystem/sr/usr/include/aarch64-linux-gnu'),
-    );
+    expect(compileArgs, contains('-isystem/sr/usr/include/aarch64-linux-gnu'));
     expect(compileArgs, contains('-I/sr/opt/include'));
     // Both include forms are compile-only; -B and -L are not.
     expect(linkArgs, isNot(contains('-isystem')));
