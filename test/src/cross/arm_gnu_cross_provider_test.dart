@@ -195,6 +195,23 @@ void main() {
       ),
       isTrue,
     );
+    // The multiarch include is a system header directory, so it reaches the
+    // compiler as -isystem. As -I it would outrank every -isystem CMake emits
+    // for a SYSTEM include directory, and a project that vendors a library the
+    // sysroot also ships would get the sysroot's headers instead of its own.
+    expect(
+      pf.cFlags.any(
+        (f) =>
+            f.startsWith('-isystem') &&
+            f.contains(p.join('usr', 'include', 'aarch64-linux-gnu')),
+      ),
+      isTrue,
+      reason: 'multiarch include must be -isystem, not -I',
+    );
+    expect(
+      pf.cFlags.any((f) => f.startsWith('-I') && f.contains('usr/include')),
+      isFalse,
+    );
     expect(pf.cmakeToolchainFile, isNotNull);
   });
 

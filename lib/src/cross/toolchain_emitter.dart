@@ -86,10 +86,10 @@ set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
     final argList = compileFlags.map((f) => "'$f'").join(', ');
     // The link step needs the crt/library search flags (`-mcpu`, `-B`, `-L`)
     // too — meson keeps compile and link args separate, so without these an
-    // executable target fails to find crt1.o / -lm. The `-I` include flags are
-    // compile-only.
+    // executable target fails to find crt1.o / -lm. The include flags
+    // (`-I`, `-isystem`) are compile-only.
     final linkArgs = cpuFlags
-        .where((f) => !f.startsWith('-I'))
+        .where((f) => !f.startsWith('-I') && !f.startsWith('-isystem'))
         .map((f) => "'$f'")
         .join(', ');
     final cpuFamily = cpuFamilyOfTriple(triple);
