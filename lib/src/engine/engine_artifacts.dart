@@ -113,6 +113,14 @@ class EngineArtifacts {
   static String engineArchForHost(HostInfo host) =>
       engineArch(host.machineArch);
 
+  /// File written into a staged bundle recording which engine artifact it came
+  /// from, so a later build can tell a current bundle from a stale one.
+  static const bundleStampName = '.emb-engine-key';
+
+  /// Identity of one engine artifact: the same key the shared store uses.
+  static String engineKey(String runtime, String arch, String commit) =>
+      '$commit-${engineArch(arch)}-$runtime';
+
   /// Build the engine SDK tarball URL for [runtime]/[arch]/[commit].
   static String engineSdkUrl(String runtime, String arch, String commit) {
     final a = engineArch(arch);
@@ -153,11 +161,15 @@ class EngineArtifacts {
     final engineDir = workspace.ensurePlatformDir('flutter-engine');
     final cwdEngine = Directory(p.join(engineDir.path, commit))
       ..createSync(recursive: true);
+    // Normalized arch token, matching what BundleBuilder looks for. Built from
+    // the raw `arch` this staged `bundle-release-x64` alongside the
+    // `bundle-release-x86_64` the consumer reads -- two directories for one
+    // artifact, and only one of them ever consulted.
     final bundleDir = Directory(
-      p.join(engineDir.path, 'bundle-$runtime-$arch'),
+      p.join(engineDir.path, 'bundle-$runtime-${engineArch(arch)}'),
     );
     final restoreLink = p.join(cwdEngine.path, 'engine-sdk-$runtime-$arch');
-    final key = '$commit-${engineArch(arch)}-$runtime';
+    final key = engineKey(runtime, arch, commit);
 
     // Ensure the extracted engine SDK is in the shared store, then symlink the
     // per-workspace path to it (preserving the clang_<host>/bin↔lib64 sibling
@@ -192,7 +204,17 @@ class EngineArtifacts {
     }
     _store.materialize(kind: 'engine', key: key, linkPath: restoreLink);
 
-    if (bundleDir.existsSync() && !clean) {
+    // The bundle is staged per (runtime, arch) while the engine SDK beside
+    // it is staged per (commit, runtime, arch), so "the directory exists" is
+    // not enough to call it current: after an engine commit bump gen_snapshot
+    // moves to the new commit and an unstamped bundle keeps serving the old
+    // libflutter_engine.so. The AOT snapshot and the engine then disagree --
+    // "snapshot requires 'release' ... but the VM has 'product'" -- with
+    // nothing in the build output to say why. Stamp what was staged and restage
+    // when it no longer matches.
+    final stamp = File(p.join(bundleDir.path, bundleStampName));
+    final staged = stamp.existsSync() ? stamp.readAsStringSync().trim() : '';
+    if (bundleDir.existsSync() && !clean && staged == key) {
       return EngineFetchResult(
         runtime: runtime,
         arch: arch,
@@ -205,7 +227,7 @@ class EngineArtifacts {
     // Stage the bundle layout: bundle-<runtime>-<arch>/{data,lib}, sourced from
     // the store tree. The archive nests the two artifacts under a variable
     // `…/engine-sdk/…` prefix, so locate them by name (exactly one of each).
-    if (clean && bundleDir.existsSync()) bundleDir.deleteSync(recursive: true);
+    if (bundleDir.existsSync()) bundleDir.deleteSync(recursive: true);
     final dataDir = Directory(p.join(bundleDir.path, 'data'))
       ..createSync(recursive: true);
     final libDir = Directory(p.join(bundleDir.path, 'lib'))
@@ -223,6 +245,7 @@ class EngineArtifacts {
     }
     icu.copySync(p.join(dataDir.path, 'icudtl.dat'));
     lib.copySync(p.join(libDir.path, 'libflutter_engine.so'));
+    stamp.writeAsStringSync(key);
 
     return EngineFetchResult(
       runtime: runtime,
