@@ -33,13 +33,21 @@ Future<BundleResult> buildAndAssemble({
   if (engine != null) {
     final engineDir = bundle.engineBundleDir(mode, arch).path;
     final icu = File(p.join(engineDir, 'data', 'icudtl.dat'));
-    if (!icu.existsSync()) {
-      final commit = workspace.engineCommit();
-      if (commit != null) {
-        final token = EngineArtifacts.engineArch(arch);
-        onStep?.call('fetching engine ($mode/$token)');
-        await engine.fetch(runtime: mode, arch: token, commit: commit);
-      }
+    final commit = workspace.engineCommit();
+    // A staged bundle is current only when it came from the engine commit this
+    // build resolves. Testing that the files merely exist lets a bundle staged
+    // for an earlier commit survive an engine bump, while the engine SDK next
+    // to it — and so gen_snapshot — moves on; the AOT snapshot and the engine
+    // then disagree at launch rather than at build time.
+    final stamp = File(p.join(engineDir, EngineArtifacts.bundleStampName));
+    final want = commit == null
+        ? null
+        : EngineArtifacts.engineKey(mode, arch, commit);
+    final have = stamp.existsSync() ? stamp.readAsStringSync().trim() : '';
+    if (commit != null && (!icu.existsSync() || have != want)) {
+      final token = EngineArtifacts.engineArch(arch);
+      onStep?.call('fetching engine ($mode/$token)');
+      await engine.fetch(runtime: mode, arch: token, commit: commit);
     }
   }
 
