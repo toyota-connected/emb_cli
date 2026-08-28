@@ -145,6 +145,73 @@ cross:
         expect(merged, projectCross());
       });
 
+      // `local`/`host` are reserved target names, so an app cannot declare a
+      // target for the native build; it states what that build needs in the
+      // shared `cross:` block, symmetrically with the project side (where
+      // selectTarget returns nativeCross for those names).
+      test('native reads the app base block, not a named target', () {
+        writeApp('.emb/base.emb.yaml', '''
+id: my-app
+cross:
+  defines:
+    DISABLE_PLUGINS: 'OFF'
+  augment:
+    - pkg: firebase-cpp-sdk
+      min: "13.12.0"
+      url: https://example.invalid/firebase.tar.gz
+      build: cmake
+''');
+        final merged = CrossProjectResolver().applyAppLayer(
+          cross: {'defines': <String, dynamic>{'DISABLE_PLUGINS': 'ON'}},
+          appDir: appDir.path,
+          targetName: 'local',
+          native: true,
+        );
+        expect((merged['defines']! as Map)['DISABLE_PLUGINS'], 'OFF');
+        expect((merged['augment']! as List).single, isA<Map<dynamic, dynamic>>()
+            .having((m) => m['pkg'], 'pkg', 'firebase-cpp-sdk'));
+      });
+
+      test('a board target does not pick up the app base block', () {
+        writeApp('.emb/base.emb.yaml', '''
+id: my-app
+cross:
+  defines:
+    DISABLE_PLUGINS: 'OFF'
+''');
+        final merged = CrossProjectResolver().applyAppLayer(
+          cross: projectCross(),
+          appDir: appDir.path,
+          targetName: 'rpi5-trixie',
+        );
+        expect(merged['defines'], isNull);
+      });
+
+      test('native with no app base block costs nothing', () {
+        final base = {'defines': <String, dynamic>{'DISABLE_PLUGINS': 'ON'}};
+        final merged = CrossProjectResolver().applyAppLayer(
+          cross: base,
+          appDir: appDir.path,
+          targetName: 'local',
+          native: true,
+        );
+        expect(merged, base);
+      });
+
+      test('appLayerSourcePath resolves the base manifest for native', () {
+        writeApp('.emb/base.emb.yaml', '''
+id: my-app
+cross:
+  defines: {DISABLE_PLUGINS: 'OFF'}
+''');
+        final path = CrossProjectResolver().appLayerSourcePath(
+          appDir: appDir.path,
+          targetName: 'local',
+          native: true,
+        );
+        expect(path, endsWith(p.join('.emb', 'base.emb.yaml')));
+      });
+
       // An app layer is additive; a broken one must not take down a build
       // whose project manifest is fine.
       test('a malformed app manifest is ignored, not fatal', () {

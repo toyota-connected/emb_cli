@@ -190,12 +190,18 @@ class CrossProjectResolver {
   /// named [targetName] wins where the two disagree; `dev_packages` accumulate
   /// rather than replace, per [_mergeCross].
   ///
+  /// [native] selects the same block the native build reads on the project
+  /// side: `local`/`host` are reserved names no manifest may define as a
+  /// target, so an app states what its native build needs in the shared
+  /// `cross:` block of its base manifest, exactly as the project does.
+  ///
   /// Returns [cross] unchanged when [appDir] has no manifest, or none naming
   /// [targetName] — an app with nothing extra to say costs nothing.
   Map<String, dynamic> applyAppLayer({
     required Map<String, dynamic> cross,
     required String appDir,
     required String targetName,
+    bool native = false,
   }) {
     final CrossProject? app;
     try {
@@ -206,9 +212,9 @@ class CrossProjectResolver {
       return cross;
     }
     if (app == null) return cross;
-    final ref = app[targetName];
-    if (ref == null) return cross;
-    return _mergeCross(cross, ref.cross);
+    final layer = native ? app.nativeCross : app[targetName]?.cross;
+    if (layer == null || layer.isEmpty) return cross;
+    return _mergeCross(cross, layer);
   }
 
   /// The source path of [appDir]'s layer for [targetName], or null when it has
@@ -217,9 +223,11 @@ class CrossProjectResolver {
   String? appLayerSourcePath({
     required String appDir,
     required String targetName,
+    bool native = false,
   }) {
     try {
-      return resolve(appDir)?[targetName]?.sourcePath;
+      final app = resolve(appDir);
+      return native ? app?.nativeSourcePath : app?[targetName]?.sourcePath;
     } on CrossProjectException {
       return null;
     }

@@ -483,21 +483,26 @@ class CrossCommand extends Command<int> {
     // An `--app` may carry its own `.emb/` layer, merged over the project's.
     // The project owns the board profile its apps share; this is where one app
     // states what only it needs — a `-dev` package its Dart build hooks link
-    // against — without every consumer of that board carrying it. Native
-    // builds use the host toolchain and have no sysroot to add to.
+    // against, or a source-built dependency the embedder links — without every
+    // consumer of that board carrying it. A native build reads the app's
+    // shared `cross:` block, the same one the project's native build uses:
+    // `sysroot` has nothing to add to on the host, but `defines` and `augment`
+    // apply to a host build exactly as they do to a cross one.
     final appDirArg = args['app'] as String?;
-    final selected = (appDirArg == null || isNative)
+    final selected = appDirArg == null
         ? selection.cross
         : _project.applyAppLayer(
             cross: selection.cross,
             appDir: appDirArg,
             targetName: effectiveTarget,
+            native: isNative,
           );
-    final appLayerSource = (appDirArg == null || isNative)
+    final appLayerSource = appDirArg == null
         ? null
         : _project.appLayerSourcePath(
             appDir: appDirArg,
             targetName: effectiveTarget,
+            native: isNative,
           );
 
     // --define KEY=VALUE overrides: parsed up front (usage error before any
