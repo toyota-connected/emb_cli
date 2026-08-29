@@ -443,6 +443,12 @@ class AotBuilder {
       '--tfa',
       '--target-os',
       'linux',
+      // Declares the root that _sourceFlags' scheme resolves against; without
+      // it the frontend has nothing to make the registrant URI relative to.
+      '--filesystem-root',
+      app,
+      '--filesystem-scheme',
+      kRegistrantScheme,
       '--packages',
       packageConfig,
       '--output-dill',
@@ -522,18 +528,35 @@ class AotBuilder {
     }
   }
 
+  /// Multi-root scheme for app-relative source URIs, so nothing in the AOT
+  /// image names the build directory. Matches the scheme `flutter build` uses.
+  static const kRegistrantScheme = 'org-dartlang-root';
+
   /// Optional dart_plugin_registrant source flags (mirrors create_aot.py).
   List<String> _sourceFlags(String app) {
     final reg = File(
       p.join(app, '.dart_tool', 'flutter_build', 'dart_plugin_registrant.dart'),
     );
     if (!reg.existsSync()) return const [];
+    // The registrant is named to the frontend through the multi-root scheme
+    // declared by `--filesystem-root`, not as a file path. Its URI becomes the
+    // generated library's import URI, which the AOT image retains verbatim --
+    // an absolute path here leaks the build directory into every shipped
+    // libapp.so, and survives `--obfuscate` because it is a URI, not a symbol.
+    // See #186.
+    //
+    // `flutter build` reaches the same form via toMultiRootPath(), but only
+    // when it has roots to offer; for a desktop AOT build it has none and
+    // falls back to the absolute file URI, so this is where it has to be set.
+    final uri =
+        '$kRegistrantScheme://'
+        '${p.separator}${p.relative(reg.path, from: app)}';
     return [
       '--source',
-      'file://${reg.path}',
+      uri,
       '--source',
       'package:flutter/src/dart_plugin_registrant.dart',
-      '-Dflutter.dart_plugin_registrant=file://${reg.path}',
+      '-Dflutter.dart_plugin_registrant=$uri',
     ];
   }
 

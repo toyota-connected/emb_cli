@@ -216,6 +216,50 @@ void main() {
             c.args.length > 1 && c.args[0] == 'build' && c.args[1] == 'bundle',
       );
 
+  test(
+    'names the plugin registrant relative to the app, not absolutely',
+    () async {
+      final ws = Directory(p.join(tmp.path, 'ws'))..createSync();
+      final app = Directory(p.join(tmp.path, 'app'));
+      writeApp(app);
+      writeSdk(ws);
+      // The registrant only gets passed when flutter_tools has generated it.
+      final reg = Directory(p.join(app.path, '.dart_tool', 'flutter_build'))
+        ..createSync(recursive: true);
+      File(
+        p.join(reg.path, 'dart_plugin_registrant.dart'),
+      ).writeAsStringSync('');
+      final rec = _Recorder(app.path);
+
+      await builder(ws, rec).build(appPath: app.path, modes: const ['release']);
+
+      final kernel = rec.calls.firstWhere((c) => c.exe == 'dartaotruntime');
+      const uri =
+          'org-dartlang-root:///.dart_tool/flutter_build/dart_plugin_registrant.dart';
+      expect(kernel.args, containsAllInOrder(<String>['--source', uri]));
+      expect(kernel.args, contains('-Dflutter.dart_plugin_registrant=$uri'));
+      // The scheme only resolves if the compile is told what it is rooted at.
+      expect(
+        kernel.args,
+        containsAllInOrder(<String>['--filesystem-root', app.path]),
+      );
+      expect(
+        kernel.args,
+        containsAllInOrder(<String>[
+          '--filesystem-scheme',
+          'org-dartlang-root',
+        ]),
+      );
+      // The whole point: every argument naming the registrant is
+      // scheme-relative, so the app path reaches nowhere the AOT
+      // image could retain it.
+      expect(
+        kernel.args.where((a) => a.contains('dart_plugin_registrant')),
+        everyElement(isNot(contains(app.path))),
+      );
+    },
+  );
+
   test('AOT build targets linux for the requested arch', () async {
     final ws = Directory(p.join(tmp.path, 'ws'))..createSync();
     final app = Directory(p.join(tmp.path, 'app'));
