@@ -1669,7 +1669,10 @@ class CrossCommand extends Command<int> {
           // bundle on this host. Only a native (--target local) build is
           // host-runnable; a cross-build would hit `Exec format error`.
           if (native) {
-            final rc = await _runLocal(binary, appBundle);
+            // The assembled bundle's copy, not the build tree's: the
+            // embedder's RUNPATH is $ORIGIN/lib, which only resolves
+            // from here. See #185.
+            final rc = await _runLocal(bin, outDir);
             if (rc != ExitCode.success.code) return rc;
           } else {
             _logger.warn(
@@ -1790,15 +1793,25 @@ class CrossCommand extends Command<int> {
     return proc.exitCode;
   }
 
-  /// Launch the native [embedder] against [bundle] on this host
-  /// (`<embedder> -b <bundle>`), inheriting stdio. Used by `--run` for a
+  /// Launch the native [embedder] from inside [bundle] on this host
+  /// (`./<embedder> -b .`), inheriting stdio. Used by `--run` for a
   /// `--target local` build, where there is no deploy step.
+  ///
+  /// [embedder] must be the bundle's own copy, not the one left in the build
+  /// tree. The embedder is linked with RUNPATH `$ORIGIN/lib:$ORIGIN`, and only
+  /// the assembled bundle has the layout that satisfies it: in the build tree a
+  /// project library such as libihs_shared sits in a sibling directory rather
+  /// than in `lib/`, so launching from there dies in the loader before main.
+  ///
+  /// Runs with the bundle as the working directory, so the invocation is the
+  /// one printed when the bundle is assembled.
   Future<int> _runLocal(File embedder, Directory bundle) async {
-    final argv = [embedder.path, '-b', bundle.path];
-    _logger.info('  running ${argv.join(' ')} …');
+    final exe = './${p.basename(embedder.path)}';
+    _logger.info('  running $exe -b . in ${bundle.path} …');
     final proc = await Process.start(
-      argv.first,
-      argv.sublist(1),
+      exe,
+      ['-b', '.'],
+      workingDirectory: bundle.path,
       mode: ProcessStartMode.inheritStdio,
     );
     return proc.exitCode;
