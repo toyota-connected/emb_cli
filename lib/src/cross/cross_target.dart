@@ -801,6 +801,26 @@ class CrossTarget {
   /// Source-built libraries to stage into the overlay (libdisplay-info, …).
   final List<AugmentLib> augment;
 
+  /// The augments whose `requires_define:` / `when:` gate this target's
+  /// defines satisfy.
+  ///
+  /// Every path that builds augments must filter through this, not just the
+  /// one that happens to build an embedder. Two variants of a package gated
+  /// against each other -- one `when: X=OFF`, one `when: X=ON` -- install into
+  /// the same `overlay-<triple>` prefix, so building both means the last one
+  /// silently wins and the gate decided nothing.
+  List<AugmentLib> gatedAugments() => [
+    for (final a in augment)
+      if (defineSatisfied(a.requiresDefine, defines)) a,
+  ];
+
+  /// The augments this target's defines exclude — what `gatedAugments` left
+  /// out, for reporting why.
+  List<AugmentLib> skippedAugments() => [
+    for (final a in augment)
+      if (!defineSatisfied(a.requiresDefine, defines)) a,
+  ];
+
   /// App-owned native libraries built from the app's own source tree and
   /// staged into the app bundle's `lib/` (next to `libapp.so`), resolved at
   /// runtime via `DynamicLibrary.open`. App-owned, so a higher manifest layer

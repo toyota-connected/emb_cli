@@ -272,4 +272,55 @@ void main() {
       expect(spec.bundleLibs, isTrue);
     });
   });
+
+  group('CrossTarget.gatedAugments', () {
+    // Two variants of one package, gated against each other. They install into
+    // the same overlay prefix, so building both means the last one wins and
+    // the gate decided nothing -- which is what `--prepare` used to do.
+    CrossTarget target(String value) => CrossTarget.fromMap({
+      'provider': 'arm-gnu',
+      'triple': 'aarch64-none-linux-gnu',
+      'defines': {'WITH_FIRESTORE': value},
+      'augment': const [
+        {
+          'pkg': 'sdk',
+          'when': 'WITH_FIRESTORE=OFF',
+          'url': 'a',
+          'build': 'cmake',
+        },
+        {
+          'pkg': 'sdk',
+          'when': 'WITH_FIRESTORE=ON',
+          'url': 'b',
+          'build': 'cmake',
+        },
+        {'pkg': 'always', 'url': 'c', 'build': 'cmake'},
+      ],
+    });
+
+    test('selects one variant of a mutually gated pair, plus the ungated', () {
+      final off = target('OFF');
+      expect(off.gatedAugments().map((a) => a.url), ['a', 'c']);
+      expect(off.skippedAugments().map((a) => a.url), ['b']);
+
+      final on = target('ON');
+      expect(on.gatedAugments().map((a) => a.url), ['b', 'c']);
+      expect(on.skippedAugments().map((a) => a.url), ['a']);
+    });
+
+    test('a CLI -D override moves the selection', () {
+      final overridden = target(
+        'OFF',
+      ).withDefineOverrides(const {'WITH_FIRESTORE': 'ON'});
+      expect(overridden.gatedAugments().map((a) => a.url), ['b', 'c']);
+    });
+
+    test('gated and skipped together account for every augment', () {
+      final t = target('ON');
+      expect(
+        t.gatedAugments().length + t.skippedAugments().length,
+        t.augment.length,
+      );
+    });
+  });
 }
