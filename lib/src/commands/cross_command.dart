@@ -793,7 +793,14 @@ class CrossCommand extends Command<int> {
       return code;
     }
 
-    if (args['prepare'] == true && target.augment.isNotEmpty) {
+    final preparable = target.gatedAugments();
+    for (final a in target.skippedAugments()) {
+      _logger.detail(
+        '  augment       : ${a.pkg} skipped (requires_define: '
+        '${a.requiresDefine})',
+      );
+    }
+    if (args['prepare'] == true && preparable.isNotEmpty) {
       final overlay = OverlayBuilder(
         workspace,
         profile,
@@ -806,7 +813,7 @@ class CrossCommand extends Command<int> {
         // build path for the rationale.
         final native = profile.providerName == 'local';
         final ov = await overlay.build(
-          target.augment,
+          preparable,
           stageInto: native ? null : Directory(profile.targetSysroot),
         );
         _logger.info('Overlay: ${ov.prefix}');
@@ -951,18 +958,12 @@ class CrossCommand extends Command<int> {
     // Drop augments whose `requires_define:` gate isn't satisfied by the
     // effective defines (e.g. sentry-native only when BUILD_CRASH_HANDLER=ON),
     // so an optional dependency in the manifest doesn't build on every run.
-    final augments = target.augment
-        .where(
-          (a) => CrossTarget.defineSatisfied(a.requiresDefine, target.defines),
-        )
-        .toList();
-    for (final a in target.augment) {
-      if (!augments.contains(a)) {
-        _logger.detail(
-          '  augment       : ${a.pkg} skipped (requires_define: '
-          '${a.requiresDefine})',
-        );
-      }
+    final augments = target.gatedAugments();
+    for (final a in target.skippedAugments()) {
+      _logger.detail(
+        '  augment       : ${a.pkg} skipped (requires_define: '
+        '${a.requiresDefine})',
+      );
     }
     if (augments.isNotEmpty) {
       final sw = Stopwatch()..start();
