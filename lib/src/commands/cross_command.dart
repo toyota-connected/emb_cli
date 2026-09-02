@@ -842,6 +842,29 @@ class CrossCommand extends Command<int> {
       if (warning != null) _logger.warn(warning);
       _offlineWrap = enforcement.wrap;
 
+<<<<<<< HEAD
+=======
+    final source =
+        FileSystemEntity.typeSync(inputPath) == FileSystemEntityType.file
+        ? File(inputPath).parent
+        : Directory(inputPath);
+
+    _EmbedderResult? preparedEmbedder;
+    if (doPrepare) {
+      preparedEmbedder = await _buildEmbedder(
+        profile,
+        target,
+        workspace,
+        source,
+        launcher: launcher,
+        hostTools: target.hostTools || args['host-tools'] == true,
+        selectedBackends: selectedBackends,
+      );
+      if (preparedEmbedder == null) return ExitCode.software.code;
+    }
+
+    if (doBuild) {
+>>>>>>> 7112630 (feat(cross): _build() now accepts an optional preparedEmbedder parameter. When --prepare --build are combined, the result from --prepare is passed through directly, skipping the second _buildEmbedder call entirely — no redundant augment rebuild.)
       if (args['flatpak'] == true && args['app'] == null) {
         _logger.err('--flatpak needs --app (a flatpak bundles the whole app).');
         return ExitCode.usage.code;
@@ -850,7 +873,13 @@ class CrossCommand extends Command<int> {
         profile,
         target,
         workspace,
+<<<<<<< HEAD
         inputPath,
+=======
+        source,
+        launcher: launcher,
+        preparedEmbedder: preparedEmbedder,
+>>>>>>> 7112630 (feat(cross): _build() now accepts an optional preparedEmbedder parameter. When --prepare --build are combined, the result from --prepare is passed through directly, skipping the second _buildEmbedder call entirely — no redundant augment rebuild.)
         host: host,
         deb: args['deb'] == true,
         ipk: args['ipk'] == true,
@@ -1052,8 +1081,67 @@ class CrossCommand extends Command<int> {
         '  build         : $okCount backend(s) in ${_secs(buildSw)}',
       );
     }
+<<<<<<< HEAD
     if (!results.every((r) => r.success)) return ExitCode.software.code;
     final built = results.where((r) => r.success).toList();
+=======
+    if (!results.every((r) => r.success)) return null;
+
+    return _EmbedderResult(
+      results: results.where((r) => r.success).toList(),
+      buildRoot: buildRoot,
+      builder: builder,
+      overlayPaths: overlayPaths,
+    );
+  }
+
+  /// Build the app bundle and assemble runnable output. Delegates augment +
+  /// embedder compilation to [_buildEmbedder] (which skips the cmake/meson
+  /// step when a prior `--prepare` already produced the binary), then proceeds
+  /// to Flutter app compilation, packaging, and deploy.
+  ///
+  /// When [preparedEmbedder] is supplied (from a `--prepare` in the same
+  /// invocation) the embedder step is skipped entirely.
+  Future<int> _build(
+    CrossProfile profile,
+    CrossTarget target,
+    Workspace workspace,
+    Directory source, {
+    required String? launcher,
+    required HostInfo host,
+    _EmbedderResult? preparedEmbedder,
+    bool deb = false,
+    bool ipk = false,
+    bool targz = false,
+    bool rpm = false,
+    bool flatpak = false,
+    String defaultName = 'app',
+    List<String> selectedBackends = const [],
+    String? appPath,
+    String mode = 'release',
+    bool tar = false,
+    String? deployHost,
+    String deployDir = 'ivi-homescreen',
+    bool run = false,
+    bool hostTools = false,
+  }) async {
+    final emb = preparedEmbedder ?? await _buildEmbedder(
+      profile,
+      target,
+      workspace,
+      source,
+      launcher: launcher,
+      hostTools: hostTools,
+      selectedBackends: selectedBackends,
+      skipIfBuilt: true,
+    );
+    if (emb == null) return ExitCode.software.code;
+
+    final built = emb.results;
+    final buildRoot = emb.buildRoot;
+    final builder = emb.builder;
+    final overlayPaths = emb.overlayPaths;
+>>>>>>> 7112630 (feat(cross): _build() now accepts an optional preparedEmbedder parameter. When --prepare --build are combined, the result from --prepare is passed through directly, skipping the second _buildEmbedder call entirely — no redundant augment rebuild.)
 
     // Assemble a runnable bundle (embedder + engine + assets + libapp).
     // --deploy targets either an --app bundle (rsync) or a --deb (scp+install).
