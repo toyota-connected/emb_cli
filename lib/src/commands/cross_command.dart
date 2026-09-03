@@ -1005,7 +1005,8 @@ class CrossCommand extends Command<int> {
     // binary. The build root name encodes buildKey(target), so a config
     // change yields a new dir and the check naturally misses.
     if (skipIfBuilt) {
-      final stampMatch = stampFile.existsSync() &&
+      final stampMatch =
+          stampFile.existsSync() &&
           stampFile.readAsStringSync().trim() == fingerprint;
       if (stampMatch) {
         final existing = <CrossBuildResult>[];
@@ -1014,9 +1015,7 @@ class CrossCommand extends Command<int> {
           final dir = Directory(p.join(buildRoot.path, 'build'));
           if (dir.existsSync() &&
               _artifactFor(dir.path, target.package?.bin) != null) {
-            existing.add(
-              CrossBuildResult(success: true, buildDir: dir.path),
-            );
+            existing.add(CrossBuildResult(success: true, buildDir: dir.path));
           } else {
             allPresent = false;
           }
@@ -1126,16 +1125,18 @@ class CrossCommand extends Command<int> {
     bool run = false,
     bool hostTools = false,
   }) async {
-    final emb = preparedEmbedder ?? await _buildEmbedder(
-      profile,
-      target,
-      workspace,
-      source,
-      launcher: launcher,
-      hostTools: hostTools,
-      selectedBackends: selectedBackends,
-      skipIfBuilt: true,
-    );
+    final emb =
+        preparedEmbedder ??
+        await _buildEmbedder(
+          profile,
+          target,
+          workspace,
+          source,
+          launcher: launcher,
+          hostTools: hostTools,
+          selectedBackends: selectedBackends,
+          skipIfBuilt: true,
+        );
     if (emb == null) return ExitCode.software.code;
 
     final built = emb.results;
@@ -2428,8 +2429,7 @@ class CrossCommand extends Command<int> {
   String _octal(File f) =>
       '0${(f.statSync().mode & 0x1FF).toRadixString(8).padLeft(3, '0')}';
 
-  static String _sourceFingerprint(Directory dir) =>
-      sourceFingerprint(dir);
+  static String _sourceFingerprint(Directory dir) => sourceFingerprint(dir);
 
   /// The binary to package: [bin] resolved under [buildDir], else the first ELF
   /// executable found there.

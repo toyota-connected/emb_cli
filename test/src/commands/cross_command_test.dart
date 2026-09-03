@@ -621,8 +621,7 @@ void main() {
 
       final before = sourceFingerprint(dir);
       Directory(p.join(dir.path, '.git')).createSync();
-      File(p.join(dir.path, '.git', 'index'))
-          .writeAsStringSync('binary blob');
+      File(p.join(dir.path, '.git', 'index')).writeAsStringSync('binary blob');
       final after = sourceFingerprint(dir);
       expect(before, after);
     });
@@ -655,8 +654,9 @@ void main() {
 
       final before = sourceFingerprint(dir);
       Directory(p.join(dir.path, 'sub')).createSync();
-      File(p.join(dir.path, 'sub', 'b.c'))
-          .writeAsStringSync('void helper() {}');
+      File(
+        p.join(dir.path, 'sub', 'b.c'),
+      ).writeAsStringSync('void helper() {}');
       final after = sourceFingerprint(dir);
       expect(before, isNot(after));
     });
