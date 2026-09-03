@@ -793,42 +793,11 @@ class CrossCommand extends Command<int> {
       return code;
     }
 
-    final preparable = target.gatedAugments();
-    for (final a in target.skippedAugments()) {
-      _logger.detail(
-        '  augment       : ${a.pkg} skipped (requires_define: '
-        '${a.requiresDefine})',
-      );
-    }
-    if (args['prepare'] == true && preparable.isNotEmpty) {
-      final overlay = OverlayBuilder(
-        workspace,
-        profile,
-        runProcess: _runProcess,
-        launcher: launcher,
-      );
-      try {
-        // Native (no sysroot) stages into a separate per-workspace overlay;
-        // cross stages into the sysroot itself. See the augment block in the
-        // build path for the rationale.
-        final native = profile.providerName == 'local';
-        final ov = await overlay.build(
-          preparable,
-          stageInto: native ? null : Directory(profile.targetSysroot),
-        );
-        _logger.info('Overlay: ${ov.prefix}');
-      } on OverlayBuildException catch (e) {
-        _logger.err(e.message);
-        return ExitCode.software.code;
-      } finally {
-        overlay.close();
-      }
-    }
-
-    if (args['build'] == true) {
-      // Resolve offline enforcement now that a build (with its subprocesses) is
-      // about to run: strict refuses when a network namespace is unavailable;
-      // deny degrades with a warning. Off is a no-op.
+    // Resolve offline enforcement and the embedder source directory once,
+    // shared by both --prepare and --build.
+    final doPrepare = args['prepare'] == true;
+    final doBuild = args['build'] == true;
+    if (doPrepare || doBuild) {
       final enforcement = await resolveOfflineEnforcement(
         _offlineMode,
         _runProcess,
@@ -841,9 +810,8 @@ class CrossCommand extends Command<int> {
       final warning = enforcement.warning;
       if (warning != null) _logger.warn(warning);
       _offlineWrap = enforcement.wrap;
+    }
 
-<<<<<<< HEAD
-=======
     final source =
         FileSystemEntity.typeSync(inputPath) == FileSystemEntityType.file
         ? File(inputPath).parent
@@ -864,7 +832,6 @@ class CrossCommand extends Command<int> {
     }
 
     if (doBuild) {
->>>>>>> 7112630 (feat(cross): _build() now accepts an optional preparedEmbedder parameter. When --prepare --build are combined, the result from --prepare is passed through directly, skipping the second _buildEmbedder call entirely — no redundant augment rebuild.)
       if (args['flatpak'] == true && args['app'] == null) {
         _logger.err('--flatpak needs --app (a flatpak bundles the whole app).');
         return ExitCode.usage.code;
@@ -873,13 +840,9 @@ class CrossCommand extends Command<int> {
         profile,
         target,
         workspace,
-<<<<<<< HEAD
-        inputPath,
-=======
         source,
         launcher: launcher,
         preparedEmbedder: preparedEmbedder,
->>>>>>> 7112630 (feat(cross): _build() now accepts an optional preparedEmbedder parameter. When --prepare --build are combined, the result from --prepare is passed through directly, skipping the second _buildEmbedder call entirely — no redundant augment rebuild.)
         host: host,
         deb: args['deb'] == true,
         ipk: args['ipk'] == true,
@@ -930,63 +893,33 @@ class CrossCommand extends Command<int> {
     );
   }
 
-  /// Configure + build the embedder under [profile], one build per
-  /// `cross.backends` entry (or a single plain build when none are declared).
-  /// The CMake/meson source is the package directory (the manifest file's
-  /// parent for a file input).
-  Future<int> _build(
+  /// Build augment libraries and the embedder, returning everything the
+  /// downstream app-bundle / packaging steps need. When [skipIfBuilt] is true
+  /// and every backend already has an embedder binary in its build dir, the
+  /// cmake/meson step is skipped — this is the fast path when `--prepare` ran
+  /// earlier.
+  ///
+  /// Returns null on any build failure (error is logged).
+  Future<_EmbedderResult?> _buildEmbedder(
     CrossProfile profile,
     CrossTarget target,
     Workspace workspace,
-    String inputPath, {
-    required HostInfo host,
-    bool deb = false,
-    bool ipk = false,
-    bool targz = false,
-    bool rpm = false,
-    bool flatpak = false,
-    String defaultName = 'app',
+    Directory source, {
+    required String? launcher,
+    required bool hostTools,
     List<String> selectedBackends = const [],
-    String? appPath,
-    String mode = 'release',
-    bool tar = false,
-    String? deployHost,
-    String deployDir = 'ivi-homescreen',
-    bool run = false,
-    bool hostTools = false,
+    bool skipIfBuilt = false,
   }) async {
-    final source =
-        FileSystemEntity.typeSync(inputPath) == FileSystemEntityType.file
-        ? File(inputPath).parent
-        : Directory(inputPath);
-
-    // A native `local` build: no sysroot, host toolchain, no augment staging.
     final native = profile.providerName == 'local';
 
-    // Resolve the optional compiler-cache launcher (ccache/sccache) once, for
-    // both the augment overlay and the main build.
-    final launcher = await _resolveLauncher(target);
-
-    // --backend filters the matrix (validated in run()); merge shared
-    // cross.defines into each backend (a backend define wins on a clash), over
-    // the bundle-relative rpath defaults.
     final backends = {
       for (final e in target.backends.entries)
         if (selectedBackends.isEmpty || selectedBackends.contains(e.key))
           e.key: mergeBackendDefines(target.defines, e.value),
     };
 
-    // Build any augment libraries the sysroot doesn't already satisfy (e.g.
-    // libdisplay-info >= 0.2.0) into a per-workspace overlay prefix — kept out
-    // of the sysroot so the sysroot can be a shared read-only store tree — and
-    // layer its include/lib/pkg-config search paths onto the embedder build.
-    // Native builds stage the same way, into a separate per-workspace overlay
-    // (there is no sysroot to stage into); host-satisfied augments are skipped.
     var hostToolBins = const <String>[];
     OverlayPaths? overlayPaths;
-    // Drop augments whose `requires_define:` gate isn't satisfied by the
-    // effective defines (e.g. sentry-native only when BUILD_CRASH_HANDLER=ON),
-    // so an optional dependency in the manifest doesn't build on every run.
     final augments = target.gatedAugments();
     for (final a in target.skippedAugments()) {
       _logger.detail(
@@ -1003,15 +936,6 @@ class CrossCommand extends Command<int> {
         launcher: launcher,
       );
       try {
-        // Cross: stage into the sysroot itself (not a separate overlay) so the
-        // headers/libs/pkg-config are found by the backend build's normal
-        // sysroot search and ship in the container image; the provider made the
-        // sysroot a private, writable clone. Native: there is no sysroot
-        // (targetSysroot is empty, so staging would land in the host /), so
-        // build into a separate per-workspace overlay; the embedder configure
-        // wires it via CMAKE_FIND_ROOT_PATH/CMAKE_PREFIX_PATH so a
-        // find_package(CONFIG) augment (e.g. sentry-native for the crash
-        // handler) resolves without touching the host root.
         overlayPaths = await overlay.build(
           augments,
           stageInto: native ? null : Directory(profile.targetSysroot),
@@ -1019,7 +943,7 @@ class CrossCommand extends Command<int> {
         hostToolBins = overlayPaths.binDirs;
       } on OverlayBuildException catch (e) {
         _logger.err('augment: ${e.message}');
-        return ExitCode.software.code;
+        return null;
       } finally {
         overlay.close();
       }
@@ -1032,12 +956,9 @@ class CrossCommand extends Command<int> {
     final buildRoot = workspace.ensurePlatformDir(
       'cross-build-${profile.targetTriple}-${buildKey(target)}',
     );
-    // Native keeps the host compiler env; cross neutralizes it.
+
     final builder = CrossBuilder(
       profile,
-      // Under --offline-strict (with isolation available) the whole build tree
-      // — cmake/ninja and any child a build script spawns — runs in a network
-      // namespace, not just the cargo modules.
       runProcess: _offlineWrap ? netnsRunner(_runProcess) : _runProcess,
       neutralizeHostEnv: !native,
       hostTools: hostTools,
@@ -1046,6 +967,62 @@ class CrossCommand extends Command<int> {
       ccacheBaseDir: workspace.root.path,
       overlay: overlayPaths,
     );
+
+    // Fingerprint the embedder source tree so a subsequent --build detects
+    // edits. Computed unconditionally: the skip check reads it, and a
+    // successful build writes it.
+    final fingerprint = _sourceFingerprint(source);
+    final stampFile = File(p.join(buildRoot.path, '.emb-source-stamp'));
+
+    // When the caller says skip-if-built, check that (a) the source hasn't
+    // changed since the last build and (b) every backend has an embedder
+    // binary. The build root name encodes buildKey(target), so a config
+    // change yields a new dir and the check naturally misses.
+    if (skipIfBuilt) {
+      final stampMatch = stampFile.existsSync() &&
+          stampFile.readAsStringSync().trim() == fingerprint;
+      if (stampMatch) {
+        final existing = <CrossBuildResult>[];
+        var allPresent = true;
+        if (backends.isEmpty) {
+          final dir = Directory('${buildRoot.path}/build');
+          if (dir.existsSync() &&
+              _artifactFor(dir.path, target.package?.bin) != null) {
+            existing.add(
+              CrossBuildResult(success: true, buildDir: dir.path),
+            );
+          } else {
+            allPresent = false;
+          }
+        } else {
+          for (final name in backends.keys) {
+            final dir = Directory(p.join(buildRoot.path, 'build-$name'));
+            if (dir.existsSync() &&
+                _artifactFor(dir.path, target.package?.bin) != null) {
+              existing.add(
+                CrossBuildResult(
+                  success: true,
+                  buildDir: dir.path,
+                  backend: name,
+                ),
+              );
+            } else {
+              allPresent = false;
+              break;
+            }
+          }
+        }
+        if (allPresent && existing.isNotEmpty) {
+          _logger.info('  embedder      : up-to-date (skipped)');
+          return _EmbedderResult(
+            results: existing,
+            buildRoot: buildRoot,
+            builder: builder,
+            overlayPaths: overlayPaths,
+          );
+        }
+      }
+    }
 
     final buildSw = Stopwatch()..start();
     final results = backends.isEmpty
@@ -1081,11 +1058,9 @@ class CrossCommand extends Command<int> {
         '  build         : $okCount backend(s) in ${_secs(buildSw)}',
       );
     }
-<<<<<<< HEAD
-    if (!results.every((r) => r.success)) return ExitCode.software.code;
-    final built = results.where((r) => r.success).toList();
-=======
     if (!results.every((r) => r.success)) return null;
+
+    stampFile.writeAsStringSync(fingerprint);
 
     return _EmbedderResult(
       results: results.where((r) => r.success).toList(),
@@ -1141,7 +1116,6 @@ class CrossCommand extends Command<int> {
     final buildRoot = emb.buildRoot;
     final builder = emb.builder;
     final overlayPaths = emb.overlayPaths;
->>>>>>> 7112630 (feat(cross): _build() now accepts an optional preparedEmbedder parameter. When --prepare --build are combined, the result from --prepare is passed through directly, skipping the second _buildEmbedder call entirely — no redundant augment rebuild.)
 
     // Assemble a runnable bundle (embedder + engine + assets + libapp).
     // --deploy targets either an --app bundle (rsync) or a --deb (scp+install).
@@ -2428,6 +2402,29 @@ class CrossCommand extends Command<int> {
   String _octal(File f) =>
       '0${(f.statSync().mode & 0x1FF).toRadixString(8).padLeft(3, '0')}';
 
+  /// Lightweight fingerprint of the embedder source tree: sorted relative
+  /// paths with their size and last-modified time, hashed to a short hex
+  /// string. Catches edits, adds, deletes and renames without reading file
+  /// contents. Hidden directories (`.git`) are excluded.
+  static String _sourceFingerprint(Directory dir) {
+    final parts = <String>[];
+    for (final e in dir.listSync(recursive: true, followLinks: false)) {
+      if (e is! File) continue;
+      final rel = p.relative(e.path, from: dir.path);
+      if (p.split(rel).any((s) => s.startsWith('.'))) continue;
+      try {
+        final stat = e.statSync();
+        parts.add('$rel:${stat.size}:${stat.modified.millisecondsSinceEpoch}');
+      } on FileSystemException {
+        // Dangling entry mid-edit; include the path so a retry after the edit
+        // settles produces a different fingerprint.
+        parts.add('$rel:?');
+      }
+    }
+    parts.sort();
+    return contentHash(parts);
+  }
+
   /// The binary to package: [bin] resolved under [buildDir], else the first ELF
   /// executable found there.
   File? _artifactFor(String buildDir, String? bin) {
@@ -3053,6 +3050,22 @@ class CrossCommand extends Command<int> {
 /// Result of staging an embedder's project-built `DT_NEEDED` libraries into a
 /// runnable bundle: the staged sonames and any per-library errors (e.g. an
 /// arch mismatch), collected so the caller can fail the build with all of them.
+/// Outcome of [CrossCommand._buildEmbedder]: everything downstream (`_build`,
+/// `_runnable`, packaging) needs to continue after the embedder build.
+class _EmbedderResult {
+  const _EmbedderResult({
+    required this.results,
+    required this.buildRoot,
+    required this.builder,
+    this.overlayPaths,
+  });
+
+  final List<CrossBuildResult> results;
+  final Directory buildRoot;
+  final CrossBuilder builder;
+  final OverlayPaths? overlayPaths;
+}
+
 class _StagedLibs {
   const _StagedLibs(this.staged, this.errors);
   final List<String> staged;
