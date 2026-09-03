@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:args/command_runner.dart';
+import 'package:crypto/crypto.dart';
 import 'package:emb_cli/src/aot/aot_builder.dart';
 import 'package:emb_cli/src/bundle/bundle_builder.dart';
 import 'package:emb_cli/src/bundle/bundle_pipeline.dart';
@@ -88,6 +89,31 @@ Map<String, String> mergeBackendDefines(
   Map<String, String> targetDefines,
   Map<String, String> backendDefines,
 ) => {...rpathDefines, ...targetDefines, ...backendDefines};
+
+/// Content-based fingerprint of a source tree: sorted relative paths with a
+/// SHA-256 digest of each file's bytes, hashed into a short hex string.
+/// Hidden directories (`.git`, `.dart_tool`, etc.) are excluded.
+///
+/// Uses file content rather than mtime so that `git checkout`, `cp -a`, and
+/// filesystems with coarse timestamp granularity (HFS+, FAT32) don't produce
+/// false cache hits.
+String sourceFingerprint(Directory dir) {
+  final parts = <String>[];
+  for (final e in dir.listSync(recursive: true, followLinks: false)) {
+    if (e is! File) continue;
+    final rel = p.relative(e.path, from: dir.path);
+    if (p.split(rel).any((s) => s.startsWith('.'))) continue;
+    try {
+      final bytes = e.readAsBytesSync();
+      final digest = sha256.convert(bytes).toString();
+      parts.add('$rel:$digest');
+    } on FileSystemException {
+      parts.add('$rel:?');
+    }
+  }
+  parts.sort();
+  return contentHash(parts);
+}
 
 class CrossCommand extends Command<int> {
   /// {@macro cross_command}
@@ -985,7 +1011,7 @@ class CrossCommand extends Command<int> {
         final existing = <CrossBuildResult>[];
         var allPresent = true;
         if (backends.isEmpty) {
-          final dir = Directory('${buildRoot.path}/build');
+          final dir = Directory(p.join(buildRoot.path, 'build'));
           if (dir.existsSync() &&
               _artifactFor(dir.path, target.package?.bin) != null) {
             existing.add(
@@ -1063,7 +1089,7 @@ class CrossCommand extends Command<int> {
     stampFile.writeAsStringSync(fingerprint);
 
     return _EmbedderResult(
-      results: results.where((r) => r.success).toList(),
+      results: results,
       buildRoot: buildRoot,
       builder: builder,
       overlayPaths: overlayPaths,
@@ -2402,28 +2428,8 @@ class CrossCommand extends Command<int> {
   String _octal(File f) =>
       '0${(f.statSync().mode & 0x1FF).toRadixString(8).padLeft(3, '0')}';
 
-  /// Lightweight fingerprint of the embedder source tree: sorted relative
-  /// paths with their size and last-modified time, hashed to a short hex
-  /// string. Catches edits, adds, deletes and renames without reading file
-  /// contents. Hidden directories (`.git`) are excluded.
-  static String _sourceFingerprint(Directory dir) {
-    final parts = <String>[];
-    for (final e in dir.listSync(recursive: true, followLinks: false)) {
-      if (e is! File) continue;
-      final rel = p.relative(e.path, from: dir.path);
-      if (p.split(rel).any((s) => s.startsWith('.'))) continue;
-      try {
-        final stat = e.statSync();
-        parts.add('$rel:${stat.size}:${stat.modified.millisecondsSinceEpoch}');
-      } on FileSystemException {
-        // Dangling entry mid-edit; include the path so a retry after the edit
-        // settles produces a different fingerprint.
-        parts.add('$rel:?');
-      }
-    }
-    parts.sort();
-    return contentHash(parts);
-  }
+  static String _sourceFingerprint(Directory dir) =>
+      sourceFingerprint(dir);
 
   /// The binary to package: [bin] resolved under [buildDir], else the first ELF
   /// executable found there.
@@ -3047,9 +3053,6 @@ class CrossCommand extends Command<int> {
   }
 }
 
-/// Result of staging an embedder's project-built `DT_NEEDED` libraries into a
-/// runnable bundle: the staged sonames and any per-library errors (e.g. an
-/// arch mismatch), collected so the caller can fail the build with all of them.
 /// Outcome of [CrossCommand._buildEmbedder]: everything downstream (`_build`,
 /// `_runnable`, packaging) needs to continue after the embedder build.
 class _EmbedderResult {
@@ -3066,6 +3069,9 @@ class _EmbedderResult {
   final OverlayPaths? overlayPaths;
 }
 
+/// Result of staging an embedder's project-built `DT_NEEDED` libraries into a
+/// runnable bundle: the staged sonames and any per-library errors (e.g. an
+/// arch mismatch), collected so the caller can fail the build with all of them.
 class _StagedLibs {
   const _StagedLibs(this.staged, this.errors);
   final List<String> staged;
