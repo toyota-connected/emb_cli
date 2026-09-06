@@ -406,6 +406,52 @@ void main() {
       });
     });
 
+    test('parses flatpak env:, args: and vendor_libs:', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'package': {
+          'flatpak': {
+            'app_id': 'com.example.App',
+            'env': {'IHS_LOG_LEVEL': 'info', 'GIO_USE_PROXY_RESOLVER': 'dummy'},
+            'args': ['--backend=wayland-egl', '--shell=xdg'],
+            'vendor_libs': 'auto',
+          },
+        },
+      });
+      final fp = t.package!.flatpak!;
+      expect(fp.env, {
+        'IHS_LOG_LEVEL': 'info',
+        'GIO_USE_PROXY_RESOLVER': 'dummy',
+      });
+      expect(fp.args, ['--backend=wayland-egl', '--shell=xdg']);
+      expect(fp.vendorLibs, isTrue);
+    });
+
+    test('flatpak env, args and vendor_libs default to empty/off', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'package': {
+          'flatpak': {'app_id': 'com.example.App'},
+        },
+      });
+      final fp = t.package!.flatpak!;
+      expect(fp.env, isEmpty);
+      expect(fp.args, isEmpty);
+      expect(fp.vendorLibs, isFalse);
+    });
+
+    test('vendor_libs: accepts a bool as well as the auto token', () {
+      CrossTarget spec(Object? v) => CrossTarget.fromMap({
+        'provider': 'arm-gnu',
+        'package': {
+          'flatpak': {'app_id': 'com.example.App', 'vendor_libs': v},
+        },
+      });
+      expect(spec(true).package!.flatpak!.vendorLibs, isTrue);
+      expect(spec('off').package!.flatpak!.vendorLibs, isFalse);
+      expect(spec(false).package!.flatpak!.vendorLibs, isFalse);
+    });
+
     test('flatpak app_id accepts the id: alias', () {
       final t = CrossTarget.fromMap(const {
         'provider': 'arm-gnu',

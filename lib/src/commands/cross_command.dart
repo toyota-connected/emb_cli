@@ -22,6 +22,7 @@ import 'package:emb_cli/src/cross/dockerfile_emitter.dart';
 import 'package:emb_cli/src/cross/elf_check.dart';
 import 'package:emb_cli/src/cross/emb_lock.dart';
 import 'package:emb_cli/src/cross/flatpak_packager.dart';
+import 'package:emb_cli/src/cross/flatpak_vendor.dart';
 import 'package:emb_cli/src/cross/image_publisher.dart';
 import 'package:emb_cli/src/cross/ipk_packager.dart';
 import 'package:emb_cli/src/cross/local_cross_provider.dart';
@@ -2273,7 +2274,20 @@ class CrossCommand extends Command<int> {
       appName: spec.name ?? defaultName,
       icon: icon,
       categories: fp.categories,
+      env: fp.env,
+      args: fp.args,
     );
+    // Resolved before packaging so a missing runtime fails before any work,
+    // but applied to the packager's staged copy — the runnable this was handed
+    // is the same tree --tar, --deploy and --run use, and libraries chosen for
+    // a flatpak runtime have no business on a device.
+    Future<void> Function(Directory)? onStaged;
+    if (fp.vendorLibs) {
+      final vendor = await _flatpakVendorStep(profile, meta: fp, arch: fpArch);
+      if (vendor == null) return ExitCode.software.code;
+      onStaged = (stagedBundle) =>
+          _runVendorStep(vendor, stagedBundle, embedder: embedder, tag: tag);
+    }
     final outDir = Directory(p.join(buildRoot.path, 'dist'));
     final progress = _steps.start('${tag}Packaging flatpak ($appId)');
     try {
@@ -2283,12 +2297,114 @@ class CrossCommand extends Command<int> {
         outDir: outDir,
         extraFiles: ef.files,
         fileModes: ef.modes,
+        onStaged: onStaged,
       );
       progress.complete('${tag}flatpak → ${out.path}');
       return ExitCode.success.code;
     } on FlatpakPackageException catch (e) {
       progress.fail('$tag${e.message}');
       return ExitCode.software.code;
+    } on FlatpakVendorException catch (e) {
+      progress.fail('$tag${e.message}');
+      return ExitCode.software.code;
+    }
+  }
+
+  /// Resolve everything `cross.package.flatpak.vendor_libs` needs, or null when
+  /// the runtime is not installed.
+  ///
+  /// The runtime is the deployment environment here, not the sysroot the build
+  /// linked against, and it ships a much narrower library set — so the closure
+  /// has to be recomputed against it. That needs the runtime present on the
+  /// build host: without it there is nothing to subtract, and vendoring the
+  /// whole closure would ship a second copy of libc.
+  Future<
+    ({
+      FlatpakLibVendor vendor,
+      Directory runtimeFiles,
+      List<Directory> searchPaths,
+    })?
+  >
+  _flatpakVendorStep(
+    CrossProfile profile, {
+    required FlatpakPackageSpec meta,
+    required String? arch,
+  }) async {
+    final ref = arch == null
+        ? '${meta.runtime}//${meta.runtimeVersion}'
+        : '${meta.runtime}/$arch/${meta.runtimeVersion}';
+    final loc = await _runProcess('flatpak', ['info', '--show-location', ref]);
+    if (loc.exitCode != 0) {
+      _logger.err(
+        '  vendor_libs needs the runtime installed to know what it already '
+        'provides — install it with:\n'
+        '    flatpak install $ref',
+      );
+      return null;
+    }
+    final runtimeFiles = Directory(p.join(loc.stdout.trim(), 'files'));
+    if (!runtimeFiles.existsSync()) {
+      _logger.err('  runtime tree has no files/: ${runtimeFiles.path}');
+      return null;
+    }
+
+    // The sysroot is where a missing soname is looked up: it holds the same
+    // libraries the embedder linked against, so the vendored copy is the one it
+    // was built for. `--target local` resolves an empty sysroot meaning "the
+    // host root", which is both correct (build host == runtime host) and a trap
+    // — joining onto '' yields relative paths that resolve against the cwd.
+    final sysroot = profile.targetSysroot.isEmpty ? '/' : profile.targetSysroot;
+    final searchPaths = [
+      for (final rel in ['lib', 'lib64', 'usr/lib', 'usr/lib64'])
+        Directory(p.join(sysroot, rel)),
+    ].where((d) => d.existsSync()).toList();
+
+    return (
+      vendor: FlatpakLibVendor(
+        readelf: _readelfFor(profile),
+        triple: profile.targetTriple,
+        runProcess: _runProcess,
+        environment: profile.buildEnv(),
+      ),
+      runtimeFiles: runtimeFiles,
+      searchPaths: searchPaths,
+    );
+  }
+
+  /// Run the resolved vendoring step against the flatpak's staged bundle.
+  Future<void> _runVendorStep(
+    ({
+      FlatpakLibVendor vendor,
+      Directory runtimeFiles,
+      List<Directory> searchPaths,
+    })
+    step,
+    Directory stagedBundle, {
+    required String embedder,
+    required String tag,
+  }) async {
+    final progress = _steps.start('${tag}Vendoring libs not in the runtime');
+    final report = await step.vendor.vendor(
+      bundleDir: stagedBundle,
+      command: embedder,
+      runtimeFiles: step.runtimeFiles,
+      searchPaths: step.searchPaths,
+    );
+    progress.complete(
+      '${tag}Vendored ${report.staged.length} lib(s); '
+      '${report.provided.length} from the runtime',
+    );
+    for (final soname in report.staged) {
+      _logger.detail('  vendored lib/$soname');
+    }
+    // Not fatal: a dlopen-only plugin has no DT_NEEDED entry either way, and
+    // a device may supply a library outside the sysroot. But each one is a
+    // candidate startup failure, so say it out loud, not under --verbose.
+    for (final soname in report.unresolved) {
+      _logger.warn(
+        '  $tag$soname: not in the runtime and not on the sysroot — the app '
+        'will fail to start if it is really needed',
+      );
     }
   }
 

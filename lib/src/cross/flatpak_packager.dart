@@ -21,6 +21,8 @@ class FlatpakMetadata {
     this.appName,
     this.icon,
     this.categories = const ['Utility'],
+    this.env = const {},
+    this.args = const [],
   });
 
   /// A reasonable sandbox for a Wayland Flutter shell: Wayland socket, GPU,
@@ -59,6 +61,11 @@ class FlatpakMetadata {
 
   /// `.desktop` `Categories`.
   final List<String> categories;
+
+  final Map<String, String> env;
+
+  /// Extra arguments the launcher passes to the embedder
+  final List<String> args;
 }
 
 /// Thrown when packaging a `.flatpak` fails.
@@ -74,7 +81,8 @@ class FlatpakPackageException implements Exception {
 ///
 /// Mirrors `DebPackager` in shape — stage, emit metadata, invoke the system
 /// packaging tool — but a flatpak wraps the *whole* app: the bundle tree is
-/// copied to `/app/<appId>`, a launcher wrapper (`exec <embedder> -b <prefix>`)
+/// copied to `/app/<appId>`, a launcher wrapper (`exec <embedder> -b <prefix>`,
+/// or whatever [FlatpakMetadata.args] spells with `{bundle}`)
 /// is installed on `PATH`, and a `.desktop` (+ optional icon) make it a
 /// first-class sandboxed app. Extra files map host paths into the `/app`
 /// prefix.
@@ -98,6 +106,7 @@ class FlatpakPackager {
     required Directory outDir,
     Map<String, String> extraFiles = const {},
     Map<String, String> fileModes = const {},
+    Future<void> Function(Directory stagedBundle)? onStaged,
   }) async {
     if (!bundleDir.existsSync()) {
       throw FlatpakPackageException('bundle not found: ${bundleDir.path}');
@@ -129,14 +138,15 @@ class FlatpakPackager {
     ctx.createSync(recursive: true);
 
     // Stage the bundle tree the manifest's `dir` source copies from.
-    await _copyTree(bundleDir, Directory(p.join(ctx.path, 'bundle')));
+    final staged = Directory(p.join(ctx.path, 'bundle'));
+    await _copyTree(bundleDir, staged);
+    if (onStaged != null) await onStaged(staged);
 
     // Launcher wrapper: run the embedder against its in-prefix bundle dir.
     final prefix = '/app/${meta.appId}';
-    File(p.join(ctx.path, 'launcher.sh')).writeAsStringSync(
-      '#!/bin/sh\n'
-      'exec $prefix/${meta.command} -b $prefix "\$@"\n',
-    );
+    File(
+      p.join(ctx.path, 'launcher.sh'),
+    ).writeAsStringSync(_launcher(meta, prefix));
 
     final desktopName = meta.appName ?? meta.appId.split('.').last;
     File(
@@ -161,9 +171,9 @@ class FlatpakPackager {
       if (!src.existsSync()) {
         throw FlatpakPackageException('extra file not found: ${entry.key}');
       }
-      final staged = 'extra/$i';
-      src.copySync(p.join(ctx.path, staged));
-      extras.add(_Extra(staged, _appDest(entry.value), fileModes[entry.key]));
+      final rel = 'extra/$i';
+      src.copySync(p.join(ctx.path, rel));
+      extras.add(_Extra(rel, _appDest(entry.value), fileModes[entry.key]));
       i++;
     }
 
@@ -212,6 +222,66 @@ class FlatpakPackager {
     return out;
   }
 
+  /// The `/app/bin/<command>` launcher wrapper.
+  ///
+  /// Beyond exec'ing the embedder against its bundle, it carries the two things
+  /// a packaged app needs and an invocation should not have to repeat: the
+  /// environment the embedder expects, and the flags describing *this* app. Env
+  /// entries are emitted as `${NAME:-<value>}` so `flatpak run --env=` still
+  /// overrides them, and the caller's own `"$@"` stays last so a manual
+  /// `flatpak run <app> --extra-flag` still reaches the embedder.
+  String _launcher(FlatpakMetadata m, String prefix) {
+    final b = StringBuffer('#!/bin/sh\n');
+    for (final e in m.env.entries) {
+      if (!_shellName.hasMatch(e.key)) {
+        throw FlatpakPackageException(
+          'flatpak env name "${e.key}" is not a shell identifier '
+          '(letters, digits and _, not starting with a digit)',
+        );
+      }
+      _rejectShellBreakout('env ${e.key}', e.value);
+      b.writeln('export ${e.key}="\${${e.key}:-${e.value}}"');
+    }
+
+    for (final a in m.args) {
+      _rejectShellBreakout('arg', a);
+      if (RegExp(r'\s').hasMatch(a)) {
+        throw FlatpakPackageException(
+          'flatpak arg "$a" contains whitespace; the launcher passes args as '
+          'shell words, so it would split into several arguments',
+        );
+      }
+    }
+
+    final placed = m.args.any((a) => a.contains(_bundleToken));
+    final args = [
+      if (!placed) ...['-b', prefix],
+      ...m.args.map((a) => a.replaceAll(_bundleToken, prefix)),
+    ].join(' ');
+    b.writeln('exec $prefix/${m.command} $args "\$@"');
+    return b.toString();
+  }
+
+  /// Placeholder for the in-sandbox bundle prefix inside `args`.
+  static const _bundleToken = '{bundle}';
+
+  /// A POSIX shell variable name.
+  static final _shellName = RegExp(r'^[A-Za-z_][A-Za-z0-9_]*$');
+
+  /// Refuse text that would escape the double-quoted word it is written into,
+  /// or run a command when the launcher starts. `$VAR` expansion is the point
+  /// of these fields and stays allowed; `"`, backticks and `$(` are not.
+  void _rejectShellBreakout(String what, String value) {
+    for (final bad in const ['"', r'\', '`', r'$(']) {
+      if (value.contains(bad)) {
+        throw FlatpakPackageException(
+          'flatpak $what value contains "$bad", which the generated launcher '
+          'cannot carry safely: $value',
+        );
+      }
+    }
+  }
+
   /// The flatpak-builder manifest (a `simple` module over a `dir` source).
   String _manifest(
     FlatpakMetadata m,
@@ -248,7 +318,7 @@ class FlatpakPackager {
     }
     b
       ..writeln('modules:')
-      ..writeln('  - name: $desktopName')
+      ..writeln('  - name: ${_moduleName(m)}')
       ..writeln('    buildsystem: simple')
       ..writeln('    build-commands:');
     for (final c in cmds) {
@@ -260,6 +330,13 @@ class FlatpakPackager {
       ..writeln('        path: .');
     return b.toString();
   }
+
+  /// flatpak-builder's module name, which is an identifier rather than a
+  /// display name — it warns on spaces, then fails obscurely later. The
+  /// `.desktop` `Name=` keeps the human string; this comes from the app id,
+  /// which is already constrained to a safe shape.
+  String _moduleName(FlatpakMetadata m) =>
+      m.appId.split('.').last.replaceAll(RegExp('[^A-Za-z0-9_-]'), '-');
 
   String _desktop(FlatpakMetadata m, String name) {
     final b = StringBuffer()

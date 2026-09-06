@@ -531,6 +531,9 @@ class FlatpakPackageSpec {
     this.finishArgs = const [],
     this.icon,
     this.categories = const ['Utility'],
+    this.env = const {},
+    this.args = const [],
+    this.vendorLibs = false,
   });
 
   factory FlatpakPackageSpec.fromMap(Map<dynamic, dynamic> map) =>
@@ -547,7 +550,25 @@ class FlatpakPackageSpec {
         categories: (map['categories'] as List<dynamic>? ?? const ['Utility'])
             .map((e) => e.toString())
             .toList(),
+        env: (map['env'] as Map<dynamic, dynamic>? ?? const {}).map(
+          (k, v) => MapEntry(k.toString(), v.toString()),
+        ),
+        args: (map['args'] as List<dynamic>? ?? const [])
+            .map((e) => e.toString())
+            .toList(),
+        vendorLibs: _vendorLibs(map['vendor_libs']),
       );
+
+  /// `vendor_libs:` accepts a bool or the tokens `auto`/`on`/`off` — `auto`
+  /// reads better in a manifest than `true` for something emb decides per
+  /// library.
+  static bool _vendorLibs(Object? raw) {
+    if (raw is bool) return raw;
+    if (raw is String) {
+      return const {'auto', 'on', 'true', 'yes'}.contains(raw.toLowerCase());
+    }
+    return false;
+  }
 
   /// Reverse-DNS app id, e.g. `com.toyota.ivi.Homescreen`. Required to build a
   /// flatpak; the command errors if it is unset.
@@ -565,6 +586,29 @@ class FlatpakPackageSpec {
 
   /// `.desktop` `Categories`.
   final List<String> categories;
+
+  /// Environment the generated launcher exports before exec'ing the embedder.
+  /// Written as `${NAME:-<value>}`, so it is a default a `flatpak run --env=`
+  /// can still override, and the value is shell text (`$HOME/...` expands in
+  /// the sandbox).
+  final Map<String, String> env;
+
+  /// Embedder flags the generated launcher passes after `-b <prefix>` — the
+  /// arguments that describe the packaged app itself (`--backend=`, `--shell=`,
+  /// `--app-id=`), rather than a given invocation of it.
+  final List<String> args;
+
+  /// Vendor the shared libraries the bundle needs but the flatpak *runtime*
+  /// does not provide into the bundle's `lib/`, where the `$ORIGIN/lib` rpath
+  /// already finds them.
+  ///
+  /// The runtime is not the sysroot: a binary that links fine against a Debian
+  /// or Yocto sysroot can still hit `not found` inside
+  /// `org.freedesktop.Platform`, which ships a deliberately narrow library set.
+  /// Off by default — it only makes sense when the runtime is known, which is
+  /// exactly the flatpak case. (Manifest key `vendor_libs`, also spelled
+  /// `auto`.)
+  final bool vendorLibs;
 }
 
 /// Where an `arm-gnu` target's sysroot comes from.
