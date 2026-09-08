@@ -570,4 +570,152 @@ void main() {
       expect(code, ExitCode.success.code, reason: '$name dry-run failed');
     }
   });
+
+  group('sourceFingerprint', () {
+    test('deterministic for identical content', () {
+      final dir = Directory(p.join(tmp.path, 'fp'))..createSync();
+      File(p.join(dir.path, 'a.c')).writeAsStringSync('int main() {}');
+      File(p.join(dir.path, 'b.h')).writeAsStringSync('#pragma once');
+
+      final a = sourceFingerprint(dir);
+      final b = sourceFingerprint(dir);
+      expect(a, b);
+    });
+
+    test('changes when file content changes', () {
+      final dir = Directory(p.join(tmp.path, 'fp'))..createSync();
+      final f = File(p.join(dir.path, 'a.c'))
+        ..writeAsStringSync('int main() {}');
+
+      final before = sourceFingerprint(dir);
+      f.writeAsStringSync('int main() { return 1; }');
+      final after = sourceFingerprint(dir);
+      expect(before, isNot(after));
+    });
+
+    test('changes when a file is added', () {
+      final dir = Directory(p.join(tmp.path, 'fp'))..createSync();
+      File(p.join(dir.path, 'a.c')).writeAsStringSync('int main() {}');
+
+      final before = sourceFingerprint(dir);
+      File(p.join(dir.path, 'b.c')).writeAsStringSync('void f() {}');
+      final after = sourceFingerprint(dir);
+      expect(before, isNot(after));
+    });
+
+    test('changes when a file is removed', () {
+      final dir = Directory(p.join(tmp.path, 'fp'))..createSync();
+      File(p.join(dir.path, 'a.c')).writeAsStringSync('int main() {}');
+      final extra = File(p.join(dir.path, 'b.c'))
+        ..writeAsStringSync('void f() {}');
+
+      final before = sourceFingerprint(dir);
+      extra.deleteSync();
+      final after = sourceFingerprint(dir);
+      expect(before, isNot(after));
+    });
+
+    test('excludes hidden directories', () {
+      final dir = Directory(p.join(tmp.path, 'fp'))..createSync();
+      File(p.join(dir.path, 'a.c')).writeAsStringSync('int main() {}');
+
+      final before = sourceFingerprint(dir);
+      Directory(p.join(dir.path, '.git')).createSync();
+      File(p.join(dir.path, '.git', 'index')).writeAsStringSync('binary blob');
+      final after = sourceFingerprint(dir);
+      expect(before, after);
+    });
+
+    test('stable across same-content recreations (not mtime-dependent)', () {
+      final dir = Directory(p.join(tmp.path, 'fp'))..createSync();
+      File(p.join(dir.path, 'a.c')).writeAsStringSync('int main() {}');
+
+      final first = sourceFingerprint(dir);
+
+      // Delete and recreate with the same content (different mtime).
+      File(p.join(dir.path, 'a.c')).deleteSync();
+      File(p.join(dir.path, 'a.c')).writeAsStringSync('int main() {}');
+
+      final second = sourceFingerprint(dir);
+      expect(first, second);
+    });
+
+    test('empty directory produces a consistent fingerprint', () {
+      final dir = Directory(p.join(tmp.path, 'fp'))..createSync();
+      final a = sourceFingerprint(dir);
+      final b = sourceFingerprint(dir);
+      expect(a, b);
+      expect(a, isNotEmpty);
+    });
+
+    test('follows a symlinked file', () {
+      final dir = Directory(p.join(tmp.path, 'fp'))..createSync();
+      final outside = Directory(p.join(tmp.path, 'vendor'))..createSync();
+      final real = File(p.join(outside.path, 'lib.c'))
+        ..writeAsStringSync('int v() { return 0; }');
+      Link(p.join(dir.path, 'lib.c')).createSync(real.path);
+
+      final before = sourceFingerprint(dir);
+      real.writeAsStringSync('int v() { return 1; }');
+      final after = sourceFingerprint(dir);
+      expect(before, isNot(after), reason: 'edit behind a symlink was missed');
+    });
+
+    test('descends into a symlinked directory', () {
+      final dir = Directory(p.join(tmp.path, 'fp'))..createSync();
+      final outside = Directory(p.join(tmp.path, 'vendor'))..createSync();
+      final real = File(p.join(outside.path, 'lib.c'))
+        ..writeAsStringSync('int v() { return 0; }');
+      Link(p.join(dir.path, 'vendor')).createSync(outside.path);
+
+      final before = sourceFingerprint(dir);
+      real.writeAsStringSync('int v() { return 1; }');
+      final after = sourceFingerprint(dir);
+      expect(before, isNot(after), reason: 'edit under a linked dir missed');
+    });
+
+    test('terminates on a symlink cycle', () {
+      final dir = Directory(p.join(tmp.path, 'fp'))..createSync();
+      File(p.join(dir.path, 'a.c')).writeAsStringSync('int main() {}');
+      final sub = Directory(p.join(dir.path, 'sub'))..createSync();
+      // sub/loop -> the tree root: a naive recursive walk never terminates.
+      Link(p.join(sub.path, 'loop')).createSync(dir.path);
+
+      expect(sourceFingerprint(dir), isNotEmpty);
+    });
+
+    test('a dangling symlink is recorded, not fatal', () {
+      final dir = Directory(p.join(tmp.path, 'fp'))..createSync();
+      File(p.join(dir.path, 'a.c')).writeAsStringSync('int main() {}');
+
+      final before = sourceFingerprint(dir);
+      Link(p.join(dir.path, 'gone.c')).createSync(p.join(tmp.path, 'nowhere'));
+      final after = sourceFingerprint(dir);
+      expect(before, isNot(after));
+    });
+
+    test('changes when a file is renamed', () {
+      final dir = Directory(p.join(tmp.path, 'fp'))..createSync();
+      final f = File(p.join(dir.path, 'a.c'))
+        ..writeAsStringSync('int main() {}');
+
+      final before = sourceFingerprint(dir);
+      f.renameSync(p.join(dir.path, 'b.c'));
+      final after = sourceFingerprint(dir);
+      expect(before, isNot(after));
+    });
+
+    test('includes files in subdirectories', () {
+      final dir = Directory(p.join(tmp.path, 'fp'))..createSync();
+      File(p.join(dir.path, 'a.c')).writeAsStringSync('int main() {}');
+
+      final before = sourceFingerprint(dir);
+      Directory(p.join(dir.path, 'sub')).createSync();
+      File(
+        p.join(dir.path, 'sub', 'b.c'),
+      ).writeAsStringSync('void helper() {}');
+      final after = sourceFingerprint(dir);
+      expect(before, isNot(after));
+    });
+  });
 }
