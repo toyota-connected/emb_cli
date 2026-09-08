@@ -164,6 +164,23 @@ export CMAKE_TOOLCHAIN_FILE="\$OECORE_NATIVE_SYSROOT/usr/share/cmake/OEToolchain
       );
     });
 
+    test('relative URL (no authority) returns null', () {
+      // Uri.tryParse('').authority is also '', so an empty authority would
+      // match a server record that has no Artifactory URL field.
+      expect(
+        YoctoSdkCrossProvider.parseArtifactoryPath('artifactory/repo/sdk.sh'),
+        isNull,
+      );
+    });
+
+    test('percent-encoded basename decodes into the repo path', () {
+      final r = YoctoSdkCrossProvider.parseArtifactoryPath(
+        'https://artifacts.example.com/artifactory/my-repo/my%2Bsdk%201.sh',
+      );
+      // pathSegments decodes; the jf pattern must carry the real artifact name.
+      expect(r, ('artifacts.example.com', 'my-repo/my+sdk 1.sh'));
+    });
+
     test('/artifactory/ with no path after it returns null', () {
       expect(
         YoctoSdkCrossProvider.parseArtifactoryPath(

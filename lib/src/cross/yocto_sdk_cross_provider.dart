@@ -54,8 +54,8 @@ class YoctoSdkCrossProvider implements CrossProvider {
   @override
   String get triple => target.targetTriple ?? 'aarch64-poky-linux';
 
-  // The SDK is relocatable. `sh` runs a downloaded installer when sdk_url is
-  // used; bash sources the environment-setup script.
+  // The SDK is relocatable. bash runs a downloaded installer when sdk_url is
+  // used, and sources the environment-setup script.
   @override
   List<String> get preflightTools => const ['bash', 'sh'];
 
@@ -223,13 +223,20 @@ class YoctoSdkCrossProvider implements CrossProvider {
 
     // -y: non-interactive; -d: target dir. The installer relocates the SDK's
     // baked-in paths to the chosen prefix on first run.
-    // Run the installer directly (not via `sh`) so the shebang is honored;
-    // OE SDK installers are bash scripts and fail silently under dash.
+    // Run under `bash`, not `sh`: OE SDK installers are bash scripts and fail
+    // silently under dash. Naming the interpreter rather than exec'ing the
+    // script also means the install does not depend on the chmod above having
+    // taken, nor on the workspace being on a filesystem mounted exec.
     final ProcessResult run;
     try {
-      run = await Process.run(installer.path, ['-y', '-d', prefix.path]);
+      run = await Process.run('bash', [
+        installer.path,
+        '-y',
+        '-d',
+        prefix.path,
+      ]);
     } on ProcessException catch (e) {
-      _failureDetail = 'cannot execute ${installer.path}: ${e.message}';
+      _failureDetail = 'cannot run bash ${installer.path}: ${e.message}';
       return null;
     }
     if (run.exitCode != 0) {
@@ -255,10 +262,17 @@ class YoctoSdkCrossProvider implements CrossProvider {
 
   Future<bool> _download(String url, File dest) async {
     final artPath = parseArtifactoryPath(url);
+    var jfHint = '';
     if (artPath != null) {
       final jfResult = await _downloadViaJFrog(artPath.$1, artPath.$2, dest);
       if (jfResult != null) return jfResult;
-      // jf not installed — fall through to plain HTTP
+      // jf is unusable (absent, no config, or no server for this host), so fall
+      // back to plain, unauthenticated HTTP — which a private Artifactory will
+      // reject. Carry the reason into whatever error the fallback produces, or
+      // the user only sees a bare 401 with no hint that jf is the way in.
+      jfHint =
+          ' (Artifactory URL, but the jf CLI is unavailable or has no server '
+          'configured for ${artPath.$1} — run `jf config add`)';
     }
     final part = File('${dest.path}.part');
     try {
@@ -267,7 +281,7 @@ class YoctoSdkCrossProvider implements CrossProvider {
       final resp = await req.close();
       if (resp.statusCode != 200) {
         await resp.drain<void>();
-        _failureDetail = 'HTTP ${resp.statusCode} downloading $url';
+        _failureDetail = 'HTTP ${resp.statusCode} downloading $url$jfHint';
         return false;
       }
       await resp.pipe(part.openWrite());
@@ -275,7 +289,7 @@ class YoctoSdkCrossProvider implements CrossProvider {
       return true;
     } on Object catch (e) {
       if (part.existsSync()) part.deleteSync();
-      _failureDetail = 'connection error downloading $url: $e';
+      _failureDetail = 'connection error downloading $url: $e$jfHint';
       return false;
     }
   }
@@ -337,14 +351,20 @@ class YoctoSdkCrossProvider implements CrossProvider {
         _failureDetail = _failMsg('jf rt dl failed', result);
         return false;
       }
-      final downloaded = File(p.join(tempDir.path, p.basename(dest.path)));
-      if (!downloaded.existsSync()) {
-        _failureDetail =
-            'jf rt dl succeeded but ${dest.path} was not created'
-            ' — artifact name in repository may differ from URL basename';
+      // Take whatever landed rather than deriving the name from the URL:
+      // repoPath comes from Uri.pathSegments (decoded) while dest is named
+      // from Uri.path (encoded), so a percent-encoded basename would never
+      // match what jf wrote. --flat + a single-file repoPath means exactly one
+      // entry is expected.
+      final got = tempDir.listSync().whereType<File>().toList();
+      if (got.length != 1) {
+        _failureDetail = got.isEmpty
+            ? 'jf rt dl reported success but downloaded nothing for $repoPath'
+            : 'jf rt dl matched ${got.length} files for $repoPath; '
+                  'expected exactly one';
         return false;
       }
-      downloaded.renameSync(dest.path);
+      got.single.renameSync(dest.path);
       return true;
     } finally {
       if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
@@ -401,7 +421,7 @@ class YoctoSdkCrossProvider implements CrossProvider {
     if (rest.length > 2 && rest[0] == 'api' && rest[1] == 'download') {
       rest = rest.sublist(2);
     }
-    if (rest.isEmpty) return null;
+    if (rest.isEmpty || uri.authority.isEmpty) return null;
     return (uri.authority, rest.join('/'));
   }
 
