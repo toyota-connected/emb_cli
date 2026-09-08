@@ -287,9 +287,9 @@ class YoctoSdkCrossProvider implements CrossProvider {
   /// used even when multiple servers are configured.
   ///
   /// Returns `true`/`false` on success/failure, or `null` when jf cannot be
-  /// used (not installed, config unavailable, or no server matches [baseAuthority]);
-  /// in the null case [_failureDetail] is left unchanged so the HTTP fallback
-  /// owns the error message.
+  /// used (not installed, config unavailable, or no server matches
+  /// [baseAuthority]); in the null case [_failureDetail] is left unchanged so
+  /// the HTTP fallback owns the error message.
   Future<bool?> _downloadViaJFrog(
     String baseAuthority,
     String repoPath,
