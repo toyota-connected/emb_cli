@@ -648,6 +648,63 @@ void main() {
       expect(a, isNotEmpty);
     });
 
+    test('follows a symlinked file', () {
+      final dir = Directory(p.join(tmp.path, 'fp'))..createSync();
+      final outside = Directory(p.join(tmp.path, 'vendor'))..createSync();
+      final real = File(p.join(outside.path, 'lib.c'))
+        ..writeAsStringSync('int v() { return 0; }');
+      Link(p.join(dir.path, 'lib.c')).createSync(real.path);
+
+      final before = sourceFingerprint(dir);
+      real.writeAsStringSync('int v() { return 1; }');
+      final after = sourceFingerprint(dir);
+      expect(before, isNot(after), reason: 'edit behind a symlink was missed');
+    });
+
+    test('descends into a symlinked directory', () {
+      final dir = Directory(p.join(tmp.path, 'fp'))..createSync();
+      final outside = Directory(p.join(tmp.path, 'vendor'))..createSync();
+      final real = File(p.join(outside.path, 'lib.c'))
+        ..writeAsStringSync('int v() { return 0; }');
+      Link(p.join(dir.path, 'vendor')).createSync(outside.path);
+
+      final before = sourceFingerprint(dir);
+      real.writeAsStringSync('int v() { return 1; }');
+      final after = sourceFingerprint(dir);
+      expect(before, isNot(after), reason: 'edit under a linked dir missed');
+    });
+
+    test('terminates on a symlink cycle', () {
+      final dir = Directory(p.join(tmp.path, 'fp'))..createSync();
+      File(p.join(dir.path, 'a.c')).writeAsStringSync('int main() {}');
+      final sub = Directory(p.join(dir.path, 'sub'))..createSync();
+      // sub/loop -> the tree root: a naive recursive walk never terminates.
+      Link(p.join(sub.path, 'loop')).createSync(dir.path);
+
+      expect(sourceFingerprint(dir), isNotEmpty);
+    });
+
+    test('a dangling symlink is recorded, not fatal', () {
+      final dir = Directory(p.join(tmp.path, 'fp'))..createSync();
+      File(p.join(dir.path, 'a.c')).writeAsStringSync('int main() {}');
+
+      final before = sourceFingerprint(dir);
+      Link(p.join(dir.path, 'gone.c')).createSync(p.join(tmp.path, 'nowhere'));
+      final after = sourceFingerprint(dir);
+      expect(before, isNot(after));
+    });
+
+    test('changes when a file is renamed', () {
+      final dir = Directory(p.join(tmp.path, 'fp'))..createSync();
+      final f = File(p.join(dir.path, 'a.c'))
+        ..writeAsStringSync('int main() {}');
+
+      final before = sourceFingerprint(dir);
+      f.renameSync(p.join(dir.path, 'b.c'));
+      final after = sourceFingerprint(dir);
+      expect(before, isNot(after));
+    });
+
     test('includes files in subdirectories', () {
       final dir = Directory(p.join(tmp.path, 'fp'))..createSync();
       File(p.join(dir.path, 'a.c')).writeAsStringSync('int main() {}');

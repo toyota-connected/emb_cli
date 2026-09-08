@@ -92,23 +92,54 @@ Map<String, String> mergeBackendDefines(
 
 /// Content-based fingerprint of a source tree: sorted relative paths with a
 /// SHA-256 digest of each file's bytes, hashed into a short hex string.
-/// Hidden directories (`.git`, `.dart_tool`, etc.) are excluded.
+/// Hidden entries (`.git`, `.dart_tool`, etc.) are excluded.
 ///
 /// Uses file content rather than mtime so that `git checkout`, `cp -a`, and
 /// filesystems with coarse timestamp granularity (HFS+, FAT32) don't produce
 /// false cache hits.
+///
+/// Symlinks are followed — a source tree that links to vendored or shared
+/// sources builds from the link target, so the fingerprint has to see it too
+/// or an edit behind a link reads as "unchanged" and the build is wrongly
+/// skipped. Directories are tracked by their resolved path, so a link that
+/// points at an ancestor is visited once instead of recursing forever.
 String sourceFingerprint(Directory dir) {
   final parts = <String>[];
-  for (final e in dir.listSync(recursive: true, followLinks: false)) {
-    if (e is! File) continue;
-    final rel = p.relative(e.path, from: dir.path);
-    if (p.split(rel).any((s) => s.startsWith('.'))) continue;
+  final visited = <String>{};
+  final queue = <(Directory, String)>[(dir, '')];
+
+  while (queue.isNotEmpty) {
+    final (current, prefix) = queue.removeLast();
+    final String resolved;
+    final List<FileSystemEntity> entries;
     try {
-      final bytes = e.readAsBytesSync();
-      final digest = sha256.convert(bytes).toString();
-      parts.add('$rel:$digest');
+      resolved = current.resolveSymbolicLinksSync();
+      if (!visited.add(resolved)) continue; // already walked (link cycle)
+      // followLinks: false, then resolve each entry's own type below — a
+      // Link is otherwise reported as a Link and dropped.
+      entries = current.listSync(followLinks: false);
     } on FileSystemException {
-      parts.add('$rel:?');
+      continue; // unreadable dir or dangling link
+    }
+    for (final e in entries) {
+      final name = p.basename(e.path);
+      if (name.startsWith('.')) continue;
+      final rel = prefix.isEmpty ? name : p.join(prefix, name);
+      // typeSync follows links, so a linked file/dir resolves to its target.
+      final type = FileSystemEntity.typeSync(e.path);
+      if (type == FileSystemEntityType.directory) {
+        queue.add((Directory(e.path), rel));
+      } else if (type == FileSystemEntityType.file) {
+        try {
+          parts.add('$rel:${sha256.convert(File(e.path).readAsBytesSync())}');
+        } on FileSystemException {
+          parts.add('$rel:?');
+        }
+      } else {
+        // A dangling link, socket, or fifo: record its presence so adding or
+        // removing one still moves the fingerprint.
+        parts.add('$rel:?');
+      }
     }
   }
   parts.sort();
@@ -823,6 +854,13 @@ class CrossCommand extends Command<int> {
     // shared by both --prepare and --build.
     final doPrepare = args['prepare'] == true;
     final doBuild = args['build'] == true;
+
+    // Validate flag combinations before any build work: --prepare now compiles
+    // the embedder, so a usage error caught after it would cost a full build.
+    if (doBuild && args['flatpak'] == true && args['app'] == null) {
+      _logger.err('--flatpak needs --app (a flatpak bundles the whole app).');
+      return ExitCode.usage.code;
+    }
     if (doPrepare || doBuild) {
       final enforcement = await resolveOfflineEnforcement(
         _offlineMode,
@@ -858,10 +896,6 @@ class CrossCommand extends Command<int> {
     }
 
     if (doBuild) {
-      if (args['flatpak'] == true && args['app'] == null) {
-        _logger.err('--flatpak needs --app (a flatpak bundles the whole app).');
-        return ExitCode.usage.code;
-      }
       return _build(
         profile,
         target,
