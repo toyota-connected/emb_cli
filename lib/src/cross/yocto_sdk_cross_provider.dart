@@ -287,8 +287,9 @@ class YoctoSdkCrossProvider implements CrossProvider {
   /// used even when multiple servers are configured.
   ///
   /// Returns `true`/`false` on success/failure, or `null` when jf cannot be
-  /// used (not installed, config unavailable, or no server matches the URL
-  /// authority — caller should fall back to plain HTTP).
+  /// used (not installed, config unavailable, or no server matches [baseAuthority]);
+  /// in the null case [_failureDetail] is left unchanged so the HTTP fallback
+  /// owns the error message.
   Future<bool?> _downloadViaJFrog(
     String baseAuthority,
     String repoPath,
@@ -308,37 +309,52 @@ class YoctoSdkCrossProvider implements CrossProvider {
       orElse: () => {},
     );
     final serverId = server['Server ID'];
-    if (serverId == null) {
-      _failureDetail =
-          'no jf server configured for $baseAuthority — run `jf c add`';
-      return null;
-    }
+    if (serverId == null) return null; // no server for this host → use HTTP
 
-    final result = await Process.run('jf', [
-      'rt',
-      'dl',
-      '--flat',
-      '--fail-no-op',
-      '--server-id',
-      serverId,
-      repoPath,
-      '${dest.parent.path}${p.separator}',
-    ]);
-    if (result.exitCode != 0) {
-      _failureDetail = _failMsg('jf rt dl failed', result);
-      return false;
+    // Download to a temp dir first, then rename atomically, so an interrupted
+    // download never leaves a partial file that looks like a valid cache hit.
+    // createTemp guarantees a unique name, so a leftover dir from a prior crash
+    // never causes a FileSystemException here.
+    final tempDir = await dest.parent.createTemp('.jf-tmp-');
+    try {
+      final ProcessResult result;
+      try {
+        result = await Process.run('jf', [
+          'rt',
+          'dl',
+          '--flat',
+          '--fail-no-op',
+          '--server-id',
+          serverId,
+          repoPath,
+          '${tempDir.path}${p.separator}',
+        ]);
+      } on ProcessException catch (e) {
+        _failureDetail = 'jf rt dl failed: ${e.message}';
+        return false;
+      }
+      if (result.exitCode != 0) {
+        _failureDetail = _failMsg('jf rt dl failed', result);
+        return false;
+      }
+      final downloaded = File(p.join(tempDir.path, p.basename(dest.path)));
+      if (!downloaded.existsSync()) {
+        _failureDetail =
+            'jf rt dl succeeded but ${dest.path} was not created'
+            ' — artifact name in repository may differ from URL basename';
+        return false;
+      }
+      downloaded.renameSync(dest.path);
+      return true;
+    } finally {
+      if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
     }
-    if (!dest.existsSync()) {
-      _failureDetail =
-          'jf rt dl succeeded but ${dest.path} was not created'
-          ' — artifact name in repository may differ from URL basename';
-      return false;
-    }
-    return true;
   }
 
   static String _failMsg(String label, ProcessResult r) {
-    final s = (r.stderr as String).trim();
+    var s = (r.stderr as String).trim();
+    // Cap to avoid leaking access tokens or large outputs into error messages.
+    if (s.length > 200) s = '${s.substring(0, 200)}…';
     return '$label (exit ${r.exitCode})${s.isNotEmpty ? ": $s" : ""}';
   }
 
