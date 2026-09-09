@@ -584,6 +584,51 @@ enum SysrootProvenance {
       };
 }
 
+/// The Flutter `custom-devices` entry a board target registers, from a
+/// `cross.custom_device:` block.
+///
+/// Metadata only: the command arrays Flutter runs (`ping`, `install`,
+/// `runDebug`, `forwardPort`, …) are **derived** from the target's transport,
+/// deploy dir and embedder name, so a registered device cannot describe a
+/// deployment different from the one `emb cross --deploy` actually performs.
+class CustomDeviceSpec {
+  const CustomDeviceSpec({
+    required this.id,
+    this.label,
+    this.sdkNameAndVersion,
+    this.platform,
+    this.enabled = true,
+  });
+
+  factory CustomDeviceSpec.fromMap(Map<dynamic, dynamic> map) =>
+      CustomDeviceSpec(
+        id: map['id']?.toString() ?? '',
+        label: map['label']?.toString(),
+        sdkNameAndVersion:
+            (map['sdk_name_and_version'] ?? map['sdkNameAndVersion'])
+                ?.toString(),
+        platform: map['platform']?.toString(),
+        enabled: map['enabled'] == null || map['enabled'] == true,
+      );
+
+  /// `flutter run -d <id>`. Required — an entry with no id cannot be merged.
+  final String id;
+
+  /// Human-readable name in `flutter devices`. Defaults to [id].
+  final String? label;
+
+  /// The `sdkNameAndVersion` column. Defaults to a description of the target.
+  final String? sdkNameAndVersion;
+
+  /// `linux-arm64` / `linux-x64`. Derived from the target triple when unset —
+  /// Flutter accepts no other value.
+  final String? platform;
+
+  /// Whether Flutter should consider the device. Registering it disabled is
+  /// how the old configs shipped a device without offering it.
+  final bool enabled;
+}
+
 /// How `emb` reaches a board for `--deploy` / `--run`.
 ///
 /// Orthogonal to [SysrootProvenance]: a sysroot can be scraped from a live
@@ -715,6 +760,7 @@ class CrossTarget {
     this.toolchainUrl,
     this.versionPolicy = ToolchainVersionPolicy.pinned,
     this.sysroot,
+    this.customDevice,
     this.yoctoBuild,
     this.machineTuple,
     this.recipe = 'weston',
@@ -750,6 +796,9 @@ class CrossTarget {
         map['version_policy']?.toString(),
       ),
       sysroot: _parseSysroot(map),
+      customDevice: map['custom_device'] is Map
+          ? CustomDeviceSpec.fromMap(map['custom_device'] as Map)
+          : null,
       yoctoBuild: map['yocto_build']?.toString(),
       machineTuple: map['machine_tuple']?.toString(),
       recipe: (map['recipe'] ?? 'weston').toString(),
@@ -806,6 +855,10 @@ class CrossTarget {
   /// How the sysroot is acquired (image unpack or device rsync). Always set
   /// for `arm-gnu`; null for the Yocto providers (their sysroot is intrinsic).
   final SysrootSpec? sysroot;
+
+  /// The parsed `custom_device:` block — the Flutter `custom-devices` entry
+  /// this target registers, or null when it declares none.
+  final CustomDeviceSpec? customDevice;
 
   /// Convenience: the image URL when [sysroot] is image-sourced.
   String? get imageUrl =>

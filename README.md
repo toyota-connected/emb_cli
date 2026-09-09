@@ -1087,6 +1087,62 @@ stamp from a different emb is reported, not enforced — a hand-maintained
 If `extends:` reports that the board library was not found, `emb boards list`
 shows every path that was tried.
 
+#### Flutter custom devices (`flutter run` against a board)
+
+A board target can register itself with Flutter as a **custom device**, so
+`flutter run -d <id>` — and with it hot reload, breakpoints and DevTools —
+drives the board directly. Declare the metadata on the target:
+
+```yaml
+cross:
+  targets:
+    rpi5-bookworm:
+      sysroot:
+        source: device
+        host: pi@raspberrypi.local     # how emb reaches the board
+      custom_device:
+        id: rpi5                        # `flutter run -d rpi5`
+        label: Raspberry Pi 5
+```
+
+Then register it:
+
+```sh
+emb boards custom-devices --target rpi5-bookworm   # writes the entry
+emb boards custom-devices --dry-run                # print it, change nothing
+flutter config --enable-custom-devices
+flutter run -d rpi5
+```
+
+Only the metadata is declared. The five command arrays Flutter runs (`ping`,
+`install`, `uninstall`, `runDebug`, `forwardPort`) are **derived** from the
+target's deploy transport, so a registered device always describes the same
+board `emb cross --deploy` pushes to — set `transport: adb` and the entry is
+adb commands instead of ssh, with nothing else to change.
+
+The division of labour matches how a build reaches the board: `emb cross
+--deploy` puts the embedder, engine and `lib/` there once, and the device
+entry's `install` then only refreshes `data/flutter_assets` on each run and hot
+restart. So deploy first, and pass the same `--deploy-dir` to both:
+
+```sh
+emb cross . --build --app ../my_app --deploy pi@raspberrypi.local
+emb boards custom-devices --target rpi5-bookworm
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `id` | — | Required. What `flutter run -d <id>` names. |
+| `label` | the `id` | Display name in `flutter devices`. |
+| `sdk_name_and_version` | `<target> (<triple>)` | The `flutter devices` detail column. |
+| `platform` | derived from the triple | `linux-arm64` / `linux-x64`; Flutter accepts nothing else, so an armv7 or riscv64 target omits it. |
+| `enabled` | `true` | Register the device without offering it. |
+
+**Hot reload needs a debug engine.** `flutter run` in its default debug mode
+runs Dart from the JIT engine, so the bundle deployed to the board must have
+been built against a debug engine, not a release/AOT one. A release bundle
+registers and installs fine, and then fails to attach.
+
 #### Reproducible builds (`emb.lock`)
 
 A cross resolve pins what it actually used to **`emb.lock`** at the project root,
