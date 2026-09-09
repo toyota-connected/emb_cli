@@ -780,6 +780,7 @@ cross:
     snapshot: 2024-06-01          # pin apt resolution to a mirror snapshot (optional)
   augment:                        # libs built from source when the sysroot is too old
     - { pkg: libdisplay-info, min: "0.2.0", url: https://.../libdisplay-info-0.2.0.tar.gz, build: meson, static: true }
+  host_dev_packages: [libpugixml-dev]   # build-machine deps of a `host: true` augment
   defines:                        # -D<name>=<value> applied to every build
     CMAKE_INSTALL_PREFIX: /usr
   cmake_args: [-Wno-dev]          # raw cmake configure flags (cmake only)
@@ -791,6 +792,28 @@ cross:
     bin: shell/homescreen         # binary, relative to each backend build dir
     install_dir: /usr/bin
 ```
+
+##### `host_dev_packages` — build-machine deps
+
+An `augment` entry marked `host: true` is a codegen tool emb compiles with the
+**host** toolchain and puts on the cross build's `PATH` (e.g. a Wayland scanner
+the project resolves via `find_program`). Its own build dependencies therefore
+have to be on the build machine, not in the sysroot — `sysroot.dev_packages`
+cannot satisfy them. `host_dev_packages` names those.
+
+They are used in two places: the Dockerfile emit bakes them into the cross
+image, and a build running straight on the host checks them during preflight.
+When one is missing the build stops before configuring, rather than failing
+minutes in on a missing pkg-config module; `--install-deps` installs them
+through the host package backend.
+
+The same list feeds the Debian-based cross image, so on a host of another
+distro a name may not exist locally (`pugixml-devel` rather than
+`libpugixml-dev`). A name the backend cannot resolve at all is reported as a
+warning and the build continues — emb cannot prove that host is actually
+missing the library. Only a name the backend recognizes *and* reports as not
+installed stops the build. When no package backend is reachable the check
+passes silently, since nothing can be verified either way.
 
 #### Multiple platforms in one manifest (`cross.targets`)
 
