@@ -1,0 +1,37 @@
+name: spell-check
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Its own workflow, not a job in emb_cli.yaml, because that one is filtered to
+# code paths — so a docs-only change ran no checks at all, and spell-check is
+# the only job that would have looked at it. Filtering here on what can change
+# a spell-check result keeps a README typo from running the full test suite.
+#
+# cspell.json is included because the check always scans every markdown file
+# (modified_files_only: false), so removing a dictionary word can break a file
+# the same commit never touched.
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/spell_check.yaml"
+      - ".github/cspell.json"
+      - "**/*.md"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/spell_check.yaml"
+      - ".github/cspell.json"
+      - "**/*.md"
+
+jobs:
+  spell-check:
+    uses: VeryGoodOpenSource/very_good_workflows/.github/workflows/spell_check.yml@v1
+    with:
+      includes: |
+        **/*.md
+        !brick/**/*.md
+        .*/**/*.md
+      modified_files_only: false
