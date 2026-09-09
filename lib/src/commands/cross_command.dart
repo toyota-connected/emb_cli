@@ -1813,12 +1813,23 @@ class CrossCommand extends Command<int> {
       codeAssets: _stagedCodeAssetNames(appBundle),
     );
     if (!audit.ok) {
-      for (final m in audit.archMismatches) {
-        _logger.err('  bundle lib/: $m');
+      // One line per file, not one per kind of fault: a host-built native asset
+      // is usually both an arch mismatch and something emb never placed, and
+      // reporting it twice reads as two unrelated nits rather than one broken
+      // bundle.
+      _logger.err(
+        'App bundle is not usable on ${profile.targetTriple} — '
+        '${audit.problems.length} file(s) in lib/ must be fixed:',
+      );
+      for (final problem in audit.problems) {
+        _logger.err('  ${problem.describe()}');
       }
-      for (final s in audit.strays) {
-        _logger.err('  bundle lib/: unexpected file "$s"');
-      }
+      _logger.err(
+        'Rebuild these for ${profile.targetTriple}, or keep them out of the '
+        'bundle. A native library the app genuinely needs belongs in '
+        'cross.modules so emb cross-builds and audits it; one produced by a '
+        'Dart build hook needs the hook to honor the cross toolchain.',
+      );
       return ExitCode.software.code;
     }
 
