@@ -19,6 +19,7 @@
   ],
   "useGitignore": true,
   "words": [
+    "Artifactory",
     "Embedder",
     "embedders",
     "aarch",
@@ -30,6 +31,7 @@
     "CFLAGS",
     "crosssdk",
     "icefish",
+    "JFrog",
     "oci",
     "opencontainers",
     "oras",

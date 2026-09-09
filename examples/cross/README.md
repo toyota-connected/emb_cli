@@ -305,12 +305,52 @@ Terrific Trout (2025), Ultimate Unagi (latest, 2026).
 1. `sdk_env_setup` — explicit `environment-setup-*` path.
 2. `sdk_path` — an installed AGL SDK root (e.g. `/opt/agl-sdk/13.0.0-aarch64`).
 3. `sdk_url` — the AGL installer; downloaded and run non-interactively
-   (`sh <installer> -y -d <workspace-prefix>`), then treated like a local
-   install. Re-runs are no-ops once the prefix is populated.
+   (`bash <installer> -y -d <workspace-prefix>`), then treated like a local
+   install. Re-runs are no-ops once the prefix is populated. `bash`, not `sh`:
+   OE installers are bash scripts and fail silently under dash.
 
 In all three the script is sourced in a clean shell and the env read back, so
 `CC`/`CXX`/`CFLAGS`/`SDKTARGETSYSROOT`/`OECORE_NATIVE_SYSROOT`/
 `CMAKE_TOOLCHAIN_FILE` flow through verbatim.
+
+### SDKs hosted on Artifactory (`jf`)
+
+A private Artifactory needs credentials that a plain HTTP GET does not carry, so
+an `sdk_url` whose path contains an `/artifactory/` segment is routed through the
+[JFrog CLI](https://jfrog.com/getting-started-with-jfrog-cli/) instead:
+
+```text
+https://artifacts.example.com/artifactory/my-repo/path/sdk.sh
+https://artifacts.example.com/artifactory/api/download/my-repo/path/sdk.sh
+```
+
+Both forms resolve to repo path `my-repo/path/sdk.sh` (the `api/download`
+prefix is stripped). Configure the server once, before building:
+
+```console
+jf config add prod-server --url https://artifacts.example.com --interactive
+```
+
+The server is selected by **authority match**: `emb` runs `jf config show` and
+picks the record whose `Artifactory URL` has the same host (and port) as
+`sdk_url`, so several configured servers coexist and the right credentials are
+used. The download itself is `jf rt dl --server-id <id>` into a temp dir next to
+the install prefix, then a rename — an interrupted fetch never leaves a partial
+file that looks like a valid cache hit.
+
+When `jf` cannot be used — not installed, `jf config show` fails, or no
+configured server matches the URL's host — the fetch **silently falls back to
+plain, unauthenticated HTTP**, which a private Artifactory will reject. The
+resulting error names jf as the likely fix, so a bare `401`/`403` on an
+`/artifactory/` URL means the fallback ran: check `jf config show`. A `jf rt dl`
+that runs and *fails* is a different case — that error is reported as-is with no
+HTTP retry, since the anonymous retry would only replace it with a less useful
+`401`.
+
+Under `--offline` neither path runs: an `sdk_url` that is not already
+downloaded (or already installed into its prefix) fails closed rather than
+reaching the network. `jf` is a network client by definition, so it is denied
+outright rather than wrapped in a network namespace the way build steps are.
 
 ## Building ivi-homescreen for AGL
 
