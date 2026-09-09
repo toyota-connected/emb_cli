@@ -129,4 +129,57 @@ void main() {
     );
     expect(a.ok, isTrue);
   });
+
+  group('problems are reported once per file', () {
+    // The #145 case: a host-built native asset is BOTH the wrong architecture
+    // and something emb never placed. Reporting it twice reads as two
+    // unrelated nits about a stray file rather than one unusable bundle.
+    test('a wrong-arch stray is a single problem naming both faults', () {
+      put('libfluorite_core_ffi.so', eMachine: 0x3e);
+
+      final a = auditBundleLib(lib, triple: triple, moduleArtifacts: const []);
+
+      expect(a.ok, isFalse);
+      expect(a.problems, hasLength(1), reason: 'one file, one problem');
+      final only = a.problems.single;
+      expect(only.name, 'libfluorite_core_ffi.so');
+      expect(only.stray, isTrue);
+      expect(only.archReason, isNotNull);
+
+      final line = only.describe();
+      expect(line, contains('libfluorite_core_ffi.so'));
+      expect(line, contains('e_machine'), reason: 'leads with the arch fact');
+      expect(
+        line,
+        contains('loader path'),
+        reason: 'and says why a stray hurts',
+      );
+      // The old wording called this "unexpected file", reading as tidiness.
+      expect(line, isNot(contains('unexpected file')));
+    });
+
+    test('an allowed lib with the wrong arch is not also called a stray', () {
+      put('libapp.so', eMachine: 0x3e);
+      final a = auditBundleLib(lib, triple: triple, moduleArtifacts: const []);
+
+      expect(a.problems, hasLength(1));
+      expect(a.problems.single.stray, isFalse);
+      expect(a.problems.single.archReason, isNotNull);
+      expect(a.problems.single.describe(), isNot(contains('loader path')));
+    });
+
+    test('problems are sorted by name', () {
+      put('zzz.so', eMachine: 0x3e);
+      put('aaa.so', eMachine: 0x3e);
+      final a = auditBundleLib(lib, triple: triple, moduleArtifacts: const []);
+      expect(a.problems.map((e) => e.name), ['aaa.so', 'zzz.so']);
+    });
+
+    test('the derived views still agree with problems', () {
+      put('libfluorite_core_ffi.so', eMachine: 0x3e);
+      final a = auditBundleLib(lib, triple: triple, moduleArtifacts: const []);
+      expect(a.strays, ['libfluorite_core_ffi.so']);
+      expect(a.archMismatches.single, startsWith('libfluorite_core_ffi.so:'));
+    });
+  });
 }
