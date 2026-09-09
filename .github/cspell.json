@@ -43,6 +43,7 @@
     "libglib",
     "libgstreamer",
     "libinput",
+    "pugixml",
     "libnl",
     "libpipewire",
     "libsecret",

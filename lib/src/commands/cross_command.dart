@@ -876,6 +876,24 @@ class CrossCommand extends Command<int> {
       _offlineWrap = enforcement.wrap;
     }
 
+    // Host-side `-dev` packages the manifest declares (host_dev_packages).
+    // These feed a `host: true` augment — a codegen tool emb compiles with the
+    // host toolchain — so they must be on the build machine, not the sysroot.
+    // The Dockerfile emit bakes them into the cross image; a build running
+    // straight on the host has to install them itself, or the host tool's
+    // configure fails on a missing pkg-config module minutes into the build.
+    if ((doPrepare || doBuild) && target.hostDevPackages.isNotEmpty) {
+      final code = await _ensureHostDevPackages(
+        host,
+        target,
+        installDeps: args['install-deps'] == true,
+        interactiveOverride: args.wasParsed('interactive')
+            ? args['interactive'] as bool
+            : null,
+      );
+      if (code != null) return code;
+    }
+
     final source =
         FileSystemEntity.typeSync(inputPath) == FileSystemEntityType.file
         ? File(inputPath).parent
@@ -921,6 +939,58 @@ class CrossCommand extends Command<int> {
       );
     }
     return ExitCode.success.code;
+  }
+
+  /// Ensure the manifest's `host_dev_packages` are installed on the build
+  /// machine, returning an exit code to stop on, or null to continue.
+  ///
+  /// The backend answers by package name (a `-dev` package ships no
+  /// executable, so `which` cannot see it). A name the backend does not
+  /// recognize counts as missing, so a host whose distro spells it differently
+  /// stops here naming the package it wants — which beats failing minutes
+  /// later inside the host tool's configure. Only when no backend is reachable
+  /// at all does this continue, since then nothing can be verified either way.
+  Future<int?> _ensureHostDevPackages(
+    HostInfo host,
+    CrossTarget target, {
+    required bool installDeps,
+    required bool? interactiveOverride,
+  }) async {
+    final pkgs = target.hostDevPackages;
+    final missing = await _preflight.missingPackages(host, pkgs);
+    if (missing == null) {
+      _logger.detail(
+        '  host dev pkgs : cannot verify ${pkgs.join(", ")} '
+        '(no package backend) — assuming present',
+      );
+      return null;
+    }
+    if (missing.isEmpty) {
+      _logger.detail('  host dev pkgs : ${pkgs.join(", ")} present');
+      return null;
+    }
+    if (!installDeps) {
+      _logger.err(
+        'Missing host dev packages: ${missing.join(", ")}\n'
+        'These are build-machine deps of a host: true augment. Re-run with '
+        '--install-deps, or install them yourself:',
+      );
+      await _preflight.logInstallHint(host, missing);
+      return ExitCode.unavailable.code;
+    }
+    final interactivity = Interactivity.resolve(
+      explicit: interactiveOverride,
+      environment: _environment,
+    );
+    final ok = await _preflight.install(
+      host,
+      name,
+      missing,
+      interactive: interactivity.interactive,
+      what: 'host dev packages',
+      verifyOnPath: false,
+    );
+    return ok ? null : ExitCode.unavailable.code;
   }
 
   /// Print the project's selectable targets (grouped by their family file when
