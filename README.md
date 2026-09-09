@@ -590,10 +590,35 @@ Build the AOT image (`libapp.so`) for a Flutter app — the AOT primitive used b
 | `--arch <arch>` | host arch | Target arch for `gen_snapshot` (e.g. `arm64` for a Pi). |
 | `--gen-snapshot <path>` | auto-resolved | Explicit `gen_snapshot` path (overrides resolution). |
 | `--glibc-sysroot <dir>` | artifact's bundled `clang_x64/lib64` | Directory with `ld-linux` + libc to run `gen_snapshot` under. |
+| `--[no-]obfuscate` | release on, profile off | Rename every identifier in the snapshot. |
+| `--[no-]strip` | on | Strip the symbol table from the snapshot. |
 
 ```sh
 emb aot --app-path ./app/my_app --arch arm64 --mode release --mode profile
 ```
+
+#### Obfuscation and the map
+
+`--obfuscate` renames every identifier, so a stack trace from the shipped image
+is unreadable without the mapping. emb therefore always passes
+`--save-obfuscation-map` alongside it, writing
+`libapp.so.<mode>.obfuscation-map.json` next to the image, and prints the path.
+**Keep that file with the build** — it is the only thing that can turn a crash
+report from that binary back into identifiers, and it is not reproducible after
+the fact. (`gen_snapshot` rejects the map flag on its own, so the two are never
+separated.)
+
+The default is on for release and off for profile. Profile exists to be
+inspected — emb passes `--track-widget-creation` there so DevTools and the
+widget inspector can name widgets, which obfuscating the same image undoes.
+
+`--strip` drops the symbol table, so `perf`/`gdb` have nothing to resolve
+against. It is independent of obfuscation; note `gen_snapshot` warns when
+obfuscating without stripping, because the DWARF it leaves behind is not
+obfuscated.
+
+Both flags are available on `emb build`, `emb bundle` and `emb cross` too,
+where they apply to the app's AOT image.
 
 ---
 
@@ -611,6 +636,8 @@ implicitly if not already cached.
 | `--arch <arch>` | host arch | Target arch (e.g. `arm64`). |
 | `-o`, `--output <dir>` (alias `--out`) | `<workspace>/bundle/<app>-<mode>-<arch>` | Output bundle directory — any path. |
 | `--build` | off | Run `emb aot` first to (re)build `flutter_assets` + `libapp.so`. |
+| `--[no-]obfuscate` | release on, profile off | Passed to the AOT step; see [Obfuscation and the map](#obfuscation-and-the-map). |
+| `--[no-]strip` | on | Passed to the AOT step. |
 
 ```sh
 emb bundle --app-path ./app/my_app --arch arm64   --build                # release
@@ -738,6 +765,8 @@ emb cross <project-dir|manifest.yaml> [options]
 | `--offline` | off | Deny all network access: reuse already-cached toolchain/sysroot inputs and fail on a miss (run `--fetch-only` online first). Cargo modules build against their vendored crates (`CARGO_HOME`/`CARGO_NET_OFFLINE`). See [Offline builds](#offline-builds). |
 | `--offline-strict` | off | Like `--offline`, but also run build subprocesses inside a network namespace, and **refuse to build** when that isolation is unavailable instead of degrading to input-level denial. See [Offline builds](#offline-builds). |
 | `--host-tools` | off | With `--build`: use the host's `cmake`/`meson` instead of the SDK's, for OE SDKs that pin an old one (e.g. AGL ships cmake 3.16.5). The OE env + toolchain/cross file are unchanged. Also set via `cross.host_build_tools`. |
+| `--[no-]obfuscate` | release on, profile off | Applied to the `--app` AOT image; see [Obfuscation and the map](#obfuscation-and-the-map). |
+| `--[no-]strip` | on | Applied to the `--app` AOT image. |
 | `--install-deps` | off | Install the provider's missing preflight host tools via the host package backend (PackageKit/brew) instead of erroring. Opt-in; needs privileges. Falls back to printing the manual install command when no backend is reachable. |
 | `--[no-]interactive` | on | Allow the system package manager to prompt for authorization when `--install-deps` is used. See [Authorization](#authorization). |
 | `--dockerfile` | off | Resolve, then emit a `Dockerfile` + `.dockerignore` (into the platform dir) that bake the toolchain + sysroot into an OCI image so CI pulls instead of resolving. arm-gnu only; does not build. See [Toolchain images](#toolchain-images). |

@@ -64,6 +64,21 @@ class AotCommand extends Command<int> {
             "(defaults to the artifact's bundled clang_x64/lib64).",
       )
       ..addFlag(
+        'obfuscate',
+        help:
+            'Rename every identifier in the AOT snapshot. Defaults to on for '
+            'release and off for profile. Whenever on, the obfuscation map is '
+            'written next to the image — keep it, or stack traces from that '
+            'build can never be symbolized.',
+      )
+      ..addFlag(
+        'strip',
+        defaultsTo: true,
+        help:
+            'Strip the symbol table from the AOT snapshot. Pass --no-strip to '
+            'keep it for perf/gdb.',
+      )
+      ..addFlag(
         'exec-native',
         help:
             'Run directly instead of routing through a container (set '
@@ -125,6 +140,11 @@ class AotCommand extends Command<int> {
         if (arch != null) ...['--arch', arch],
         if (genSnapshot != null) ...['--gen-snapshot', genSnapshot],
         if (glibcSysroot != null) ...['--glibc-sysroot', glibcSysroot],
+        if (args.wasParsed('obfuscate') && args['obfuscate'] as bool)
+          '--obfuscate',
+        if (args.wasParsed('obfuscate') && args['obfuscate'] as bool == false)
+          '--no-obfuscate',
+        if (args['strip'] as bool == false) '--no-strip',
       ],
     );
     if (routed != null) return routed;
@@ -139,12 +159,18 @@ class AotCommand extends Command<int> {
       modes: args['mode'] as List<String>,
       arch: arch,
       genSnapshot: args['gen-snapshot'] as String?,
+      // Unparsed means "per mode" (release on, profile off), which is not the
+      // same as an explicit --no-obfuscate.
+      obfuscate: args.wasParsed('obfuscate') ? args['obfuscate'] as bool : null,
+      strip: args['strip'] as bool,
       onStep: _logger.info,
     );
 
     for (final m in result.modes) {
       if (m.success) {
         _logger.info(lightGreen.wrap(' ${m.mode}: ${m.output}'));
+        final map = m.obfuscationMap;
+        if (map != null) _logger.info('  obfuscation map: $map');
       } else {
         _logger.err(' ${m.mode}: ${m.message}');
       }

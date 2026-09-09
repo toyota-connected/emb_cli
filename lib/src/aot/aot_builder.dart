@@ -16,6 +16,7 @@ class AotModeResult {
     required this.success,
     this.output,
     this.message,
+    this.obfuscationMap,
   });
 
   final String mode;
@@ -24,6 +25,11 @@ class AotModeResult {
   /// Path to the produced `libapp.so.<mode>`, when successful.
   final String? output;
   final String? message;
+
+  /// Path to the JSON obfuscation map, when this mode was obfuscated. Keep it
+  /// with the build: without it a stack trace from the shipped image cannot be
+  /// turned back into identifiers by anything, ever.
+  final String? obfuscationMap;
 }
 
 /// Aggregate AOT build result.
@@ -244,11 +250,26 @@ class AotBuilder {
   /// Build AOT images for [modes] (default release + profile) of the app at
   /// [appPath]. [arch] selects the target engine artifact for the cross
   /// gen_snapshot (defaults to host); [genSnapshot] overrides the resolved one.
+  /// Builds the AOT image for each of [modes].
+  ///
+  /// [obfuscate] renames every identifier in the snapshot. Null (the default)
+  /// picks per mode: on for release, off for profile — profile exists to be
+  /// inspected, and `--track-widget-creation` is passed there precisely so
+  /// DevTools can name widgets, which obfuscating the same image undoes.
+  /// Whenever it is on, `--save-obfuscation-map` writes the map next to the
+  /// image; gen_snapshot rejects the map flag without `--obfuscate`, and
+  /// obfuscating with no map produces an artifact nothing can ever symbolize.
+  ///
+  /// [strip] drops the symbol table. On by default, as before. Note
+  /// gen_snapshot warns when obfuscating without stripping, because the DWARF
+  /// it leaves behind is not obfuscated.
   Future<AotResult> build({
     required String appPath,
     List<String> modes = const ['release', 'profile'],
     String? arch,
     String? genSnapshot,
+    bool? obfuscate,
+    bool strip = true,
     void Function(String step)? onStep,
   }) async {
     final app = p.absolute(appPath);
@@ -368,6 +389,8 @@ class AotBuilder {
         continue;
       }
       final out = 'libapp.so.$mode';
+      final obfuscateMode = obfuscate ?? (mode == 'release');
+      final mapName = '$out.obfuscation-map.json';
       final (genExe, genLead) = _genSnapshotInvocation(gen);
       final genResult = await runProcess(
         genExe,
@@ -376,8 +399,14 @@ class AotBuilder {
           '--deterministic',
           '--snapshot_kind=app-aot-elf',
           '--elf=$out',
-          '--strip',
-          '--obfuscate',
+          if (strip) '--strip',
+          // The map must accompany --obfuscate: gen_snapshot errors on the map
+          // flag alone, and an obfuscated image without one is unsymbolizable
+          // for good. flutter_tools refuses this combination for that reason.
+          if (obfuscateMode) ...[
+            '--obfuscate',
+            '--save-obfuscation-map=$mapName',
+          ],
           p.join(buildDir, 'app.dill'),
         ],
         workingDirectory: app,
@@ -390,6 +419,9 @@ class AotBuilder {
           mode: mode,
           success: genCode == 0,
           output: genCode == 0 ? p.join(app, out) : null,
+          obfuscationMap: genCode == 0 && obfuscateMode
+              ? p.join(app, mapName)
+              : null,
           message: genCode == 0
               ? null
               : _withTail('gen_snapshot failed', genResult.stderr),
