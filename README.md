@@ -760,8 +760,8 @@ emb cross <project-dir|manifest.yaml> [options]
 | `--list-targets` | off | List the targets this project defines — `cross.targets` entries and `.emb/` files, grouped by family — plus the built-in `local`, then exit. |
 | `--dry-run` | off | Report the resolution plan (provider, toolchain, sysroot, preflight, augment, backends) with no download / mount / ssh. |
 | `--json` | off | Emit the plan as a machine-readable `{schema, command, ok, data}` envelope instead of text (implies `--dry-run`). Also on `emb doctor`. |
-| `--prepare` | off | After resolving, build the `augment` libraries into the overlay. |
-| `--build` | off | Configure + build the embedder under the resolved profile, one build per `cross.backends` entry. |
+| `--prepare` | off | After resolving, build the `augment` libraries **and the embedder**, so a later `--build` is a no-op when nothing changed. See [Preparing ahead of a build](#preparing-ahead-of-a-build). |
+| `--build` | off | Configure + build the embedder under the resolved profile, one build per `cross.backends` entry. Skipped when a prior `--prepare` already built it and the source is unchanged. |
 | `--backend <name>` | all | Build only the named `cross.backends` entries. Repeatable. |
 | `--deb` | off | With `--build`: package each backend binary into a root-free `.deb` (Depends auto-derived from the binary's needed libraries). |
 | `--app <dir>` | — | With `--build`: also build this Flutter app for the target and assemble a **runnable bundle** (embedder + engine + flutter_assets + icudtl + libapp), runnable as `./homescreen -b .`. |
@@ -800,6 +800,33 @@ emb cross ./app/ivi-homescreen --clean-all    # drop everything for this target
 > embedder build. `-vv` additionally logs every shell command and the resolved
 > cross environment (toolchain, sysroot, flags). Being a global flag, `-v` goes
 > **before** `cross`.
+
+#### Preparing ahead of a build
+
+`--prepare` builds the `augment` libraries **and the embedder**, so the
+expensive work can happen in one step and a later `--build` reuses it:
+
+```sh
+emb cross ./app/ivi-homescreen --prepare   # resolve, augments, embedder
+emb cross ./app/ivi-homescreen --build     # reuses the above when unchanged
+```
+
+The second command re-runs the cmake/meson step only when it has to. `--prepare`
+stamps the build root with a SHA-256 fingerprint of the embedder source tree,
+and `--build` skips the step when that fingerprint still matches *and* every
+selected backend already has its binary. Because the build root is keyed by the
+target's build key, changing the manifest's toolchain, defines or backends
+yields a different root and the check misses, so a config change always
+rebuilds. The fingerprint is content-based, so `git checkout`, `cp -a`, and
+filesystems with coarse timestamps do not produce false hits.
+
+Combining them in one invocation (`--prepare --build`) builds the embedder once,
+not twice.
+
+> **If you use `--prepare` as a container/CI cache layer**, note it now does the
+> embedder build as well as the augments. That is the point — the layer carries
+> more, and the build stage that consumes it does less — but the layer is bigger
+> and invalidates whenever the embedder source changes, not just the augments.
 
 Everything is **root-free**: the sysroot is extracted with `debugfs` /
 `dpkg-deb`, and `-dev` packages are resolved against the image's own apt sources
