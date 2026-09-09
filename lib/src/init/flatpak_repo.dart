@@ -278,9 +278,22 @@ String generateEmbManifest(FlatpakRepoSpec s) {
     ..writeln('      vendor_libs: auto')
     ..writeln('      env:')
     ..writeln(
-      '        # Every entry is a default: `flatpak run --env=NAME=…` still '
-      'wins.',
-    );
+      '        # The launcher exports these unconditionally; flatpak pre-sets '
+      'both',
+    )
+    ..writeln(
+      '        # LD_LIBRARY_PATH and XDG_DATA_HOME, so a default would never '
+      'fire.',
+    )
+    ..writeln(
+      "        # Names ending in PATH/DIRS prepend, so the runtime's own "
+      'entries',
+    )
+    ..writeln(
+      '        # survive. For a value a user should be able to override, use '
+      'a',
+    )
+    ..writeln('        # finish-args `--env=NAME=VALUE` instead.');
 
   if (s.embedder == 'ivi-homescreen') {
     b.writeln('        IHS_LOG_LEVEL: info');
@@ -812,7 +825,13 @@ freedesktop SDK does not have, and the build fails.
 
 `XDG_DATA_HOME` in the manifest's `env:` block matters for any app that reads
 per-user data through a library that consults it — without it, the library sees
-Flatpak's private per-app data dir instead of the user's.
+Flatpak's private per-app data dir instead of the user's. The launcher is the
+only place that can set it: flatpak forces the `XDG_*_HOME` variables after the
+user environment, so `flatpak run --env=XDG_DATA_HOME=…` is ignored.
+
+`LD_LIBRARY_PATH` is likewise always `/app/lib` in the sandbox, so the entry
+prepends the bundle's `lib/` rather than replacing it — that is what puts a
+`dlopen`ed, bare-soname library within reach without hiding the runtime's own.
 
 The system libraries come from the runner's `/usr/lib`, not a target sysroot, so
 CI and local dev may not ship identical versions.

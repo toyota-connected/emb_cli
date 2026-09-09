@@ -226,10 +226,12 @@ class FlatpakPackager {
   ///
   /// Beyond exec'ing the embedder against its bundle, it carries the two things
   /// a packaged app needs and an invocation should not have to repeat: the
-  /// environment the embedder expects, and the flags describing *this* app. Env
-  /// entries are emitted as `${NAME:-<value>}` so `flatpak run --env=` still
-  /// overrides them, and the caller's own `"$@"` stays last so a manual
-  /// `flatpak run <app> --extra-flag` still reaches the embedder.
+  /// environment the embedder expects, and the flags describing *this* app. The
+  /// caller's own `"$@"` stays last, so a manual `flatpak run <app> --flag`
+  /// still reaches the embedder.
+  ///
+  /// Env entries are plain assignments, and path-shaped names prepend — see
+  /// [_emitEnv] for why a `${NAME:-<value>}` default cannot work here.
   String _launcher(FlatpakMetadata m, String prefix) {
     final b = StringBuffer('#!/bin/sh\n');
     for (final e in m.env.entries) {
@@ -240,7 +242,7 @@ class FlatpakPackager {
         );
       }
       _rejectShellBreakout('env ${e.key}', e.value);
-      b.writeln('export ${e.key}="\${${e.key}:-${e.value}}"');
+      _emitEnv(b, e.key, e.value);
     }
 
     for (final a in m.args) {
@@ -267,6 +269,18 @@ class FlatpakPackager {
 
   /// A POSIX shell variable name.
   static final _shellName = RegExp(r'^[A-Za-z_][A-Za-z0-9_]*$');
+
+  /// A name holding a `:`-separated search path rather than a single value.
+  static final _pathShaped = RegExp(r'(PATH|DIRS)$');
+
+  /// Write one `env:` entry as a shell assignment.
+  void _emitEnv(StringBuffer b, String name, String value) {
+    if (_pathShaped.hasMatch(name)) {
+      b.writeln('export $name="$value\${$name:+:\$$name}"');
+    } else {
+      b.writeln('export $name="$value"');
+    }
+  }
 
   /// Refuse text that would escape the double-quoted word it is written into,
   /// or run a command when the launcher starts. `$VAR` expansion is the point

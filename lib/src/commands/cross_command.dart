@@ -2281,15 +2281,27 @@ class CrossCommand extends Command<int> {
     // but applied to the packager's staged copy — the runnable this was handed
     // is the same tree --tar, --deploy and --run use, and libraries chosen for
     // a flatpak runtime have no business on a device.
-    Future<void> Function(Directory)? onStaged;
+    final ({
+      FlatpakLibVendor vendor,
+      Directory runtimeFiles,
+      List<Directory> searchPaths,
+    })?
+    vendorStep;
     if (fp.vendorLibs) {
-      final vendor = await _flatpakVendorStep(profile, meta: fp, arch: fpArch);
-      if (vendor == null) return ExitCode.software.code;
-      onStaged = (stagedBundle) =>
-          _runVendorStep(vendor, stagedBundle, embedder: embedder, tag: tag);
+      vendorStep = await _flatpakVendorStep(profile, meta: fp, arch: fpArch);
+      if (vendorStep == null) return ExitCode.software.code;
+    } else {
+      vendorStep = null;
     }
     final outDir = Directory(p.join(buildRoot.path, 'dist'));
-    final progress = _steps.start('${tag}Packaging flatpak ($appId)');
+    final label = '${tag}Packaging flatpak ($appId)';
+    final progress = _steps.start(label);
+    // Vendoring runs inside build(), so it is already under the step above: it
+    // revises that label rather than starting a second, concurrent spinner, and
+    // parks its diagnostics here to be printed once the step has settled —
+    // warning over a live spinner writes over the line it is drawing.
+    final notes = <void Function()>[];
+    final step = vendorStep;
     try {
       final out = await FlatpakPackager(runProcess: _runProcess).build(
         bundleDir: bundleDir,
@@ -2297,7 +2309,17 @@ class CrossCommand extends Command<int> {
         outDir: outDir,
         extraFiles: ef.files,
         fileModes: ef.modes,
-        onStaged: onStaged,
+        onStaged: step == null
+            ? null
+            : (stagedBundle) => _runVendorStep(
+                step,
+                stagedBundle,
+                embedder: embedder,
+                tag: tag,
+                progress: progress,
+                label: label,
+                notes: notes,
+              ),
       );
       progress.complete('${tag}flatpak → ${out.path}');
       return ExitCode.success.code;
@@ -2307,6 +2329,10 @@ class CrossCommand extends Command<int> {
     } on FlatpakVendorException catch (e) {
       progress.fail('$tag${e.message}');
       return ExitCode.software.code;
+    } finally {
+      for (final note in notes) {
+        note();
+      }
     }
   }
 
@@ -2372,6 +2398,13 @@ class CrossCommand extends Command<int> {
   }
 
   /// Run the resolved vendoring step against the flatpak's staged bundle.
+  ///
+  /// Called from inside `FlatpakPackager.build`, which the caller has already
+  /// wrapped in [progress]. So this borrows that handle instead of opening one
+  /// of its own — it never completes or fails it, and restores [label] on the
+  /// way out so the caller's own settle reads correctly whether vendoring
+  /// succeeded or threw. Diagnostics go to [notes] for the caller to print once
+  /// the step has settled.
   Future<void> _runVendorStep(
     ({
       FlatpakLibVendor vendor,
@@ -2382,30 +2415,40 @@ class CrossCommand extends Command<int> {
     Directory stagedBundle, {
     required String embedder,
     required String tag,
+    required StepHandle progress,
+    required String label,
+    required List<void Function()> notes,
   }) async {
-    final progress = _steps.start('${tag}Vendoring libs not in the runtime');
-    final report = await step.vendor.vendor(
-      bundleDir: stagedBundle,
-      command: embedder,
-      runtimeFiles: step.runtimeFiles,
-      searchPaths: step.searchPaths,
-    );
-    progress.complete(
-      '${tag}Vendored ${report.staged.length} lib(s); '
-      '${report.provided.length} from the runtime',
-    );
-    for (final soname in report.staged) {
-      _logger.detail('  vendored lib/$soname');
-    }
-    // Not fatal: a dlopen-only plugin has no DT_NEEDED entry either way, and
-    // a device may supply a library outside the sysroot. But each one is a
-    // candidate startup failure, so say it out loud, not under --verbose.
-    for (final soname in report.unresolved) {
-      _logger.warn(
-        '  $tag$soname: not in the runtime and not on the sysroot — the app '
-        'will fail to start if it is really needed',
+    progress.update('${tag}Vendoring libs not in the runtime');
+    final VendorReport report;
+    try {
+      report = await step.vendor.vendor(
+        bundleDir: stagedBundle,
+        command: embedder,
+        runtimeFiles: step.runtimeFiles,
+        searchPaths: step.searchPaths,
       );
+    } finally {
+      progress.update(label);
     }
+    notes.add(() {
+      _logger.info(
+        '  ${tag}Vendored ${report.staged.length} lib(s); '
+        '${report.provided.length} from the runtime',
+      );
+      for (final soname in report.staged) {
+        _logger.detail('  vendored lib/$soname');
+      }
+      // Not fatal: a dlopen-only plugin has no DT_NEEDED entry either way, and
+      // a device may supply a library outside the sysroot. But each one is a
+      // candidate startup failure, so say it out loud, not under --verbose.
+      for (final soname in report.unresolved) {
+        _logger.warn(
+          '  $tag$soname: not in the runtime and not on the sysroot — the app '
+          'will fail to start if it is really needed',
+        );
+      }
+    });
   }
 
   /// Resolve [spec]'s `files:` against [manifestDir] into a (host source →

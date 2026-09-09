@@ -154,7 +154,7 @@ void main() {
     );
   });
 
-  test('launcher carries env defaults and embedder args', () async {
+  test('launcher carries env assignments and embedder args', () async {
     final out = Directory(p.join(tmp.path, 'dist'));
     await FlatpakPackager(runProcess: fakeRun).build(
       bundleDir: fakeBundle(),
@@ -168,13 +168,11 @@ void main() {
     );
     final lines = capturedLauncher!.trim().split('\n');
     expect(lines.first, '#!/bin/sh');
-    // `${NAME:-value}` form, so `flatpak run --env=` still wins.
-    expect(lines, contains(r'export IHS_LOG_LEVEL="${IHS_LOG_LEVEL:-info}"'));
+    // A plain assignment, not `${NAME:-value}`: flatpak pre-sets the variables
+    // this field exists to control, so a default would never fire.
+    expect(lines, contains('export IHS_LOG_LEVEL="info"'));
     // The value is shell text: $HOME expands in the sandbox, not at build time.
-    expect(
-      lines,
-      contains(r'export XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"'),
-    );
+    expect(lines, contains(r'export XDG_DATA_HOME="$HOME/.local/share"'));
     expect(
       lines.last,
       'exec /app/com.example.App/homescreen -b /app/com.example.App '
@@ -259,8 +257,41 @@ void main() {
     );
     expect(
       capturedLauncher,
-      contains(r'export XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"'),
+      contains(r'export XDG_DATA_HOME="$HOME/.local/share"'),
     );
+  });
+
+  test('a path-shaped env name prepends, keeping runtime entries', () async {
+    await FlatpakPackager(runProcess: fakeRun).build(
+      bundleDir: fakeBundle(),
+      outDir: Directory(p.join(tmp.path, 'dist')),
+      meta: const FlatpakMetadata(
+        appId: 'com.example.App',
+        command: 'homescreen',
+        env: {
+          'LD_LIBRARY_PATH': '/app/com.example.App/lib',
+          'XDG_DATA_DIRS': '/app/share',
+          // Not path-shaped: assigned outright.
+          'GIO_USE_PROXY_RESOLVER': 'dummy',
+        },
+      ),
+    );
+    final lines = capturedLauncher!.trim().split('\n');
+    // Flatpak always sets LD_LIBRARY_PATH=/app/lib in the sandbox. Replacing it
+    // would drop the runtime's own libraries, so the bundle's lib/ goes in
+    // front of whatever is already there.
+    const keep = r'${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}';
+    expect(
+      lines,
+      contains('export LD_LIBRARY_PATH="/app/com.example.App/lib$keep"'),
+    );
+    expect(
+      lines,
+      contains(
+        r'export XDG_DATA_DIRS="/app/share${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"',
+      ),
+    );
+    expect(lines, contains('export GIO_USE_PROXY_RESOLVER="dummy"'));
   });
 
   test("onStaged edits the staged copy, never the caller's bundle", () async {
