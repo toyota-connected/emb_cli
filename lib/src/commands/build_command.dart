@@ -57,6 +57,21 @@ class BuildCommand extends Command<int> {
         negatable: false,
       )
       ..addFlag(
+        'obfuscate',
+        help:
+            'Rename every identifier in the app AOT snapshot. Defaults to on '
+            'for release and off for profile. Whenever on, the obfuscation '
+            'map is written next to the image — keep it, or stack traces from '
+            'that build can never be symbolized.',
+      )
+      ..addFlag(
+        'strip',
+        defaultsTo: true,
+        help:
+            'Strip the symbol table from the app AOT snapshot. Pass '
+            '--no-strip to keep it for perf/gdb.',
+      )
+      ..addFlag(
         'exec-native',
         help:
             'Run directly instead of routing through a container (set '
@@ -176,6 +191,10 @@ class BuildCommand extends Command<int> {
           mode: mode,
           outputDir: out,
           build: !(args['no-build'] as bool),
+          obfuscate: args.wasParsed('obfuscate')
+              ? args['obfuscate'] as bool
+              : null,
+          strip: args['strip'] as bool,
           onStep: progress.update,
         );
         if (result.success) {

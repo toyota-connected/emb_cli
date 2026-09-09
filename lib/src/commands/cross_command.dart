@@ -368,6 +368,21 @@ class CrossCommand extends Command<int> {
         negatable: false,
       )
       ..addFlag(
+        'obfuscate',
+        help:
+            'Rename every identifier in the app AOT snapshot. Defaults to on '
+            'for release and off for profile. Whenever on, the obfuscation '
+            'map is written next to the image — keep it, or stack traces from '
+            'that build can never be symbolized.',
+      )
+      ..addFlag(
+        'strip',
+        defaultsTo: true,
+        help:
+            'Strip the symbol table from the app AOT snapshot. Pass '
+            '--no-strip to keep it for perf/gdb.',
+      )
+      ..addFlag(
         'install-deps',
         help:
             "Install the provider's missing preflight host tools via the host "
@@ -931,6 +946,10 @@ class CrossCommand extends Command<int> {
         selectedBackends: selectedBackends,
         appPath: args['app'] as String?,
         mode: args['mode'] as String,
+        obfuscate: args.wasParsed('obfuscate')
+            ? args['obfuscate'] as bool
+            : null,
+        strip: args['strip'] as bool,
         tar: args['tar'] == true,
         deployHost: args['deploy'] as String?,
         deployDir: args['deploy-dir'] as String,
@@ -1235,6 +1254,8 @@ class CrossCommand extends Command<int> {
     List<String> selectedBackends = const [],
     String? appPath,
     String mode = 'release',
+    bool? obfuscate,
+    bool strip = true,
     bool tar = false,
     String? deployHost,
     String deployDir = 'ivi-homescreen',
@@ -1283,6 +1304,8 @@ class CrossCommand extends Command<int> {
         workspace: workspace,
         appPath: appPath,
         mode: mode,
+        obfuscate: obfuscate,
+        strip: strip,
         tar: tar,
         deployHost: deployHost,
         deployDir: deployDir,
@@ -1692,6 +1715,8 @@ class CrossCommand extends Command<int> {
     required String mode,
     required bool tar,
     required Directory manifestDir,
+    bool? obfuscate,
+    bool strip = true,
     String? overlayPrefix,
     String? deployHost,
     String deployDir = 'ivi-homescreen',
@@ -1744,6 +1769,8 @@ class CrossCommand extends Command<int> {
       mode: mode,
       outputDir: appBundle.path,
       build: true,
+      obfuscate: obfuscate,
+      strip: strip,
       onStep: progress.update,
     );
     if (!res.success) {

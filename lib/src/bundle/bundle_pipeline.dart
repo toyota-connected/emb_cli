@@ -11,6 +11,7 @@ import 'package:path/path.dart' as p;
 /// Shared by `emb bundle` and `emb build` so both behave identically:
 ///  * when [build], compile the app — `flutter build bundle --debug` (JIT) for
 ///    debug, or AOT (`gen_snapshot` → `libapp.so`) for profile/release;
+///    [obfuscate] and [strip] are passed straight to [AotBuilder.build];
 ///  * **implicitly fetch the engine SDK** for (mode, arch) when it isn't
 ///    already staged (keyed by the SDK's engine commit), so you don't have to
 ///    run `emb engine` first;
@@ -25,6 +26,8 @@ Future<BundleResult> buildAndAssemble({
   required String outputDir,
   required bool build,
   EngineArtifacts? engine,
+  bool? obfuscate,
+  bool strip = true,
   void Function(String step)? onStep,
 }) async {
   // 1. Ensure the engine SDK for (mode, arch) is staged FIRST — it provides
@@ -63,7 +66,13 @@ Future<BundleResult> buildAndAssemble({
       }
     } else {
       onStep?.call('AOT ($mode)');
-      final r = await aot.build(appPath: appPath, modes: [mode], arch: arch);
+      final r = await aot.build(
+        appPath: appPath,
+        modes: [mode],
+        arch: arch,
+        obfuscate: obfuscate,
+        strip: strip,
+      );
       if (!r.success) {
         final failed = r.modes.firstWhere((m) => !m.success);
         return BundleResult(success: false, message: failed.message);

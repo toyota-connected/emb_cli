@@ -260,6 +260,102 @@ void main() {
     },
   );
 
+  group('obfuscation and stripping', () {
+    /// Build [mode] and return the gen_snapshot argv.
+    Future<({List<String> args, AotResult result})> gen(
+      Directory tmpDir,
+      String mode, {
+      bool? obfuscate,
+      bool strip = true,
+    }) async {
+      final ws = Directory(p.join(tmpDir.path, 'ws'))..createSync();
+      final app = Directory(p.join(tmpDir.path, 'app'));
+      writeApp(app);
+      writeSdk(ws);
+      final rec = _Recorder(app.path);
+      final result = await builder(ws, rec).build(
+        appPath: app.path,
+        modes: [mode],
+        obfuscate: obfuscate,
+        strip: strip,
+      );
+      return (
+        args: rec.calls.firstWhere((c) => c.exe == 'gen_snapshot').args,
+        result: result,
+      );
+    }
+
+    // gen_snapshot errors on --save-obfuscation-map without --obfuscate, and
+    // an obfuscated image with no map can never be symbolized — so the two
+    // always travel together.
+    test('release obfuscates and always saves the map', () async {
+      final g = await gen(tmp, 'release');
+      expect(g.args, contains('--obfuscate'));
+      expect(
+        g.args,
+        contains(
+          '--save-obfuscation-map=libapp.so.release.obfuscation-map.json',
+        ),
+      );
+      expect(
+        g.result.modes.single.obfuscationMap,
+        endsWith('libapp.so.release.obfuscation-map.json'),
+      );
+    });
+
+    // profile exists to be inspected; --track-widget-creation is passed there
+    // so DevTools can name widgets, which obfuscating the image undoes.
+    test('profile does not obfuscate by default', () async {
+      final g = await gen(tmp, 'profile');
+      expect(g.args, isNot(contains('--obfuscate')));
+      expect(
+        g.args.any((a) => a.startsWith('--save-obfuscation-map')),
+        isFalse,
+      );
+      expect(g.result.modes.single.obfuscationMap, isNull);
+    });
+
+    test('--no-obfuscate drops both flags on release', () async {
+      final g = await gen(tmp, 'release', obfuscate: false);
+      expect(g.args, isNot(contains('--obfuscate')));
+      expect(
+        g.args.any((a) => a.startsWith('--save-obfuscation-map')),
+        isFalse,
+      );
+      expect(g.result.modes.single.obfuscationMap, isNull);
+    });
+
+    test('--obfuscate opts profile in, with a map', () async {
+      final g = await gen(tmp, 'profile', obfuscate: true);
+      expect(g.args, contains('--obfuscate'));
+      expect(
+        g.args,
+        contains(
+          '--save-obfuscation-map=libapp.so.profile.obfuscation-map.json',
+        ),
+      );
+    });
+
+    test('strips by default, and --no-strip opts out', () async {
+      expect((await gen(tmp, 'release')).args, contains('--strip'));
+      final keep = Directory(p.join(tmp.path, 'keep'))..createSync();
+      expect(
+        (await gen(keep, 'release', strip: false)).args,
+        isNot(contains('--strip')),
+      );
+    });
+
+    test('strip and obfuscate are independent', () async {
+      final g = await gen(tmp, 'release', obfuscate: false, strip: false);
+      expect(g.args, isNot(contains('--strip')));
+      expect(g.args, isNot(contains('--obfuscate')));
+      final other = Directory(p.join(tmp.path, 'other'))..createSync();
+      final g2 = await gen(other, 'profile', obfuscate: true, strip: false);
+      expect(g2.args, contains('--obfuscate'));
+      expect(g2.args, isNot(contains('--strip')));
+    });
+  });
+
   test('AOT build targets linux for the requested arch', () async {
     final ws = Directory(p.join(tmp.path, 'ws'))..createSync();
     final app = Directory(p.join(tmp.path, 'app'));
