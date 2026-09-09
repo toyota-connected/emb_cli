@@ -557,5 +557,32 @@ void main() {
         ['libpugixml-dev'],
       );
     });
+
+    test('aot_obfuscate / aot_strip parse (null when unset)', () {
+      // Null, not false: unset must stay distinguishable from an explicit
+      // false, so the per-mode default (release on, profile off) survives.
+      final bare = CrossTarget.fromMap(const {'provider': 'arm-gnu'});
+      expect(bare.aotObfuscate, isNull);
+      expect(bare.aotStrip, isNull);
+
+      final set = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'aot_obfuscate': false,
+        'aot_strip': false,
+      });
+      expect(set.aotObfuscate, isFalse);
+      expect(set.aotStrip, isFalse);
+    });
+
+    test('aot keys survive the copy methods', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'aot_obfuscate': true,
+        'aot_strip': false,
+      });
+      final overridden = t.withDefineOverrides(const {'FOO': 'ON'});
+      expect(overridden.aotObfuscate, isTrue);
+      expect(overridden.aotStrip, isFalse);
+    });
   });
 }

@@ -697,6 +697,8 @@ class CrossTarget {
     this.cmakeArgs = const [],
     this.hostTools = false,
     this.hostDevPackages = const [],
+    this.aotObfuscate,
+    this.aotStrip,
   });
 
   factory CrossTarget.fromMap(Map<dynamic, dynamic> map) {
@@ -743,6 +745,8 @@ class CrossTarget {
       hostTools:
           (map['host_build_tools'] ?? map['host_cmake'] ?? false) == true,
       hostDevPackages: _stringList(map['host_dev_packages']),
+      aotObfuscate: map['aot_obfuscate'] as bool?,
+      aotStrip: map['aot_strip'] as bool?,
     );
   }
 
@@ -867,6 +871,18 @@ class CrossTarget {
   /// host tool. (Manifest key `host_dev_packages`.)
   final List<String> hostDevPackages;
 
+  /// Obfuscate the app's AOT snapshot. Null (unset) leaves the per-mode
+  /// default: on for release, off for profile. `--[no-]obfuscate` on the
+  /// command line wins over this. Whenever obfuscation is on the obfuscation
+  /// map is written beside the image — without it no stack trace from that
+  /// build can ever be symbolized. (Manifest key `aot_obfuscate`.)
+  final bool? aotObfuscate;
+
+  /// Strip the symbol table from the app's AOT snapshot. Null (unset) means
+  /// the default, on. `--[no-]strip` wins over this. (Manifest key
+  /// `aot_strip`.)
+  final bool? aotStrip;
+
   /// Parse the `backends:` block (backend name → `{define: value}` map).
   static Map<String, Map<String, String>> _parseBackends(Object? value) {
     if (value is! Map) return const {};
@@ -926,6 +942,8 @@ class CrossTarget {
       cmakeArgs: cmakeArgs,
       hostTools: hostTools,
       hostDevPackages: hostDevPackages,
+      aotObfuscate: aotObfuscate,
+      aotStrip: aotStrip,
     );
   }
 
@@ -960,6 +978,8 @@ class CrossTarget {
       cmakeArgs: cmakeArgs,
       hostTools: hostTools,
       hostDevPackages: hostDevPackages,
+      aotObfuscate: aotObfuscate,
+      aotStrip: aotStrip,
     );
   }
 

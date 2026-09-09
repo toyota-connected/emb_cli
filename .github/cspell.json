@@ -45,6 +45,7 @@
     "libinput",
     "libpugixml",
     "pugixml",
+    "unobfuscated",
     "libnl",
     "libpipewire",
     "libsecret",

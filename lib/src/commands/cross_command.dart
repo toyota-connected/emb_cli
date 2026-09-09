@@ -948,8 +948,10 @@ class CrossCommand extends Command<int> {
         mode: args['mode'] as String,
         obfuscate: args.wasParsed('obfuscate')
             ? args['obfuscate'] as bool
-            : null,
-        strip: args['strip'] as bool,
+            : target.aotObfuscate,
+        strip: args.wasParsed('strip')
+            ? args['strip'] as bool
+            : target.aotStrip ?? true,
         tar: args['tar'] == true,
         deployHost: args['deploy'] as String?,
         deployDir: args['deploy-dir'] as String,
