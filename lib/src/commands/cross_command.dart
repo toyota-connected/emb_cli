@@ -30,6 +30,7 @@ import 'package:emb_cli/src/cross/lock_sync.dart';
 import 'package:emb_cli/src/cross/module_stager.dart';
 import 'package:emb_cli/src/cross/offline_enforcement.dart';
 import 'package:emb_cli/src/cross/overlay_builder.dart';
+import 'package:emb_cli/src/cross/package_files.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/cross/rpm_packager.dart';
 import 'package:emb_cli/src/cross/runnable_bundle.dart';
@@ -2530,14 +2531,16 @@ class CrossCommand extends Command<int> {
   /// dest) map and a (host source → octal mode) map. The mode is the entry's
   /// explicit `mode:`, else the source file's own mode (so an executable stays
   /// executable and a shared object stays 0644 without spelling it out).
+  ///
+  /// A source naming a directory contributes every file beneath it; see
+  /// [expandPackageFiles].
   ({Map<String, String> files, Map<String, String> modes}) _extraFiles(
     PackageSpec spec,
     Directory manifestDir, {
     String? overlayPrefix,
     Map<String, String> defines = const {},
   }) {
-    final files = <String, String>{};
-    final modes = <String, String>{};
+    final entries = <PackageFileEntry>[];
     for (final e in spec.files.entries) {
       // Skip a file gated on an embedder define that isn't satisfied (e.g.
       // crashpad_handler unless BUILD_CRASH_HANDLER=ON) -- its source may not
@@ -2562,12 +2565,13 @@ class CrossCommand extends Command<int> {
       } else {
         src = p.join(manifestDir.path, e.key);
       }
-      files[src] = e.value;
-      final f = File(src);
-      final mode = spec.fileModes[e.key] ?? (f.existsSync() ? _octal(f) : null);
-      if (mode != null) modes[src] = mode;
+      entries.add((src: src, dest: e.value, mode: spec.fileModes[e.key]));
     }
-    return (files: files, modes: modes);
+    final expanded = expandPackageFiles(entries, modeOf: _octal);
+    for (final w in expanded.warnings) {
+      _logger.warn('  package.files: $w');
+    }
+    return (files: expanded.files, modes: expanded.modes);
   }
 
   /// The file's permission bits as a 4-digit octal string (e.g. `0755`).

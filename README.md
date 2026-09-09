@@ -835,7 +835,41 @@ cross:
     version: 1.0.0
     bin: shell/homescreen         # binary, relative to each backend build dir
     install_dir: /usr/bin
+    files:                        # extra payload; a source may be a directory
+      ../runnable/data: { to: /usr/share/ivi-homescreen/data, mode: '0644' }
 ```
+
+##### `package.files` — extra payload
+
+Each entry maps a host source (relative to the manifest) to an absolute target
+path. The value is either a bare destination or a map taking `to`, `mode`, and
+`requires_define` (alias `when`) to gate the file on an embedder define.
+
+**A source may name a directory**, in which case every file beneath it ships at
+`<to>/<path relative to the source>`. That is what lets a Flutter app bundle go
+into a `.deb`/`.ipk`/`.rpm`/`.tar.gz` at all: `data/flutter_assets` is hundreds
+of files, regenerated on every build, so no hand-written list stays correct.
+
+```yaml
+files:
+  ../runnable/data: { to: /usr/share/ivi-homescreen/data, mode: '0644' }
+  ../runnable/lib/libapp.so: /usr/lib/ivi-homescreen/libapp.so
+```
+
+An entry's `mode` applies to every file it contributes; without one each file
+keeps its own mode, so an executable stays executable. An **explicit file entry
+wins over a directory entry covering the same destination**, so one file inside
+a swept tree can still carry its own mode:
+
+```yaml
+files:
+  ../runnable/data: { to: /usr/share/ivi-homescreen/data, mode: '0644' }
+  ../runnable/data/secret.key: { to: /usr/share/ivi-homescreen/data/secret.key, mode: '0600' }
+```
+
+Symlinks to files are followed and shipped as regular files. A symlink to a
+directory is skipped with a warning rather than descended into — name the real
+directory, or the individual files, to include it.
 
 ##### `host_dev_packages` — build-machine deps
 
