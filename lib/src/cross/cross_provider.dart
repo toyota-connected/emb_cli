@@ -68,6 +68,7 @@ abstract class CrossProvider {
       target,
       workspace: workspace,
       host: host,
+      offline: offline,
     ),
   };
 }

@@ -7,6 +7,7 @@ import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_provider.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/cross/emb_lock.dart';
+import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
 import 'package:meta/meta.dart';
@@ -32,12 +33,23 @@ class YoctoSdkCrossProvider implements CrossProvider {
     required this.workspace,
     required this.host,
     HttpClient? httpClient,
+    this.runProcess = defaultProcessRunner,
+    this.offline = false,
   }) : _http = httpClient ?? HttpClient();
 
   final CrossTarget target;
   final Workspace workspace;
   final HostInfo host;
   final HttpClient _http;
+
+  /// Runs every subprocess this provider spawns — the SDK installer, the
+  /// `bash` that sources `environment-setup-*`, and the `jf` CLI. Injected so
+  /// those paths are testable without a real toolchain or a real Artifactory.
+  final ProcessRunner runProcess;
+
+  /// Deny every network fetch during [resolve], reusing an already-installed
+  /// SDK prefix or an already-downloaded installer and failing on a miss.
+  final bool offline;
 
   /// Artifacts this resolve (re)materialized, recorded for `emb.lock` — the
   /// downloaded installer when sdk_url is used. A local sdk_path install
@@ -219,7 +231,7 @@ class YoctoSdkCrossProvider implements CrossProvider {
         sha256: await _sha256OfFile(installer),
       ),
     );
-    await Process.run('chmod', ['+x', installer.path]);
+    await runProcess('chmod', ['+x', installer.path]);
 
     // -y: non-interactive; -d: target dir. The installer relocates the SDK's
     // baked-in paths to the chosen prefix on first run.
@@ -227,14 +239,9 @@ class YoctoSdkCrossProvider implements CrossProvider {
     // silently under dash. Naming the interpreter rather than exec'ing the
     // script also means the install does not depend on the chmod above having
     // taken, nor on the workspace being on a filesystem mounted exec.
-    final ProcessResult run;
+    final RunResult run;
     try {
-      run = await Process.run('bash', [
-        installer.path,
-        '-y',
-        '-d',
-        prefix.path,
-      ]);
+      run = await runProcess('bash', [installer.path, '-y', '-d', prefix.path]);
     } on ProcessException catch (e) {
       _failureDetail = 'cannot run bash ${installer.path}: ${e.message}';
       return null;
@@ -261,6 +268,18 @@ class YoctoSdkCrossProvider implements CrossProvider {
   }
 
   Future<bool> _download(String url, File dest) async {
+    // Offline: fail closed rather than isolate. `_materializeFromUrl` has
+    // already checked for an installed prefix and a previously downloaded
+    // installer, so reaching here is a genuine cache miss. Both egress paths
+    // (HttpClient and the `jf` subprocess) exist only to fetch, so running jf
+    // under `netnsWrap` — the treatment build steps get, where the command has
+    // real work to do and the namespace only denies it the network — would
+    // just turn a clear denial into an opaque jf connection error.
+    if (offline) {
+      _failureDetail =
+          'offline: $url is not cached — re-run without --offline to fetch it';
+      return false;
+    }
     final artPath = parseArtifactoryPath(url);
     var jfHint = '';
     if (artPath != null) {
@@ -309,14 +328,14 @@ class YoctoSdkCrossProvider implements CrossProvider {
     String repoPath,
     File dest,
   ) async {
-    final ProcessResult configResult;
+    final RunResult configResult;
     try {
-      configResult = await Process.run('jf', ['config', 'show']);
+      configResult = await runProcess('jf', ['config', 'show']);
       if (configResult.exitCode != 0) return null;
     } on ProcessException {
       return null;
     }
-    final servers = parseJFrogServers(configResult.stdout as String);
+    final servers = parseJFrogServers(configResult.stdout);
     final server = servers.firstWhere(
       (s) =>
           Uri.tryParse(s['Artifactory URL'] ?? '')?.authority == baseAuthority,
@@ -331,9 +350,9 @@ class YoctoSdkCrossProvider implements CrossProvider {
     // never causes a FileSystemException here.
     final tempDir = await dest.parent.createTemp('.jf-tmp-');
     try {
-      final ProcessResult result;
+      final RunResult result;
       try {
-        result = await Process.run('jf', [
+        result = await runProcess('jf', [
           'rt',
           'dl',
           '--flat',
@@ -371,11 +390,56 @@ class YoctoSdkCrossProvider implements CrossProvider {
     }
   }
 
-  static String _failMsg(String label, ProcessResult r) {
-    var s = (r.stderr as String).trim();
-    // Cap to avoid leaking access tokens or large outputs into error messages.
-    if (s.length > 200) s = '${s.substring(0, 200)}…';
-    return '$label (exit ${r.exitCode})${s.isNotEmpty ? ": $s" : ""}';
+  static String _failMsg(String label, RunResult r) {
+    final s = redactSecrets(r.stderr.trim());
+    // jf writes the actual failure last (the leading lines are progress and
+    // banner noise), so the cap keeps the *tail* rather than the head. The cap
+    // bounds message size only — redaction above is what handles credentials.
+    final capped = s.length > _stderrCap
+        ? '…${s.substring(s.length - _stderrCap)}'
+        : s;
+    return '$label (exit ${r.exitCode})${capped.isNotEmpty ? ": $capped" : ""}';
+  }
+
+  /// Chars of stderr retained in a failure message.
+  static const _stderrCap = 800;
+
+  /// Patterns whose *match* is a credential. Anything they capture in group 1
+  /// is a keep-prefix (the `--password=` part), retained so the redacted
+  /// message still says which field was masked; the rest of the match is
+  /// replaced. Lookbehinds keep the leading context out of the match entirely.
+  static final _secretPatterns = <RegExp>[
+    // URL userinfo: https://user:token@host → mask the whole user:token pair.
+    RegExp(r'(?<=://)[^\s/@]+(?=@)'),
+    // Flag- or field-style secrets: --access-token=X, "password": "X",
+    // Authorization: Bearer X. The optional scheme is part of the match so the
+    // whole value collapses to one mask rather than being redacted twice.
+    RegExp(
+      '((?:access[-_]?token|api[-_]?key|password|passwd|secret|authorization)'
+      r'''["']?\s*[:=]\s*["']?)(?:(?:Bearer|Basic)\s+)?[^\s"',}]+''',
+      caseSensitive: false,
+    ),
+    // A Bearer/Basic value with no key in front of it.
+    RegExp(r'(?<=\b(?:Bearer|Basic)\s)\S+', caseSensitive: false),
+    // A bare JWT (JFrog access tokens are JWTs) anywhere in the output.
+    RegExp(r'\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+'),
+  ];
+
+  /// Mask credentials in subprocess output before it reaches a user-facing
+  /// error. Truncation is not a redaction strategy — a token can appear
+  /// anywhere in the stream — so these patterns are what keep secrets out.
+  @visibleForTesting
+  static String redactSecrets(String text) {
+    var out = text;
+    for (final re in _secretPatterns) {
+      out = out.replaceAllMapped(re, (m) {
+        // Only the keyed form captures a prefix; the rest match the secret
+        // alone and replace it whole.
+        final keep = m.groupCount >= 1 ? m.group(1) ?? '' : '';
+        return '$keep***';
+      });
+    }
+    return out;
   }
 
   /// Parse `jf config show` stdout into server records keyed by field name.
@@ -433,14 +497,14 @@ class YoctoSdkCrossProvider implements CrossProvider {
   Future<Map<String, String>?> _sourceEnv(String envSetup) async {
     final seedPath = Platform.environment['PATH'] ?? '/usr/bin:/bin';
     try {
-      final result = await Process.run(
+      final result = await runProcess(
         'bash',
         ['-c', r'set -a; . "$EMB_ENV_SETUP" >/dev/null 2>&1; printenv'],
         environment: {'EMB_ENV_SETUP': envSetup, 'PATH': seedPath},
         includeParentEnvironment: false,
       );
       if (result.exitCode != 0) return null;
-      return _parsePrintenv(result.stdout.toString());
+      return _parsePrintenv(result.stdout);
     } on ProcessException {
       return null;
     }
