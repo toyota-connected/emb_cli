@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:emb_cli/src/bundle/bundle_builder.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
@@ -221,5 +222,130 @@ void main() {
     );
     expect(result.success, isFalse);
     expect(result.missing, hasLength(4)); // assets, libapp, icudtl, engine.so
+  });
+
+  group('architecture audit', () {
+    /// A minimal little-endian 64-bit ELF header for [eMachine].
+    Uint8List elf({int eMachine = 0x3e}) {
+      final b = Uint8List(64);
+      b[0] = 0x7f;
+      b[1] = 0x45;
+      b[2] = 0x4c;
+      b[3] = 0x46;
+      b[4] = 2; // 64-bit
+      b[5] = 1; // little-endian
+      ByteData.sublistView(b).setUint16(18, eMachine, Endian.little);
+      return b;
+    }
+
+    /// Put a code asset under flutter_assets/native_assets, where a Dart build
+    /// hook leaves one — the #145 path.
+    void putCodeAsset(Directory app, String name, Uint8List bytes) {
+      File(
+          p.join(
+            app.path,
+            'build',
+            'flutter_assets',
+            'native_assets',
+            'linux',
+            name,
+          ),
+        )
+        ..createSync(recursive: true)
+        ..writeAsBytesSync(bytes);
+    }
+
+    // A hook that resolved a host compiler produces an x86-64 .so that loads on
+    // the build machine and dies at dlopen on an arm64 device. emb cross has
+    // caught this since #96; emb bundle/emb build reached the same staging code
+    // and shipped it.
+    test('a code asset matching the target arch is accepted', () {
+      final s = stageInputs();
+      putCodeAsset(s.app, 'libfluorite_core_ffi.so', elf());
+
+      final result = BundleBuilder(Workspace(s.ws)).assemble(
+        appPath: s.app.path,
+        mode: 'release',
+        arch: 'x86_64',
+        outputDir: p.join(tmp.path, 'out'),
+      );
+      // The baseline for the rejection test below: same asset, right target.
+      expect(result.success, isTrue, reason: result.message);
+    });
+
+    test('the same asset in an arm64 bundle is rejected', () {
+      final s = stageInputs();
+      putCodeAsset(s.app, 'libfluorite_core_ffi.so', elf());
+      // Engine half for arm64, so the assemble gets far enough to audit.
+      final eng = Directory(
+        p.join(
+          s.ws.path,
+          '.config',
+          'flutter_workspace',
+          'flutter-engine',
+          'bundle-release-arm64',
+        ),
+      );
+      File(p.join(eng.path, 'data', 'icudtl.dat'))
+        ..createSync(recursive: true)
+        ..writeAsStringSync('ICU');
+      File(p.join(eng.path, 'lib', 'libflutter_engine.so'))
+        ..createSync(recursive: true)
+        ..writeAsBytesSync(elf(eMachine: 0xb7));
+
+      final result = BundleBuilder(Workspace(s.ws)).assemble(
+        appPath: s.app.path,
+        mode: 'release',
+        arch: 'arm64',
+        outputDir: p.join(tmp.path, 'out'),
+      );
+
+      expect(result.success, isFalse);
+      expect(result.message, contains('libfluorite_core_ffi.so'));
+      expect(result.message, contains('e_machine'));
+      expect(result.message, contains('arm64'));
+    });
+
+    test('a matching code asset passes', () {
+      final s = stageInputs();
+      putCodeAsset(s.app, 'libok.so', elf());
+
+      final result = BundleBuilder(Workspace(s.ws)).assemble(
+        appPath: s.app.path,
+        mode: 'release',
+        arch: 'x86_64',
+        outputDir: p.join(tmp.path, 'out'),
+      );
+      expect(result.success, isTrue, reason: result.message);
+    });
+
+    // The x64 spelling reaches here from EngineArtifacts.engineArch; before
+    // this it mapped to no e_machine and skipped the check entirely.
+    test('the x64 arch spelling is checked, not skipped', () {
+      final s = stageInputs();
+      putCodeAsset(s.app, 'libwrong.so', elf(eMachine: 0xb7));
+
+      final result = BundleBuilder(Workspace(s.ws)).assemble(
+        appPath: s.app.path,
+        mode: 'release',
+        arch: 'x64',
+        outputDir: p.join(tmp.path, 'out'),
+      );
+      expect(result.success, isFalse);
+      expect(result.message, contains('libwrong.so'));
+    });
+
+    test('non-ELF placeholders are ignored, not flagged', () {
+      final s = stageInputs();
+      putCodeAsset(s.app, 'notes.txt', Uint8List.fromList('hello'.codeUnits));
+
+      final result = BundleBuilder(Workspace(s.ws)).assemble(
+        appPath: s.app.path,
+        mode: 'release',
+        arch: 'x86_64',
+        outputDir: p.join(tmp.path, 'out'),
+      );
+      expect(result.success, isTrue, reason: result.message);
+    });
   });
 }
