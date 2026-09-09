@@ -613,12 +613,25 @@ inspected — emb passes `--track-widget-creation` there so DevTools and the
 widget inspector can name widgets, which obfuscating the same image undoes.
 
 `--strip` drops the symbol table, so `perf`/`gdb` have nothing to resolve
-against. It is independent of obfuscation; note `gen_snapshot` warns when
-obfuscating without stripping, because the DWARF it leaves behind is not
-obfuscated.
+against.
+
+**Obfuscating without stripping is refused.** `gen_snapshot` leaves the DWARF
+unobfuscated when it is not stripping, so the image would still carry the
+identifiers obfuscation was asked to remove — while looking as though it did
+not. Since release obfuscates by default, `--no-strip` on a release build needs
+`--no-obfuscate` alongside it; the error says so. Profile takes `--no-strip`
+on its own, because it does not obfuscate by default.
 
 Both flags are available on `emb build`, `emb bundle` and `emb cross` too,
-where they apply to the app's AOT image.
+where they apply to the app's AOT image. In an `.emb` manifest, `aot_obfuscate`
+and `aot_strip` set the same thing per target; a command-line flag wins over
+the manifest, and the manifest wins over the per-mode default.
+
+```yaml
+cross:
+  aot_obfuscate: false     # keep identifiers (this target ships debug builds)
+  aot_strip: false         # and keep the symbol table for perf/gdb
+```
 
 ---
 
@@ -810,6 +823,8 @@ cross:
   augment:                        # libs built from source when the sysroot is too old
     - { pkg: libdisplay-info, min: "0.2.0", url: https://.../libdisplay-info-0.2.0.tar.gz, build: meson, static: true }
   host_dev_packages: [libpugixml-dev]   # build-machine deps of a `host: true` augment
+  aot_obfuscate: false            # app AOT: keep identifiers (default: release only)
+  aot_strip: false                # app AOT: keep the symbol table (default: strip)
   defines:                        # -D<name>=<value> applied to every build
     CMAKE_INSTALL_PREFIX: /usr
   cmake_args: [-Wno-dev]          # raw cmake configure flags (cmake only)

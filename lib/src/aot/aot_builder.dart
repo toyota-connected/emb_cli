@@ -260,9 +260,10 @@ class AotBuilder {
   /// image; gen_snapshot rejects the map flag without `--obfuscate`, and
   /// obfuscating with no map produces an artifact nothing can ever symbolize.
   ///
-  /// [strip] drops the symbol table. On by default, as before. Note
-  /// gen_snapshot warns when obfuscating without stripping, because the DWARF
-  /// it leaves behind is not obfuscated.
+  /// [strip] drops the symbol table. On by default, as before. Obfuscating
+  /// *without* stripping is refused: gen_snapshot leaves the DWARF
+  /// unobfuscated, so the image would still carry the identifiers obfuscation
+  /// was asked to remove while looking as though it did not.
   Future<AotResult> build({
     required String appPath,
     List<String> modes = const ['release', 'profile'],
@@ -290,6 +291,27 @@ class AotBuilder {
 
     final results = <AotModeResult>[];
     for (final mode in modes) {
+      // gen_snapshot leaves the DWARF unobfuscated when it is not stripping,
+      // so this pair yields an image that still carries the identifiers
+      // obfuscation was asked to remove — worse than either choice alone,
+      // because it looks obfuscated. Refuse it before doing any work.
+      if ((obfuscate ?? _obfuscatesByDefault(mode)) && !strip) {
+        results.add(
+          AotModeResult(
+            mode: mode,
+            success: false,
+            message: obfuscate == null
+                ? '$mode obfuscates by default, and --no-strip would '
+                      'leave its DWARF unobfuscated — pass --no-obfuscate as '
+                      'well to keep symbols, or drop --no-strip'
+                : '--obfuscate with --no-strip leaves the DWARF '
+                      'unobfuscated, so the image would still carry the '
+                      'identifiers obfuscation is meant to remove — pass '
+                      '--no-obfuscate to keep symbols, or drop --no-strip',
+          ),
+        );
+        continue;
+      }
       onStep?.call('[$mode] flutter build bundle');
       final bundle = await runProcess(
         _flutterBin,
@@ -389,7 +411,7 @@ class AotBuilder {
         continue;
       }
       final out = 'libapp.so.$mode';
-      final obfuscateMode = obfuscate ?? (mode == 'release');
+      final obfuscateMode = obfuscate ?? _obfuscatesByDefault(mode);
       final mapName = '$out.obfuscation-map.json';
       final (genExe, genLead) = _genSnapshotInvocation(gen);
       final genResult = await runProcess(
@@ -430,6 +452,13 @@ class AotBuilder {
     }
     return AotResult(results);
   }
+
+  /// Whether [mode] obfuscates when the caller expressed no preference.
+  ///
+  /// Release only. Profile is the mode built to be inspected —
+  /// `--track-widget-creation` is passed there so DevTools can name widgets,
+  /// which obfuscating the same image undoes.
+  static bool _obfuscatesByDefault(String mode) => mode == 'release';
 
   Future<RunResult> _kernelSnapshot({
     required String app,

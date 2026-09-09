@@ -336,23 +336,80 @@ void main() {
       );
     });
 
-    test('strips by default, and --no-strip opts out', () async {
+    test('strips by default', () async {
       expect((await gen(tmp, 'release')).args, contains('--strip'));
-      final keep = Directory(p.join(tmp.path, 'keep'))..createSync();
-      expect(
-        (await gen(keep, 'release', strip: false)).args,
-        isNot(contains('--strip')),
-      );
     });
 
-    test('strip and obfuscate are independent', () async {
+    test('--no-strip opts out when not obfuscating', () async {
       final g = await gen(tmp, 'release', obfuscate: false, strip: false);
       expect(g.args, isNot(contains('--strip')));
       expect(g.args, isNot(contains('--obfuscate')));
-      final other = Directory(p.join(tmp.path, 'other'))..createSync();
-      final g2 = await gen(other, 'profile', obfuscate: true, strip: false);
-      expect(g2.args, contains('--obfuscate'));
-      expect(g2.args, isNot(contains('--strip')));
+    });
+
+    test('profile takes --no-strip without opting out of anything', () async {
+      // profile does not obfuscate by default, so --no-strip alone is fine.
+      final g = await gen(tmp, 'profile', strip: false);
+      expect(g.args, isNot(contains('--strip')));
+      expect(g.args, isNot(contains('--obfuscate')));
+    });
+  });
+
+  group('obfuscate without strip is refused', () {
+    /// Build [mode] and return the result plus whether gen_snapshot ran.
+    Future<({AotResult result, bool ranGen})> attempt(
+      Directory tmpDir,
+      String mode, {
+      bool? obfuscate,
+    }) async {
+      final ws = Directory(p.join(tmpDir.path, 'ws'))..createSync();
+      final app = Directory(p.join(tmpDir.path, 'app'));
+      writeApp(app);
+      writeSdk(ws);
+      final rec = _Recorder(app.path);
+      final result = await builder(ws, rec).build(
+        appPath: app.path,
+        modes: [mode],
+        obfuscate: obfuscate,
+        strip: false,
+      );
+      return (
+        result: result,
+        ranGen: rec.calls.any((c) => c.exe == 'gen_snapshot'),
+      );
+    }
+
+    // gen_snapshot leaves the DWARF unobfuscated when not stripping, so the
+    // image still carries the identifiers obfuscation was asked to remove.
+    test(
+      'explicit --obfuscate with --no-strip fails before any work',
+      () async {
+        final a = await attempt(tmp, 'release', obfuscate: true);
+        expect(a.result.success, isFalse);
+        expect(a.ranGen, isFalse, reason: 'must fail before compiling');
+        expect(a.result.modes.single.message, contains('--no-obfuscate'));
+      },
+    );
+
+    test('release --no-strip alone fails, naming the default', () async {
+      final a = await attempt(tmp, 'release');
+      expect(a.result.success, isFalse);
+      expect(a.result.modes.single.message, contains('obfuscates by default'));
+    });
+
+    test('only the offending mode fails', () async {
+      final ws = Directory(p.join(tmp.path, 'ws'))..createSync();
+      final app = Directory(p.join(tmp.path, 'app'));
+      writeApp(app);
+      writeSdk(ws);
+      final rec = _Recorder(app.path);
+      final r = await builder(ws, rec).build(
+        appPath: app.path,
+        modes: const ['profile', 'release'],
+        strip: false,
+      );
+      final byMode = {for (final m in r.modes) m.mode: m};
+      expect(byMode['profile']!.success, isTrue);
+      expect(byMode['release']!.success, isFalse);
     });
   });
 
