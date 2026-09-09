@@ -19,6 +19,14 @@ Future<bool> whichProbe(String tool) async =>
 typedef ProvisionerFactory =
     HostProvisioner Function(HostInfo host, {bool interactive});
 
+/// What the host package backend knows about a set of package names.
+///
+/// `missing` are names it recognizes but reports as not installed — actionable,
+/// by `--install-deps` or by hand. `unresolved` are names it does not recognize
+/// at all, which is the expected answer on a host whose distro spells them
+/// differently, and so is a warning rather than a failure.
+typedef HostPackageStatus = ({List<String> missing, List<String> unresolved});
+
 /// Host-tool preflight: which required tools are missing, how to install them
 /// (via the running package backend or a static fallback hint), and an opt-in
 /// auto-install. Shared by `emb cross` (build/plan preflight) and `emb doctor
@@ -48,19 +56,23 @@ class Preflight {
     return missing;
   }
 
-  /// The subset of [packages] the host package backend reports as NOT
-  /// installed, or null when no backend can answer.
+  /// Ask the host package backend about [packages], or null when no backend
+  /// can answer (not reachable, not compiled in, or it errored) — callers
+  /// should proceed rather than block a build on a check the host cannot make.
   ///
   /// Unlike [missingTools] this asks the package backend rather than probing
   /// `PATH`, because a `-dev` package ships headers and a `.pc` file and no
-  /// executable — `which` can never see it. Null means "could not determine"
-  /// (no backend reachable, or it errored); callers should proceed rather than
-  /// block a build on a check the host cannot answer.
-  Future<List<String>?> missingPackages(
+  /// executable — `which` can never see it.
+  ///
+  /// Names the backend cannot resolve to an installable package come back as
+  /// `unresolved` rather than `missing`, so a caller can tell "you need to
+  /// install this" from "this host has never heard of it".
+  Future<HostPackageStatus?> missingPackages(
     HostInfo host,
     List<String> packages,
   ) async {
-    if (packages.isEmpty) return const [];
+    const empty = (missing: <String>[], unresolved: <String>[]);
+    if (packages.isEmpty) return empty;
     HostProvisioner? provisioner;
     try {
       provisioner = _provisionerFor(host);
@@ -70,12 +82,23 @@ class Preflight {
     }
     try {
       if (!await provisioner.isAvailable()) return null;
-      final missing = await provisioner.missing(packages.toSet());
+      final notInstalled = await provisioner.missing(packages.toSet());
+      if (notInstalled.isEmpty) return empty;
+      // simulate() resolves each name against the repositories; whatever it
+      // cannot place is a name this distro does not use.
+      final plan = await provisioner.simulate(notInstalled);
+      final unresolved = plan.unresolved.toSet();
       // Preserve the caller's order so messages read predictably.
-      return [
-        for (final p in packages)
-          if (missing.contains(p)) p,
-      ];
+      return (
+        missing: [
+          for (final n in packages)
+            if (notInstalled.contains(n) && !unresolved.contains(n)) n,
+        ],
+        unresolved: [
+          for (final n in packages)
+            if (unresolved.contains(n)) n,
+        ],
+      );
     } on Exception {
       return null;
     } finally {
@@ -143,7 +166,7 @@ class Preflight {
     // a null answer there means "cannot tell", which is not a failure.
     final stillMissing = verifyOnPath
         ? await missingTools(tools)
-        : await missingPackages(host, tools) ?? const <String>[];
+        : (await missingPackages(host, tools))?.missing ?? const <String>[];
     if (stillMissing.isNotEmpty) {
       _logger.err('Still missing after install: ${stillMissing.join(", ")}');
       return false;

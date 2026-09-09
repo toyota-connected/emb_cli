@@ -13,11 +13,17 @@ const _host = HostInfo(
   versionId: '24.04',
 );
 
-/// Reports [absent] as not installed; everything else counts as present.
+/// Reports [absent] as not installed. Names also in [unknown] come back from
+/// simulate() as unresolved — the backend does not recognize them at all.
 class _FakeProvisioner implements HostProvisioner {
-  _FakeProvisioner({this.absent = const {}, this.available = true});
+  _FakeProvisioner({
+    this.absent = const {},
+    this.unknown = const {},
+    this.available = true,
+  });
 
   final Set<String> absent;
+  final Set<String> unknown;
   final bool available;
   int missingCalls = 0;
 
@@ -34,8 +40,11 @@ class _FakeProvisioner implements HostProvisioner {
   }
 
   @override
-  Future<ProvisionPlan> simulate(Set<String> names) async =>
-      ProvisionPlan(requested: names.toList(), toInstall: names.toList());
+  Future<ProvisionPlan> simulate(Set<String> names) async => ProvisionPlan(
+    requested: names.toList(),
+    toInstall: names.difference(unknown).toList(),
+    unresolved: names.intersection(unknown).toList(),
+  );
   @override
   Future<ProvisionResult> install(
     Set<String> names, {
@@ -75,63 +84,90 @@ void main() {
   });
 
   group('Preflight.missingPackages', () {
+    Preflight pf(_FakeProvisioner fake, {ToolProbe? probe}) => Preflight(
+      Logger(),
+      probe: probe ?? (_) async => true,
+      provisionerFactory: (host, {interactive = true}) => fake,
+    );
+
     // `which` can never see a -dev package: it ships headers and a .pc file
     // and no executable. This is why host_dev_packages needs its own probe.
     test('asks the backend, not PATH', () async {
       final fake = _FakeProvisioner(absent: {'libpugixml-dev'});
-      final pf = Preflight(
-        Logger(),
+      final r = await pf(
+        fake,
         probe: (_) async => fail('must not probe PATH for a package name'),
-        provisionerFactory: (host, {interactive = true}) => fake,
-      );
-      expect(await pf.missingPackages(_host, ['libpugixml-dev']), [
-        'libpugixml-dev',
-      ]);
+      ).missingPackages(_host, ['libpugixml-dev']);
+      expect(r!.missing, ['libpugixml-dev']);
+      expect(r.unresolved, isEmpty);
       expect(fake.missingCalls, 1);
     });
 
     test('empty when the backend reports everything installed', () async {
-      final pf = Preflight(
-        Logger(),
-        provisionerFactory: (host, {interactive = true}) => _FakeProvisioner(),
-      );
-      expect(await pf.missingPackages(_host, ['libpugixml-dev']), isEmpty);
+      final r = await pf(
+        _FakeProvisioner(),
+      ).missingPackages(_host, ['libpugixml-dev']);
+      expect(r!.missing, isEmpty);
+      expect(r.unresolved, isEmpty);
+    });
+
+    test(
+      'a name the backend cannot resolve is unresolved, not missing',
+      () async {
+        // The Fedora case: libpugixml-dev is spelled pugixml-devel
+        // there, so the backend reports it uninstalled AND unplaceable.
+        // That must warn, not fail the build.
+        final r = await pf(
+          _FakeProvisioner(
+            absent: {'libpugixml-dev'},
+            unknown: {'libpugixml-dev'},
+          ),
+        ).missingPackages(_host, ['libpugixml-dev']);
+        expect(r!.unresolved, ['libpugixml-dev']);
+        expect(r.missing, isEmpty);
+      },
+    );
+
+    test('splits a mixed set into missing and unresolved', () async {
+      final r = await pf(
+        _FakeProvisioner(absent: {'a', 'c'}, unknown: {'c'}),
+      ).missingPackages(_host, ['a', 'b', 'c']);
+      expect(r!.missing, ['a']);
+      expect(r.unresolved, ['c']);
     });
 
     test('preserves the requested order', () async {
-      final pf = Preflight(
-        Logger(),
-        provisionerFactory: (host, {interactive = true}) =>
-            _FakeProvisioner(absent: {'c', 'a'}),
-      );
-      expect(await pf.missingPackages(_host, ['a', 'b', 'c']), ['a', 'c']);
+      final r = await pf(
+        _FakeProvisioner(absent: {'c', 'a'}),
+      ).missingPackages(_host, ['a', 'b', 'c']);
+      expect(r!.missing, ['a', 'c']);
     });
 
     test('null when the backend is unreachable', () async {
-      final pf = Preflight(
-        Logger(),
-        provisionerFactory: (host, {interactive = true}) =>
-            _FakeProvisioner(available: false),
-      );
-      expect(await pf.missingPackages(_host, ['libpugixml-dev']), isNull);
+      final r = await pf(
+        _FakeProvisioner(available: false),
+      ).missingPackages(_host, ['libpugixml-dev']);
+      expect(r, isNull);
     });
 
     test('null when no backend is compiled in', () async {
-      final pf = Preflight(
+      final p = Preflight(
         Logger(),
         provisionerFactory: (host, {interactive = true}) =>
             throw UnsupportedError('no backend'),
       );
-      expect(await pf.missingPackages(_host, ['libpugixml-dev']), isNull);
+      expect(await p.missingPackages(_host, ['libpugixml-dev']), isNull);
     });
 
     test('an empty package list never reaches the backend', () async {
-      final pf = Preflight(
+      final p = Preflight(
         Logger(),
         provisionerFactory: (host, {interactive = true}) =>
             throw StateError('must not build a provisioner'),
       );
-      expect(await pf.missingPackages(_host, const []), isEmpty);
+      final r = await p.missingPackages(_host, const []);
+      expect(r!.missing, isEmpty);
+      expect(r.unresolved, isEmpty);
     });
   });
 }

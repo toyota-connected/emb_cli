@@ -957,16 +957,28 @@ class CrossCommand extends Command<int> {
     required bool? interactiveOverride,
   }) async {
     final pkgs = target.hostDevPackages;
-    final missing = await _preflight.missingPackages(host, pkgs);
-    if (missing == null) {
+    final status = await _preflight.missingPackages(host, pkgs);
+    if (status == null) {
       _logger.detail(
         '  host dev pkgs : cannot verify ${pkgs.join(", ")} '
         '(no package backend) — assuming present',
       );
       return null;
     }
+    // Names this host's backend has never heard of are almost always the same
+    // package under another distro's spelling (libpugixml-dev vs
+    // pugixml-devel). Say so and carry on rather than blocking a build we
+    // cannot actually prove is broken.
+    if (status.unresolved.isNotEmpty) {
+      _logger.warn(
+        "host dev packages unknown to this host's package backend: "
+        '${status.unresolved.join(", ")} — these are the names the cross image '
+        'bakes; install the local equivalents if the build fails',
+      );
+    }
+    final missing = status.missing;
     if (missing.isEmpty) {
-      _logger.detail('  host dev pkgs : ${pkgs.join(", ")} present');
+      _logger.detail('  host dev pkgs : ${pkgs.join(", ")} ok');
       return null;
     }
     if (!installDeps) {

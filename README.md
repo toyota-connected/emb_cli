@@ -807,12 +807,13 @@ When one is missing the build stops before configuring, rather than failing
 minutes in on a missing pkg-config module; `--install-deps` installs them
 through the host package backend.
 
-The names are whatever your host's package backend understands, and the same
-list feeds the Debian-based cross image — so on a host of another distro a name
-it does not recognize is reported missing and the build stops naming it, which
-is your cue to install the local equivalent (`pugixml-devel` rather than
-`libpugixml-dev`, say). Only when no package backend is reachable at all does
-the check pass silently, since nothing can be verified either way.
+The same list feeds the Debian-based cross image, so on a host of another
+distro a name may not exist locally (`pugixml-devel` rather than
+`libpugixml-dev`). A name the backend cannot resolve at all is reported as a
+warning and the build continues — emb cannot prove that host is actually
+missing the library. Only a name the backend recognizes *and* reports as not
+installed stops the build. When no package backend is reachable the check
+passes silently, since nothing can be verified either way.
 
 #### Multiple platforms in one manifest (`cross.targets`)
 
