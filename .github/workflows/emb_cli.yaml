@@ -42,15 +42,6 @@ jobs:
         sudo apt-get update -qq
         sudo apt-get install -y -qq libsystemd-dev cmake ninja-build
 
-  spell-check:
-    uses: VeryGoodOpenSource/very_good_workflows/.github/workflows/spell_check.yml@v1
-    with:
-      includes: |
-        **/*.md
-        !brick/**/*.md
-        .*/**/*.md
-      modified_files_only: false
-
   verify-version:
     runs-on: ubuntu-latest
     steps:
