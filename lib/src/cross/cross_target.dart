@@ -584,6 +584,27 @@ enum SysrootProvenance {
       };
 }
 
+/// How `emb` reaches a board for `--deploy` / `--run`.
+///
+/// Orthogonal to [SysrootProvenance]: a sysroot can be scraped from a live
+/// board over SSH and the built bundle still pushed over adb, or the reverse.
+enum DeviceTransport {
+  /// `ssh` + `rsync` (or tar-over-ssh). The default, and the only transport
+  /// that supports `--deb --deploy` (which needs apt on the board).
+  ssh,
+
+  /// `adb push` + `adb shell`, for boards running `adbd` — the Android-style
+  /// USB workflow asked for in #191. Needs `adb` on the build host and no SSH
+  /// server, credentials, or network route to the board.
+  adb;
+
+  static DeviceTransport fromToken(String? token) =>
+      switch ((token ?? 'ssh').toLowerCase()) {
+        'adb' => DeviceTransport.adb,
+        _ => DeviceTransport.ssh,
+      };
+}
+
 /// How an `arm-gnu` target's sysroot is acquired.
 ///
 /// Backward compatible with a bare top-level `image_url:` (folded into an
@@ -595,6 +616,8 @@ class SysrootSpec {
     this.deviceHost,
     this.sshPort = 22,
     this.sshOpts,
+    this.transport = DeviceTransport.ssh,
+    this.adbSerial,
     this.partition = 2,
     this.devPackages = const [],
     this.snapshot,
@@ -607,6 +630,8 @@ class SysrootSpec {
     deviceHost: (map['host'] ?? map['device_host'])?.toString(),
     sshPort: int.tryParse('${map['ssh_port'] ?? 22}') ?? 22,
     sshOpts: map['ssh_opts']?.toString(),
+    transport: DeviceTransport.fromToken(map['transport']?.toString()),
+    adbSerial: (map['adb_serial'] ?? map['serial'])?.toString(),
     partition:
         int.tryParse('${map['partition'] ?? map['rootfs_partition'] ?? 2}') ??
         2,
@@ -632,6 +657,15 @@ class SysrootSpec {
 
   /// Extra `ssh`/`rsync -e` options for the device rsync.
   final String? sshOpts;
+
+  /// Transport for `--deploy`/`--run`. Read whatever the block's `source:` is —
+  /// pushing a bundle is a different concern from where the sysroot came from,
+  /// so a target that never scrapes a device can still set `transport: adb`.
+  final DeviceTransport transport;
+
+  /// `adb -s <serial>` device selector. Null means "the single connected
+  /// device", which is what adb itself defaults to.
+  final String? adbSerial;
 
   /// The 1-based rootfs partition index within an image (Raspberry Pi and
   /// most Debian images put rootfs on `p2`; override with

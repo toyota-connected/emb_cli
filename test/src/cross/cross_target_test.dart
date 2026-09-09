@@ -323,4 +323,58 @@ void main() {
       );
     });
   });
+
+  group('SysrootSpec transport', () {
+    SysrootSpec? specOf(Map<String, dynamic> sysroot) => CrossTarget.fromMap({
+      'provider': 'arm-gnu',
+      'sysroot': sysroot,
+    }).sysroot;
+
+    test('defaults to ssh with no serial', () {
+      final s = specOf({'source': 'device', 'host': 'pi@board'})!;
+      expect(s.transport, DeviceTransport.ssh);
+      expect(s.adbSerial, isNull);
+    });
+
+    test('transport: adb is parsed', () {
+      final s = specOf({'source': 'device', 'transport': 'adb'})!;
+      expect(s.transport, DeviceTransport.adb);
+    });
+
+    test('adb_serial and its serial alias both parse', () {
+      expect(specOf({'transport': 'adb', 'adb_serial': 'A1'})!.adbSerial, 'A1');
+      expect(specOf({'transport': 'adb', 'serial': 'B2'})!.adbSerial, 'B2');
+    });
+
+    test('transport is read even when the source is an image', () {
+      // Pushing a bundle is a separate concern from where the sysroot came
+      // from: an image-sourced sysroot can still deploy over adb.
+      final s = specOf({
+        'source': 'image',
+        'image_url': 'https://example.com/x.img.xz',
+        'transport': 'adb',
+      })!;
+      expect(s.source, SysrootProvenance.image);
+      expect(s.transport, DeviceTransport.adb);
+    });
+
+    test('an unknown transport token falls back to ssh', () {
+      expect(
+        specOf({'transport': 'carrier-pigeon'})!.transport,
+        DeviceTransport.ssh,
+      );
+    });
+
+    test('ssh_port/ssh_opts still parse alongside a transport', () {
+      final s = specOf({
+        'source': 'device',
+        'host': 'pi@board',
+        'ssh_port': 2222,
+        'ssh_opts': '-o StrictHostKeyChecking=no',
+      })!;
+      expect(s.sshPort, 2222);
+      expect(s.sshOpts, '-o StrictHostKeyChecking=no');
+      expect(s.transport, DeviceTransport.ssh);
+    });
+  });
 }
