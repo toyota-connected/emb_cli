@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:emb_cli/src/cross/elf_check.dart';
 import 'package:emb_cli/src/engine/engine_artifacts.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
 import 'package:path/path.dart' as p;
@@ -103,6 +104,31 @@ class BundleBuilder {
     }
     engineSo.copySync(p.join(libDir.path, 'libflutter_engine.so'));
     _stageCodeAssets(outAssets, libDir);
+
+    // Every ELF in lib/ must be built for the target. The engine and the AOT
+    // image are staged from per-arch directories and so are hard to get wrong,
+    // but a code asset comes from a Dart build hook, and a hook that resolved a
+    // *host* compiler produces a host-arch .so that loads fine on the build
+    // machine and dies at dlopen on the device — surfacing in Dart as a symbol
+    // lookup failure, several steps from the cause. `emb cross` has audited
+    // this since #96; `emb bundle` and `emb build` reach the same staging code
+    // and did not.
+    final wrongArch = <String>[
+      for (final f in libDir.listSync(followLinks: false).whereType<File>())
+        if (verifyElfForTriple(f, arch) case final reason?)
+          '${p.basename(f.path)}: $reason',
+    ]..sort();
+    if (wrongArch.isNotEmpty) {
+      return BundleResult(
+        success: false,
+        message:
+            'bundle lib/ holds ${wrongArch.length} file(s) not built for '
+            '$arch:\n  ${wrongArch.join("\n  ")}\n'
+            'Rebuild them for $arch, or drop the dependency that produces '
+            'them. A native asset from a Dart build hook needs the hook to '
+            'honor the cross toolchain.',
+      );
+    }
 
     return BundleResult(success: true, outputDir: out.path);
   }

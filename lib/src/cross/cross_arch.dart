@@ -75,7 +75,7 @@ int elfMachine(String triple) => switch (archOfTriple(triple)) {
   'aarch64' || 'arm64' => 0xB7,
   'arm' || 'armv7' || 'armv7l' || 'armhf' => 0x28,
   'riscv64' => 0xF3,
-  'x86_64' || 'amd64' => 0x3E,
+  'x86_64' || 'amd64' || 'x64' => 0x3E,
   final _ => 0,
 };
 
