@@ -274,6 +274,51 @@ The `cross.sysroot` block selects how the sysroot is acquired:
   the unoq **derive** policy work: the synced rootfs is what
   `_detectCodename` reads to pick the toolchain version.
 
+### Deploy transport (`--deploy` / `--run`)
+
+`cross.sysroot` also carries how `emb` reaches the board to push a build, which
+is a separate concern from where the sysroot came from — an image-sourced
+sysroot can still deploy to a live board:
+
+- `transport: ssh` (default) — `rsync` when the board has it, else
+  tar-over-SSH. Uses `host`/`ssh_port`/`ssh_opts`.
+- `transport: adb` — `adb push` + `adb shell`, for boards running `adbd`. No
+  SSH server, credentials, or network route needed; pick a board with
+  `adb_serial:` (alias `serial:`) when more than one is connected.
+
+```yaml
+cross:
+  sysroot:
+    source: device
+    host: pi@board            # still used to scrape the sysroot
+    transport: adb            # …but the build is pushed over adb
+    adb_serial: 0123456789ABCDEF
+```
+
+The `--deploy` value is read against that transport, and can also select adb on
+its own — which is how a manifest with no `sysroot:` block at all (every
+`yocto-sdk` target) reaches an adb board:
+
+```console
+emb cross . --build --app ../my_app --deploy pi@board   # ssh
+emb cross . --build --app ../my_app --deploy adb        # the one adb device
+emb cross . --build --app ../my_app --deploy adb:ABC123 # a specific one
+emb cross . --build --app ../my_app --deploy ABC123     # a serial, when
+                                                        # transport: adb
+```
+
+Two differences from the SSH path are worth knowing:
+
+- **adb push overlays, it does not mirror.** There is no `adb` equivalent of
+  `rsync --delete`, so a file dropped from the bundle since the last push stays
+  on the board. `emb` says so after a push rather than issuing an `rm -rf`
+  driven by a manifest string; use a fresh `--deploy-dir` when a removed file
+  must not linger.
+- **`--deb --deploy` is SSH-only** — it installs with `apt-get` on the board,
+  which an adb-only target generally has no route for. `emb` rejects the
+  combination up front rather than after a full build. Push a runnable bundle
+  with `--app` instead.
+
 Two more `cross.sysroot` knobs handle image quirks (see `radxa_zero3.emb.yaml`):
 
 - `partition: <n>` — the 1-based rootfs partition in the image (default 2;

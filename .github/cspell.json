@@ -23,6 +23,7 @@
     "Embedder",
     "embedders",
     "aarch",
+    "adbd",
     "aotruntime",
     "archs",
     "armhf",

@@ -209,6 +209,7 @@ sudo dnf install -y meson pkgconf-pkg-config wayland-devel \
 | `.ipk` packaging (`--ipk`) | `opkg-build` | `opkg-utils` † | `opkg-utils` † |
 | `.flatpak` packaging (`--flatpak`) | `flatpak`, `flatpak-builder` | `flatpak flatpak-builder` | `flatpak flatpak-builder` |
 | Deploy over SSH (`--deploy` / `--run`) | `ssh`, `scp`, `rsync` | `openssh-client rsync` | `openssh-clients rsync` |
+| Deploy over adb (`--deploy adb`) | `adb` | `adb` | `android-tools` |
 | Toolchain images (`--dockerfile` / `--publish`) | `docker` or `podman` (+ `skopeo`) | `docker.io` or `podman` | `podman` |
 | Cache OCI (`cache push` / `pull`) | `oras` | download the static binary † | download the static binary † |
 | `--offline-strict` sandbox | `unshare` | `util-linux` (preinstalled) | `util-linux-core` (preinstalled) |
@@ -767,9 +768,9 @@ emb cross <project-dir|manifest.yaml> [options]
 | `--app <dir>` | — | With `--build`: also build this Flutter app for the target and assemble a **runnable bundle** (embedder + engine + flutter_assets + icudtl + libapp), runnable as `./homescreen -b .`. |
 | `-m`, `--mode <mode>` | `release` | Runtime mode for the `--app` bundle (`debug`/`profile`/`release`). |
 | `--tar` | off | Also produce a `.tar.gz` of each runnable bundle. |
-| `--deploy <user@host>` | — | With `--app`: send each runnable bundle to the board over SSH — rsync when the target has it, else a tar-over-SSH fallback (port/opts reused from `cross.sysroot` when device-sourced). |
+| `--deploy <target>` | — | With `--app`: send each runnable bundle to the board. `<user@host>` uses SSH — rsync when the target has it, else a tar-over-SSH fallback (port/opts reused from `cross.sysroot` when device-sourced). `adb` or `adb:<serial>` uses adb instead; so does any value when `cross.sysroot.transport: adb`. With `--deb`: SSH only. |
 | `--deploy-dir <path>` | `ivi-homescreen` | Remote destination dir for `--deploy`. |
-| `--run` | off | After `--deploy`, run the bundle on the target over SSH (`./homescreen -b .`). |
+| `--run` | off | After `--deploy`, run the bundle on the target over its transport (`./homescreen -b .`). |
 | `--clean` | off | Remove this target's build + overlay dirs (keeps the toolchain + sysroot), then exit. |
 | `--clean-all` | off | Also remove the downloaded / extracted toolchain + sysroot and the apt / deb caches, then exit. |
 | `--update-lock` | off | Regenerate this target's `emb.lock` entry from the resolved toolchain/sysroot (accepts an intentional URL / version change). See [Reproducible builds](#reproducible-builds-emblock). |

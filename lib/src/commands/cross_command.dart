@@ -305,10 +305,13 @@ class CrossCommand extends Command<int> {
       ..addOption(
         'deploy',
         help:
-            'Send the build to <user@host> over SSH. With --app: rsync each '
-            'runnable bundle (SSH port/opts reused from cross.sysroot when '
-            'device-sourced). With --deb: scp each .deb and apt-get install it '
-            '(resolves Depends from the device repos).',
+            'Send the build to a board. <user@host> deploys over SSH '
+            '(port/opts reused from cross.sysroot when device-sourced); '
+            '"adb" or '
+            '"adb:<serial>" deploys over adb, as does any value when '
+            'cross.sysroot.transport is adb. With --app: push each runnable '
+            'bundle. With --deb: scp each .deb and apt-get install it '
+            '(SSH only — needs apt on the board).',
       )
       ..addOption(
         'deploy-dir',
@@ -319,7 +322,7 @@ class CrossCommand extends Command<int> {
         'run',
         help:
             'Run the assembled bundle: on this host for --target local, or on '
-            'the --deploy target over SSH.',
+            'the --deploy target over its transport (ssh/adb).',
         negatable: false,
       )
       ..addFlag(
@@ -1290,6 +1293,18 @@ class CrossCommand extends Command<int> {
       _logger.err('--deploy needs --app or --deb (nothing to send).');
       return ExitCode.usage.code;
     }
+    // `--deb --deploy` is scp + `apt-get install` on the board; adb reaches
+    // boards that have neither. Fail here rather than after a full build.
+    if (deployHost != null &&
+        deb &&
+        _deployTarget(deployHost, target.sysroot).transport ==
+            DeviceTransport.adb) {
+      _logger.err(
+        '--deb --deploy needs the ssh transport (it installs with apt-get on '
+        'the board). Use --app to push a runnable bundle over adb.',
+      );
+      return ExitCode.usage.code;
+    }
     if (appPath == null && target.modules.isNotEmpty) {
       _logger.warn(
         '  modules       : ${target.modules.map((m) => m.name).join(", ")} '
@@ -1903,9 +1918,8 @@ class CrossCommand extends Command<int> {
           final rc = await _deploy(
             outDir,
             binName: p.basename(bin.path),
-            host: deployHost,
+            device: _deployTarget(deployHost, target.sysroot),
             destDir: dest,
-            spec: target.sysroot,
             bundleArch: archOfTriple(profile.targetTriple),
             // Auto-run only makes sense for a single embedder.
             run: run && built.length == 1,
@@ -1937,6 +1951,24 @@ class CrossCommand extends Command<int> {
     return ExitCode.success.code;
   }
 
+  /// Resolve the `--deploy` value plus the manifest device block into a
+  /// [DeployTarget].
+  ///
+  /// SSH port/opts stay gated on `source: device` (they describe the rsync
+  /// that scrapes the sysroot, and that is where they have always applied);
+  /// the transport and adb serial are read whatever the source is, since
+  /// pushing a bundle is a separate concern from sysroot provenance.
+  DeployTarget _deployTarget(String value, SysrootSpec? spec) {
+    final fromDevice = spec?.source == SysrootProvenance.device;
+    return DeployTarget.parse(
+      value,
+      transport: spec?.transport ?? DeviceTransport.ssh,
+      serial: spec?.adbSerial,
+      port: fromDevice ? spec!.sshPort : 22,
+      opts: fromDevice ? spec!.sshOpts : null,
+    );
+  }
+
   /// scp a built `.deb` to [host] and install it with `apt-get`, which
   /// resolves the package's `Depends:` from the device's own repos. The path
   /// for `--deb --deploy`. Assumes key-based SSH and non-interactive sudo (or a
@@ -1947,7 +1979,7 @@ class CrossCommand extends Command<int> {
     required String bundleArch,
   }) async {
     final deployer = Deployer(runProcess: _runProcess);
-    final boardArch = await deployer.remoteArch(host);
+    final boardArch = await deployer.remoteArch(DeployTarget.ssh(host));
     if (boardArch != null && !archMatches(bundleArch, boardArch)) {
       _logger.warn(
         'package arch is $bundleArch but $host reports $boardArch — apt will '
@@ -1978,60 +2010,55 @@ class CrossCommand extends Command<int> {
     return ExitCode.success.code;
   }
 
-  /// rsync [outDir] to [host]:[destDir] over SSH, then optionally run the
-  /// embedder there. SSH port/opts come from a device-sourced [spec].
+  /// Push [outDir] to [device]:[destDir] over its transport, then optionally
+  /// run the embedder there.
   Future<int> _deploy(
     Directory outDir, {
     required String binName,
-    required String host,
+    required DeployTarget device,
     required String destDir,
-    required SysrootSpec? spec,
     required String bundleArch,
     required bool run,
   }) async {
     final deployer = Deployer(runProcess: _runProcess);
-    final device = spec?.source == SysrootProvenance.device;
-    final port = device ? spec!.sshPort : 22;
-    final opts = device ? spec!.sshOpts : null;
+    final label = device.label;
 
     // Catch the common footgun: pushing a wrong-arch bundle (e.g. a native
     // `--target local` build) to the board, which only fails at run time with
     // a cryptic `Exec format error`.
-    final boardArch = await deployer.remoteArch(host, port: port, opts: opts);
+    final boardArch = await deployer.remoteArch(device);
     if (boardArch != null && !archMatches(bundleArch, boardArch)) {
       _logger.warn(
-        'bundle arch is $bundleArch but $host reports $boardArch — '
+        'bundle arch is $bundleArch but $label reports $boardArch — '
         'the embedder will not run there. Re-build with a matching '
         '--target (cross sysroot) for this board.',
       );
     }
 
-    final progress = _steps.start('Deploying → $host:$destDir');
-    final res = await deployer.push(
-      outDir,
-      host: host,
-      destDir: destDir,
-      port: port,
-      opts: opts,
-    );
+    final progress = _steps.start('Deploying → $label:$destDir');
+    final res = await deployer.push(outDir, device: device, destDir: destDir);
     if (!res.success) {
       progress.fail(res.message ?? 'deploy failed');
       return ExitCode.software.code;
     }
-    progress.complete('Deployed → $host:$destDir (via ${res.method})');
+    progress.complete('Deployed → $label:$destDir (via ${res.method})');
+    if (device.transport == DeviceTransport.adb) {
+      // adb has no rsync --delete, so a file dropped from the bundle since the
+      // last push survives on the board. Say so rather than let it surface as
+      // a stale asset at run time.
+      _logger.detail(
+        '  adb push overlays the destination (no --delete): use a fresh '
+        '--deploy-dir if a removed file must not linger.',
+      );
+    }
     final runCmd = './$binName -b .';
     if (!run) {
-      _logger.info('  run on target: ssh $host "cd $destDir && $runCmd"');
+      final argv = deployer.runArgv(device, destDir, runCmd);
+      _logger.info('  run on target: ${argv.join(' ')}');
       return ExitCode.success.code;
     }
-    _logger.info('  running on $host …');
-    final argv = deployer.runArgv(
-      host,
-      destDir,
-      runCmd,
-      port: port,
-      opts: opts,
-    );
+    _logger.info('  running on $label …');
+    final argv = deployer.runArgv(device, destDir, runCmd);
     final proc = await Process.start(
       argv.first,
       argv.sublist(1),
