@@ -626,20 +626,22 @@ void main() {
       expect(before, after);
     });
 
-    test('stable across same-content recreations (not mtime-dependent)',
-        () async {
-      final dir = Directory(p.join(tmp.path, 'fp'))..createSync();
-      File(p.join(dir.path, 'a.c')).writeAsStringSync('int main() {}');
+    test(
+      'stable across same-content recreations (not mtime-dependent)',
+      () async {
+        final dir = Directory(p.join(tmp.path, 'fp'))..createSync();
+        File(p.join(dir.path, 'a.c')).writeAsStringSync('int main() {}');
 
-      final first = await sourceFingerprint(dir);
+        final first = await sourceFingerprint(dir);
 
-      // Delete and recreate with the same content (different mtime).
-      File(p.join(dir.path, 'a.c')).deleteSync();
-      File(p.join(dir.path, 'a.c')).writeAsStringSync('int main() {}');
+        // Delete and recreate with the same content (different mtime).
+        File(p.join(dir.path, 'a.c')).deleteSync();
+        File(p.join(dir.path, 'a.c')).writeAsStringSync('int main() {}');
 
-      final second = await sourceFingerprint(dir);
-      expect(first, second);
-    });
+        final second = await sourceFingerprint(dir);
+        expect(first, second);
+      },
+    );
 
     test('empty directory produces a consistent fingerprint', () async {
       final dir = Directory(p.join(tmp.path, 'fp'))..createSync();

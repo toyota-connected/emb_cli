@@ -368,8 +368,7 @@ class OverlayBuilder {
     final hostTools = workspace.ensurePlatformDir('host-tools');
     final stampFile = File(p.join(hostTools.path, '${lib.pkg}.stamp'));
     final key = _hostToolKey(lib);
-    if (stampFile.existsSync() &&
-        stampFile.readAsStringSync().trim() == key) {
+    if (stampFile.existsSync() && stampFile.readAsStringSync().trim() == key) {
       return p.join(hostTools.path, 'usr', 'bin');
     }
     final bin = await switch (lib.build) {
@@ -385,8 +384,9 @@ class OverlayBuilder {
       lib.url,
       lib.minVersion,
       lib.build.name,
-      for (final e in (lib.defines.entries.toList()
-        ..sort((a, b) => a.key.compareTo(b.key))))
+      for (final e
+          in (lib.defines.entries.toList()
+            ..sort((a, b) => a.key.compareTo(b.key))))
         '${e.key}=${e.value}',
       if (lib.patches.isNotEmpty) patchSeriesDigest(lib.patches),
     ];
