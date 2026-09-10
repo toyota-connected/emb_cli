@@ -409,4 +409,48 @@ void main() {
       expect(buildCount, 2, reason: 'version changed — must rebuild');
     },
   );
+
+  test(
+    'host: true tool rebuilds when compiler version changes (stamp mismatch)',
+    () async {
+      prestage('wayland-cxx-scanner-1.0.0');
+      var buildCount = 0;
+
+      ProcessRunner runWith(String compilerVersion) =>
+          (
+            String exe,
+            List<String> args, {
+            String? workingDirectory,
+            Map<String, String>? environment,
+            bool includeParentEnvironment = true,
+            bool runInShell = false,
+            ProcessOutputMode output = ProcessOutputMode.capture,
+            String? label,
+          }) async {
+            if (exe == 'cmake' && args.contains('-S')) buildCount++;
+            final stdout = (exe == 'cc') ? compilerVersion : '';
+            return RunResult(0, stdout, '');
+          };
+
+      final lib = _hostLib();
+      final ob = OverlayBuilder(
+        Workspace(tmp),
+        _profile,
+        runProcess: runWith('gcc (Ubuntu 13.1.0) 13.1.0'),
+      );
+      await ob.build([lib]);
+      ob.close();
+      expect(buildCount, 1, reason: 'first build');
+
+      // Same inputs, different compiler: stamp key changes, must rebuild.
+      final ob2 = OverlayBuilder(
+        Workspace(tmp),
+        _profile,
+        runProcess: runWith('gcc (Ubuntu 14.2.0) 14.2.0'),
+      );
+      await ob2.build([lib]);
+      ob2.close();
+      expect(buildCount, 2, reason: 'compiler changed — must rebuild');
+    },
+  );
 }

@@ -2,7 +2,8 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:emb_cli/src/cross/build_jobs.dart';
-import 'package:emb_cli/src/cross/cross_keys.dart' show contentHash;
+import 'package:emb_cli/src/cross/cross_keys.dart'
+    show augmentIdentity, contentHash;
 import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
@@ -82,6 +83,23 @@ class OverlayBuilder {
   /// or null. Applied to the augment CMake builds as a compiler launcher, but
   /// not the host-tool builds (those use the host compiler).
   final String? _launcher;
+
+  String? _cachedCompilerVersion;
+
+  /// First line of `$CC --version` (or `cc --version`), used to key host-tool
+  /// stamps so a compiler upgrade invalidates the cached binary. Empty string
+  /// on any failure so a missing `cc` doesn't break the build.
+  Future<String> _compilerVersion() async {
+    if (_cachedCompilerVersion != null) return _cachedCompilerVersion!;
+    final cc = Platform.environment['CC'] ?? 'cc';
+    try {
+      final r = await _run(cc, ['--version']);
+      _cachedCompilerVersion = r.stdout.split('\n').first.trim();
+    } on ProcessException {
+      _cachedCompilerVersion = '';
+    }
+    return _cachedCompilerVersion!;
+  }
 
   /// Build every lib in [libs] that the sysroot doesn't already satisfy.
   /// Returns the overlay search paths to layer onto the build env.
@@ -361,37 +379,35 @@ class OverlayBuilder {
   /// file and no `profile.buildEnv()` — the tool must run on the build machine,
   /// so it uses the host compiler and the inherited host environment.
   ///
-  /// A stamp keyed on the lib's URL, version, defines, and patch digest skips
-  /// the build when the inputs haven't changed — host tools are otherwise
+  /// A stamp keyed on [augmentIdentity] plus host OS and compiler version
+  /// skips the build when the inputs haven't changed — host tools are otherwise
   /// rebuilt on every `--build` because `_freshBuildDir` wipes the cmake dir.
+  /// The stamp also checks that the `usr/bin` payload still exists, so a
+  /// partial prune falls through to a rebuild rather than returning a bad path.
   Future<String> _buildHostTool(AugmentLib lib) async {
     final hostTools = workspace.ensurePlatformDir('host-tools');
     final stampFile = File(p.join(hostTools.path, '${lib.pkg}.stamp'));
-    final key = _hostToolKey(lib);
-    if (stampFile.existsSync() && stampFile.readAsStringSync().trim() == key) {
-      return p.join(hostTools.path, 'usr', 'bin');
+    final key = await _hostToolKey(lib);
+    final binDir = p.join(hostTools.path, 'usr', 'bin');
+    if (stampFile.existsSync() &&
+        stampFile.readAsStringSync().trim() == key &&
+        Directory(binDir).existsSync()) {
+      return binDir;
     }
     final bin = await switch (lib.build) {
       CrossGenerator.cmake => _buildCMakeHost(lib),
       CrossGenerator.meson => _buildMesonHost(lib),
     };
+    Directory(bin).createSync(recursive: true);
     stampFile.writeAsStringSync(key);
     return bin;
   }
 
-  String _hostToolKey(AugmentLib lib) {
-    final parts = [
-      lib.url,
-      lib.minVersion,
-      lib.build.name,
-      for (final e
-          in (lib.defines.entries.toList()
-            ..sort((a, b) => a.key.compareTo(b.key))))
-        '${e.key}=${e.value}',
-      if (lib.patches.isNotEmpty) patchSeriesDigest(lib.patches),
-    ];
-    return contentHash(parts);
-  }
+  Future<String> _hostToolKey(AugmentLib lib) async => contentHash([
+    augmentIdentity(lib),
+    Platform.operatingSystem,
+    await _compilerVersion(),
+  ]);
 
   Future<String> _buildCMakeHost(AugmentLib lib) async {
     final src = await _fetchSource(lib);
