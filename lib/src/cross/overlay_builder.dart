@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:emb_cli/src/cross/build_jobs.dart';
+import 'package:emb_cli/src/cross/cross_keys.dart' show contentHash;
 import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
@@ -359,10 +360,38 @@ class OverlayBuilder {
   /// prepend to the cross build's PATH. Deliberately passes no cross toolchain
   /// file and no `profile.buildEnv()` — the tool must run on the build machine,
   /// so it uses the host compiler and the inherited host environment.
-  Future<String> _buildHostTool(AugmentLib lib) => switch (lib.build) {
-    CrossGenerator.cmake => _buildCMakeHost(lib),
-    CrossGenerator.meson => _buildMesonHost(lib),
-  };
+  ///
+  /// A stamp keyed on the lib's URL, version, defines, and patch digest skips
+  /// the build when the inputs haven't changed — host tools are otherwise
+  /// rebuilt on every `--build` because `_freshBuildDir` wipes the cmake dir.
+  Future<String> _buildHostTool(AugmentLib lib) async {
+    final hostTools = workspace.ensurePlatformDir('host-tools');
+    final stampFile = File(p.join(hostTools.path, '${lib.pkg}.stamp'));
+    final key = _hostToolKey(lib);
+    if (stampFile.existsSync() &&
+        stampFile.readAsStringSync().trim() == key) {
+      return p.join(hostTools.path, 'usr', 'bin');
+    }
+    final bin = await switch (lib.build) {
+      CrossGenerator.cmake => _buildCMakeHost(lib),
+      CrossGenerator.meson => _buildMesonHost(lib),
+    };
+    stampFile.writeAsStringSync(key);
+    return bin;
+  }
+
+  String _hostToolKey(AugmentLib lib) {
+    final parts = [
+      lib.url,
+      lib.minVersion,
+      lib.build.name,
+      for (final e in (lib.defines.entries.toList()
+        ..sort((a, b) => a.key.compareTo(b.key))))
+        '${e.key}=${e.value}',
+      if (lib.patches.isNotEmpty) patchSeriesDigest(lib.patches),
+    ];
+    return contentHash(parts);
+  }
 
   Future<String> _buildCMakeHost(AugmentLib lib) async {
     final src = await _fetchSource(lib);
