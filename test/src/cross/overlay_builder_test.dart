@@ -357,7 +357,8 @@ void main() {
       ob.close();
       expect(buildCount, 1, reason: 'first build');
 
-      // Second invocation with identical inputs: cmake must not be called again.
+      // Second invocation with identical inputs: cmake must not be called
+      // again.
       final ob2 = OverlayBuilder(Workspace(tmp), _profile, runProcess: run);
       await ob2.build([lib]);
       ob2.close();
