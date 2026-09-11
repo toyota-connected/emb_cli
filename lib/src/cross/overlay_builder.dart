@@ -1,7 +1,10 @@
+import 'dart:ffi';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:emb_cli/src/cross/build_jobs.dart';
+import 'package:emb_cli/src/cross/cross_keys.dart'
+    show augmentIdentity, contentHash;
 import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
@@ -81,6 +84,29 @@ class OverlayBuilder {
   /// or null. Applied to the augment CMake builds as a compiler launcher, but
   /// not the host-tool builds (those use the host compiler).
   final String? _launcher;
+
+  String? _cachedCompilerVersions;
+
+  /// First line of `$CC --version` and `$CXX --version`, joined, used to key
+  /// host-tool stamps so a compiler upgrade invalidates the cached binary.
+  /// Splits on whitespace so `CC="ccache gcc"` resolves the real executable.
+  /// Empty string per tool on any failure so a missing compiler doesn't break.
+  Future<String> _compilerVersions() async {
+    if (_cachedCompilerVersions != null) return _cachedCompilerVersions!;
+    Future<String> probe(String envVar, String fallback) async {
+      final exe = (Platform.environment[envVar] ?? fallback).split(' ').first;
+      try {
+        final r = await _run(exe, ['--version']);
+        return r.stdout.split('\n').first.trim();
+      } on ProcessException {
+        return '';
+      }
+    }
+
+    final results = await Future.wait([probe('CC', 'cc'), probe('CXX', 'c++')]);
+    _cachedCompilerVersions = results.join('|');
+    return _cachedCompilerVersions!;
+  }
 
   /// Build every lib in [libs] that the sysroot doesn't already satisfy.
   /// Returns the overlay search paths to layer onto the build env.
@@ -359,15 +385,45 @@ class OverlayBuilder {
   /// prepend to the cross build's PATH. Deliberately passes no cross toolchain
   /// file and no `profile.buildEnv()` — the tool must run on the build machine,
   /// so it uses the host compiler and the inherited host environment.
-  Future<String> _buildHostTool(AugmentLib lib) => switch (lib.build) {
-    CrossGenerator.cmake => _buildCMakeHost(lib),
-    CrossGenerator.meson => _buildMesonHost(lib),
-  };
+  ///
+  /// A stamp keyed on [augmentIdentity] plus host OS, arch, and compiler
+  /// versions skips the build when the inputs haven't changed — host tools are
+  /// otherwise rebuilt on every `--build` because `_freshBuildDir` wipes the
+  /// cmake dir. The stamp is deleted before each build so a failed install
+  /// doesn't leave a stale hit; the payload dir is also checked so a partial
+  /// prune falls through to a rebuild rather than returning a bad path.
+  Future<String> _buildHostTool(AugmentLib lib) async {
+    final hostTools = workspace.ensurePlatformDir('host-tools');
+    final toolDir = Directory(p.join(hostTools.path, lib.pkg))
+      ..createSync(recursive: true);
+    final stampFile = File(p.join(toolDir.path, 'stamp'));
+    final key = await _hostToolKey(lib);
+    final binDir = p.join(toolDir.path, 'usr', 'bin');
+    if (stampFile.existsSync() &&
+        stampFile.readAsStringSync().trim() == key &&
+        Directory(binDir).existsSync()) {
+      return binDir;
+    }
+    if (stampFile.existsSync()) stampFile.deleteSync();
+    final bin = await switch (lib.build) {
+      CrossGenerator.cmake => _buildCMakeHost(lib, toolDir),
+      CrossGenerator.meson => _buildMesonHost(lib, toolDir),
+    };
+    Directory(bin).createSync(recursive: true);
+    stampFile.writeAsStringSync(key);
+    return bin;
+  }
 
-  Future<String> _buildCMakeHost(AugmentLib lib) async {
+  Future<String> _hostToolKey(AugmentLib lib) async => contentHash([
+    augmentIdentity(lib),
+    Platform.operatingSystem,
+    Abi.current().toString(),
+    await _compilerVersions(),
+  ]);
+
+  Future<String> _buildCMakeHost(AugmentLib lib, Directory toolDir) async {
     final src = await _fetchSource(lib);
     final bld = _freshBuildDir(src);
-    final hostTools = workspace.ensurePlatformDir('host-tools');
     _check(
       lib,
       'cmake configure (host)',
@@ -397,17 +453,16 @@ class OverlayBuilder {
       await _run(
         'cmake',
         ['--install', bld.path],
-        environment: {'DESTDIR': hostTools.path},
+        environment: {'DESTDIR': toolDir.path},
         output: ProcessOutputMode.stream,
       ),
     );
-    return p.join(hostTools.path, 'usr', 'bin');
+    return p.join(toolDir.path, 'usr', 'bin');
   }
 
-  Future<String> _buildMesonHost(AugmentLib lib) async {
+  Future<String> _buildMesonHost(AugmentLib lib, Directory toolDir) async {
     final src = await _fetchSource(lib);
     final bld = _freshBuildDir(src);
-    final hostTools = workspace.ensurePlatformDir('host-tools');
     _check(
       lib,
       'meson setup (host)',
@@ -435,11 +490,11 @@ class OverlayBuilder {
       await _run(
         'ninja',
         ['-C', bld.path, 'install'],
-        environment: {'DESTDIR': hostTools.path},
+        environment: {'DESTDIR': toolDir.path},
         output: ProcessOutputMode.stream,
       ),
     );
-    return p.join(hostTools.path, 'usr', 'bin');
+    return p.join(toolDir.path, 'usr', 'bin');
   }
 
   /// Throw with the failing [step]'s stderr so an overlay failure is

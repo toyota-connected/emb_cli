@@ -89,7 +89,7 @@ String sysrootKey(CrossTarget t) {
 }
 
 /// An augment's build identity: the fields that change what gets produced,
-/// including a digest of its patch series.
+/// including defines, a digest of its patch series, and subdir.
 ///
 /// The patch digest is load-bearing. Nothing else here moves when a patch is
 /// edited in place — `url` and `min` stay put — so without it a store entry
@@ -99,12 +99,15 @@ String sysrootKey(CrossTarget t) {
 ///
 /// Patch paths must already be resolved (see `resolvePatchPaths`); a relative
 /// path here would hash whatever it resolves to from the current directory.
+/// Defines are sorted before hashing so key order is stable regardless of
+/// insertion order.
 String augmentIdentity(AugmentLib a) => [
   a.pkg,
   a.minVersion,
   a.url,
   a.build.name,
   '${a.staticLink}',
+  if (a.defines.isNotEmpty) 'defines:${_kv(a.defines)}',
   if (a.patches.isNotEmpty) 'patches:${patchSeriesDigest(a.patches)}',
   if (a.subdir != null && a.subdir!.isNotEmpty) 'subdir:${a.subdir}',
 ].join(':');
