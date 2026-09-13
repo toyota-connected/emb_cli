@@ -285,7 +285,8 @@ class AotBuilder {
       ]);
     }
 
-    final newScheme = File(_frontendServerAot).existsSync();
+    final oldSnapshot = p.join(_hostEngine.path, 'frontend_server.dart.snapshot');
+    final newScheme = File(_frontendServerAot).existsSync() || !File(oldSnapshot).existsSync();
     final targetArch = arch ?? host.machineArch;
     final gen = genSnapshot ?? await _resolveGenSnapshot(targetArch, modes);
 
