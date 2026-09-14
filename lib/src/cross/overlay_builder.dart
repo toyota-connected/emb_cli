@@ -89,12 +89,19 @@ class OverlayBuilder {
 
   /// First line of `$CC --version` and `$CXX --version`, joined, used to key
   /// host-tool stamps so a compiler upgrade invalidates the cached binary.
-  /// Splits on whitespace so `CC="ccache gcc"` resolves the real executable.
+  /// Strips ccache/sccache wrappers so `CC="ccache gcc"` resolves to `gcc`.
   /// Empty string per tool on any failure so a missing compiler doesn't break.
   Future<String> _compilerVersions() async {
     if (_cachedCompilerVersions != null) return _cachedCompilerVersions!;
     Future<String> probe(String envVar, String fallback) async {
-      final exe = (Platform.environment[envVar] ?? fallback).split(' ').first;
+      const wrappers = {'ccache', 'sccache'};
+      final parts = (Platform.environment[envVar] ?? fallback).trim().split(
+        RegExp(r'\s+'),
+      );
+      final exe = parts.firstWhere(
+        (p) => !wrappers.contains(p),
+        orElse: () => fallback,
+      );
       try {
         final r = await _run(exe, ['--version']);
         return r.stdout.split('\n').first.trim();
