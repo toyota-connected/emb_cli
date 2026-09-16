@@ -331,4 +331,183 @@ void main() {
     );
     ob.close();
   });
+
+  test(
+    'host: true tool is skipped on second build when stamp matches',
+    () async {
+      prestage('wayland-cxx-scanner-1.0.0');
+      var buildCount = 0;
+      Future<RunResult> run(
+        String exe,
+        List<String> args, {
+        String? workingDirectory,
+        Map<String, String>? environment,
+        bool includeParentEnvironment = true,
+        bool runInShell = false,
+        ProcessOutputMode output = ProcessOutputMode.capture,
+        String? label,
+      }) async {
+        if (exe == 'cmake' && args.contains('-S')) buildCount++;
+        return const RunResult(0, '', '');
+      }
+
+      final lib = _hostLib();
+      final ob = OverlayBuilder(Workspace(tmp), _profile, runProcess: run);
+      await ob.build([lib]);
+      ob.close();
+      expect(buildCount, 1, reason: 'first build');
+
+      // Second invocation with identical inputs: cmake must not be called
+      // again.
+      final ob2 = OverlayBuilder(Workspace(tmp), _profile, runProcess: run);
+      await ob2.build([lib]);
+      ob2.close();
+      expect(
+        buildCount,
+        1,
+        reason: 'stamp hit — cmake skipped on second build',
+      );
+    },
+  );
+
+  test(
+    'host: true tool rebuilds when inputs change (stamp mismatch)',
+    () async {
+      prestage('wayland-cxx-scanner-1.0.0');
+      prestage('wayland-cxx-scanner-2.0.0');
+      var buildCount = 0;
+      Future<RunResult> run(
+        String exe,
+        List<String> args, {
+        String? workingDirectory,
+        Map<String, String>? environment,
+        bool includeParentEnvironment = true,
+        bool runInShell = false,
+        ProcessOutputMode output = ProcessOutputMode.capture,
+        String? label,
+      }) async {
+        if (exe == 'cmake' && args.contains('-S')) buildCount++;
+        return const RunResult(0, '', '');
+      }
+
+      final ob = OverlayBuilder(Workspace(tmp), _profile, runProcess: run);
+      await ob.build([_hostLib()]);
+      ob.close();
+      expect(buildCount, 1);
+
+      // Same package, different version: stamp key changes, must rebuild.
+      final updated = AugmentLib.fromMap({
+        'pkg': 'wayland-cxx-scanner',
+        'min': '2.0.0',
+        'url': 'https://x/wayland-cxx-scanner-2.0.0.tar.gz',
+        'build': 'cmake',
+        'host': true,
+      });
+      final ob2 = OverlayBuilder(Workspace(tmp), _profile, runProcess: run);
+      await ob2.build([updated]);
+      ob2.close();
+      expect(buildCount, 2, reason: 'version changed — must rebuild');
+    },
+  );
+
+  test(
+    'host: true tool rebuilds when compiler version changes (stamp mismatch)',
+    () async {
+      prestage('wayland-cxx-scanner-1.0.0');
+      var buildCount = 0;
+
+      ProcessRunner runWith(String compilerVersion) =>
+          (
+            String exe,
+            List<String> args, {
+            String? workingDirectory,
+            Map<String, String>? environment,
+            bool includeParentEnvironment = true,
+            bool runInShell = false,
+            ProcessOutputMode output = ProcessOutputMode.capture,
+            String? label,
+          }) async {
+            if (exe == 'cmake' && args.contains('-S')) buildCount++;
+            final stdout = args.contains('--version') ? compilerVersion : '';
+            return RunResult(0, stdout, '');
+          };
+
+      final lib = _hostLib();
+      final ob = OverlayBuilder(
+        Workspace(tmp),
+        _profile,
+        runProcess: runWith('gcc (Ubuntu 13.1.0) 13.1.0'),
+      );
+      await ob.build([lib]);
+      ob.close();
+      expect(buildCount, 1, reason: 'first build');
+
+      // Same inputs, different compiler: stamp key changes, must rebuild.
+      final ob2 = OverlayBuilder(
+        Workspace(tmp),
+        _profile,
+        runProcess: runWith('gcc (Ubuntu 14.2.0) 14.2.0'),
+      );
+      await ob2.build([lib]);
+      ob2.close();
+      expect(buildCount, 2, reason: 'compiler changed — must rebuild');
+    },
+  );
+
+  test('host: true stamp is cleared before build so a failed install does not '
+      'leave a stale hit', () async {
+    prestage('wayland-cxx-scanner-1.0.0');
+    prestage('wayland-cxx-scanner-2.0.0');
+    var buildCount = 0;
+    var failConfigure = false;
+
+    Future<RunResult> run(
+      String exe,
+      List<String> args, {
+      String? workingDirectory,
+      Map<String, String>? environment,
+      bool includeParentEnvironment = true,
+      bool runInShell = false,
+      ProcessOutputMode output = ProcessOutputMode.capture,
+      String? label,
+    }) async {
+      if (exe == 'cmake' && args.contains('-S')) {
+        buildCount++;
+        if (failConfigure) return const RunResult(1, '', 'simulated failure');
+      }
+      return const RunResult(0, '', '');
+    }
+
+    // First build: v1 succeeds, stamp written.
+    final ob = OverlayBuilder(Workspace(tmp), _profile, runProcess: run);
+    await ob.build([_hostLib()]);
+    ob.close();
+    expect(buildCount, 1);
+
+    // Second build: v2 key doesn't match v1 stamp → stamp deleted → cmake
+    // configure fails → no new stamp written.
+    failConfigure = true;
+    final v2 = AugmentLib.fromMap({
+      'pkg': 'wayland-cxx-scanner',
+      'min': '2.0.0',
+      'url': 'https://x/wayland-cxx-scanner-2.0.0.tar.gz',
+      'build': 'cmake',
+      'host': true,
+    });
+    final ob2 = OverlayBuilder(Workspace(tmp), _profile, runProcess: run);
+    await expectLater(ob2.build([v2]), throwsA(isA<OverlayBuildException>()));
+    ob2.close();
+    expect(buildCount, 2);
+
+    // Third build: no stamp present → must rebuild, not skip.
+    failConfigure = false;
+    final ob3 = OverlayBuilder(Workspace(tmp), _profile, runProcess: run);
+    await ob3.build([v2]);
+    ob3.close();
+    expect(
+      buildCount,
+      3,
+      reason: 'stale stamp must not survive a failed build',
+    );
+  });
 }

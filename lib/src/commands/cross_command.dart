@@ -104,7 +104,10 @@ Map<String, String> mergeBackendDefines(
 /// or an edit behind a link reads as "unchanged" and the build is wrongly
 /// skipped. Directories are tracked by their resolved path, so a link that
 /// points at an ancestor is visited once instead of recursing forever.
-String sourceFingerprint(Directory dir) {
+///
+/// File content is hashed by streaming through `sha256.bind` so the memory
+/// footprint is bounded regardless of file size.
+Future<String> sourceFingerprint(Directory dir) async {
   final parts = <String>[];
   final visited = <String>{};
   final queue = <(Directory, String)>[(dir, '')];
@@ -132,7 +135,8 @@ String sourceFingerprint(Directory dir) {
         queue.add((Directory(e.path), rel));
       } else if (type == FileSystemEntityType.file) {
         try {
-          parts.add('$rel:${sha256.convert(File(e.path).readAsBytesSync())}');
+          final digest = await sha256.bind(File(e.path).openRead()).first;
+          parts.add('$rel:$digest');
         } on FileSystemException {
           parts.add('$rel:?');
         }
@@ -1077,14 +1081,25 @@ class CrossCommand extends Command<int> {
     List<String> selectedBackends = const [],
     bool skipIfBuilt = false,
   }) async {
+    // A native `local` build: no sysroot; host toolchain; augments stage into
+    // a separate overlay rather than the sysroot.
     final native = profile.providerName == 'local';
 
+    // --backend filters the matrix (validated in run()); merge shared
+    // cross.defines into each backend (a backend define wins on a clash), over
+    // the bundle-relative rpath defaults.
     final backends = {
       for (final e in target.backends.entries)
         if (selectedBackends.isEmpty || selectedBackends.contains(e.key))
           e.key: mergeBackendDefines(target.defines, e.value),
     };
 
+    // Build any augment libraries the sysroot doesn't already satisfy (e.g.
+    // libdisplay-info >= 0.2.0) into a per-workspace overlay prefix — kept out
+    // of the sysroot so the sysroot can be a shared read-only store tree — and
+    // layer its include/lib/pkg-config search paths onto the embedder build.
+    // Native builds stage the same way, into a separate per-workspace overlay
+    // (there is no sysroot to stage into); host-satisfied augments are skipped.
     var hostToolBins = const <String>[];
     OverlayPaths? overlayPaths;
     final augments = target.gatedAugments();
@@ -1103,6 +1118,15 @@ class CrossCommand extends Command<int> {
         launcher: launcher,
       );
       try {
+        // Cross: stage into the sysroot itself (not a separate overlay) so the
+        // headers/libs/pkg-config are found by the backend build's normal
+        // sysroot search and ship in the container image; the provider made the
+        // sysroot a private, writable clone. Native: there is no sysroot
+        // (targetSysroot is empty, so staging would land in the host /), so
+        // build into a separate per-workspace overlay; the embedder configure
+        // wires it via CMAKE_FIND_ROOT_PATH/CMAKE_PREFIX_PATH so a
+        // find_package(CONFIG) augment (e.g. sentry-native for the crash
+        // handler) resolves without touching the host root.
         overlayPaths = await overlay.build(
           augments,
           stageInto: native ? null : Directory(profile.targetSysroot),
@@ -1124,8 +1148,12 @@ class CrossCommand extends Command<int> {
       'cross-build-${profile.targetTriple}-${buildKey(target)}',
     );
 
+    // Native keeps the host compiler env; cross neutralizes it.
     final builder = CrossBuilder(
       profile,
+      // Under --offline-strict (with isolation available) the whole build tree
+      // — cmake/ninja and any child a build script spawns — runs in a network
+      // namespace, not just the cargo modules.
       runProcess: _offlineWrap ? netnsRunner(_runProcess) : _runProcess,
       neutralizeHostEnv: !native,
       hostTools: hostTools,
@@ -1138,7 +1166,7 @@ class CrossCommand extends Command<int> {
     // Fingerprint the embedder source tree so a subsequent --build detects
     // edits. Computed unconditionally: the skip check reads it, and a
     // successful build writes it.
-    final fingerprint = _sourceFingerprint(source);
+    final fingerprint = await _sourceFingerprint(source);
     final stampFile = File(p.join(buildRoot.path, '.emb-source-stamp'));
 
     // When the caller says skip-if-built, check that (a) the source hasn't
@@ -2616,7 +2644,8 @@ class CrossCommand extends Command<int> {
   String _octal(File f) =>
       '0${(f.statSync().mode & 0x1FF).toRadixString(8).padLeft(3, '0')}';
 
-  static String _sourceFingerprint(Directory dir) => sourceFingerprint(dir);
+  static Future<String> _sourceFingerprint(Directory dir) =>
+      sourceFingerprint(dir);
 
   /// The binary to package: [bin] resolved under [buildDir], else the first ELF
   /// executable found there.
