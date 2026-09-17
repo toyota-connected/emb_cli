@@ -52,6 +52,53 @@ void main() {
     setUp(() => tmp = Directory.systemTemp.createTempSync('emb_proj_'));
     tearDown(() => tmp.deleteSync(recursive: true));
 
+    group('workspace:', () {
+      CrossProject load(String body) {
+        final f = File(p.join(tmp.path, 'x.emb.yaml'))..writeAsStringSync(body);
+        return CrossProjectResolver().resolve(f.path)!;
+      }
+
+      test('resolves relative to the manifest, not the cwd', () {
+        final project = load('''
+id: x
+workspace: staging/emb-workspace
+cross:
+  provider: arm-gnu
+''');
+        expect(project.workspaceDir, p.join(tmp.path, 'staging/emb-workspace'));
+      });
+
+      test('keeps an absolute value as given', () {
+        final project = load('''
+id: x
+workspace: /opt/ws
+cross:
+  provider: arm-gnu
+''');
+        expect(project.workspaceDir, '/opt/ws');
+      });
+
+      test('is null when undeclared', () {
+        final project = load('''
+id: x
+cross:
+  provider: arm-gnu
+''');
+        expect(project.workspaceDir, isNull);
+        expect(project.flutterVersion, isNull);
+      });
+
+      test('flutter_version: comes through beside it', () {
+        final project = load('''
+id: x
+flutter_version: 3.44.2
+cross:
+  provider: arm-gnu
+''');
+        expect(project.flutterVersion, '3.44.2');
+      });
+    });
+
     group('applyAppLayer', () {
       late Directory appDir;
       setUp(() => appDir = Directory.systemTemp.createTempSync('emb_app_'));

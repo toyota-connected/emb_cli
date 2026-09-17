@@ -61,6 +61,8 @@ class CrossProject {
     required this.nativeCross,
     this.nativeSourcePath,
     this.defaultTarget,
+    this.workspaceDir,
+    this.flutterVersion,
   });
 
   /// The project identifier (single manifest's id, or the `.emb/` base's),
@@ -85,6 +87,12 @@ class CrossProject {
   /// or a multi-file `.emb/`), where omitting `--target` means the native
   /// `local` build.
   final String? defaultTarget;
+
+  /// The manifest's `workspace:`, resolved absolute, or null when undeclared.
+  final String? workspaceDir;
+
+  /// The manifest's `flutter_version:`, when declared.
+  final String? flutterVersion;
 
   CrossTargetRef? operator [](String name) => targets[name];
 
@@ -274,6 +282,8 @@ class CrossProjectResolver {
       // A flat file's single target is the default; a cross.targets file
       // requires an explicit --target (else native local).
       defaultTarget: multi ? null : name,
+      workspaceDir: _workspaceOf(manifest, sourcePath),
+      flutterVersion: manifest['flutter_version'] as String?,
     );
   }
 
@@ -337,7 +347,23 @@ class CrossProjectResolver {
       targets: out,
       nativeCross: _withoutTargets(baseCross),
       nativeSourcePath: baseFile.existsSync() ? baseFile.path : null,
+      workspaceDir: _workspaceOf(
+        baseManifest,
+        baseFile.existsSync() ? baseFile.path : null,
+      ),
+      flutterVersion: baseManifest['flutter_version'] as String?,
     );
+  }
+
+  /// `workspace:` resolved against [sourcePath]'s directory, so the value
+  /// means the same thing from any cwd. Null when relative with no
+  /// [sourcePath] to anchor it.
+  String? _workspaceOf(Map<String, dynamic> manifest, String? sourcePath) {
+    final raw = manifest['workspace'];
+    if (raw is! String || raw.isEmpty) return null;
+    if (p.isAbsolute(raw)) return p.normalize(raw);
+    if (sourcePath == null) return null;
+    return p.normalize(p.join(p.dirname(p.absolute(sourcePath)), raw));
   }
 
   /// Expand one (already base-merged) `cross:` block into its target refs: a

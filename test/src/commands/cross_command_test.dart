@@ -19,6 +19,11 @@ class _CaptureLogger extends Logger {
   void info(String? message, {LogStyle? style}) => buffer.writeln(message);
 }
 
+/// Thrown by a fake process runner to end a command early.
+class _Stop implements Exception {
+  const _Stop();
+}
+
 const _host = HostInfo(
   os: HostOs.linux,
   machineArch: 'x86_64',
@@ -266,6 +271,159 @@ void main() {
         '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n',
       );
     expect(await run(['cross', '--dry-run', f.path]), ExitCode.success.code);
+  });
+
+  test('an unknown --backend fails before fetching sources', () async {
+    final ws = Directory(p.join(tmp.path, 'ws'))..createSync();
+    final pkg = pkgWith(
+      'badbe',
+      'id: badbe\ntype: app\n'
+          'cross:\n  provider: arm-gnu\n'
+          '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n'
+          '  source: { uri: https://invalid.example/nope.git }\n'
+          '  app: { uri: https://invalid.example/app.git }\n'
+          '  backends:\n    wayland-egl: { BUILD_BACKEND_WAYLAND_EGL: ON }\n',
+    );
+    final code = await run([
+      'cross',
+      '--build',
+      '--backend',
+      'wayland-typo',
+      '-w',
+      ws.path,
+      pkg.path,
+    ]);
+    expect(code, ExitCode.usage.code);
+    expect(Directory(p.join(ws.path, 'app')).existsSync(), isFalse);
+  });
+
+  test('--offline does not install a missing Flutter SDK', () async {
+    final ws = Directory(p.join(tmp.path, 'ws'))..createSync();
+    final pkg = pkgWith(
+      'offsdk',
+      'id: offsdk\ntype: app\nflutter_version: 3.44.2\n'
+          'cross:\n  provider: arm-gnu\n'
+          '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n',
+    );
+    final code = await run([
+      'cross',
+      '--build',
+      '--offline',
+      '-w',
+      ws.path,
+      pkg.path,
+    ]);
+    expect(code, ExitCode.software.code);
+    expect(Directory(p.join(ws.path, 'flutter')).existsSync(), isFalse);
+  });
+
+  group('app package resolution', () {
+    late Directory ws;
+    late Directory app;
+    late List<List<String>> calls;
+
+    setUp(() {
+      ws = Directory(p.join(tmp.path, 'ws'))..createSync();
+      File(p.join(ws.path, 'flutter', 'bin', 'flutter'))
+        ..createSync(recursive: true)
+        ..writeAsStringSync('');
+      app = Directory(p.join(tmp.path, 'app'))..createSync();
+      File(p.join(app.path, 'pubspec.yaml')).writeAsStringSync('name: app\n');
+      calls = [];
+    });
+
+    Future<void> build() async {
+      final pkg = pkgWith(
+        'pub',
+        'id: pub\ntype: app\ncross:\n  provider: arm-gnu\n'
+            '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n',
+      );
+      Future<RunResult> runner(
+        String exe,
+        List<String> args, {
+        String? workingDirectory,
+        Map<String, String>? environment,
+        bool includeParentEnvironment = true,
+        bool runInShell = false,
+        ProcessOutputMode output = ProcessOutputMode.capture,
+        String? label,
+      }) async {
+        calls.add([exe, ...args]);
+        // Stop at the first process: nothing past resolution is under test.
+        throw const _Stop();
+      }
+
+      final crossRunner = CommandRunner<int>('emb', 'test')
+        ..addCommand(
+          CrossCommand(logger: Logger(), host: _host, processRunner: runner),
+        );
+      try {
+        await crossRunner.run([
+          'cross',
+          '--build',
+          '-t',
+          'local',
+          '--app',
+          app.path,
+          '-w',
+          ws.path,
+          pkg.path,
+        ]);
+      } on _Stop {
+        // Expected: the runner stops the build.
+      }
+    }
+
+    bool ranPubGet() =>
+        calls.any((c) => c.contains('pub') && c.contains('get'));
+
+    test('runs pub get when there is no package config', () async {
+      await build();
+      expect(ranPubGet(), isTrue);
+    });
+
+    test('skips pub get when the package config is current', () async {
+      File(p.join(app.path, '.dart_tool', 'package_config.json'))
+        ..createSync(recursive: true)
+        ..setLastModifiedSync(DateTime.now().add(const Duration(hours: 1)));
+      await build();
+      expect(ranPubGet(), isFalse);
+    });
+
+    test('reruns pub get when pubspec.yaml is newer', () async {
+      File(p.join(app.path, '.dart_tool', 'package_config.json'))
+        ..createSync(recursive: true)
+        ..setLastModifiedSync(
+          DateTime.now().subtract(const Duration(hours: 1)),
+        );
+      await build();
+      expect(ranPubGet(), isTrue);
+    });
+  });
+
+  // --dry-run/--json promise to report the plan without touching the network.
+  // cross.source:/cross.app: would otherwise clone on the way past.
+  test('--json does not fetch a declared cross.source', () async {
+    final ws = Directory(p.join(tmp.path, 'ws'))..createSync();
+    final pkg = pkgWith(
+      'nofetch',
+      'id: nofetch\ntype: app\n'
+          'cross:\n  provider: arm-gnu\n'
+          '  triple: aarch64-none-linux-gnu\n'
+          '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n'
+          '  source: { uri: https://invalid.example/nope.git }\n'
+          '  app: { uri: https://invalid.example/app.git }\n',
+    );
+    final (code, _) = await runJson([
+      'cross',
+      '--json',
+      '-w',
+      ws.path,
+      pkg.path,
+    ]);
+    expect(code, ExitCode.success.code);
+    // A clone would have created <workspace>/app to clone into.
+    expect(Directory(p.join(ws.path, 'app')).existsSync(), isFalse);
   });
 
   test('--json emits the plan envelope (implies --dry-run)', () async {

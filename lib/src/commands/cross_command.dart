@@ -23,6 +23,7 @@ import 'package:emb_cli/src/cross/dockerfile_emitter.dart';
 import 'package:emb_cli/src/cross/elf_check.dart';
 import 'package:emb_cli/src/cross/emb_lock.dart';
 import 'package:emb_cli/src/cross/flatpak_packager.dart';
+import 'package:emb_cli/src/cross/flatpak_vendor.dart';
 import 'package:emb_cli/src/cross/image_publisher.dart';
 import 'package:emb_cli/src/cross/ipk_packager.dart';
 import 'package:emb_cli/src/cross/local_cross_provider.dart';
@@ -36,11 +37,15 @@ import 'package:emb_cli/src/cross/rpm_packager.dart';
 import 'package:emb_cli/src/cross/runnable_bundle.dart';
 import 'package:emb_cli/src/cross/tarball_packager.dart';
 import 'package:emb_cli/src/engine/engine_artifacts.dart';
+import 'package:emb_cli/src/env/env_script.dart';
+import 'package:emb_cli/src/flutter/flutter_sdk.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/host/interactivity.dart';
 import 'package:emb_cli/src/host/preflight.dart';
 import 'package:emb_cli/src/json_output.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
+import 'package:emb_cli/src/manifest/source_repo.dart';
+import 'package:emb_cli/src/repo/git_repo.dart';
 import 'package:emb_cli/src/step_reporter.dart';
 import 'package:emb_cli/src/verbosity.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
@@ -498,6 +503,10 @@ class CrossCommand extends Command<int> {
   /// wrapped in a network namespace — resolved in [run] once the host's
   /// isolation capability is known, then read by the module build.
   OfflineMode _offlineMode = OfflineMode.off;
+
+  /// The checkout `cross.source:` produced; null means the manifest's own
+  /// directory is the build source.
+  Directory? _sourceOverride;
   bool _offlineWrap = false;
 
   late final Preflight _preflight = Preflight(_logger);
@@ -528,7 +537,13 @@ class CrossCommand extends Command<int> {
     final inputPath = args.rest.first;
     // The checkout every build tree below is keyed against; resolved here
     // because --clean needs it too, before any target work happens.
-    final source =
+    //
+    // This stays the *manifest's* directory even when `cross.source:` clones
+    // the embedder elsewhere: it is what `icon:`, `files:` and
+    // `modules[].path` resolve against, and what projectKey names, so a clean
+    // (which clones nothing) matches the build dirs a build produced. Which
+    // embedder source was configured is carried by buildKey instead.
+    final manifestDir =
         FileSystemEntity.typeSync(inputPath) == FileSystemEntityType.file
         ? File(inputPath).parent
         : Directory(inputPath);
@@ -566,31 +581,6 @@ class CrossCommand extends Command<int> {
     final effectiveTarget = selection.name;
     final isNative = selection.isNative;
 
-    // An `--app` may carry its own `.emb/` layer, merged over the project's.
-    // The project owns the board profile its apps share; this is where one app
-    // states what only it needs — a `-dev` package its Dart build hooks link
-    // against, or a source-built dependency the embedder links — without every
-    // consumer of that board carrying it. A native build reads the app's
-    // shared `cross:` block, the same one the project's native build uses:
-    // `sysroot` has nothing to add to on the host, but `defines` and `augment`
-    // apply to a host build exactly as they do to a cross one.
-    final appDirArg = args['app'] as String?;
-    final selected = appDirArg == null
-        ? selection.cross
-        : _project.applyAppLayer(
-            cross: selection.cross,
-            appDir: appDirArg,
-            targetName: effectiveTarget,
-            native: isNative,
-          );
-    final appLayerSource = appDirArg == null
-        ? null
-        : _project.appLayerSourcePath(
-            appDir: appDirArg,
-            targetName: effectiveTarget,
-            native: isNative,
-          );
-
     // --define KEY=VALUE overrides: parsed up front (usage error before any
     // download), then baked into the target itself so buildKey, the backend
     // matrix, the no-backend build, and --dry-run all see the final values.
@@ -604,31 +594,6 @@ class CrossCommand extends Command<int> {
       return ExitCode.usage.code;
     }
 
-    final CrossTarget target;
-    try {
-      target = CrossTarget.fromMap(selected)
-          .withResolvedPatches(appLayerSource ?? selection.sourcePath)
-          .withDefineOverrides(cliDefines);
-      // fromMap throws ArgumentError on an unknown provider token.
-      // ignore: avoid_catching_errors
-    } on ArgumentError catch (e) {
-      _logger.err('Invalid cross: block — ${e.message}');
-      return ExitCode.usage.code;
-    }
-
-    // Validate --backend against the manifest up front, before any download.
-    final selectedBackends = args['backend'] as List<String>;
-    final unknownBackends = selectedBackends.where(
-      (b) => !target.backends.containsKey(b),
-    );
-    if (unknownBackends.isNotEmpty) {
-      _logger.err(
-        'Unknown backend(s): ${unknownBackends.join(", ")}. '
-        'Available: ${target.backends.keys.join(", ")}',
-      );
-      return ExitCode.usage.code;
-    }
-
     // --publish needs a registry target up front (before any download).
     final publishImage = args['image'] as String?;
     if (args['publish'] == true &&
@@ -638,7 +603,7 @@ class CrossCommand extends Command<int> {
     }
 
     final host = _host ?? HostInfo.detect();
-    final workspace = Workspace.resolve(override: args['workspace'] as String?);
+    final workspace = _resolveWorkspace(project, args['workspace'] as String?);
     // --offline-strict implies --offline; it additionally requires a network
     // namespace around build subprocesses (see the build dispatch below).
     _offlineMode = args['offline-strict'] == true
@@ -647,6 +612,135 @@ class CrossCommand extends Command<int> {
         ? OfflineMode.deny
         : OfflineMode.off;
     final offline = _offlineMode != OfflineMode.off;
+
+    // Only --prepare and --build compile the embedder, and only --build needs
+    // the app, the SDK and resolved packages. Reporting and cleaning modes
+    // touch no network.
+    final inspecting =
+        args['dry-run'] == true ||
+        args['json'] == true ||
+        args['clean'] == true ||
+        args['clean-all'] == true;
+    final building = args['build'] == true && !inspecting;
+    final compiling = building || (args['prepare'] == true && !inspecting);
+
+    var appDirArg = args['app'] as String?;
+    final declaredApp = building && appDirArg == null
+        ? CrossTarget.repoFrom(selection.cross['app'])
+        : null;
+
+    // An `--app` may carry its own `.emb/` layer, merged over the project's.
+    // The project owns the board profile its apps share; this is where one app
+    // states what only it needs — a `-dev` package its Dart build hooks link
+    // against, or a source-built dependency the embedder links — without every
+    // consumer of that board carrying it. A native build reads the app's
+    // shared `cross:` block, the same one the project's native build uses:
+    // `sysroot` has nothing to add to on the host, but `defines` and `augment`
+    // apply to a host build exactly as they do to a cross one.
+    CrossTarget? resolveTarget() {
+      final appDir = appDirArg;
+      final selected = appDir == null
+          ? selection.cross
+          : _project.applyAppLayer(
+              cross: selection.cross,
+              appDir: appDir,
+              targetName: effectiveTarget,
+              native: isNative,
+            );
+      final appLayerSource = appDir == null
+          ? null
+          : _project.appLayerSourcePath(
+              appDir: appDir,
+              targetName: effectiveTarget,
+              native: isNative,
+            );
+      final CrossTarget t;
+      try {
+        t = CrossTarget.fromMap(selected)
+            .withResolvedPatches(appLayerSource ?? selection.sourcePath)
+            .withDefineOverrides(cliDefines);
+        // fromMap throws ArgumentError on an unknown provider token.
+        // ignore: avoid_catching_errors
+      } on ArgumentError catch (e) {
+        _logger.err('Invalid cross: block — ${e.message}');
+        return null;
+      }
+      final unknown = (args['backend'] as List<String>).where(
+        (b) => !t.backends.containsKey(b),
+      );
+      if (unknown.isNotEmpty) {
+        _logger.err(
+          'Unknown backend(s): ${unknown.join(", ")}. '
+          'Available: ${t.backends.keys.join(", ")}',
+        );
+        return null;
+      }
+      return t;
+    }
+
+    // Validate before any download; re-checked once a cloned app's layer
+    // merges.
+    var resolved = resolveTarget();
+    if (resolved == null) return ExitCode.usage.code;
+
+    if (building &&
+        args['flatpak'] == true &&
+        appDirArg == null &&
+        declaredApp == null) {
+      _logger.err(
+        '--flatpak needs an app (a flatpak bundles the whole app): pass '
+        '--app <dir>, or declare cross.app in the manifest.',
+      );
+      return ExitCode.usage.code;
+    }
+
+    if (compiling) {
+      final declaredSource = CrossTarget.repoFrom(selection.cross['source']);
+      if (declaredSource != null) {
+        final dir = await _syncRepo(
+          declaredSource,
+          workspace,
+          what: 'embedder source',
+          sourcePath: selection.sourcePath,
+          offline: offline,
+        );
+        if (dir == null) return ExitCode.software.code;
+        _sourceOverride = dir;
+      }
+    }
+
+    if (building) {
+      if (!await _ensureFlutterSdk(project, workspace, host, offline)) {
+        return ExitCode.software.code;
+      }
+
+      if (declaredApp != null) {
+        final dir = await _syncRepo(
+          declaredApp,
+          workspace,
+          what: 'app source',
+          sourcePath: selection.sourcePath,
+          offline: offline,
+        );
+        if (dir == null) return ExitCode.software.code;
+        // `pubspec_path` addresses an app inside a larger repo.
+        final sub = declaredApp.pubspecPath;
+        appDirArg = sub == null || sub.isEmpty
+            ? dir.path
+            : p.join(dir.path, sub);
+        resolved = resolveTarget();
+        if (resolved == null) return ExitCode.usage.code;
+      }
+
+      final appDir = appDirArg;
+      if (appDir != null &&
+          !await _ensureAppResolved(Directory(appDir), workspace, offline)) {
+        return ExitCode.software.code;
+      }
+    }
+    final target = resolved;
+    final selectedBackends = args['backend'] as List<String>;
+
     final provider = isNative
         ? LocalCrossProvider(host)
         : CrossProvider.forTarget(
@@ -662,7 +756,7 @@ class CrossCommand extends Command<int> {
         provider,
         target,
         workspace,
-        source,
+        manifestDir,
         all: args['clean-all'] == true,
       );
     }
@@ -827,10 +921,6 @@ class CrossCommand extends Command<int> {
           await _preflight.logInstallHint(host, ['cargo']);
           return ExitCode.unavailable.code;
         }
-        final manifestDir =
-            FileSystemEntity.typeSync(inputPath) == FileSystemEntityType.file
-            ? File(inputPath).parent
-            : Directory(inputPath);
         final err = await vendorTargetCargo(
           target: target,
           manifestDir: manifestDir,
@@ -887,10 +977,6 @@ class CrossCommand extends Command<int> {
 
     // Validate flag combinations before any build work: --prepare now compiles
     // the embedder, so a usage error caught after it would cost a full build.
-    if (doBuild && args['flatpak'] == true && args['app'] == null) {
-      _logger.err('--flatpak needs --app (a flatpak bundles the whole app).');
-      return ExitCode.usage.code;
-    }
     if (doPrepare || doBuild) {
       final enforcement = await resolveOfflineEnforcement(
         _offlineMode,
@@ -924,6 +1010,12 @@ class CrossCommand extends Command<int> {
       if (code != null) return code;
     }
 
+    // What CMake/Meson configures. `manifestDir` (resolved at the top, because
+    // --clean needs it before any target work) stays what `icon:`, `files:`
+    // and `modules[].path` resolve against; `cross.source:` makes the two
+    // different directories.
+    final source = _sourceOverride ?? manifestDir;
+
     _EmbedderResult? preparedEmbedder;
     if (doPrepare) {
       preparedEmbedder = await _buildEmbedder(
@@ -931,6 +1023,7 @@ class CrossCommand extends Command<int> {
         target,
         workspace,
         source,
+        manifestDir: manifestDir,
         launcher: launcher,
         hostTools: target.hostTools || args['host-tools'] == true,
         selectedBackends: selectedBackends,
@@ -944,6 +1037,7 @@ class CrossCommand extends Command<int> {
         target,
         workspace,
         source,
+        manifestDir: manifestDir,
         launcher: launcher,
         preparedEmbedder: preparedEmbedder,
         host: host,
@@ -954,7 +1048,7 @@ class CrossCommand extends Command<int> {
         flatpak: args['flatpak'] == true,
         defaultName: project.id,
         selectedBackends: selectedBackends,
-        appPath: args['app'] as String?,
+        appPath: appDirArg,
         mode: args['mode'] as String,
         obfuscate: args.wasParsed('obfuscate')
             ? args['obfuscate'] as bool
@@ -1078,6 +1172,7 @@ class CrossCommand extends Command<int> {
     CrossTarget target,
     Workspace workspace,
     Directory source, {
+    required Directory manifestDir,
     required String? launcher,
     required bool hostTools,
     List<String> selectedBackends = const [],
@@ -1156,9 +1251,14 @@ class CrossCommand extends Command<int> {
     // same project (a worktree, a second clone, a bisect tree) resolve one
     // buildKey and would otherwise share a CMake cache naming the first one's
     // source dir. See projectKey.
+    //
+    // Keyed on the manifest rather than on [source], because --clean clones
+    // nothing and has only the manifest to match against. Which embedder
+    // source was configured is in buildKey (see cross_keys: `src:`), so two
+    // `cross.source:` URIs under one manifest still get their own trees.
     final buildRoot = workspace.ensurePlatformDir(
       'cross-build-${profile.targetTriple}-${buildKey(target)}'
-      '-${projectKey(source.path)}',
+      '-${projectKey(manifestDir.path)}',
     );
 
     // Native keeps the host compiler env; cross neutralizes it.
@@ -1291,6 +1391,7 @@ class CrossCommand extends Command<int> {
     CrossTarget target,
     Workspace workspace,
     Directory source, {
+    required Directory manifestDir,
     required String? launcher,
     required HostInfo host,
     _EmbedderResult? preparedEmbedder,
@@ -1318,6 +1419,7 @@ class CrossCommand extends Command<int> {
           target,
           workspace,
           source,
+          manifestDir: manifestDir,
           launcher: launcher,
           hostTools: hostTools,
           selectedBackends: selectedBackends,
@@ -1388,7 +1490,7 @@ class CrossCommand extends Command<int> {
         run: run,
         flatpak: flatpak,
         defaultName: defaultName,
-        manifestDir: source,
+        manifestDir: manifestDir,
         overlayPrefix: overlayPaths?.prefix,
       );
       if (rc != ExitCode.success.code) return rc;
@@ -1401,7 +1503,7 @@ class CrossCommand extends Command<int> {
         buildRoot,
         built,
         defaultName,
-        source,
+        manifestDir,
         overlayPaths?.prefix,
         deployHost: deployHost,
       );
@@ -1414,7 +1516,7 @@ class CrossCommand extends Command<int> {
         buildRoot,
         built,
         defaultName,
-        source,
+        manifestDir,
         overlayPaths?.prefix,
       );
       if (rc != ExitCode.success.code) return rc;
@@ -1426,7 +1528,7 @@ class CrossCommand extends Command<int> {
         buildRoot,
         built,
         defaultName,
-        source,
+        manifestDir,
         overlayPaths?.prefix,
       );
       if (rc != ExitCode.success.code) return rc;
@@ -1438,7 +1540,7 @@ class CrossCommand extends Command<int> {
         buildRoot,
         built,
         defaultName,
-        source,
+        manifestDir,
         overlayPaths?.prefix,
       );
       if (rc != ExitCode.success.code) return rc;
@@ -1764,6 +1866,179 @@ class CrossCommand extends Command<int> {
     } on FileSystemException {
       return const [];
     }
+  }
+
+  /// Provision the Flutter SDK the manifest pins, when the workspace has none.
+  /// An SDK already there is left alone; use `emb flutter` to change it.
+  Future<bool> _ensureFlutterSdk(
+    CrossProject project,
+    Workspace workspace,
+    HostInfo host,
+    bool offline,
+  ) async {
+    final version = project.flutterVersion;
+    if (version == null || version.isEmpty) return true;
+    final sdk = FlutterSdk(workspace, host: host);
+
+    if (!File(sdk.flutterBin).existsSync()) {
+      if (offline) {
+        _logger.err(
+          '  --offline cannot install Flutter SDK $version into '
+          '${workspace.flutterDir.path} — run once online, or run '
+          '"emb flutter" first.',
+        );
+        return false;
+      }
+      final progress = _steps.start('Installing Flutter SDK $version');
+      final result = await sdk.install(version);
+      if (!result.success) {
+        progress.fail('Flutter SDK $version: ${result.message ?? "failed"}');
+        return false;
+      }
+      progress.complete('Flutter SDK $version → ${workspace.flutterDir.path}');
+      File(p.join(workspace.root.path, 'setup_env.sh')).writeAsStringSync(
+        generateSetupEnv(
+          workspace: workspace,
+          host: host,
+          engineVersion: result.engineCommit,
+        ),
+      );
+    }
+
+    // emb picks its frontend_server by probing bin/cache before it invokes
+    // flutter, and a fresh clone has none — so a cold workspace takes the wrong
+    // branch and the kernel snapshot fails. No-op once populated.
+    final snapshot = File(
+      p.join(
+        workspace.flutterDir.path,
+        'bin/cache/dart-sdk/bin/snapshots/frontend_server_aot.dart.snapshot',
+      ),
+    );
+    if (!snapshot.existsSync()) {
+      if (offline) {
+        _logger.err(
+          '  --offline cannot precache the Flutter SDK in '
+          '${workspace.flutterDir.path} — run once online.',
+        );
+        return false;
+      }
+      final progress = _steps.start('Precaching Flutter artifacts');
+      final r = await _runProcess(sdk.flutterBin, [
+        'precache',
+        '--linux',
+        '--no-universal',
+      ], output: ProcessOutputMode.stream);
+      if (r.exitCode != 0) {
+        progress.fail('flutter precache failed');
+        return false;
+      }
+      progress.complete('Flutter artifacts precached');
+    }
+    return true;
+  }
+
+  /// `flutter pub get` the app when its `.dart_tool/package_config.json` is
+  /// missing or older than its pubspec, which the AOT step would otherwise
+  /// fail on much later.
+  Future<bool> _ensureAppResolved(
+    Directory appDir,
+    Workspace workspace,
+    bool offline,
+  ) async {
+    if (!appDir.existsSync()) {
+      _logger.err('  app directory does not exist: ${appDir.path}');
+      return false;
+    }
+    final config = File(
+      p.join(appDir.path, '.dart_tool', 'package_config.json'),
+    );
+    if (config.existsSync()) {
+      final resolvedAt = config.lastModifiedSync();
+      final stale = ['pubspec.yaml', 'pubspec.lock']
+          .map((n) => File(p.join(appDir.path, n)))
+          .any(
+            (f) => f.existsSync() && f.lastModifiedSync().isAfter(resolvedAt),
+          );
+      if (!stale) return true;
+    }
+    final flutter = FlutterSdk(workspace).flutterBin;
+    if (!File(flutter).existsSync()) {
+      _logger.err(
+        '  ${appDir.path} has no .dart_tool/package_config.json and there is '
+        'no Flutter SDK in ${workspace.root.path} to resolve it — declare '
+        'flutter_version: or run "emb flutter" first.',
+      );
+      return false;
+    }
+    final progress = _steps.start('Resolving app packages');
+    final r = await _runProcess(flutter, [
+      'pub',
+      'get',
+      if (offline) '--offline',
+      '--directory',
+      appDir.path,
+    ], output: ProcessOutputMode.stream);
+    if (r.exitCode != 0) {
+      progress.fail('flutter pub get failed in ${appDir.path}');
+      return false;
+    }
+    progress.complete('App packages resolved');
+    return true;
+  }
+
+  /// Clone or update a manifest-declared repo into `<workspace>/app`, or null
+  /// after reporting why it could not be had. Uses the same [GitRepo] machinery
+  /// as `emb sync`. [sourcePath] is the declaring manifest, which relative
+  /// `patches:` resolve against. Offline reuses an existing checkout.
+  Future<Directory?> _syncRepo(
+    SourceRepo repo,
+    Workspace workspace, {
+    required String what,
+    required String? sourcePath,
+    required bool offline,
+  }) async {
+    final git = GitRepo.fromSource(repo).resolvePatchesAgainst(sourcePath);
+    final dest = Directory(p.join(workspace.appDir.path, git.folderName));
+    if (offline) {
+      if (dest.existsSync()) {
+        _logger.detail('  offline: reusing ${dest.path}');
+        return dest;
+      }
+      _logger.err(
+        '  --offline cannot fetch the $what (${repo.uri}) — '
+        'run once online, or clone it to ${dest.path} yourself.',
+      );
+      return null;
+    }
+
+    final progress = _steps.start('Fetching $what (${git.folderName})');
+    final result = await git.sync(
+      workspace.ensureAppDir(),
+      patchBase: sourcePath == null
+          ? null
+          : Directory(p.dirname(p.absolute(sourcePath))),
+    );
+    if (!result.success) {
+      progress.fail('$what: ${result.message ?? "git failed"}');
+      return null;
+    }
+    progress.complete('$what → ${dest.path}');
+    return dest;
+  }
+
+  /// The workspace this build runs in: `-w` → the manifest's `workspace:` →
+  /// `$FLUTTER_WORKSPACE` → cwd. The manifest beats the environment on purpose,
+  /// so a repo can pin where it builds regardless of the calling shell.
+  Workspace _resolveWorkspace(CrossProject project, String? override) {
+    final declared = project.workspaceDir;
+    if (override == null && declared != null) {
+      final env = _environment['FLUTTER_WORKSPACE'];
+      if (env != null && env.isNotEmpty && p.normalize(env) != declared) {
+        _logger.detail('  ignoring inherited FLUTTER_WORKSPACE=$env');
+      }
+      return Workspace(Directory(declared));
+    }
+    return Workspace.resolve(override: override);
   }
 
   /// First [name] on PATH, or null.
@@ -2637,9 +2912,25 @@ class CrossCommand extends Command<int> {
       appName: spec.name ?? defaultName,
       icon: icon,
       categories: fp.categories,
+      env: fp.env,
+      args: fp.args,
+      libDirOnPath: fp.vendorLibs,
     );
+    // Resolved up front so a missing runtime fails before any work, but
+    // applied only to the packager's staged copy: the runnable is shared with
+    // --tar, --deploy and --run.
+    final plan = fp.vendorLibs
+        ? await _flatpakVendorPlan(profile, meta: fp, arch: fpArch)
+        : null;
+    if (fp.vendorLibs && plan == null) return ExitCode.software.code;
+
     final outDir = Directory(p.join(buildRoot.path, 'dist'));
-    final progress = _steps.start('${tag}Packaging flatpak ($appId)');
+    final label = '${tag}Packaging flatpak ($appId)';
+    final progress = _steps.start(label);
+    // Vendoring runs inside build(), already under the step above, so it
+    // revises that label rather than starting a second spinner. Diagnostics
+    // wait until the step settles; warning over a live spinner overwrites it.
+    VendorReport? report;
     try {
       final out = await FlatpakPackager(runProcess: _runProcess).build(
         bundleDir: bundleDir,
@@ -2647,12 +2938,95 @@ class CrossCommand extends Command<int> {
         outDir: outDir,
         extraFiles: ef.files,
         fileModes: ef.modes,
+        onStaged: plan == null
+            ? null
+            : (stagedBundle) async {
+                progress.update('${tag}Vendoring libs not in the runtime');
+                try {
+                  report = await plan.run(
+                    bundleDir: stagedBundle,
+                    command: embedder,
+                  );
+                } finally {
+                  // Restore the caller's label, succeed or throw.
+                  progress.update(label);
+                }
+              },
       );
       progress.complete('${tag}flatpak → ${out.path}');
       return ExitCode.success.code;
     } on FlatpakPackageException catch (e) {
       progress.fail('$tag${e.message}');
       return ExitCode.software.code;
+    } on FlatpakVendorException catch (e) {
+      progress.fail('$tag${e.message}');
+      return ExitCode.software.code;
+    } finally {
+      _logVendorReport(report, tag);
+    }
+  }
+
+  /// Resolve what `vendor_libs` needs, or null when the runtime is not
+  /// installed — without it there is nothing to subtract the closure against.
+  Future<FlatpakVendorPlan?> _flatpakVendorPlan(
+    CrossProfile profile, {
+    required FlatpakPackageSpec meta,
+    required String? arch,
+  }) async {
+    final ref = arch == null
+        ? '${meta.runtime}//${meta.runtimeVersion}'
+        : '${meta.runtime}/$arch/${meta.runtimeVersion}';
+    final loc = await _runProcess('flatpak', ['info', '--show-location', ref]);
+    if (loc.exitCode != 0) {
+      _logger.err(
+        '  vendor_libs needs the runtime installed to know what it already '
+        'provides — install it with:\n'
+        '    flatpak install $ref',
+      );
+      return null;
+    }
+    final runtimeFiles = Directory(p.join(loc.stdout.trim(), 'files'));
+    if (!runtimeFiles.existsSync()) {
+      _logger.err('  runtime tree has no files/: ${runtimeFiles.path}');
+      return null;
+    }
+
+    // A missing soname is looked up in the sysroot, which holds the libraries
+    // the embedder linked against. `--target local` leaves it empty, meaning
+    // the host root; joining onto '' would yield cwd-relative paths.
+    final sysroot = profile.targetSysroot.isEmpty ? '/' : profile.targetSysroot;
+    return FlatpakVendorPlan(
+      vendor: FlatpakLibVendor(
+        readelf: _readelfFor(profile),
+        triple: profile.targetTriple,
+        runProcess: _runProcess,
+        environment: profile.buildEnv(),
+      ),
+      runtimeFiles: runtimeFiles,
+      searchPaths: [
+        for (final rel in ['lib', 'lib64', 'usr/lib', 'usr/lib64'])
+          Directory(p.join(sysroot, rel)),
+      ].where((d) => d.existsSync()).toList(),
+    );
+  }
+
+  /// Report a finished vendoring pass, once the step spinner has settled.
+  void _logVendorReport(VendorReport? report, String tag) {
+    if (report == null) return;
+    _logger.info(
+      '  ${tag}Vendored ${report.staged.length} lib(s); '
+      '${report.provided.length} from the runtime',
+    );
+    for (final soname in report.staged) {
+      _logger.detail('  vendored lib/$soname');
+    }
+    // Not fatal: a dlopen-only plugin has no DT_NEEDED entry either way. But
+    // each is a candidate startup failure, so warn rather than --verbose.
+    for (final soname in report.unresolved) {
+      _logger.warn(
+        '  $tag$soname: not in the runtime and not on the sysroot — the app '
+        'will fail to start if it is really needed',
+      );
     }
   }
 

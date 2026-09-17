@@ -177,8 +177,8 @@ String armGnuToolchainKey({
 }) => 'arm-gnu-toolchain-$version-$tcHost-$triple';
 
 /// Hash of the **full build** configuration: everything in [sysrootKey] plus
-/// cpu flags, generator, backends, defines and raw cmake args. Names the
-/// per-board build dir (and the cpu-specific emitted toolchain file).
+/// cpu flags, generator, backends, defines, raw cmake args and `source`. Names
+/// the per-board build dir (and the cpu-specific emitted toolchain file).
 String buildKey(CrossTarget t) => contentHash([
   sysrootKey(t),
   'cpu:${t.cpuFlags.join(" ")}',
@@ -187,6 +187,10 @@ String buildKey(CrossTarget t) => contentHash([
   for (final m in t.modules) 'mod:${_module(m)}',
   'def:${_kv(t.defines)}',
   'cmake:${t.cmakeArgs.join(" ")}',
+  // A different source tree needs its own build dir: CMake refuses a cache
+  // generated from another one. The rev is left out, so a bump rebuilds
+  // incrementally.
+  if (t.source != null) 'src:${t.source!.uri}:${t.source!.destName ?? ""}',
 ]);
 
 /// Short hash of *which checkout* a build tree belongs to.
