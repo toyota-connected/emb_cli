@@ -752,12 +752,17 @@ class CrossCommand extends Command<int> {
 
     // --clean / --clean-all: remove working dirs and exit (no download).
     if (args['clean'] == true || args['clean-all'] == true) {
+      final sourceDir =
+          FileSystemEntity.typeSync(inputPath) == FileSystemEntityType.file
+              ? File(inputPath).parent
+              : Directory(inputPath);
       return _clean(
         provider,
         target,
         workspace,
         manifestDir,
         all: args['clean-all'] == true,
+        sourceDir: sourceDir,
       );
     }
 
@@ -1213,6 +1218,7 @@ class CrossCommand extends Command<int> {
         profile,
         runProcess: _runProcess,
         launcher: launcher,
+        sourceCacheDir: source,
       );
       try {
         // Cross: stage into the sysroot itself (not a separate overlay) so the
@@ -1590,6 +1596,7 @@ class CrossCommand extends Command<int> {
     Workspace workspace,
     Directory source, {
     required bool all,
+    Directory? sourceDir,
   }) async {
     final triple = provider.triple;
     final sk = sysrootKey(target);
@@ -1598,6 +1605,9 @@ class CrossCommand extends Command<int> {
       workspace.platformDir('overlay-$triple'),
       if (all) ...[
         workspace.platformDir('cross-$triple-$sk'),
+        // Project-local augment source cache. Keep the legacy shared dir in
+        // the list too, so a clean of an old layout still sweeps it.
+        if (sourceDir != null) Directory(p.join(sourceDir.path, '.cache', 'overlay-src')),
         workspace.platformDir('overlay-src'),
         if (provider.name == 'yocto-sdk')
           workspace.platformDir('yocto-sdk-$sk'),
