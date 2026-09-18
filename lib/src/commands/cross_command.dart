@@ -2763,8 +2763,35 @@ class CrossCommand extends Command<int> {
     }
     final triple = rustTriple(profile.targetTriple);
     final offline = _offlineMode != OfflineMode.off;
+    // CARGO_TARGET_*_LINKER only accepts an executable path, not a command with
+    // args. The Yocto GCC has no built-in sysroot (--print-sysroot = /not/exist),
+    // so we generate a thin wrapper script that injects --sysroot, mirroring how
+    // the SDK's CC variable carries the sysroot for cmake/meson builds.
+    final upperTriple = triple.replaceAll('-', '_').toUpperCase();
+    String? linkerWrapper;
+    if (profile.targetSysroot.isNotEmpty) {
+      final script = File(p.join(buildDir.path, 'cargo-linker.sh'));
+      script.parent.createSync(recursive: true);
+      script.writeAsStringSync(
+        '#!/bin/sh\nexec ${profile.cc} --sysroot=${profile.targetSysroot} "\$@"\n',
+      );
+      await _runProcess('chmod', ['+x', script.path]);
+      linkerWrapper = script.path;
+    }
     final env = {
+      // Yocto SDK: the full sourced SDK environment carries PATH with the
+      // toolchain bin directory, which the linker wrapper needs to resolve cc.
+      // ARM GNU: buildEnv() is only pkg-config vars; harmless to include.
+      ...profile.buildEnv(),
+      // Neutralize any RUSTFLAGS the SDK environment-setup script exports.
+      // In cargo 1.73+ RUSTFLAGS accumulates with CARGO_TARGET_*_RUSTFLAGS;
+      // blanking it prevents Yocto SDK's --sysroot from appearing twice and
+      // confusing older toolchains.
+      'RUSTFLAGS': '',
       ...cargoEnv(profile, triple),
+      // Override the linker with our sysroot wrapper so --sysroot reaches the
+      // link step regardless of cargo version / config-file rustflags precedence.
+      if (linkerWrapper != null) 'CARGO_TARGET_${upperTriple}_LINKER': linkerWrapper,
       'CARGO_TARGET_DIR': buildDir.path,
       // A fast-fail under an offline build: cargo errors immediately on a
       // needed registry/git fetch instead of hanging on a network timeout.
