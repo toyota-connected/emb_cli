@@ -69,10 +69,12 @@ class OverlayBuilder {
     ProcessRunner runProcess = defaultProcessRunner,
     HttpClient? httpClient,
     String? launcher,
+    Directory? sourceCacheDir,
   }) : _emitter = emitter,
        _run = runProcess,
        _http = httpClient ?? HttpClient(),
-       _launcher = launcher;
+       _launcher = launcher,
+       _sourceCacheDir = sourceCacheDir;
 
   final Workspace workspace;
   final CrossProfile profile;
@@ -84,6 +86,11 @@ class OverlayBuilder {
   /// or null. Applied to the augment CMake builds as a compiler launcher, but
   /// not the host-tool builds (those use the host compiler).
   final String? _launcher;
+
+  /// Project root whose `.cache/overlay-src` holds fetched augment tarballs —
+  /// isolating sources per project rather than sharing them in the workspace.
+  /// When unset, falls back to today's shared `<workspace>/overlay-src`.
+  final Directory? _sourceCacheDir;
 
   String? _cachedCompilerVersions;
 
@@ -200,6 +207,16 @@ class OverlayBuilder {
     return r.exitCode == 0;
   }
 
+  /// Where fetched augment tarballs + unpacked trees live. Project-local when a
+  /// [sourceCacheDir] was passed (so projects don't collide on the shared
+  /// workspace dir), else the legacy workspace `overlay-src` location.
+  Directory _overlaySrcDir() {
+    final root = _sourceCacheDir;
+    if (root == null) return workspace.ensurePlatformDir('overlay-src');
+    return Directory(p.join(root.path, '.cache', 'overlay-src'))
+      ..createSync(recursive: true);
+  }
+
   Future<Directory> _fetchSource(AugmentLib lib) async {
     // A local tree is the source: nothing to download, nothing to unpack, and
     // nothing to patch (CrossTarget rejects `patches:` with `path:`, because
@@ -214,7 +231,7 @@ class OverlayBuilder {
       return dir;
     }
 
-    final src = workspace.ensurePlatformDir('overlay-src');
+    final src = _overlaySrcDir();
     final tarball = File(p.join(src.path, p.basename(Uri.parse(lib.url).path)));
     if (!tarball.existsSync()) {
       await _download(lib.url, tarball);
