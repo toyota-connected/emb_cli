@@ -495,6 +495,49 @@ void main() {
     expect(Directory(p.join(root, 'cross-$triple-$sk')).existsSync(), isTrue);
   });
 
+  test('--clean removes this checkout\'s build dirs whatever key built them '
+      'and leaves another checkout alone', () async {
+    final pkg = pkgWith(
+      'cl2',
+      'id: cl2\ntype: app\ncross:\n  provider: arm-gnu\n'
+          '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n',
+    );
+    const triple = 'aarch64-none-linux-gnu';
+    final root = p.join(tmp.path, '.config', 'flutter_workspace');
+    final mine = projectKey(pkg.path);
+    final theirs = projectKey(p.join(tmp.path, 'somewhere-else'));
+
+    // Two configurations of this checkout (say --backend a and --backend b),
+    // neither of which is the key a bare --clean resolves, plus one that
+    // belongs to a different checkout entirely.
+    for (final d in [
+      'cross-build-$triple-aaaaaaaaaaaa-$mine',
+      'cross-build-$triple-bbbbbbbbbbbb-$mine',
+      'cross-build-$triple-cccccccccccc-$theirs',
+    ]) {
+      Directory(p.join(root, d)).createSync(recursive: true);
+    }
+
+    final code = await run(['cross', '-w', tmp.path, '--clean', pkg.path]);
+    expect(code, ExitCode.success.code);
+    for (final d in [
+      'cross-build-$triple-aaaaaaaaaaaa-$mine',
+      'cross-build-$triple-bbbbbbbbbbbb-$mine',
+    ]) {
+      expect(
+        Directory(p.join(root, d)).existsSync(),
+        isFalse,
+        reason: '$d belongs to this checkout',
+      );
+    }
+    expect(
+      Directory(p.join(root, 'cross-build-$triple-cccccccccccc-$theirs'))
+          .existsSync(),
+      isTrue,
+      reason: 'another checkout keeps its build tree',
+    );
+  });
+
   test('--clean-all also removes the toolchain + sysroot dir', () async {
     final pkg = pkgWith(
       'ca',
