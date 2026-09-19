@@ -326,11 +326,17 @@ class OverlayBuilder {
     final patches = lib.patches;
     final digest = patches.isEmpty ? '' : patchSeriesDigest(patches);
     final stamp = File(p.join(dir.path, '.emb-patch-stamp'));
-    if (dir.existsSync() && (!stamp.existsSync() || !File(stamp).existsSync())) {
-      dir.deleteSync(recursive: true);
-    } else if (stamp.existsSync()) {
-      final stamped = stamp.readAsStringSync().trim();
-      if (stamped != digest) dir.deleteSync(recursive: true);
+    if (dir.existsSync()) {
+      // Reuse is only safe when this code wrote the tree: a matching
+      // `.emb-patch-stamp` proves it. Anything else — an absent dir, a
+      // missing stamp, or a stale digest from before patches were added/edited
+      // — gets wiped so we re-unpack clean rather than silently reuse it.
+      if (!stamp.existsSync()) {
+        dir.deleteSync(recursive: true);
+      } else {
+        final stamped = stamp.readAsStringSync().trim();
+        if (stamped != digest) dir.deleteSync(recursive: true);
+      }
     }
 
     if (!dir.existsSync()) {
