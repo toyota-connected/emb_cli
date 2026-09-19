@@ -1,5 +1,6 @@
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:emb_cli/src/cross/build_jobs.dart';
@@ -208,13 +209,54 @@ class OverlayBuilder {
   }
 
   /// Where fetched augment tarballs + unpacked trees live. Project-local when a
-  /// [sourceCacheDir] was passed (so projects don't collide on the shared
+  /// sourceCacheDir was passed (so projects don't collide on the shared
   /// workspace dir), else the legacy workspace `overlay-src` location.
   Directory _overlaySrcDir() {
     final root = _sourceCacheDir;
     if (root == null) return workspace.ensurePlatformDir('overlay-src');
     return Directory(p.join(root.path, '.cache', 'overlay-src'))
       ..createSync(recursive: true);
+  }
+
+  /// Whether [tarball] is a usable archive: recognized magic bytes, passing
+  /// an integrity test (`gzip -t` / `unzip -t`), and — when the manifest pins
+  /// a [sha] — a matching sha256. A cached download can be truncated (an
+  /// interrupted fetch, a disk-full write) or hold an HTML error page saved
+  /// under a tarball name; trusting `existsSync()` alone lets those through,
+  /// and the failure only surfaces later as a misleading patch error against
+  /// an empty tree. Anything failing here is deleted so the caller
+  /// re-downloads.
+  Future<bool> _usableArchive(File tarball, String? sha) async {
+    if (!tarball.existsSync()) return false;
+    final magic = Uint8List(4);
+    try {
+      final raf = await tarball.open();
+      try {
+        final n = await raf.readInto(magic, 0, 4);
+        if (n < 2) return false;
+      } finally {
+        await raf.close();
+      }
+    } on FileSystemException {
+      return false;
+    }
+    final isGzip = magic[0] == 0x1f && magic[1] == 0x8b;
+    // PK\x03\x04 — a zip local file header.
+    final isZip =
+        magic[0] == 0x50 &&
+        magic[1] == 0x4b &&
+        magic[2] == 0x03 &&
+        magic[3] == 0x04;
+    if (!isGzip && !isZip) return false;
+    final test = isGzip
+        ? await _run('gzip', ['-t', tarball.path])
+        : await _run('unzip', ['-t', '-q', tarball.path]);
+    if (test.exitCode != 0) return false;
+    final expected = sha?.toLowerCase();
+    if (expected != null && await _sha256(tarball) != expected) {
+      return false;
+    }
+    return true;
   }
 
   Future<Directory> _fetchSource(AugmentLib lib) async {
@@ -232,9 +274,39 @@ class OverlayBuilder {
     }
 
     final src = _overlaySrcDir();
-    final tarball = File(p.join(src.path, p.basename(Uri.parse(lib.url).path)));
-    if (!tarball.existsSync()) {
-      await _download(lib.url, tarball);
+    // Prefix the package name so two augments whose URLs share a basename
+    // (e.g. two vendors both publishing `v1.0.0.tar.gz`) can't collide on,
+    // and then cross-validate, the same cached tarball.
+    final tarball = File(
+      p.join(
+        src.path,
+        '${lib.pkg}-${p.basename(Uri.parse(lib.url).path)}',
+      ),
+    );
+    // Download at most twice: a sha-pinned source whose bytes don't match the
+    // pin is deleted and re-fetched once (an upstream mirror swap or a
+    // half-written body recover cleanly), and a second mismatch is a real
+    // manifest/upstream divergence that must fail loudly, not loop.
+    for (var download = 0; ; download++) {
+      if (!await _usableArchive(tarball, lib.sha256)) {
+        if (download == 2) {
+          if (!tarball.existsSync()) {
+            throw OverlayBuildException(
+              '${lib.pkg}: download failed twice (${lib.url})',
+            );
+          }
+          throw OverlayBuildException(
+            tarball.existsSync() && lib.sha256 != null
+                ? '${lib.pkg}: sha256 mismatch for ${tarball.path} — the '
+                      'downloaded bytes do not match the manifest pin'
+                : '${lib.pkg}: ${tarball.path} is not a valid archive after '
+                      're-download',
+          );
+        }
+        await _download(lib.url, tarball);
+        continue;
+      }
+      break;
     }
     final dir = Directory(p.join(src.path, '${lib.pkg}-${lib.minVersion}'));
 
@@ -246,25 +318,69 @@ class OverlayBuilder {
     // Already absolute: CrossTarget.withResolvedPatches rebases them against
     // the declaring manifest at load, so the paths hashed into the cache keys
     // and the paths applied here are the same files.
+    // The stamp is written even when there are no patches (empty digest), so a
+    // directory only survives reuse when this code created it — stale trees
+    // from older runs or hand-made dirs carry no stamp, mismatch the current
+    // series, and get re-unpacked; without that guard a no-patch augment could
+    // silently reuse an empty foreign dir (the original bug we are fixing).
     final patches = lib.patches;
     final digest = patches.isEmpty ? '' : patchSeriesDigest(patches);
     final stamp = File(p.join(dir.path, '.emb-patch-stamp'));
-    if (dir.existsSync() && patches.isNotEmpty) {
-      final stamped = stamp.existsSync() ? stamp.readAsStringSync().trim() : '';
+    if (dir.existsSync() && (!stamp.existsSync() || !File(stamp).existsSync())) {
+      dir.deleteSync(recursive: true);
+    } else if (stamp.existsSync()) {
+      final stamped = stamp.readAsStringSync().trim();
       if (stamped != digest) dir.deleteSync(recursive: true);
     }
 
     if (!dir.existsSync()) {
+      // Extract into a staging dir and promote it only on success, so a
+      // failing extraction (corrupt tarball, `tar` exit != 0) can never leave
+      // a pre-created empty [dir] behind for the next run to reuse — that
+      // hole is what turned a bad download into a misleading patch error
+      // against an empty tree.
+      final stage = Directory('${dir.path}.unzip');
+      if (stage.existsSync()) stage.deleteSync(recursive: true);
+      stage.createSync(recursive: true);
+      final RunResult extracted;
       if (tarball.path.toLowerCase().endsWith('.zip')) {
         // GNU `tar` can't read a zip and `unzip` has no `--strip-components`,
         // so unzip into a staging dir and promote a lone top-level directory to
         // reproduce the tar path's `--strip-components=1`. Release zips that
         // bundle vendored subtrees (e.g. sentry-native's crashpad/breakpad) come
         // this way.
-        final stage = Directory('${dir.path}.unzip');
-        if (stage.existsSync()) stage.deleteSync(recursive: true);
-        stage.createSync(recursive: true);
-        await _run('unzip', ['-q', tarball.path, '-d', stage.path]);
+        extracted = await _run('unzip', ['-q', tarball.path, '-d', stage.path]);
+      } else {
+        extracted = await _run('tar', [
+          '-xf',
+          tarball.path,
+          '-C',
+          stage.path,
+          '--strip-components=1',
+        ]);
+      }
+      final detail = [
+        extracted.stdout,
+        extracted.stderr,
+      ].map((s) => s.trim()).where((s) => s.isNotEmpty).join('\n');
+      if (extracted.exitCode != 0) {
+        stage.deleteSync(recursive: true);
+        throw OverlayBuildException(
+          '${lib.pkg}: extract failed (exit ${extracted.exitCode}) '
+          'from ${tarball.path}'
+          '${detail.isEmpty ? '' : '\n$detail'}',
+        );
+      }
+      if (stage.listSync().isEmpty) {
+        // Exit 0 on an empty archive (e.g. a stub tarball) would otherwise
+        // produce an empty source tree that "builds" into nothing.
+        stage.deleteSync(recursive: true);
+        throw OverlayBuildException(
+          '${lib.pkg}: extract produced no files from ${tarball.path}'
+          '${detail.isEmpty ? '' : '\n$detail'}',
+        );
+      }
+      if (tarball.path.toLowerCase().endsWith('.zip')) {
         final top = stage.listSync();
         if (top.length == 1 && top.single is Directory) {
           (top.single as Directory).renameSync(dir.path);
@@ -273,14 +389,7 @@ class OverlayBuilder {
           stage.renameSync(dir.path);
         }
       } else {
-        dir.createSync(recursive: true);
-        await _run('tar', [
-          '-xf',
-          tarball.path,
-          '-C',
-          dir.path,
-          '--strip-components=1',
-        ]);
+        stage.renameSync(dir.path);
       }
 
       // Patch the freshly unpacked tree, then stamp it. On failure the tree is
@@ -306,8 +415,8 @@ class OverlayBuilder {
           // `sync`, and keeps every OverlayBuilder caller consistent.
           throw OverlayBuildException('${lib.pkg}: ${e.message}');
         }
-        stamp.writeAsStringSync(digest);
       }
+      stamp.writeAsStringSync(digest);
     }
     return dir;
   }
@@ -570,24 +679,32 @@ class OverlayBuilder {
     // Retry transient failures (5xx / 429 / network) with backoff — a CI run
     // fetches augment sources on every job, so a single upstream hiccup (e.g.
     // a gitlab 500) shouldn't fail the build. 4xx and the like fail fast.
+    // Write to a `.part` file and rename into place only on success, so an
+    // interrupted fetch (Ctrl-C, kill, disk-full) can never leave a truncated
+    // body at [dest] for the next run to trust as a complete download.
     const maxAttempts = 4;
+    final part = File('${dest.path}.part');
     for (var attempt = 1; ; attempt++) {
       try {
         final req = await _http.getUrl(Uri.parse(url));
         req.followRedirects = true;
         final resp = await req.close();
         if (resp.statusCode == 200) {
-          await resp.pipe(dest.openWrite());
+          if (part.existsSync()) part.deleteSync();
+          await resp.pipe(part.openWrite());
+          part.renameSync(dest.path);
           return;
         }
         await resp.drain<void>();
         final transient = resp.statusCode >= 500 || resp.statusCode == 429;
         if (!transient || attempt == maxAttempts) {
+          if (part.existsSync()) part.deleteSync();
           throw OverlayBuildException(
             'download failed ($url): ${resp.statusCode}',
           );
         }
       } on IOException catch (e) {
+        if (part.existsSync()) part.deleteSync();
         if (attempt == maxAttempts) {
           throw OverlayBuildException('download failed ($url): $e');
         }
@@ -599,9 +716,10 @@ class OverlayBuilder {
   /// Close the underlying HTTP client.
   void close() => _http.close(force: true);
 
-  // Retained for sha-pinned augment sources (parity with EngineArtifacts).
-  // ignore: unused_element
-  String _sha256(File f) => sha256.convert(f.readAsBytesSync()).toString();
+  Future<String> _sha256(File f) async {
+    final digest = await sha256.bind(f.openRead()).first;
+    return digest.toString();
+  }
 }
 
 /// Thrown when an augment library fails to build into the overlay.
