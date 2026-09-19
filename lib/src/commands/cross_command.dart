@@ -1144,8 +1144,13 @@ class CrossCommand extends Command<int> {
       );
     }
 
+    // Qualified by the checkout, not the configuration alone: two trees of the
+    // same project (a worktree, a second clone, a bisect tree) resolve one
+    // buildKey and would otherwise share a CMake cache naming the first one's
+    // source dir. See projectKey.
     final buildRoot = workspace.ensurePlatformDir(
-      'cross-build-${profile.targetTriple}-${buildKey(target)}',
+      'cross-build-${profile.targetTriple}-${buildKey(target)}'
+      '-${projectKey(source.path)}',
     );
 
     // Native keeps the host compiler env; cross neutralizes it.

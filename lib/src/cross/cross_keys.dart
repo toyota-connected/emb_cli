@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:crypto/crypto.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/repo/patch_series.dart';
+import 'package:path/path.dart' as p;
 
 /// Stable short content hash (12 hex chars) of [parts].
 String contentHash(List<String> parts) =>
@@ -187,3 +188,19 @@ String buildKey(CrossTarget t) => contentHash([
   'def:${_kv(t.defines)}',
   'cmake:${t.cmakeArgs.join(" ")}',
 ]);
+
+/// Short hash of *which checkout* a build tree belongs to.
+///
+/// [buildKey] names a configuration, and a configuration is not unique to a
+/// checkout: a worktree, a pinned clone of the same upstream, or a bisect tree
+/// all resolve the same one. Sharing a build dir between them hands the second
+/// one a CMake cache that names the first one's source dir, which CMake
+/// refuses -- "does not match the source ... used to generate cache" -- so the
+/// only way out was to clean, throwing away the other checkout's build.
+///
+/// Deliberately *not* part of [buildKey]: the lock records `build_key`, and a
+/// path-dependent one would report drift on every machine that checked the
+/// project out somewhere else. This qualifies the build directory's name
+/// instead, where it is local by definition.
+String projectKey(String projectPath) =>
+    contentHash(['project:${p.canonicalize(projectPath)}']).substring(0, 8);
