@@ -120,18 +120,18 @@ void main() {
     expect(debian.collisions.single, contains('libcamera-dev'));
 
     // And the other way round: the newer one already held, the older merged in.
-    final other = parsePackagesIndex(
-      'Package: libcamera-dev\nVersion: 0.7.0+rpt20250903-1\n'
-      'Filename: r/libcamera-dev.deb\n',
-      repoBase: 'http://archive.raspberrypi.com/debian',
-    );
-    other.addAll(
-      parsePackagesIndex(
-        'Package: libcamera-dev\nVersion: 0.4.0-6\n'
-        'Filename: d/libcamera-dev.deb\n',
-        repoBase: 'http://deb.debian.org/debian',
-      ),
-    );
+    final other =
+        parsePackagesIndex(
+          'Package: libcamera-dev\nVersion: 0.7.0+rpt20250903-1\n'
+          'Filename: r/libcamera-dev.deb\n',
+          repoBase: 'http://archive.raspberrypi.com/debian',
+        )..addAll(
+          parsePackagesIndex(
+            'Package: libcamera-dev\nVersion: 0.4.0-6\n'
+            'Filename: d/libcamera-dev.deb\n',
+            repoBase: 'http://deb.debian.org/debian',
+          ),
+        );
     expect(other.packages['libcamera-dev']!.version, '0.7.0+rpt20250903-1');
   });
 

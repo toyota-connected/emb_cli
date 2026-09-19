@@ -495,7 +495,7 @@ void main() {
     expect(Directory(p.join(root, 'cross-$triple-$sk')).existsSync(), isTrue);
   });
 
-  test('--clean removes this checkout\'s build dirs whatever key built them '
+  test("--clean removes this checkout's build dirs whatever key built them "
       'and leaves another checkout alone', () async {
     final pkg = pkgWith(
       'cl2',
