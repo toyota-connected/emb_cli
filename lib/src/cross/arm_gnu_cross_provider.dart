@@ -590,6 +590,13 @@ class ArmGnuCrossProvider implements CrossProvider {
         'failed to fetch any apt Packages index',
       );
     }
+    // Which copy won where two repos carried the same package. Worth saying
+    // out loud: the version the sysroot gets has to match the one the board
+    // runs, and a mismatch surfaces far from here -- as a library that loads
+    // and then misbehaves, not as a build error.
+    for (final c in index.collisions) {
+      stderr.writeln('note: apt index collision — $c');
+    }
 
     final status = File(
       p.join(sysrootDir.path, 'var', 'lib', 'dpkg', 'status'),

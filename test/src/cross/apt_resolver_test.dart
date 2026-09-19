@@ -85,7 +85,7 @@ void main() {
     expect(got, contains('libdrm-dev'));
   });
 
-  test('merge keeps the first writer (repo priority)', () {
+  test('merge keeps the first writer when neither carries a version', () {
     final a = parsePackagesIndex(
       'Package: x\nFilename: a/x.deb\n',
       repoBase: 'http://a',
@@ -96,6 +96,72 @@ void main() {
     );
     a.addAll(b);
     expect(a.packages['x']!.repoBase, 'http://a');
+  });
+
+  test('merge keeps the higher version, whichever repo came first', () {
+    // The real case: Debian first in the list, the board vendor second,
+    // carrying the version the board actually runs.
+    final debian = parsePackagesIndex(
+      'Package: libcamera-dev\nVersion: 0.4.0-6\n'
+      'Filename: d/libcamera-dev.deb\n',
+      repoBase: 'http://deb.debian.org/debian',
+    );
+    final rpt = parsePackagesIndex(
+      'Package: libcamera-dev\nVersion: 0.7.0+rpt20250903-1\n'
+      'Filename: r/libcamera-dev.deb\n',
+      repoBase: 'http://archive.raspberrypi.com/debian',
+    );
+    debian.addAll(rpt);
+    expect(debian.packages['libcamera-dev']!.version, '0.7.0+rpt20250903-1');
+    expect(
+      debian.packages['libcamera-dev']!.repoBase,
+      'http://archive.raspberrypi.com/debian',
+    );
+    expect(debian.collisions.single, contains('libcamera-dev'));
+
+    // And the other way round: the newer one already held, the older merged in.
+    final other = parsePackagesIndex(
+      'Package: libcamera-dev\nVersion: 0.7.0+rpt20250903-1\n'
+      'Filename: r/libcamera-dev.deb\n',
+      repoBase: 'http://archive.raspberrypi.com/debian',
+    );
+    other.addAll(
+      parsePackagesIndex(
+        'Package: libcamera-dev\nVersion: 0.4.0-6\n'
+        'Filename: d/libcamera-dev.deb\n',
+        repoBase: 'http://deb.debian.org/debian',
+      ),
+    );
+    expect(other.packages['libcamera-dev']!.version, '0.7.0+rpt20250903-1');
+  });
+
+  group('compareDebianVersions', () {
+    // Pairs dpkg --compare-versions agrees with; the tilde and epoch rows are
+    // the ones a string or numeric compare gets backwards.
+    const older = <(String, String)>[
+      ('0.4.0-6', '0.7.0+rpt20250903-1'),
+      ('1.0~rc1', '1.0'),
+      ('1.0', '1.0-1'),
+      ('1.9', '1.10'),
+      ('1:0.1', '2:0.1'),
+      ('0.1', '1:0.1'),
+      ('1.0-1', '1.0-2'),
+      ('2.0.0+git20240101', '2.0.0+git20240202'),
+    ];
+
+    for (final (lo, hi) in older) {
+      test('$lo < $hi', () {
+        expect(compareDebianVersions(lo, hi), lessThan(0));
+        expect(compareDebianVersions(hi, lo), greaterThan(0));
+        expect(compareDebianVersions(lo, lo), 0);
+      });
+    }
+
+    test('a missing version sorts lowest', () {
+      expect(compareDebianVersions(null, '0.1'), lessThan(0));
+      expect(compareDebianVersions('0.1', null), greaterThan(0));
+      expect(compareDebianVersions(null, null), 0);
+    });
   });
 
   group('aptIndexUrls', () {

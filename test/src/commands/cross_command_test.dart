@@ -531,8 +531,9 @@ void main() {
       );
     }
     expect(
-      Directory(p.join(root, 'cross-build-$triple-cccccccccccc-$theirs'))
-          .existsSync(),
+      Directory(
+        p.join(root, 'cross-build-$triple-cccccccccccc-$theirs'),
+      ).existsSync(),
       isTrue,
       reason: 'another checkout keeps its build tree',
     );
