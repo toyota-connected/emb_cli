@@ -526,6 +526,12 @@ class CrossCommand extends Command<int> {
     // emb.yaml), a package directory, or an explicit manifest file (e.g.
     // examples/cross/pi5.emb.yaml).
     final inputPath = args.rest.first;
+    // The checkout every build tree below is keyed against; resolved here
+    // because --clean needs it too, before any target work happens.
+    final source =
+        FileSystemEntity.typeSync(inputPath) == FileSystemEntityType.file
+        ? File(inputPath).parent
+        : Directory(inputPath);
     final CrossProject project;
     try {
       final resolved = _project.resolve(inputPath);
@@ -656,6 +662,7 @@ class CrossCommand extends Command<int> {
         provider,
         target,
         workspace,
+        source,
         all: args['clean-all'] == true,
       );
     }
@@ -917,11 +924,6 @@ class CrossCommand extends Command<int> {
       if (code != null) return code;
     }
 
-    final source =
-        FileSystemEntity.typeSync(inputPath) == FileSystemEntityType.file
-        ? File(inputPath).parent
-        : Directory(inputPath);
-
     _EmbedderResult? preparedEmbedder;
     if (doPrepare) {
       preparedEmbedder = await _buildEmbedder(
@@ -1144,8 +1146,13 @@ class CrossCommand extends Command<int> {
       );
     }
 
+    // Qualified by the checkout, not the configuration alone: two trees of the
+    // same project (a worktree, a second clone, a bisect tree) resolve one
+    // buildKey and would otherwise share a CMake cache naming the first one's
+    // source dir. See projectKey.
     final buildRoot = workspace.ensurePlatformDir(
-      'cross-build-${profile.targetTriple}-${buildKey(target)}',
+      'cross-build-${profile.targetTriple}-${buildKey(target)}'
+      '-${projectKey(source.path)}',
     );
 
     // Native keeps the host compiler env; cross neutralizes it.
@@ -1416,6 +1423,38 @@ class CrossCommand extends Command<int> {
     return ExitCode.success.code;
   }
 
+  /// Every build dir this checkout owns for [triple], whatever configuration
+  /// produced it.
+  ///
+  /// `--clean` used to derive one build key from the flags it happened to be
+  /// given, so a clean without the `--backend`/`--app`/`--mode` the build uses
+  /// removed a different directory, reported the bytes it freed, and left the
+  /// wedged one in place -- the next build then failed as though the clean had
+  /// not run. Cleaning a target means cleaning what that target built here, so
+  /// match on the [projectKey] suffix and take every key in front of it. Other
+  /// checkouts keep their trees; that is the point of the suffix.
+  Iterable<Directory> _projectBuildDirs(
+    Workspace workspace,
+    String triple,
+    Directory source,
+    CrossTarget target,
+  ) {
+    final parent = workspace.platformDir('cross-build').parent;
+    if (!parent.existsSync()) return const [];
+    final prefix = 'cross-build-$triple-';
+    final suffix = '-${projectKey(source.path)}';
+    return [
+      for (final d in parent.listSync().whereType<Directory>())
+        if (p.basename(d.path).startsWith(prefix) &&
+            p.basename(d.path).endsWith(suffix))
+          d,
+      // A tree built before build dirs carried the checkout suffix. Nothing
+      // records whose it was -- it was shared -- so clean it on the terms that
+      // applied then, or upgrading strands it where no clean can reach it.
+      Directory(p.join(parent.path, '$prefix${buildKey(target)}')),
+    ];
+  }
+
   /// Remove the selected target's cross working dirs and report freed space.
   /// `--clean` keeps the expensive toolchain + sysroot (the keyed
   /// `cross-<triple>-<key>` dir); `--clean-all` ([all]) removes those plus the
@@ -1423,13 +1462,14 @@ class CrossCommand extends Command<int> {
   Future<int> _clean(
     CrossProvider provider,
     CrossTarget target,
-    Workspace workspace, {
+    Workspace workspace,
+    Directory source, {
     required bool all,
   }) async {
     final triple = provider.triple;
     final sk = sysrootKey(target);
     final dirs = <Directory>[
-      workspace.platformDir('cross-build-$triple-${buildKey(target)}'),
+      ..._projectBuildDirs(workspace, triple, source, target),
       workspace.platformDir('overlay-$triple'),
       if (all) ...[
         workspace.platformDir('cross-$triple-$sk'),

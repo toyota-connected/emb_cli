@@ -38,6 +38,89 @@ class AptPackage {
   String get url => '$repoBase/$filename';
 }
 
+/// Compare two Debian version strings by dpkg's own rules, so the caller can
+/// keep the newer of two indexes' copies of a package.
+///
+/// `[epoch:]upstream[-revision]`. Epoch wins outright; otherwise upstream then
+/// revision are compared fragment by fragment, alternating non-digit and digit
+/// runs. Within a non-digit run the ordering is dpkg's, not ASCII's: `~` sorts
+/// *before* the end of a string, which is what makes 1.0~rc1 older than 1.0 --
+/// the case a plain string or numeric compare gets backwards. Digit runs
+/// compare numerically with leading zeros ignored.
+///
+/// A null version (an index entry without a Version field) sorts lowest.
+int compareDebianVersions(String? a, String? b) {
+  if (a == null || b == null) {
+    if (a == b) return 0;
+    return a == null ? -1 : 1;
+  }
+
+  (int, String, String) split(String v) {
+    var rest = v;
+    var epoch = 0;
+    final colon = rest.indexOf(':');
+    if (colon >= 0) {
+      epoch = int.tryParse(rest.substring(0, colon)) ?? 0;
+      rest = rest.substring(colon + 1);
+    }
+    final dash = rest.lastIndexOf('-');
+    return dash >= 0
+        ? (epoch, rest.substring(0, dash), rest.substring(dash + 1))
+        : (epoch, rest, '');
+  }
+
+  final (ea, ua, ra) = split(a);
+  final (eb, ub, rb) = split(b);
+  if (ea != eb) return ea.compareTo(eb);
+  final up = _compareFragment(ua, ub);
+  return up != 0 ? up : _compareFragment(ra, rb);
+}
+
+bool _isDigit(int c) => c >= 0x30 && c <= 0x39;
+
+/// dpkg's per-character weight: `~` first, then end-of-string, then letters,
+/// then everything else.
+int _order(int c) {
+  if (_isDigit(c)) return 0;
+  if ((c >= 0x41 && c <= 0x5a) || (c >= 0x61 && c <= 0x7a)) return c;
+  if (c == 0x7e) return -1; // '~'
+  return c + 256;
+}
+
+int _compareFragment(String a, String b) {
+  var i = 0;
+  var j = 0;
+  while (i < a.length || j < b.length) {
+    var firstDiff = 0;
+    while ((i < a.length && !_isDigit(a.codeUnitAt(i))) ||
+        (j < b.length && !_isDigit(b.codeUnitAt(j)))) {
+      final ac = i < a.length ? _order(a.codeUnitAt(i)) : 0;
+      final bc = j < b.length ? _order(b.codeUnitAt(j)) : 0;
+      if (ac != bc) return ac - bc;
+      i++;
+      j++;
+    }
+    while (i < a.length && a.codeUnitAt(i) == 0x30) {
+      i++;
+    }
+    while (j < b.length && b.codeUnitAt(j) == 0x30) {
+      j++;
+    }
+    while (i < a.length &&
+        _isDigit(a.codeUnitAt(i)) &&
+        j < b.length &&
+        _isDigit(b.codeUnitAt(j))) {
+      if (firstDiff == 0) firstDiff = a.codeUnitAt(i) - b.codeUnitAt(j);
+      i++;
+      j++;
+    }
+    if (i < a.length && _isDigit(a.codeUnitAt(i))) return 1;
+    if (j < b.length && _isDigit(b.codeUnitAt(j))) return -1;
+    if (firstDiff != 0) return firstDiff;
+  }
+  return 0;
+}
+
 /// A parsed (and possibly merged) `Packages` index.
 class AptIndex {
   AptIndex([Map<String, AptPackage>? packages, Map<String, String>? provides])
@@ -50,9 +133,39 @@ class AptIndex {
   /// Virtual package (`Provides`) → a concrete providing package name.
   final Map<String, String> provides;
 
-  /// Merge [other] in (first writer wins, matching apt's repo priority order).
+  /// Names where two indexes carried the same package, as
+  /// `name: chosen (kept) over other`. Reported by the caller; a silent
+  /// downgrade is the part that costs a day.
+  final List<String> collisions = [];
+
+  /// Merge [other] in, keeping the higher version of any package both carry.
+  ///
+  /// This used to be first-writer-wins, on the reasoning that the repo list is
+  /// in priority order. Apt does not work that way without pinning -- it takes
+  /// the highest version it can see -- and the difference is not academic: a
+  /// board vendor shipping a package ahead of the base distribution is the
+  /// normal case, not the exception. A Raspberry Pi target resolved libcamera
+  /// 0.4 from Debian while the board image runs 0.7.1+rpt, so the cross build
+  /// compiled against one ABI and the device ran another. That does not fail
+  /// at build time; it fails as a camera that will not start.
+  ///
+  /// `Provides` stays first-writer-wins: a virtual name carries no version, so
+  /// there is nothing to compare, and the first real provider is as good a
+  /// choice as any.
   void addAll(AptIndex other) {
-    other.packages.forEach((k, v) => packages.putIfAbsent(k, () => v));
+    other.packages.forEach((k, v) {
+      final mine = packages[k];
+      if (mine == null) {
+        packages[k] = v;
+        return;
+      }
+      if (compareDebianVersions(v.version, mine.version) > 0) {
+        collisions.add('$k: ${v.version} (kept) over ${mine.version}');
+        packages[k] = v;
+      } else if (mine.version != v.version) {
+        collisions.add('$k: ${mine.version} (kept) over ${v.version}');
+      }
+    });
     other.provides.forEach((k, v) => provides.putIfAbsent(k, () => v));
   }
 
