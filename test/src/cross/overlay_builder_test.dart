@@ -92,9 +92,15 @@ class _StopAfterFetch {
     calls.add([exe, ...args]);
     if (exe == 'pkg-config') return const RunResult(1, '', '');
     if (exe == 'tar') {
-      // The builder stages into a fresh dir via `-C stage.path`. Write a file
-      // there so the empty-tree guard passes and stamping can happen.
+      // Honor the stubbed extraction outcome: when [extractExit] is set to a
+      // non-zero code we behave like `tar` failing mid-stream — no files are
+      // written into `-C stage.path`, and the caller sees that exit code. With
+      // extractExit == 0 (the default) we synthesize a successful extraction by
+      // dropping a file so the empty-tree guard passes and stamping can happen.
       final dest = args[args.indexOf('-C') + 1];
+      if (extractExit != 0) {
+        return RunResult(extractExit, '', 'tar: stubbed failure');
+      }
       File(p.join(dest, 'present.txt')).writeAsStringSync('before\n');
       return const RunResult(0, '', '');
     }
@@ -148,13 +154,9 @@ void main() {
     // `_makeTarGz` builds; we also unpack it straight into the staged tree so
     // pre-stage and extraction agree.
     final tarballName = '$pkg-$name.tar.gz';
-    _makeTarGzSync(p.join(src.path, tarballName), {'present.txt': 'stub\n'});
-
-    final dir = Directory(p.join(src.path, name))..createSync(recursive: true);
-    File(p.join(dir.path, '.emb-patch-stamp')).writeAsStringSync('');
-  }
-    File(p.join(src.path, '$pkg-$name.tar.gz'))
+    File(p.join(src.path, tarballName))
         .writeAsBytesSync(gzip.encode(utf8.encode('stub\n')));
+
     final dir = Directory(p.join(src.path, name))..createSync(recursive: true);
     File(p.join(dir.path, '.emb-patch-stamp')).writeAsStringSync('');
   }
