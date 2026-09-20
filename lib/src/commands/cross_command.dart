@@ -1146,6 +1146,12 @@ class CrossCommand extends Command<int> {
       );
     }
 
+    // Where a staged dependency goes: the same rule the augments above follow,
+    // named once so embedder_exports lands beside them rather than guessing.
+    final stageDir = native
+        ? workspace.ensurePlatformDir('overlay-${profile.targetTriple}')
+        : Directory(profile.targetSysroot);
+
     // Qualified by the checkout, not the configuration alone: two trees of the
     // same project (a worktree, a second clone, a bisect tree) resolve one
     // buildKey and would otherwise share a CMake cache naming the first one's
@@ -1219,6 +1225,7 @@ class CrossCommand extends Command<int> {
             results: existing,
             buildRoot: buildRoot,
             builder: builder,
+            stageDir: stageDir,
             overlayPaths: overlayPaths,
           );
         }
@@ -1267,6 +1274,7 @@ class CrossCommand extends Command<int> {
       results: results,
       buildRoot: buildRoot,
       builder: builder,
+      stageDir: stageDir,
       overlayPaths: overlayPaths,
     );
   }
@@ -1321,6 +1329,21 @@ class CrossCommand extends Command<int> {
     final buildRoot = emb.buildRoot;
     final builder = emb.builder;
     final overlayPaths = emb.overlayPaths;
+
+    // Stage the parts of the embedder that app modules link against, before
+    // any module is built. See CrossTarget.embedderExports: without this a
+    // module links an augment's copy of a library the embedder also builds,
+    // and the two are not the same binary.
+    if (target.embedderExports.isNotEmpty && built.isNotEmpty) {
+      if (!await _exportFromEmbedder(
+        target: target,
+        profile: profile,
+        overlay: emb.stageDir,
+        results: built,
+      )) {
+        return ExitCode.software.code;
+      }
+    }
 
     // Assemble a runnable bundle (embedder + engine + assets + libapp).
     // --deploy targets either an --app bundle (rsync) or a --deb (scp+install).
@@ -2716,6 +2739,65 @@ class CrossCommand extends Command<int> {
     return null;
   }
 
+  /// Stage [CrossTarget.embedderExports] out of the embedder build and into
+  /// the overlay, so a module that links one of them gets the embedder's own
+  /// binary rather than a second build of the same source.
+  ///
+  /// Installed the way an augment is (see OverlayBuilder): `--prefix /usr`
+  /// with DESTDIR pointing at the overlay, which keeps the layout identical
+  /// whether a library arrived here or through an augment, and writes nothing
+  /// outside the workspace. Cross stages into the sysroot for the same reason
+  /// augments do -- it is what the backend build already searches.
+  ///
+  /// Each entry names a subdirectory of the build tree rather than a target,
+  /// because `cmake --install <dir>` runs that directory's install script and
+  /// nothing else. A path that is not a directory, or holds no install script,
+  /// is an error: it means the manifest names something the embedder does not
+  /// build, and silently exporting nothing is how a module ends up linking the
+  /// copy this exists to replace.
+  ///
+  /// Backends build the same sources, so the first result is representative;
+  /// installing from each would write the same files repeatedly.
+  Future<bool> _exportFromEmbedder({
+    required CrossTarget target,
+    required CrossProfile profile,
+    required Directory overlay,
+    required List<CrossBuildResult> results,
+  }) async {
+    final from = results.first.buildDir;
+
+    for (final sub in target.embedderExports) {
+      final dir = Directory(p.join(from, sub));
+      if (!dir.existsSync()) {
+        _logger.err(
+          'embedder_exports: "$sub" is not in the embedder build '
+          '(${dir.path}). It names a subdirectory of the build tree, not a '
+          'target.',
+        );
+        return false;
+      }
+      if (!File(p.join(dir.path, 'cmake_install.cmake')).existsSync()) {
+        _logger.err(
+          'embedder_exports: "$sub" has no install script, so it would '
+          'export nothing. Does that directory call install()?',
+        );
+        return false;
+      }
+
+      final res = await _runProcess(
+        'cmake',
+        ['--install', dir.path, '--prefix', '/usr'],
+        environment: {...profile.buildEnv(), 'DESTDIR': overlay.path},
+      );
+      if (res.exitCode != 0) {
+        _logger.err('embedder_exports: installing "$sub" failed');
+        return false;
+      }
+      _logger.info('  export        : $sub → ${overlay.path}/usr');
+    }
+    return true;
+  }
+
   /// Build each app-owned [CrossTarget.modules] entry against the embedder's
   /// cross toolchain ([builder]) and stage its declared `.so` artifacts into
   /// [libDir] (the app bundle's `lib/`). Returns false — with an error logged —
@@ -3316,12 +3398,19 @@ class _EmbedderResult {
     required this.results,
     required this.buildRoot,
     required this.builder,
+    required this.stageDir,
     this.overlayPaths,
   });
 
   final List<CrossBuildResult> results;
   final Directory buildRoot;
   final CrossBuilder builder;
+
+  /// Where a staged dependency goes for this build: the overlay for a native
+  /// build, the sysroot for a cross one. The same place an augment lands, and
+  /// where [CrossTarget.embedderExports] puts the embedder's own libraries.
+  final Directory stageDir;
+
   final OverlayPaths? overlayPaths;
 }
 

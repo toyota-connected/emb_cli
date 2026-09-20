@@ -144,6 +144,39 @@ automatically. The deb/ipk/rpm/targz packagers package the *embedder binary*
 plus `cross.package.files:` — not the app bundle — so a module reaches those
 only if the bundle tree is listed under `files:` (the same as `libapp.so`).
 
+## Embedder exports (linking what the embedder ships)
+
+A module that links a library the **embedder itself builds** — a shell's
+platform-view ABI, say — has to link *that* build, not a second one. Left
+alone it links whatever an `augment:` or the sysroot provided, while the
+embedder ships its own copy in the bundle's `lib/`; the module then compiles
+against one binary and, because the bundle's `lib/` is on the loader path at
+runtime, runs against the other. Nothing checks this: a contract change like
+"submit consumes the frame's fds" compiles clean against the old headers and
+misbehaves later.
+
+`cross.embedder_exports:` closes that gap. Each entry is a **subdirectory of
+the embedder's build tree** whose `install()` output is staged — after the
+embedder is built, before any module is:
+
+```yaml
+cross:
+  # …provider / sysroot / backends…
+  embedder_exports:
+    - shared                      # <build>/shared/cmake_install.cmake
+```
+
+- Staged the way an augment is: `cmake --install <dir> --prefix /usr` with
+  `DESTDIR` pointing at the overlay (native) or the sysroot (cross), so the
+  layout is identical whether a library arrived this way or through an
+  `augment:`, and nothing is written outside the workspace.
+- An entry that is not a directory, or that holds no `cmake_install.cmake`, is
+  an **error**. It means the manifest names something the embedder does not
+  build, and exporting nothing silently is how a module ends up linking the
+  copy this exists to replace.
+- Backends build the same sources, so the first backend's build tree is the
+  one installed from.
+
 ## Packaging formats
 
 All five formats hang off a single `cross.package:` block. The shared fields —
