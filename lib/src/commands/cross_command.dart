@@ -1219,6 +1219,7 @@ class CrossCommand extends Command<int> {
         runProcess: _runProcess,
         launcher: launcher,
         sourceCacheDir: source,
+        logger: _logger,
       );
       try {
         // Cross: stage into the sysroot itself (not a separate overlay) so the
