@@ -192,6 +192,39 @@ automatically. The deb/ipk/rpm/targz packagers package the *embedder binary*
 plus `cross.package.files:` — not the app bundle — so a module reaches those
 only if the bundle tree is listed under `files:` (the same as `libapp.so`).
 
+## Local augment sources (`path:`)
+
+An `augment:` normally names a release tarball with `url:`. `path:` builds a
+**local tree** instead, for working on a dependency and the embedder together:
+
+```yaml
+cross:
+  augment:
+    - pkg: libdisplay-info
+      min: "0.2.0"
+      path: ../libdisplay-info     # relative to this manifest
+      build: meson
+      static: true
+```
+
+An augment declares one source: `url:` or `path:`, never both and never
+neither. emb does not own a local tree, and the rest follows from that:
+
+- **It is always rebuilt.** The pkg-config probe that skips an augment the
+  sysroot already satisfies does not apply — a previously installed copy
+  satisfying `min` is exactly the case where the edit under way would be
+  skipped.
+- **The build directory goes in the workspace**, under
+  `overlay-build/<pkg>-local/`, not `_build/` inside your checkout. emb wipes
+  that directory on every run, which is not something to do inside someone's
+  source tree.
+- **`patches:` is refused with `path:`.** A patch rewrites files in the source
+  tree; for a tarball that tree is emb's, and for a local checkout it is yours.
+  Apply them in the checkout instead.
+- `min:` is still read for the pkg-config metadata the embedder's configure
+  sees, so a local build that installs an older version still fails the way a
+  tarball one would.
+
 ## Embedder exports (linking what the embedder ships)
 
 A module that links a library the **embedder itself builds** — a shell's

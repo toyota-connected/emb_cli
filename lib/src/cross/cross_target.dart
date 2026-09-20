@@ -93,6 +93,7 @@ class AugmentLib {
     required this.pkg,
     required this.minVersion,
     required this.url,
+    this.path,
     this.build = CrossGenerator.meson,
     this.staticLink = true,
     this.defines = const {},
@@ -102,24 +103,56 @@ class AugmentLib {
     this.subdir,
   });
 
-  factory AugmentLib.fromMap(Map<dynamic, dynamic> map) => AugmentLib(
-    pkg: (map['pkg'] ?? '').toString(),
-    minVersion: (map['min'] ?? map['min_version'] ?? '0').toString(),
-    url: (map['url'] ?? '').toString(),
-    build: CrossGenerator.fromToken((map['build'] ?? 'meson').toString()),
-    staticLink: (map['static'] ?? true) as bool,
-    defines:
-        (map['defines'] as Map?)?.map(
-          (k, v) => MapEntry(k.toString(), v.toString()),
-        ) ??
-        const <String, String>{},
-    host: (map['host'] ?? false) as bool,
-    requiresDefine: (map['requires_define'] ?? map['when'])?.toString(),
-    patches: [
+  factory AugmentLib.fromMap(Map<dynamic, dynamic> map) {
+    final pkg = (map['pkg'] ?? '').toString();
+    final url = (map['url'] ?? '').toString();
+    final path = (map['path'] as Object?)?.toString() ?? '';
+    final patches = [
       for (final e in (map['patches'] as List<dynamic>? ?? const [])) '$e',
-    ],
-    subdir: (map['subdir'] ?? map['source_subdir'])?.toString(),
-  );
+    ];
+
+    // Refused rather than ranked, because either order would be a silent
+    // surprise: the manifest names two sources and only one can be built.
+    if (url.isNotEmpty && path.isNotEmpty) {
+      throw ArgumentError(
+        'augment "$pkg" declares both url: and path:; it builds one source, '
+        'so give it one',
+      );
+    }
+    if (url.isEmpty && path.isEmpty) {
+      throw ArgumentError(
+        'augment "$pkg" needs a source: url: for a release tarball, or path: '
+        'for a local tree',
+      );
+    }
+    // A patch rewrites files in the source tree. For a tarball that tree is
+    // emb's, unpacked and re-unpacked at will; a local tree is the
+    // developer's, and editing it is their business, not emb's.
+    if (path.isNotEmpty && patches.isNotEmpty) {
+      throw ArgumentError(
+        'augment "$pkg" cannot use patches: with path: — emb will not rewrite '
+        'a tree it did not create. Apply them in that checkout instead',
+      );
+    }
+
+    return AugmentLib(
+      pkg: pkg,
+      minVersion: (map['min'] ?? map['min_version'] ?? '0').toString(),
+      url: url,
+      path: path.isEmpty ? null : path,
+      build: CrossGenerator.fromToken((map['build'] ?? 'meson').toString()),
+      staticLink: (map['static'] ?? true) as bool,
+      defines:
+          (map['defines'] as Map?)?.map(
+            (k, v) => MapEntry(k.toString(), v.toString()),
+          ) ??
+          const <String, String>{},
+      host: (map['host'] ?? false) as bool,
+      requiresDefine: (map['requires_define'] ?? map['when'])?.toString(),
+      patches: patches,
+      subdir: (map['subdir'] ?? map['source_subdir'])?.toString(),
+    );
+  }
 
   /// pkg-config module name to probe (and the package to build).
   final String pkg;
@@ -128,8 +161,26 @@ class AugmentLib {
   /// build is skipped.
   final String minVersion;
 
-  /// Source tarball URL for the version to build.
+  /// Source tarball URL for the version to build. Empty when [path] names a
+  /// local tree instead.
   final String url;
+
+  /// A local source directory to build instead of downloading [url], resolved
+  /// against the manifest that declared it. For working on a dependency and
+  /// the embedder together: the tree is built where it lies, so an edit is in
+  /// the next build with no tarball to cut and no version to bump.
+  ///
+  /// emb does not own this tree, which is what the rules around it follow
+  /// from: the build directory goes in the workspace rather than inside it,
+  /// `patches:` is refused (a patch would rewrite the developer's own files),
+  /// and the pkg-config probe that skips a satisfied augment does not apply --
+  /// a previously installed copy satisfying `min` is exactly the case where
+  /// the edit under way must still be built.
+  final String? path;
+
+  /// Whether this augment builds a local tree rather than a downloaded
+  /// tarball.
+  bool get isLocal => path != null && path!.isNotEmpty;
 
   /// A copy with relative [patches] rewritten to resolve against the
   /// directory holding [declaringFile] — the manifest that declared them.
@@ -139,18 +190,25 @@ class AugmentLib {
   /// time. Leaving
   /// them relative would make the key depend on the working directory the keys
   /// were computed from rather than on the files that actually get applied.
+  /// Also absolutizes [path] against the same directory, and for the same
+  /// reason: it is hashed into the augment identity as well as read at build
+  /// time, so a relative value would key on the working directory rather than
+  /// on the tree that gets built.
   AugmentLib resolvePatchesAgainst(String? declaringFile) {
-    if (patches.isEmpty || declaringFile == null) return this;
+    if (declaringFile == null) return this;
+    if (patches.isEmpty && !isLocal) return this;
+    final base = p.dirname(p.absolute(declaringFile));
     return AugmentLib(
       pkg: pkg,
       minVersion: minVersion,
       url: url,
+      path: isLocal ? p.normalize(p.join(base, path)) : path,
       build: build,
       staticLink: staticLink,
       defines: defines,
       host: host,
       requiresDefine: requiresDefine,
-      patches: resolvePatchPaths(patches, p.dirname(p.absolute(declaringFile))),
+      patches: resolvePatchPaths(patches, base),
       subdir: subdir,
     );
   }

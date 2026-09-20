@@ -106,6 +106,11 @@ String augmentIdentity(AugmentLib a) => [
   a.pkg,
   a.minVersion,
   a.url,
+  // Absolute by the time it is hashed (resolvePatchesAgainst), so two
+  // checkouts of the same dependency key differently. The tree's *contents*
+  // are deliberately not hashed: a local augment is always rebuilt, so an
+  // edit does not need to move the key to take effect.
+  if (a.isLocal) 'path:${a.path}',
   a.build.name,
   '${a.staticLink}',
   if (a.defines.isNotEmpty) 'defines:${_kv(a.defines)}',

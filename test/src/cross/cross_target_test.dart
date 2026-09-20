@@ -1,3 +1,4 @@
+import 'package:emb_cli/src/cross/cross_keys.dart';
 import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:test/test.dart';
@@ -440,6 +441,66 @@ void main() {
       // target -- the failure vendoring exists to prevent.
       expect(() => vendorOf('atuo'), throwsA(isA<ArgumentError>()));
       expect(() => vendorOf('enabled'), throwsA(isA<ArgumentError>()));
+    });
+  });
+
+  group('AugmentLib source declarations', () {
+    AugmentLib augmentOf(Map<String, Object?> extra) =>
+        AugmentLib.fromMap({'pkg': 'libfoo', ...extra});
+
+    test('a url augment is not local', () {
+      final a = augmentOf({'url': 'https://x/libfoo-1.2.tar.gz'});
+      expect(a.isLocal, isFalse);
+      expect(a.path, isNull);
+    });
+
+    test('a path augment is local and keeps its path', () {
+      final a = augmentOf({'path': '../libfoo'});
+      expect(a.isLocal, isTrue);
+      expect(a.path, '../libfoo');
+      expect(a.url, isEmpty);
+    });
+
+    test('declaring both sources is refused', () {
+      expect(
+        () => augmentOf({'url': 'https://x/libfoo.tar.gz', 'path': '../foo'}),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+
+    test('declaring neither source is refused', () {
+      expect(() => augmentOf({}), throwsA(isA<ArgumentError>()));
+    });
+
+    test('patches with a local path are refused', () {
+      // emb would be rewriting files it did not create.
+      expect(
+        () => augmentOf({
+          'path': '../libfoo',
+          'patches': ['fix.patch'],
+        }),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+
+    test('a local path resolves against the declaring manifest', () {
+      final a = augmentOf({
+        'path': '../libfoo',
+      }).resolvePatchesAgainst('/w/boards/pi5.emb.yaml');
+      expect(a.path, '/w/libfoo');
+    });
+
+    test('an absolute local path is left alone', () {
+      final a = augmentOf({
+        'path': '/src/libfoo',
+      }).resolvePatchesAgainst('/w/boards/pi5.emb.yaml');
+      expect(a.path, '/src/libfoo');
+    });
+
+    test('two checkouts of one package key differently', () {
+      final a = augmentOf({'path': '/src/a'});
+      final b = augmentOf({'path': '/src/b'});
+      expect(augmentIdentity(a), isNot(augmentIdentity(b)));
     });
   });
 }
