@@ -57,6 +57,7 @@
     "libvulkan",
     "libxkbcommon",
     "dlopens",
+    "DESTDIR",
     "gstreamer",
     "hwdata",
     "pipewire",

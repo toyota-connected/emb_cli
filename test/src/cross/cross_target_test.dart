@@ -377,4 +377,39 @@ void main() {
       expect(s.transport, DeviceTransport.ssh);
     });
   });
+
+  group('CrossTarget.embedderExports', () {
+    CrossTarget targetOf(Object? raw) => CrossTarget.fromMap({
+      'provider': 'arm-gnu',
+      'triple': 'aarch64-none-linux-gnu',
+      if (raw != null) 'embedder_exports': raw,
+    });
+
+    test('absent means nothing is staged out of the embedder build', () {
+      expect(targetOf(null).embedderExports, isEmpty);
+    });
+
+    test('entries are build-tree subdirectories, kept in order', () {
+      expect(targetOf(['shared', 'plugins/common']).embedderExports, [
+        'shared',
+        'plugins/common',
+      ]);
+    });
+
+    test('a non-string entry is stringified rather than dropped', () {
+      // Dropping it would stage less than the manifest asked for, which is the
+      // failure this feature exists to prevent -- fail at install instead.
+      expect(targetOf([42]).embedderExports, ['42']);
+    });
+
+    test('survives withDefineOverrides and withResolvedPatches', () {
+      final t = targetOf(['shared']);
+      expect(t.withDefineOverrides(const {'X': '1'}).embedderExports, [
+        'shared',
+      ]);
+      expect(t.withResolvedPatches('/tmp/board.emb.yaml').embedderExports, [
+        'shared',
+      ]);
+    });
+  });
 }

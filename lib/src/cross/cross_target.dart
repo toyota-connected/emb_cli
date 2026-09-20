@@ -769,6 +769,7 @@ class CrossTarget {
     this.sdkEnvSetup,
     this.augment = const [],
     this.modules = const [],
+    this.embedderExports = const [],
     this.generator = CrossGenerator.cmake,
     this.launcher = Launcher.none,
     this.backends = const {},
@@ -813,6 +814,10 @@ class CrossTarget {
           .whereType<Map<dynamic, dynamic>>()
           .map(ModuleSpec.fromMap)
           .toList(),
+      embedderExports: [
+        for (final e in (map['embedder_exports'] as List<dynamic>? ?? const []))
+          '$e',
+      ],
       generator: CrossGenerator.fromToken(
         (map['generator'] ?? 'cmake').toString(),
       ),
@@ -918,6 +923,19 @@ class CrossTarget {
   /// replaces (never merges) this list.
   final List<ModuleSpec> modules;
 
+  /// Subdirectories of the embedder build tree whose `install()` output is
+  /// staged into the overlay after the embedder is built, before any
+  /// `modules` are.
+  ///
+  /// For a module that links a library the embedder itself builds -- a shell's
+  /// plugin ABI, say -- this is what makes the two the same binary. Without it
+  /// the module links whatever an augment or the sysroot happened to provide,
+  /// and the embedder ships its own copy beside it: the module then compiles
+  /// against one and, because the bundle's lib/ is on the loader path, runs
+  /// against the other. Each entry is a path relative to a backend's build
+  /// directory, e.g. `shared`.
+  final List<String> embedderExports;
+
   /// Build system to configure the embedder with (default CMake).
   final CrossGenerator generator;
 
@@ -1019,6 +1037,7 @@ class CrossTarget {
       sdkEnvSetup: sdkEnvSetup,
       augment: augment,
       modules: modules,
+      embedderExports: embedderExports,
       generator: generator,
       launcher: launcher,
       backends: {
@@ -1057,6 +1076,7 @@ class CrossTarget {
         for (final a in augment) a.resolvePatchesAgainst(declaringFile),
       ],
       modules: modules,
+      embedderExports: embedderExports,
       generator: generator,
       launcher: launcher,
       backends: backends,
