@@ -1,4 +1,5 @@
 import 'package:emb_cli/src/cross/cross_profile.dart';
+import 'package:emb_cli/src/manifest/source_repo.dart';
 import 'package:emb_cli/src/repo/patch_series.dart';
 import 'package:path/path.dart' as p;
 
@@ -531,6 +532,9 @@ class FlatpakPackageSpec {
     this.finishArgs = const [],
     this.icon,
     this.categories = const ['Utility'],
+    this.env = const {},
+    this.args = const [],
+    this.vendorLibs = false,
   });
 
   factory FlatpakPackageSpec.fromMap(Map<dynamic, dynamic> map) =>
@@ -547,7 +551,34 @@ class FlatpakPackageSpec {
         categories: (map['categories'] as List<dynamic>? ?? const ['Utility'])
             .map((e) => e.toString())
             .toList(),
+        env: (map['env'] as Map<dynamic, dynamic>? ?? const {}).map(
+          (k, v) => MapEntry(k.toString(), v.toString()),
+        ),
+        args: (map['args'] as List<dynamic>? ?? const [])
+            .map((e) => e.toString())
+            .toList(),
+        vendorLibs: _vendorLibs(map['vendor_libs']),
       );
+
+  /// `vendor_libs:` accepts a bool or the tokens `auto`/`on`/`off`.
+  ///
+  /// Anything else is refused rather than read as off. Off is the expensive
+  /// mistake here: the flatpak builds, ships nothing extra, and fails at first
+  /// launch on the target -- which is the failure vendoring exists to prevent,
+  /// arrived at by a typo.
+  static bool _vendorLibs(Object? raw) {
+    if (raw == null) return false;
+    if (raw is bool) return raw;
+    const on = {'auto', 'on', 'true', 'yes'};
+    const off = {'off', 'false', 'no', 'none'};
+    final token = raw.toString().toLowerCase();
+    if (on.contains(token)) return true;
+    if (off.contains(token)) return false;
+    throw ArgumentError(
+      'flatpak vendor_libs: "$raw" is not a value it takes '
+      '(${[...on, ...off].join(", ")}, or a bool)',
+    );
+  }
 
   /// Reverse-DNS app id, e.g. `com.toyota.ivi.Homescreen`. Required to build a
   /// flatpak; the command errors if it is unset.
@@ -565,6 +596,20 @@ class FlatpakPackageSpec {
 
   /// `.desktop` `Categories`.
   final List<String> categories;
+
+  /// Environment the generated launcher exports before exec'ing the embedder.
+  /// Values are shell text, so `$HOME/...` expands in the sandbox. Entries are
+  /// forced, not defaults; for a value a user should be able to override, use
+  /// a `finish_args` `--env=NAME=VALUE`.
+  final Map<String, String> env;
+
+  /// Embedder flags the generated launcher passes after `-b <prefix>`.
+  final List<String> args;
+
+  /// Copy the libraries the bundle needs but the flatpak runtime does not
+  /// provide into the bundle's `lib/`. Off by default: it needs the runtime
+  /// installed on the build host. See `examples/cross/README.md`.
+  final bool vendorLibs;
 }
 
 /// Where an `arm-gnu` target's sysroot comes from.
@@ -778,6 +823,8 @@ class CrossTarget {
     this.cmakeArgs = const [],
     this.hostTools = false,
     this.hostDevPackages = const [],
+    this.source,
+    this.app,
     this.aotObfuscate,
     this.aotStrip,
   });
@@ -833,9 +880,18 @@ class CrossTarget {
       hostTools:
           (map['host_build_tools'] ?? map['host_cmake'] ?? false) == true,
       hostDevPackages: _stringList(map['host_dev_packages']),
+      source: repoFrom(map['source']),
+      app: repoFrom(map['app']),
       aotObfuscate: map['aot_obfuscate'] as bool?,
       aotStrip: map['aot_strip'] as bool?,
     );
+  }
+
+  /// A single `uri`/`rev` git entry (`source:` / `app:`), or null when absent.
+  static SourceRepo? repoFrom(Object? raw) {
+    if (raw is! Map) return null;
+    final repo = SourceRepo.fromMap(Map<String, dynamic>.from(raw));
+    return repo.uri.isEmpty ? null : repo;
   }
 
   final CrossProviderKind provider;
@@ -976,6 +1032,16 @@ class CrossTarget {
   /// host tool. (Manifest key `host_dev_packages`.)
   final List<String> hostDevPackages;
 
+  /// Where the embedder source comes from (`cross.source`), cloned into
+  /// `<workspace>/app/` and used as the build source dir. Unset builds the
+  /// directory holding the manifest. `icon:` and `files:` always resolve
+  /// against the manifest, not this.
+  final SourceRepo? source;
+
+  /// Where the Flutter app comes from (`cross.app`). `--app <dir>` overrides
+  /// it; [SourceRepo.pubspecPath] addresses an app inside a larger repo.
+  final SourceRepo? app;
+
   /// Obfuscate the app's AOT snapshot. Null (unset) leaves the per-mode
   /// default: on for release, off for profile. `--[no-]obfuscate` on the
   /// command line wins over this. Whenever obfuscation is on the obfuscation
@@ -1048,6 +1114,8 @@ class CrossTarget {
       cmakeArgs: cmakeArgs,
       hostTools: hostTools,
       hostDevPackages: hostDevPackages,
+      source: source,
+      app: app,
       aotObfuscate: aotObfuscate,
       aotStrip: aotStrip,
     );
@@ -1085,6 +1153,8 @@ class CrossTarget {
       cmakeArgs: cmakeArgs,
       hostTools: hostTools,
       hostDevPackages: hostDevPackages,
+      source: source,
+      app: app,
       aotObfuscate: aotObfuscate,
       aotStrip: aotStrip,
     );

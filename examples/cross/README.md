@@ -104,6 +104,54 @@ What lands where, under `<workspace>/.config/flutter_workspace/`:
   (`.deb`/`.ipk`/`.rpm`/`.tar.gz`/`.flatpak`).
 - `overlay-<triple>/`, `overlay-src/` — augment build prefix + sources.
 
+## Self-contained manifests (`source:` / `app:` / `workspace:`)
+
+By default `emb cross <file>` builds the directory holding the manifest, which
+means the manifest has to live inside the embedder's source tree. Three keys let
+a manifest name its own inputs instead, so a packaging repo can be a manifest
+plus its assets rather than a checkout with a staging script beside it:
+
+```yaml
+id: my-app
+workspace: staging/emb-workspace     # relative to this file
+flutter_version: 3.44.2              # provisioned if the workspace has none
+
+cross:
+  provider: arm-gnu
+  source:                            # the embedder, cloned into <workspace>/app
+    uri: https://github.com/toyota-connected/ivi-homescreen.git
+    rev: e48ec1c001c6170bd45a5530bf1c32341a55bf76
+  app:                               # the Flutter app; --app <dir> still wins
+    uri: https://github.com/me/my_flutter_app.git
+    rev: 76b2c6de449ad27de77f53e5a0c1bf748c79b139
+    # pubspec_path: example/my_app   # when the app sits inside a larger repo
+  package:
+    flatpak: { app_id: com.example.MyApp }
+```
+
+```sh
+emb cross my-app.emb.yaml --build --flatpak
+```
+
+`source:` and `app:` take the same fields as a top-level `src:` entry — `rev`
+(alias `ref`), `branch`, `dest_name`, `pubspec_path`, `patches:` — and clone with
+the same machinery `emb sync` uses, so submodules and Git-LFS work unchanged.
+
+Two things worth knowing:
+
+- **`icon:`, `files:` and `modules[].path` resolve against the manifest**, not
+  the build source. That is what makes the split useful: your assets stay in
+  your repo while the build happens in the checkout.
+- **`workspace:` beats `$FLUTTER_WORKSPACE`** (but not `-w`). emb reuses whatever
+  engine artifacts it finds in a workspace, and an engine from an unrelated SDK
+  mismatches `gen_snapshot` and fails at Dart VM init rather than at build time —
+  so a repo that owns its pipeline needs to pin where that pipeline builds,
+  independently of the shell it was launched from.
+
+`--dry-run` / `--json` / `--clean` fetch nothing, so they still report the plan
+without touching the network. `--offline` reuses an existing checkout and fails
+only when there is none.
+
 ## Modules (app-owned native libraries)
 
 A `cross.modules:` list builds native libraries from the **app's own source
@@ -283,7 +331,18 @@ package:
     app_id: com.toyota.ivi.Homescreen
     runtime_version: '23.08'
     finish_args: [--share=ipc, --socket=wayland, --device=dri]
+    vendor_libs: auto                      # see below
+    env: {XDG_DATA_HOME: $HOME/.local/share}
+    args: [--shell=xdg]
 ```
+
+`env:` and `args:` are carried by the generated `/app/bin/<command>` launcher —
+the environment the embedder expects, and the flags describing *this* app,
+neither of which an invocation should have to repeat. Env names ending in
+`PATH`/`DIRS` prepend so the runtime's own entries survive; the rest are plain
+assignments. `args:` is appended after emb's default `-b <prefix>`, or replaces
+it when an arg contains `{bundle}`. The caller's own flags still come last, so
+`flatpak run <app> --flag` reaches the embedder.
 
 > **deb auto-`Depends` needs a sysroot.** The `.deb` field is derived by mapping
 > the binary's `DT_NEEDED` sonames to the packages that own them, looked up in
@@ -294,6 +353,24 @@ package:
 > `Requires` (e.g. `libc.so.6()(64bit)`) that rpmbuild extracts straight from
 > the ELF, resolved by the target's package DB at install time, so it needs no
 > sysroot; `.ipk` is explicit-only by design (Yocto sysroots ship no dpkg db).
+
+> **flatpak `vendor_libs` needs the runtime, not the sysroot.** A binary that
+> links cleanly against a Debian or Yocto sysroot can still fail to start inside
+> `org.freedesktop.Platform`, which ships a narrower library set. `vendor_libs:
+> auto` walks the bundle's `DT_NEEDED` closure, drops every soname the runtime
+> already provides, copies the rest into the bundle's `lib/`, and puts that
+> directory on the launcher's `LD_LIBRARY_PATH` (copied libraries have no
+> rpath of their own). A soname in neither is warned about, not failed
+> on: a `dlopen`-only plugin has no `DT_NEEDED` entry to find. Off by default,
+> because it needs the runtime installed on the build host to know what to
+> subtract (`flatpak install flathub org.freedesktop.Platform//<ver>`). Only the
+> flatpak's staged copy is touched; the runnable tree `--tar`, `--deploy` and
+> `--run` share is left alone.
+>
+> Vendoring copies libraries out of a sysroot into something you redistribute,
+> so what may be copied is your call, not emb's: LGPL terms expect relinking to
+> stay possible, and some libraries cannot be bundled at all. emb stages what
+> the closure names and reports every soname it staged.
 
 ## Sysroot provenance (arm-gnu)
 

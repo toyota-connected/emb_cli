@@ -500,4 +500,29 @@ void main() {
       expect(augmentOverlayKey(fromA), isNot(augmentOverlayKey(fromB)));
     });
   });
+
+  group('buildKey source', () {
+    CrossTarget t([Map<String, dynamic>? source]) => CrossTarget.fromMap({
+      'provider': 'arm-gnu',
+      if (source != null) 'source': source,
+    });
+
+    test('a declared source gets its own build dir', () {
+      expect(
+        buildKey(t({'uri': 'https://x/ivi-homescreen.git'})),
+        isNot(buildKey(t())),
+      );
+      expect(
+        buildKey(t({'uri': 'https://x/ivi-homescreen.git'})),
+        isNot(buildKey(t({'uri': 'https://y/ivi-homescreen.git'}))),
+      );
+    });
+
+    test('bumping the rev keeps the build dir', () {
+      expect(
+        buildKey(t({'uri': 'https://x/a.git', 'rev': 'aaa'})),
+        buildKey(t({'uri': 'https://x/a.git', 'rev': 'bbb'})),
+      );
+    });
+  });
 }
