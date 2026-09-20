@@ -138,3 +138,11 @@ cross:
         - --device=dri
         - --socket=pulseaudio
       categories: [Utility]
+      # env: {XDG_DATA_HOME: $HOME/.local/share}  # exported by the launcher;
+      #                                           # *PATH/*DIRS names prepend
+      # args: [--shell=xdg]                 # embedder flags, after -b <prefix>;
+      #                                     # an arg containing {bundle}
+      #                                     # replaces that default
+      # vendor_libs: auto                   # copy libraries the runtime lacks
+      #                                     # into the bundle; needs the
+      #                                     # runtime installed to build

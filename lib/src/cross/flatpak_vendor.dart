@@ -53,6 +53,10 @@ class FlatpakLibVendor {
   /// The soname the dynamic loader itself provides; never a file on disk.
   static const _vdso = 'linux-vdso.so.1';
 
+  /// A shared object's file name: `libfoo.so`, `libfoo.so.1`, `libfoo.so.1.2`.
+  /// Anchored, so `notes.sock` and `libfoo.solib` are not mistaken for one.
+  static final _soName = RegExp(r'\.so(\.\d+)*$');
+
   /// Vendor into `<bundleDir>/lib`, seeded from [command] plus every shared
   /// object already there. [runtimeFiles] is the runtime's `files/` tree (from
   /// `flatpak info --show-location`); [searchPaths] are the directories a
@@ -90,7 +94,7 @@ class FlatpakLibVendor {
       embedder,
       if (libDir.existsSync())
         for (final e in libDir.listSync())
-          if (e is File && p.basename(e.path).contains('.so')) e,
+          if (e is File && _soName.hasMatch(p.basename(e.path))) e,
     ];
 
     while (queue.isNotEmpty) {
@@ -148,7 +152,7 @@ class FlatpakLibVendor {
       try {
         for (final e in d.listSync(recursive: true, followLinks: false)) {
           final base = p.basename(e.path);
-          if (base.contains('.so')) names.add(base);
+          if (_soName.hasMatch(base)) names.add(base);
         }
       } on FileSystemException {
         // Unreadable corner of the runtime tree: index what we can.

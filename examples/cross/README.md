@@ -366,6 +366,11 @@ it when an arg contains `{bundle}`. The caller's own flags still come last, so
 > subtract (`flatpak install flathub org.freedesktop.Platform//<ver>`). Only the
 > flatpak's staged copy is touched; the runnable tree `--tar`, `--deploy` and
 > `--run` share is left alone.
+>
+> Vendoring copies libraries out of a sysroot into something you redistribute,
+> so what may be copied is your call, not emb's: LGPL terms expect relinking to
+> stay possible, and some libraries cannot be bundled at all. emb stages what
+> the closure names and reports every soname it staged.
 
 ## Sysroot provenance (arm-gnu)
 

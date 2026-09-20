@@ -412,4 +412,34 @@ void main() {
       ]);
     });
   });
+
+  group('FlatpakPackageSpec.vendorLibs', () {
+    bool vendorOf(Object? raw) => FlatpakPackageSpec.fromMap({
+      'app_id': 'com.example.App',
+      if (raw != null) 'vendor_libs': raw,
+    }).vendorLibs;
+
+    test('absent is off', () {
+      expect(vendorOf(null), isFalse);
+    });
+
+    test('auto, on and true are on', () {
+      expect(vendorOf('auto'), isTrue);
+      expect(vendorOf('ON'), isTrue);
+      expect(vendorOf(true), isTrue);
+    });
+
+    test('off, false and none are off', () {
+      expect(vendorOf('off'), isFalse);
+      expect(vendorOf(false), isFalse);
+      expect(vendorOf('none'), isFalse);
+    });
+
+    test('a token it does not know is refused, not read as off', () {
+      // Read as off, a typo ships a flatpak that fails at first launch on the
+      // target -- the failure vendoring exists to prevent.
+      expect(() => vendorOf('atuo'), throwsA(isA<ArgumentError>()));
+      expect(() => vendorOf('enabled'), throwsA(isA<ArgumentError>()));
+    });
+  });
 }

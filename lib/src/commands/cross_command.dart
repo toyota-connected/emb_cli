@@ -2971,11 +2971,9 @@ class CrossCommand extends Command<int> {
   Future<FlatpakVendorPlan?> _flatpakVendorPlan(
     CrossProfile profile, {
     required FlatpakPackageSpec meta,
-    required String? arch,
+    required String arch,
   }) async {
-    final ref = arch == null
-        ? '${meta.runtime}//${meta.runtimeVersion}'
-        : '${meta.runtime}/$arch/${meta.runtimeVersion}';
+    final ref = '${meta.runtime}/$arch/${meta.runtimeVersion}';
     final loc = await _runProcess('flatpak', ['info', '--show-location', ref]);
     if (loc.exitCode != 0) {
       _logger.err(
@@ -2985,7 +2983,18 @@ class CrossCommand extends Command<int> {
       );
       return null;
     }
-    final runtimeFiles = Directory(p.join(loc.stdout.trim(), 'files'));
+    // The location is the last thing printed: a runtime installed from a
+    // remote that prints a note first would otherwise become part of the path.
+    final where = loc.stdout
+        .split('\n')
+        .map((l) => l.trim())
+        .where((l) => l.isNotEmpty)
+        .lastOrNull;
+    if (where == null) {
+      _logger.err('  flatpak info --show-location $ref printed nothing');
+      return null;
+    }
+    final runtimeFiles = Directory(p.join(where, 'files'));
     if (!runtimeFiles.existsSync()) {
       _logger.err('  runtime tree has no files/: ${runtimeFiles.path}');
       return null;

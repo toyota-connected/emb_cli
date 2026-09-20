@@ -561,12 +561,23 @@ class FlatpakPackageSpec {
       );
 
   /// `vendor_libs:` accepts a bool or the tokens `auto`/`on`/`off`.
+  ///
+  /// Anything else is refused rather than read as off. Off is the expensive
+  /// mistake here: the flatpak builds, ships nothing extra, and fails at first
+  /// launch on the target -- which is the failure vendoring exists to prevent,
+  /// arrived at by a typo.
   static bool _vendorLibs(Object? raw) {
+    if (raw == null) return false;
     if (raw is bool) return raw;
-    if (raw is String) {
-      return const {'auto', 'on', 'true', 'yes'}.contains(raw.toLowerCase());
-    }
-    return false;
+    const on = {'auto', 'on', 'true', 'yes'};
+    const off = {'off', 'false', 'no', 'none'};
+    final token = raw.toString().toLowerCase();
+    if (on.contains(token)) return true;
+    if (off.contains(token)) return false;
+    throw ArgumentError(
+      'flatpak vendor_libs: "$raw" is not a value it takes '
+      '(${[...on, ...off].join(", ")}, or a bool)',
+    );
   }
 
   /// Reverse-DNS app id, e.g. `com.toyota.ivi.Homescreen`. Required to build a
