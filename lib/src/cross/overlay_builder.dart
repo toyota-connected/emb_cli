@@ -142,7 +142,10 @@ class OverlayBuilder {
         if (!binDirs.contains(hostBin)) binDirs.add(hostBin);
         continue;
       }
-      if (await _satisfied(lib)) continue;
+      // A local augment is always built: the developer is editing that tree,
+      // and a previously installed copy satisfying `min` is exactly when the
+      // edit under way would be skipped. See AugmentLib.path.
+      if (!lib.isLocal && await _satisfied(lib)) continue;
       switch (lib.build) {
         case CrossGenerator.meson:
           await _buildMeson(lib, overlay);
@@ -162,12 +165,25 @@ class OverlayBuilder {
     );
   }
 
-  /// A fresh build dir for [src] — wiped first so a re-run never reuses a stale
-  /// (possibly mis-configured) meson/cmake cache.
-  Directory _freshBuildDir(Directory src) {
-    final bld = Directory(p.join(src.path, '_build'));
+  /// A fresh build dir for [lib]'s source — wiped first so a re-run never
+  /// reuses a stale (possibly mis-configured) meson/cmake cache.
+  ///
+  /// For a downloaded tarball that is `_build/` inside the unpacked tree, which
+  /// emb owns and re-unpacks at will. A local tree belongs to the developer, so
+  /// its build dir goes in the workspace instead: emb creates and deletes this
+  /// directory on every run, which is not something to do inside someone's
+  /// checkout.
+  Directory _freshBuildDir(AugmentLib lib, Directory src) {
+    final bld = lib.isLocal
+        ? Directory(
+            p.join(
+              workspace.ensurePlatformDir('overlay-build').path,
+              '${lib.pkg}-local',
+            ),
+          )
+        : Directory(p.join(src.path, '_build'));
     if (bld.existsSync()) bld.deleteSync(recursive: true);
-    return bld..createSync();
+    return bld..createSync(recursive: true);
   }
 
   /// True when the sysroot already provides [lib] at >= its `min` version.
@@ -185,6 +201,19 @@ class OverlayBuilder {
   }
 
   Future<Directory> _fetchSource(AugmentLib lib) async {
+    // A local tree is the source: nothing to download, nothing to unpack, and
+    // nothing to patch (CrossTarget rejects `patches:` with `path:`, because
+    // applying them would rewrite files emb did not create).
+    if (lib.isLocal) {
+      final dir = Directory(lib.path!);
+      if (!dir.existsSync()) {
+        throw OverlayBuildException(
+          '${lib.pkg}: path "${lib.path}" does not exist',
+        );
+      }
+      return dir;
+    }
+
     final src = workspace.ensurePlatformDir('overlay-src');
     final tarball = File(p.join(src.path, p.basename(Uri.parse(lib.url).path)));
     if (!tarball.existsSync()) {
@@ -268,7 +297,7 @@ class OverlayBuilder {
 
   Future<void> _buildMeson(AugmentLib lib, Directory overlay) async {
     final src = await _fetchSource(lib);
-    final bld = _freshBuildDir(src);
+    final bld = _freshBuildDir(lib, src);
     // Prefer the profile's meson cross file; else emit one from its fields.
     final cross =
         profile.mesonCrossFile ??
@@ -330,7 +359,7 @@ class OverlayBuilder {
     final srcDir = sub == null || sub.isEmpty
         ? src.path
         : p.join(src.path, sub);
-    final bld = _freshBuildDir(src);
+    final bld = _freshBuildDir(lib, src);
     final tc = profile.cmakeToolchainFile;
     final configure = await _run(
       'cmake',
@@ -430,7 +459,7 @@ class OverlayBuilder {
 
   Future<String> _buildCMakeHost(AugmentLib lib, Directory toolDir) async {
     final src = await _fetchSource(lib);
-    final bld = _freshBuildDir(src);
+    final bld = _freshBuildDir(lib, src);
     _check(
       lib,
       'cmake configure (host)',
@@ -469,7 +498,7 @@ class OverlayBuilder {
 
   Future<String> _buildMesonHost(AugmentLib lib, Directory toolDir) async {
     final src = await _fetchSource(lib);
-    final bld = _freshBuildDir(src);
+    final bld = _freshBuildDir(lib, src);
     _check(
       lib,
       'meson setup (host)',
