@@ -28,7 +28,10 @@ void main() {
     expect(env['CXX_aarch64_unknown_linux_gnu'], contains('-g++'));
     expect(env['AR_aarch64_unknown_linux_gnu'], contains('-ar'));
     // LINKER is not set here; _cargoModule sets it so it can inject a wrapper.
-    expect(env.containsKey('CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER'), isFalse);
+    expect(
+      env.containsKey('CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER'),
+      isFalse,
+    );
     // No bare CC/CFLAGS that would poison host build scripts.
     expect(env.containsKey('CC'), isFalse);
     expect(env.containsKey('CFLAGS'), isFalse);
