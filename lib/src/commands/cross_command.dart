@@ -754,8 +754,8 @@ class CrossCommand extends Command<int> {
     if (args['clean'] == true || args['clean-all'] == true) {
       final sourceDir =
           FileSystemEntity.typeSync(inputPath) == FileSystemEntityType.file
-              ? File(inputPath).parent
-              : Directory(inputPath);
+          ? File(inputPath).parent
+          : Directory(inputPath);
       return _clean(
         provider,
         target,
@@ -1608,7 +1608,8 @@ class CrossCommand extends Command<int> {
         workspace.platformDir('cross-$triple-$sk'),
         // Project-local augment source cache. Keep the legacy shared dir in
         // the list too, so a clean of an old layout still sweeps it.
-        if (sourceDir != null) Directory(p.join(sourceDir.path, '.cache', 'overlay-src')),
+        if (sourceDir != null)
+          Directory(p.join(sourceDir.path, '.cache', 'overlay-src')),
         workspace.platformDir('overlay-src'),
         if (provider.name == 'yocto-sdk')
           workspace.platformDir('yocto-sdk-$sk'),

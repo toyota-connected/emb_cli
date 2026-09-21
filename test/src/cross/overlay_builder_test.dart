@@ -56,10 +56,8 @@ class _FakeOrigin {
     });
   }
 
-  static Future<_FakeOrigin> start(List<int> body) async => _FakeOrigin(
-    await HttpServer.bind(InternetAddress.loopbackIPv4, 0),
-    body,
-  );
+  static Future<_FakeOrigin> start(List<int> body) async =>
+      _FakeOrigin(await HttpServer.bind(InternetAddress.loopbackIPv4, 0), body);
 
   final HttpServer _server;
   final List<int> body;
@@ -79,7 +77,7 @@ class _StopAfterFetch {
   final int extractExit;
   List<List<String>> calls = [];
 
-    Future<RunResult> call(
+  Future<RunResult> call(
     String exe,
     List<String> args, {
     String? workingDirectory,
@@ -121,10 +119,13 @@ Future<void> _makeTarGz(
   for (final e in entries.entries) {
     File(p.join(top, e.key))..writeAsStringSync(e.value);
   }
-  final r = await Process.run(
-    'tar',
-    ['-czf', outPath, '-C', staging.path, p.basename(top)],
-  );
+  final r = await Process.run('tar', [
+    '-czf',
+    outPath,
+    '-C',
+    staging.path,
+    p.basename(top),
+  ]);
   if (r.exitCode != 0) {
     throw StateError('tar failed: ${r.stderr}');
   }
@@ -154,8 +155,9 @@ void main() {
     // `_makeTarGz` builds; we also unpack it straight into the staged tree so
     // pre-stage and extraction agree.
     final tarballName = '$pkg-$name.tar.gz';
-    File(p.join(src.path, tarballName))
-        .writeAsBytesSync(gzip.encode(utf8.encode('stub\n')));
+    File(
+      p.join(src.path, tarballName),
+    ).writeAsBytesSync(gzip.encode(utf8.encode('stub\n')));
 
     final dir = Directory(p.join(src.path, name))..createSync(recursive: true);
     File(p.join(dir.path, '.emb-patch-stamp')).writeAsStringSync('');
@@ -418,8 +420,9 @@ void main() {
       // matches a series with a patch), and extraction must actually produce
       // a file or the empty-tree guard throws before the patch is reached.
       if (exe == 'tar') {
-        File(p.join(args[args.indexOf('-C') + 1], 'present.txt'))
-            .writeAsStringSync('before\n');
+        File(
+          p.join(args[args.indexOf('-C') + 1], 'present.txt'),
+        ).writeAsStringSync('before\n');
       }
       return const RunResult(0, '', '');
     }
@@ -627,37 +630,48 @@ void main() {
   Future<_FakeOrigin> originWithGzip() =>
       _FakeOrigin.start(gzip.encode(utf8.encode('payload\n')));
 
-  test('corrupt cached tarball is re-downloaded, not patched against', () async {
-    // The regression: a truncated cached download was trusted on
-    // existsSync(), extracted to nothing (exit code ignored), and the failure
-    // surfaced much later as a misleading patch error. Now the magic-byte +
-    // gzip -t check rejects it before extraction, and a clean re-download
-    // heals the cache.
-    final origin = await originWithGzip();
-    addTearDown(origin.close);
-    // Point the lib at the fake origin so the re-download succeeds.
-    final lib = AugmentLib.fromMap({
-      'pkg': 'libdisplay-info',
-      'min': '0.2.0',
-      'url': '${origin.origin}/libdisplay-info-0.2.0.tar.gz',
-      'build': 'meson',
-    });
-    final src = Directory(
-      p.join(tmp.path, '.config', 'flutter_workspace', 'overlay-src'),
-    )..createSync(recursive: true);
-    final tarball = File(p.join(src.path, 'libdisplay-info-libdisplay-info-0.2.0.tar.gz'))
-      ..writeAsBytesSync(List.filled(1000, 0x41)); // garbage bytes
-    final runner = _StopAfterFetch();
+  test(
+    'corrupt cached tarball is re-downloaded, not patched against',
+    () async {
+      // The regression: a truncated cached download was trusted on
+      // existsSync(), extracted to nothing (exit code ignored), and the failure
+      // surfaced much later as a misleading patch error. Now the magic-byte +
+      // gzip -t check rejects it before extraction, and a clean re-download
+      // heals the cache.
+      final origin = await originWithGzip();
+      addTearDown(origin.close);
+      // Point the lib at the fake origin so the re-download succeeds.
+      final lib = AugmentLib.fromMap({
+        'pkg': 'libdisplay-info',
+        'min': '0.2.0',
+        'url': '${origin.origin}/libdisplay-info-0.2.0.tar.gz',
+        'build': 'meson',
+      });
+      final src = Directory(
+        p.join(tmp.path, '.config', 'flutter_workspace', 'overlay-src'),
+      )..createSync(recursive: true);
+      final tarball = File(
+        p.join(src.path, 'libdisplay-info-libdisplay-info-0.2.0.tar.gz'),
+      )..writeAsBytesSync(List.filled(1000, 0x41)); // garbage bytes
+      final runner = _StopAfterFetch();
 
-    final ob = OverlayBuilder(Workspace(tmp), _profile, runProcess: runner.call);
-    await expectLater(ob.build([lib]), throwsA(isA<OverlayBuildException>()));
-    ob.close();
+      final ob = OverlayBuilder(
+        Workspace(tmp),
+        _profile,
+        runProcess: runner.call,
+      );
+      await expectLater(ob.build([lib]), throwsA(isA<OverlayBuildException>()));
+      ob.close();
 
-    expect(origin.requests, 1); // corrupt cache triggered exactly one re-fetch
-    expect(tarball.readAsBytesSync(), isNot(equals(List.filled(1000, 0x41))));
-    // The healed tarball is a real gzip.
-    expect(tarball.readAsBytesSync().take(2), [0x1f, 0x8b]);
-  });
+      expect(
+        origin.requests,
+        1,
+      ); // corrupt cache triggered exactly one re-fetch
+      expect(tarball.readAsBytesSync(), isNot(equals(List.filled(1000, 0x41))));
+      // The healed tarball is a real gzip.
+      expect(tarball.readAsBytesSync().take(2), [0x1f, 0x8b]);
+    },
+  );
 
   test('cached tarball is reused when valid — no re-download', () async {
     final origin = await originWithGzip();
@@ -671,11 +685,16 @@ void main() {
     final src = Directory(
       p.join(tmp.path, '.config', 'flutter_workspace', 'overlay-src'),
     )..createSync(recursive: true);
-    File(p.join(src.path, 'libdisplay-info-libdisplay-info-0.2.0.tar.gz'))
-        .writeAsBytesSync(gzip.encode(utf8.encode('cached\n')));
+    File(
+      p.join(src.path, 'libdisplay-info-libdisplay-info-0.2.0.tar.gz'),
+    ).writeAsBytesSync(gzip.encode(utf8.encode('cached\n')));
     final runner = _StopAfterFetch();
 
-    final ob = OverlayBuilder(Workspace(tmp), _profile, runProcess: runner.call);
+    final ob = OverlayBuilder(
+      Workspace(tmp),
+      _profile,
+      runProcess: runner.call,
+    );
     await expectLater(ob.build([lib]), throwsA(isA<OverlayBuildException>()));
     ob.close();
 
@@ -696,7 +715,11 @@ void main() {
     });
     final runner = _StopAfterFetch(extractExit: 2);
 
-    final ob = OverlayBuilder(Workspace(tmp), _profile, runProcess: runner.call);
+    final ob = OverlayBuilder(
+      Workspace(tmp),
+      _profile,
+      runProcess: runner.call,
+    );
     await expectLater(
       ob.build([lib]),
       throwsA(
@@ -715,8 +738,14 @@ void main() {
     final src = Directory(
       p.join(tmp.path, '.config', 'flutter_workspace', 'overlay-src'),
     );
-    expect(Directory(p.join(src.path, 'libdisplay-info-0.2.0')).existsSync(), isFalse);
-    expect(Directory(p.join(src.path, 'libdisplay-info-0.2.0.unzip')).existsSync(), isFalse);
+    expect(
+      Directory(p.join(src.path, 'libdisplay-info-0.2.0')).existsSync(),
+      isFalse,
+    );
+    expect(
+      Directory(p.join(src.path, 'libdisplay-info-0.2.0.unzip')).existsSync(),
+      isFalse,
+    );
   });
 
   test('sha-pinned download mismatch fails after one retry', () async {
@@ -732,7 +761,11 @@ void main() {
     });
     final runner = _StopAfterFetch();
 
-    final ob = OverlayBuilder(Workspace(tmp), _profile, runProcess: runner.call);
+    final ob = OverlayBuilder(
+      Workspace(tmp),
+      _profile,
+      runProcess: runner.call,
+    );
     await expectLater(
       ob.build([lib]),
       throwsA(
@@ -761,7 +794,11 @@ void main() {
     });
     final runner = _StopAfterFetch();
 
-    final ob = OverlayBuilder(Workspace(tmp), _profile, runProcess: runner.call);
+    final ob = OverlayBuilder(
+      Workspace(tmp),
+      _profile,
+      runProcess: runner.call,
+    );
     await expectLater(
       ob.build([lib]),
       throwsA(
@@ -775,51 +812,55 @@ void main() {
     ob.close();
   });
 
-  test('no-patch extract still stamps, and a stamp-less dir is re-unpacked', () async {
-    // Closes the no-patch silent-empty-build hole: with no patches the tree
-    // used to be reused blindly. Now every extracted tree carries a stamp and
-    // only a matching stamp grants reuse.
-    final src = Directory(
-      p.join(tmp.path, '.config', 'flutter_workspace', 'overlay-src'),
-    )..createSync(recursive: true);
-    await _makeTarGz(
-      p.join(src.path, 'libdisplay-info-libdisplay-info-0.2.0.tar.gz'),
-      entries: {'present.txt': 'payload\n'},
-    );
-    // A pre-existing, stamp-less tree (stale from an older emb, or hand-made)
-    // must be replaced by a fresh extraction.
-    final stale = Directory(p.join(src.path, 'libdisplay-info-0.2.0'))
-      ..createSync(recursive: true);
-    File(p.join(stale.path, 'stale.txt')).writeAsStringSync('stale');
-    final runner = _StopAfterFetch();
+  test(
+    'no-patch extract still stamps, and a stamp-less dir is re-unpacked',
+    () async {
+      // Closes the no-patch silent-empty-build hole: with no patches the tree
+      // used to be reused blindly. Now every extracted tree carries a stamp and
+      // only a matching stamp grants reuse.
+      final src = Directory(
+        p.join(tmp.path, '.config', 'flutter_workspace', 'overlay-src'),
+      )..createSync(recursive: true);
+      await _makeTarGz(
+        p.join(src.path, 'libdisplay-info-libdisplay-info-0.2.0.tar.gz'),
+        entries: {'present.txt': 'payload\n'},
+      );
+      // A pre-existing, stamp-less tree (stale from an older emb, or hand-made)
+      // must be replaced by a fresh extraction.
+      final stale = Directory(p.join(src.path, 'libdisplay-info-0.2.0'))
+        ..createSync(recursive: true);
+      File(p.join(stale.path, 'stale.txt')).writeAsStringSync('stale');
+      final runner = _StopAfterFetch();
 
-    const url = 'https://x/libdisplay-info-0.2.0.tar.gz';
-    final lib = AugmentLib.fromMap({
-      'pkg': 'libdisplay-info',
-      'min': '0.2.0',
-      'url': url,
-      'build': 'meson',
-    });
+      const url = 'https://x/libdisplay-info-0.2.0.tar.gz';
+      final lib = AugmentLib.fromMap({
+        'pkg': 'libdisplay-info',
+        'min': '0.2.0',
+        'url': url,
+        'build': 'meson',
+      });
 
-    final ob = OverlayBuilder(Workspace(tmp), _profile, runProcess: runner.call);
-    await expectLater(ob.build([lib]), throwsA(isA<OverlayBuildException>()));
-    ob.close();
+      final ob = OverlayBuilder(
+        Workspace(tmp),
+        _profile,
+        runProcess: runner.call,
+      );
+      await expectLater(ob.build([lib]), throwsA(isA<OverlayBuildException>()));
+      ob.close();
 
-    // A real `tar` was invoked against the staged tarball.
-    expect(runner.calls.any((c) => c.first == 'tar'), isTrue);
+      // A real `tar` was invoked against the staged tarball.
+      expect(runner.calls.any((c) => c.first == 'tar'), isTrue);
 
-    final tree = Directory(p.join(src.path, 'libdisplay-info-0.2.0'));
-    if (!tree.existsSync()) {
-      // The tree never got extracted — that's the actual bug.
-      expect(runner.calls.any((c) => c.first == 'tar'), isFalse);
-      return;
-    }
-    expect(File(p.join(tree.path, 'stale.txt')).existsSync(), isFalse);
-    // The stamp is written even with an empty patch list, so the next run
-    // reuses this tree.
-    expect(
-      File(p.join(tree.path, '.emb-patch-stamp')).existsSync(),
-      isTrue,
-    );
-  });
+      final tree = Directory(p.join(src.path, 'libdisplay-info-0.2.0'));
+      if (!tree.existsSync()) {
+        // The tree never got extracted — that's the actual bug.
+        expect(runner.calls.any((c) => c.first == 'tar'), isFalse);
+        return;
+      }
+      expect(File(p.join(tree.path, 'stale.txt')).existsSync(), isFalse);
+      // The stamp is written even with an empty patch list, so the next run
+      // reuses this tree.
+      expect(File(p.join(tree.path, '.emb-patch-stamp')).existsSync(), isTrue);
+    },
+  );
 }

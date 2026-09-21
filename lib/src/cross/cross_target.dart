@@ -110,9 +110,7 @@ class AugmentLib {
     final path = (map['path'] as Object?)?.toString() ?? '';
     final patches = [
       for (final e in (map['patches'] as List<dynamic>? ?? const [])) '$e',
-    ],
-    subdir: (map['subdir'] ?? map['source_subdir'])?.toString(),
-    sha256: _trimmedOrNull(map['sha256']),
+    ];
 
     // Refused rather than ranked, because either order would be a silent
     // surprise: the manifest names two sources and only one can be built.
@@ -154,6 +152,7 @@ class AugmentLib {
       requiresDefine: (map['requires_define'] ?? map['when'])?.toString(),
       patches: patches,
       subdir: (map['subdir'] ?? map['source_subdir'])?.toString(),
+      sha256: _trimmedOrNull(map['sha256']),
     );
   }
 

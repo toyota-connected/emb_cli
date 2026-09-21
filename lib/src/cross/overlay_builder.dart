@@ -174,7 +174,8 @@ class OverlayBuilder {
         } catch (e) {
           handle?.fail(e is OverlayBuildException ? e.message : '$e');
           rethrow;
-        } continue;
+        }
+        continue;
       }
       final handle = _steps?.start('augment ${lib.pkg}');
       // "cached"; otherwise run fetch+build and update/complete along the way.
@@ -200,7 +201,8 @@ class OverlayBuilder {
       } catch (e) {
         handle?.fail(e is OverlayBuildException ? e.message : '$e');
         rethrow;
-      } continue;
+      }
+      continue;
     }
     return OverlayPaths(
       prefix: overlay.path,
@@ -268,7 +270,7 @@ class OverlayBuilder {
   /// an empty tree. Anything failing here is deleted so the caller
   /// re-downloads.
   Future<bool> _usableArchive(File tarball, String? sha) async {
-    if (!tarball.existsSync()){
+    if (!tarball.existsSync()) {
       return false;
     }
 
@@ -310,10 +312,7 @@ class OverlayBuilder {
     return true;
   }
 
-  Future<Directory> _fetchSource(
-    AugmentLib lib, {
-    StepHandle? onStep,
-  }) async {
+  Future<Directory> _fetchSource(AugmentLib lib, {StepHandle? onStep}) async {
     // A local tree is the source: nothing to download, nothing to unpack, and
     // nothing to patch (CrossTarget rejects `patches:` with `path:`, because
     // applying them would rewrite files emb did not create).
@@ -332,10 +331,7 @@ class OverlayBuilder {
     // (e.g. two vendors both publishing `v1.0.0.tar.gz`) can't collide on,
     // and then cross-validate, the same cached tarball.
     final tarball = File(
-      p.join(
-        src.path,
-        '${lib.pkg}-${p.basename(Uri.parse(lib.url).path)}',
-      ),
+      p.join(src.path, '${lib.pkg}-${p.basename(Uri.parse(lib.url).path)}'),
     );
 
     // Retry downloading: a sha-pinned source whose bytes don't match the
@@ -347,7 +343,7 @@ class OverlayBuilder {
     const maxRetries = 3;
     for (var downloadAttempts = 0; ; downloadAttempts++) {
       // Check previous attempt
-      if(tarball.existsSync()) {
+      if (tarball.existsSync()) {
         // If tarball is valid, skip download
         if (await _usableArchive(tarball, lib.sha256)) {
           // A usable archive was already in the cache before we tried to fetch.
@@ -368,14 +364,16 @@ class OverlayBuilder {
       }
 
       // If maxRetries exceeded, fail loudly
-      if(downloadAttempts == maxRetries) {
+      if (downloadAttempts == maxRetries) {
         throw OverlayBuildException(
           '${lib.pkg}: download failed $maxRetries retries (${lib.url})',
         );
       }
 
       // Try downloading
-      onStep?.update('Downloading ${lib.pkg} (attempt ${downloadAttempts + 1}/$maxRetries)');
+      onStep?.update(
+        'Downloading ${lib.pkg} (attempt ${downloadAttempts + 1}/$maxRetries)',
+      );
       try {
         await _download(lib.url, tarball);
       } catch (e) {
@@ -651,10 +649,7 @@ class OverlayBuilder {
   /// cmake dir. The stamp is deleted before each build so a failed install
   /// doesn't leave a stale hit; the payload dir is also checked so a partial
   /// prune falls through to a rebuild rather than returning a bad path.
-  Future<String> _buildHostTool(
-    AugmentLib lib, {
-    StepHandle? onStep,
-  }) async {
+  Future<String> _buildHostTool(AugmentLib lib, {StepHandle? onStep}) async {
     final hostTools = workspace.ensurePlatformDir('host-tools');
     final toolDir = Directory(p.join(hostTools.path, lib.pkg))
       ..createSync(recursive: true);
@@ -683,7 +678,9 @@ class OverlayBuilder {
     await _compilerVersions(),
   ]);
 
-  Future<String> _buildCMakeHost(AugmentLib lib, Directory toolDir, {
+  Future<String> _buildCMakeHost(
+    AugmentLib lib,
+    Directory toolDir, {
     StepHandle? onStep,
   }) async {
     final src = await _fetchSource(lib, onStep: onStep);
