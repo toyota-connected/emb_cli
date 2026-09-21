@@ -71,7 +71,11 @@ Map<String, String> cargoEnv(CrossProfile profile, String rustTriple) {
     'PKG_CONFIG_ALLOW_CROSS': '1',
     ...?profile.pkgConfig?.toEnv(),
     // bindgen (for `-sys` crates) needs the sysroot + tuning on its clang args.
+    // --target ensures clang generates bindings for the correct ABI/pointer
+    // size; modern bindgen (≥0.69) gets this from cargo, but older versions do
+    // not, and a missing --target silently produces host-layout types.
     'BINDGEN_EXTRA_CLANG_ARGS': [
+      '--target=$rustTriple',
       ...sysrootArg,
       ...profile.cFlags,
       ...pmFlags,

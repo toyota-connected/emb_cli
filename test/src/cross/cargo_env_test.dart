@@ -50,7 +50,7 @@ void main() {
     );
     expect(
       env['BINDGEN_EXTRA_CLANG_ARGS'],
-      startsWith('--sysroot=/sysroot -mcpu=cortex-a76'),
+      startsWith('--target=aarch64-unknown-linux-gnu --sysroot=/sysroot'),
     );
   });
 
