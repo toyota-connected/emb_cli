@@ -293,10 +293,19 @@ class OverlayBuilder {
     File tarball,
     String? sha,
   ) async {
+    // Check 0: is the file present?
     if (!tarball.existsSync()) {
       return _OverlayDownloadResult.missingFile;
     }
 
+    // Check 1: is SHA256 valid?
+    final expected = sha?.toLowerCase();
+    final actual = await _sha256(tarball);
+    if (expected != null && actual != expected) {
+      return _OverlayDownloadResult.invalidSha;
+    }
+
+    // Check 2: are the magic bytes valid for tar/gz/zip?
     final magic = Uint8List(4);
     try {
       final raf = await tarball.open();
@@ -321,16 +330,13 @@ class OverlayBuilder {
     if (!isGzip && !isZip) {
       return _OverlayDownloadResult.invalidArchive;
     }
+
+    // Check 3: does the file open?
     final test = isGzip
         ? await _run('gzip', ['-t', tarball.path])
         : await _run('unzip', ['-t', '-q', tarball.path]);
     if (test.exitCode != 0) {
       return _OverlayDownloadResult.failedOpen;
-    }
-    final expected = sha?.toLowerCase();
-    final actual = await _sha256(tarball);
-    if (expected != null && actual != expected) {
-      return _OverlayDownloadResult.invalidSha;
     }
 
     return _OverlayDownloadResult.success;
