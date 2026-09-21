@@ -6,11 +6,12 @@ import 'package:path/path.dart' as p;
 /// [rustTriple] using the C toolchain in [profile]. The caller layers this over
 /// the parent process environment.
 ///
-/// Uses **target-suffixed** variables (`CC_<triple>`,
-/// `CARGO_TARGET_<TRIPLE>_LINKER`, `CFLAGS_<triple>`, …) rather than the bare
-/// `CC`/`CFLAGS`, so a crate's *host* build scripts (`build.rs`, proc-macros)
-/// still compile with the host toolchain while the *target* artifacts use the
-/// cross compiler.
+/// Uses **target-suffixed** variables (`CC_<triple>`, `CFLAGS_<triple>`, …)
+/// rather than the bare `CC`/`CFLAGS`, so a crate's *host* build scripts
+/// (`build.rs`, proc-macros) still compile with the host toolchain while the
+/// *target* artifacts use the cross compiler. `CARGO_TARGET_<TRIPLE>_LINKER`
+/// is intentionally absent — the caller sets it to either a sysroot-injecting
+/// wrapper or the bare compiler.
 ///
 /// The compiler is taken from [profile] as a complete cross `gcc` path — the
 /// arm-gnu (and native `local`) shape. A Yocto SDK carries a bare compiler plus
