@@ -2763,10 +2763,11 @@ class CrossCommand extends Command<int> {
     }
     final triple = rustTriple(profile.targetTriple);
     final offline = _offlineMode != OfflineMode.off;
-    // CARGO_TARGET_*_LINKER only accepts an executable path, not a command with
-    // args. The Yocto GCC has no built-in sysroot (--print-sysroot = /not/exist),
-    // so we generate a thin wrapper script that injects --sysroot, mirroring how
-    // the SDK's CC variable carries the sysroot for cmake/meson builds.
+    // CARGO_TARGET_*_LINKER only accepts an executable path, not a command
+    // with args. The Yocto GCC has no built-in sysroot
+    // (--print-sysroot = /not/exist), so we generate a thin wrapper script
+    // that injects --sysroot, mirroring how the SDK's CC variable carries the
+    // sysroot for cmake/meson builds.
     final upperTriple = triple.replaceAll('-', '_').toUpperCase();
     String? linkerWrapper;
     if (profile.targetSysroot.isNotEmpty) {
@@ -2791,7 +2792,8 @@ class CrossCommand extends Command<int> {
       ...cargoEnv(profile, triple),
       // Override the linker with our sysroot wrapper so --sysroot reaches the
       // link step regardless of cargo version / config-file rustflags precedence.
-      if (linkerWrapper != null) 'CARGO_TARGET_${upperTriple}_LINKER': linkerWrapper,
+      if (linkerWrapper != null)
+        'CARGO_TARGET_${upperTriple}_LINKER': linkerWrapper,
       'CARGO_TARGET_DIR': buildDir.path,
       // A fast-fail under an offline build: cargo errors immediately on a
       // needed registry/git fetch instead of hanging on a network timeout.

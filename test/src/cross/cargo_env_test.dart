@@ -69,53 +69,50 @@ void main() {
     expect(env['PKG_CONFIG_LIBDIR'], '/sysroot/usr/lib/pkgconfig');
   });
 
-  test(
-    'rustc link args carry the C search paths, then ldFlags',
-    () {
-      // The rustc link step runs through gcc; crt/libc search paths from cFlags
-      // must reach the linker as link-args. --sysroot is NOT included here —
-      // _cargoModule's linker wrapper injects it so it doesn't appear twice.
-      final env = cargoEnv(profile(), rust);
-      final rf = env['CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS']!;
-      expect(rf, startsWith('-C link-arg=-mcpu=cortex-a76'));
-      expect(rf, isNot(contains('-C link-arg=--sysroot')));
-      // The Rust half is canonicalized with --remap-path-prefix, not the
-      // gcc-style prefix-map flags.
-      expect(rf, contains('--remap-path-prefix=/sysroot=/emb/sysroot'));
+  test('rustc link args carry the C search paths, then ldFlags', () {
+    // The rustc link step runs through gcc; crt/libc search paths from cFlags
+    // must reach the linker as link-args. --sysroot is NOT included here —
+    // _cargoModule's linker wrapper injects it so it doesn't appear twice.
+    final env = cargoEnv(profile(), rust);
+    final rf = env['CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS']!;
+    expect(rf, startsWith('-C link-arg=-mcpu=cortex-a76'));
+    expect(rf, isNot(contains('-C link-arg=--sysroot')));
+    // The Rust half is canonicalized with --remap-path-prefix, not the
+    // gcc-style prefix-map flags.
+    expect(rf, contains('--remap-path-prefix=/sysroot=/emb/sysroot'));
 
-      // A realistic Debian-multiarch arm-gnu flag set: the -B/-L crt/libc paths
-      // must reach the linker as link-args.
-      final ma = cargoEnv(
-        profile(
-          cFlags: const [
-            '-mcpu=cortex-a76',
-            '-B/sysroot/usr/lib/aarch64-linux-gnu',
-            '-L/sysroot/usr/lib/aarch64-linux-gnu',
-            '-Wl,-rpath-link,/sysroot/usr/lib/aarch64-linux-gnu',
-          ],
-        ),
-        rust,
-      );
-      final rustflags = ma['CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS']!;
-      expect(rustflags, isNot(contains('-C link-arg=--sysroot')));
-      expect(
-        rustflags,
-        contains('-C link-arg=-B/sysroot/usr/lib/aarch64-linux-gnu'),
-      );
-      expect(
-        rustflags,
-        contains('-C link-arg=-L/sysroot/usr/lib/aarch64-linux-gnu'),
-      );
+    // A realistic Debian-multiarch arm-gnu flag set: the -B/-L crt/libc paths
+    // must reach the linker as link-args.
+    final ma = cargoEnv(
+      profile(
+        cFlags: const [
+          '-mcpu=cortex-a76',
+          '-B/sysroot/usr/lib/aarch64-linux-gnu',
+          '-L/sysroot/usr/lib/aarch64-linux-gnu',
+          '-Wl,-rpath-link,/sysroot/usr/lib/aarch64-linux-gnu',
+        ],
+      ),
+      rust,
+    );
+    final rustflags = ma['CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS']!;
+    expect(rustflags, isNot(contains('-C link-arg=--sysroot')));
+    expect(
+      rustflags,
+      contains('-C link-arg=-B/sysroot/usr/lib/aarch64-linux-gnu'),
+    );
+    expect(
+      rustflags,
+      contains('-C link-arg=-L/sysroot/usr/lib/aarch64-linux-gnu'),
+    );
 
-      // Provider ldFlags (when set, e.g. Yocto) are appended after cFlags —
-      // among the link args, ahead of the trailing remap-path-prefix flags.
-      final withLd = cargoEnv(profile(ldFlags: [r'-Wl,-rpath,$ORIGIN']), rust);
-      expect(
-        withLd['CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS'],
-        contains(r'-C link-arg=-Wl,-rpath,$ORIGIN'),
-      );
-    },
-  );
+    // Provider ldFlags (when set, e.g. Yocto) are appended after cFlags —
+    // among the link args, ahead of the trailing remap-path-prefix flags.
+    final withLd = cargoEnv(profile(ldFlags: [r'-Wl,-rpath,$ORIGIN']), rust);
+    expect(
+      withLd['CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS'],
+      contains(r'-C link-arg=-Wl,-rpath,$ORIGIN'),
+    );
+  });
 
   test('omits the sysroot flags when the profile has no sysroot (native)', () {
     final env = cargoEnv(
