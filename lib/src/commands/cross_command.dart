@@ -2281,6 +2281,7 @@ class CrossCommand extends Command<int> {
             defaultName: defaultName,
             manifestDir: manifestDir,
             overlayPrefix: overlayPrefix,
+            appPath: appPath,
           );
           if (rc != ExitCode.success.code) return rc;
         }
@@ -2593,10 +2594,7 @@ class CrossCommand extends Command<int> {
       // Maintainer scripts (preinst/postinst/prerm/postrm) → DEBIAN/<name>.
       final maintainerScripts = {
         for (final e in spec.scripts.entries)
-          e.key: p.join(
-            manifestDir.path,
-            expandManifestVars(e.value, vars),
-          ),
+          e.key: p.join(manifestDir.path, expandManifestVars(e.value, vars)),
       };
 
       // bundle_libs: stage the binary's in-tree .so closure into the package
@@ -2714,10 +2712,7 @@ class CrossCommand extends Command<int> {
       );
       final maintainerScripts = {
         for (final e in spec.scripts.entries)
-          e.key: p.join(
-            manifestDir.path,
-            expandManifestVars(e.value, vars),
-          ),
+          e.key: p.join(manifestDir.path, expandManifestVars(e.value, vars)),
       };
       final meta = IpkMetadata(
         name: name,
@@ -2804,10 +2799,7 @@ class CrossCommand extends Command<int> {
       );
       final scriptlets = {
         for (final e in spec.scripts.entries)
-          e.key: p.join(
-            manifestDir.path,
-            expandManifestVars(e.value, vars),
-          ),
+          e.key: p.join(manifestDir.path, expandManifestVars(e.value, vars)),
       };
       final meta = RpmMetadata(
         name: name,
@@ -2927,6 +2919,7 @@ class CrossCommand extends Command<int> {
     required String defaultName,
     required Directory manifestDir,
     String? overlayPrefix,
+    String? appPath,
   }) async {
     final tag = backend != null ? '$backend: ' : '';
     final spec = target.package ?? const PackageSpec();
@@ -2942,15 +2935,25 @@ class CrossCommand extends Command<int> {
     final baseId = fp!.appId!;
     final appId = multi ? '$baseId.$backend' : baseId;
     final fpArch = flatpakArch(profile.targetTriple);
+    // For flatpak, bundleDir IS the runnable directory already assembled by
+    // _runnable, so ${runnable} maps directly to it.
+    final vars = _manifestVars(
+      manifestDir: manifestDir,
+      appDir: _appDir(appPath),
+      buildRoot: buildRoot,
+      multi: multi,
+      backend: backend,
+    );
     final iconRel = fp.icon;
     final icon = iconRel != null
-        ? File(p.join(manifestDir.path, iconRel))
+        ? File(p.join(manifestDir.path, expandManifestVars(iconRel, vars)))
         : null;
     final ef = _extraFiles(
       spec,
       manifestDir,
       overlayPrefix: overlayPrefix,
       defines: target.defines,
+      vars: vars,
     );
     final meta = FlatpakMetadata(
       appId: appId,
@@ -3100,10 +3103,9 @@ class CrossCommand extends Command<int> {
   ///
   /// A source naming a directory contributes every file beneath it; see
   /// [expandPackageFiles].
-  /// Resolve [spec.files] into concrete host→target path pairs.
   ///
-  /// [vars] is expanded in each source key before path resolution.
-  /// Supported variables: `${embedder_root}`, `${app_root}`, `${runnable}`.
+  /// [vars] tokens (`${embedder_root}`, `${app_root}`, `${runnable}`) are
+  /// expanded in each source key before path resolution.
   ({Map<String, String> files, Map<String, String> modes}) _extraFiles(
     PackageSpec spec,
     Directory manifestDir, {
@@ -3163,12 +3165,12 @@ class CrossCommand extends Command<int> {
   };
 
   /// Derive the app project directory from the `--app` argument, which may be
-  /// a directory path or a manifest file path.
+  /// a directory path or a manifest file path. Always returns an absolute path.
   static String? _appDir(String? appPath) {
     if (appPath == null) return null;
     return FileSystemEntity.typeSync(appPath) == FileSystemEntityType.file
-        ? File(appPath).parent.path
-        : appPath;
+        ? File(appPath).absolute.parent.path
+        : Directory(appPath).absolute.path;
   }
 
   /// The file's permission bits as a 4-digit octal string (e.g. `0755`).
