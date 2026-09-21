@@ -3268,8 +3268,39 @@ class CrossCommand extends Command<int> {
     }
     final triple = rustTriple(profile.targetTriple);
     final offline = _offlineMode != OfflineMode.off;
+    // CARGO_TARGET_*_LINKER only accepts an executable path, not a command
+    // with args. The Yocto GCC has no built-in sysroot
+    // (--print-sysroot = /not/exist), so we generate a thin wrapper script
+    // that injects --sysroot, mirroring how the SDK's CC variable carries the
+    // sysroot for cmake/meson builds.
+    final upperTriple = triple.replaceAll('-', '_').toUpperCase();
+    String? linkerWrapper;
+    if (profile.targetSysroot.isNotEmpty) {
+      final script = File(p.join(buildDir.path, 'cargo-linker.sh'));
+      script.parent.createSync(recursive: true);
+      script.writeAsStringSync(
+        '#!/bin/sh\nexec "${profile.cc}" --sysroot="${profile.targetSysroot}" "\$@"\n',
+      );
+      await _runProcess('chmod', ['+x', script.path]);
+      linkerWrapper = script.path;
+    }
+    // Hermetic base: inherit the full parent environment but strip RUSTFLAGS
+    // sources that sit above CARGO_TARGET_*_RUSTFLAGS in cargo's four-source
+    // first-wins chain. CARGO_ENCODED_RUSTFLAGS (pos 1) and RUSTFLAGS (pos 2)
+    // both block our target-scoped flags (pos 3) entirely, even when empty.
+    final baseEnv = Map.of(Platform.environment)
+      ..remove('RUSTFLAGS')
+      ..remove('CARGO_ENCODED_RUSTFLAGS');
     final env = {
+      ...baseEnv,
+      // Yocto: override PATH with the SDK toolchain bin directory so the
+      // linker wrapper can resolve the compiler. ARM GNU: no-op (extraEnv
+      // is empty; parent PATH already carries the toolchain).
+      if (profile.extraEnv['PATH'] case final String path) 'PATH': path,
       ...cargoEnv(profile, triple),
+      // Linker: wrapper injects --sysroot when the sysroot is non-empty;
+      // bare cc otherwise. cargoEnv does not set this key.
+      'CARGO_TARGET_${upperTriple}_LINKER': linkerWrapper ?? profile.cc,
       'CARGO_TARGET_DIR': buildDir.path,
       // A fast-fail under an offline build: cargo errors immediately on a
       // needed registry/git fetch instead of hanging on a network timeout.
@@ -3310,6 +3341,7 @@ class CrossCommand extends Command<int> {
       ],
       workingDirectory: src.path,
       environment: env,
+      includeParentEnvironment: false,
       output: ProcessOutputMode.stream,
       label: 'cargo:${m.name}',
     );

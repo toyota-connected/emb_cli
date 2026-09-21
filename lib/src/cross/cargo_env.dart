@@ -6,11 +6,12 @@ import 'package:path/path.dart' as p;
 /// [rustTriple] using the C toolchain in [profile]. The caller layers this over
 /// the parent process environment.
 ///
-/// Uses **target-suffixed** variables (`CC_<triple>`,
-/// `CARGO_TARGET_<TRIPLE>_LINKER`, `CFLAGS_<triple>`, …) rather than the bare
-/// `CC`/`CFLAGS`, so a crate's *host* build scripts (`build.rs`, proc-macros)
-/// still compile with the host toolchain while the *target* artifacts use the
-/// cross compiler.
+/// Uses **target-suffixed** variables (`CC_<triple>`, `CFLAGS_<triple>`, …)
+/// rather than the bare `CC`/`CFLAGS`, so a crate's *host* build scripts
+/// (`build.rs`, proc-macros) still compile with the host toolchain while the
+/// *target* artifacts use the cross compiler. `CARGO_TARGET_<TRIPLE>_LINKER`
+/// is intentionally absent — the caller sets it to either a sysroot-injecting
+/// wrapper or the bare compiler.
 ///
 /// The compiler is taken from [profile] as a complete cross `gcc` path — the
 /// arm-gnu (and native `local`) shape. A Yocto SDK carries a bare compiler plus
@@ -45,15 +46,17 @@ Map<String, String> cargoEnv(CrossProfile profile, String rustTriple) {
 
   final cflags = [...sysrootArg, ...profile.cFlags, ...pmFlags].join(' ');
   final cxxflags = [...sysrootArg, ...profile.cxxFlags, ...pmFlags].join(' ');
-  final linkArgs = [...sysrootArg, ...profile.cFlags, ...profile.ldFlags];
+  // --sysroot is injected at the linker stage by the wrapper script in
+  // _cargoModule; exclude it here to avoid passing it twice.
+  final linkArgs = [...profile.cFlags, ...profile.ldFlags];
   final rustFlags = [
     ...linkArgs.map((f) => '-C link-arg=$f'),
     ...rustRemapArgs(prefixMap),
   ];
 
   return {
-    // Linker driver + cc-rs compiler selection, target-scoped.
-    'CARGO_TARGET_${upper}_LINKER': profile.cc,
+    // cc-rs compiler selection, target-scoped. The linker is set by the
+    // caller (_cargoModule) so it can substitute a sysroot-injecting wrapper.
     'CC_$lower': profile.cc,
     'CXX_$lower': profile.cxx,
     'AR_$lower': profile.ar,
@@ -69,7 +72,11 @@ Map<String, String> cargoEnv(CrossProfile profile, String rustTriple) {
     'PKG_CONFIG_ALLOW_CROSS': '1',
     ...?profile.pkgConfig?.toEnv(),
     // bindgen (for `-sys` crates) needs the sysroot + tuning on its clang args.
+    // --target ensures clang generates bindings for the correct ABI/pointer
+    // size; modern bindgen (≥0.69) gets this from cargo, but older versions do
+    // not, and a missing --target silently produces host-layout types.
     'BINDGEN_EXTRA_CLANG_ARGS': [
+      '--target=$rustTriple',
       ...sysrootArg,
       ...profile.cFlags,
       ...pmFlags,
