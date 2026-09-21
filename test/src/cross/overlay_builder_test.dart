@@ -748,7 +748,7 @@ void main() {
     );
   });
 
-  test('sha-pinned download mismatch fails after one retry', () async {
+  test('sha-pinned download mismatch should retry', () async {
     final bytes = gzip.encode(utf8.encode('wrong mirror\n'));
     final origin = await _FakeOrigin.start(bytes);
     addTearDown(origin.close);
@@ -759,6 +759,9 @@ void main() {
       'build': 'meson',
       'sha256': sha256.convert(utf8.encode('some other bytes')).toString(),
     });
+
+    expect(lib.sha256, isNotNull);
+
     final runner = _StopAfterFetch();
 
     final ob = OverlayBuilder(
@@ -778,7 +781,7 @@ void main() {
     );
     ob.close();
 
-    expect(origin.requests, 2); // mismatch: delete, re-fetch, still bad
+    expect(origin.requests, 3); // mismatch: delete, re-fetch, still bad
   });
 
   test('an HTML error page served as a tarball is rejected', () async {

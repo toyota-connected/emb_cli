@@ -394,12 +394,6 @@ class OverlayBuilder {
         // If there was a previous failed download attempt, delete it
         else {
           await tarball.delete();
-
-          // If sha failed, don't retry
-          if (result == _OverlayDownloadResult.invalidSha) {
-            onStep?.fail(_overlayDownloadErrorMessage[result]);
-            break;
-          }
         }
       }
 
