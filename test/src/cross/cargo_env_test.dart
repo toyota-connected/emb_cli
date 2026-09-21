@@ -70,20 +70,15 @@ void main() {
   });
 
   test(
-    'rustc link args carry the sysroot + the C search paths, then ldFlags',
+    'rustc link args carry the C search paths, then ldFlags',
     () {
-      // The rustc link step runs through gcc, so it must receive the same
-      // --sysroot and crt/libc search paths the cmake/meson link uses — which
-      // arm-gnu keeps in cFlags, with ldFlags empty. Without this the linker
-      // cannot find crt1.o / -lc.
+      // The rustc link step runs through gcc; crt/libc search paths from cFlags
+      // must reach the linker as link-args. --sysroot is NOT included here —
+      // _cargoModule's linker wrapper injects it so it doesn't appear twice.
       final env = cargoEnv(profile(), rust);
       final rf = env['CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS']!;
-      expect(
-        rf,
-        startsWith(
-          '-C link-arg=--sysroot=/sysroot -C link-arg=-mcpu=cortex-a76',
-        ),
-      );
+      expect(rf, startsWith('-C link-arg=-mcpu=cortex-a76'));
+      expect(rf, isNot(contains('-C link-arg=--sysroot')));
       // The Rust half is canonicalized with --remap-path-prefix, not the
       // gcc-style prefix-map flags.
       expect(rf, contains('--remap-path-prefix=/sysroot=/emb/sysroot'));
@@ -102,7 +97,7 @@ void main() {
         rust,
       );
       final rustflags = ma['CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS']!;
-      expect(rustflags, contains('-C link-arg=--sysroot=/sysroot'));
+      expect(rustflags, isNot(contains('-C link-arg=--sysroot')));
       expect(
         rustflags,
         contains('-C link-arg=-B/sysroot/usr/lib/aarch64-linux-gnu'),

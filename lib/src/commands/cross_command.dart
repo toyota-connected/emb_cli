@@ -2773,7 +2773,7 @@ class CrossCommand extends Command<int> {
       final script = File(p.join(buildDir.path, 'cargo-linker.sh'));
       script.parent.createSync(recursive: true);
       script.writeAsStringSync(
-        '#!/bin/sh\nexec ${profile.cc} --sysroot=${profile.targetSysroot} "\$@"\n',
+        '#!/bin/sh\nexec "${profile.cc}" --sysroot="${profile.targetSysroot}" "\$@"\n',
       );
       await _runProcess('chmod', ['+x', script.path]);
       linkerWrapper = script.path;

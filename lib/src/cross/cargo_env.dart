@@ -45,7 +45,9 @@ Map<String, String> cargoEnv(CrossProfile profile, String rustTriple) {
 
   final cflags = [...sysrootArg, ...profile.cFlags, ...pmFlags].join(' ');
   final cxxflags = [...sysrootArg, ...profile.cxxFlags, ...pmFlags].join(' ');
-  final linkArgs = [...sysrootArg, ...profile.cFlags, ...profile.ldFlags];
+  // --sysroot is injected at the linker stage by the wrapper script in
+  // _cargoModule; exclude it here to avoid passing it twice.
+  final linkArgs = [...profile.cFlags, ...profile.ldFlags];
   final rustFlags = [
     ...linkArgs.map((f) => '-C link-arg=$f'),
     ...rustRemapArgs(prefixMap),
