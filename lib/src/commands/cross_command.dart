@@ -2780,15 +2780,13 @@ class CrossCommand extends Command<int> {
       linkerWrapper = script.path;
     }
     final env = {
-      // Yocto SDK: the full sourced SDK environment carries PATH with the
-      // toolchain bin directory, which the linker wrapper needs to resolve cc.
-      // ARM GNU: buildEnv() is only pkg-config vars; harmless to include.
-      ...profile.buildEnv(),
-      // Neutralize any RUSTFLAGS the SDK environment-setup script exports.
-      // In cargo 1.73+ RUSTFLAGS accumulates with CARGO_TARGET_*_RUSTFLAGS;
-      // blanking it prevents Yocto SDK's --sysroot from appearing twice and
-      // confusing older toolchains.
-      'RUSTFLAGS': '',
+      // Only PATH from the SDK environment: the linker wrapper needs the
+      // toolchain bin directory, and the parent env may not carry it for Yocto.
+      // Spreading the full extraEnv would leak bare CC/CXX/CFLAGS into cargo,
+      // which cc-rs picks up for host build.rs compilations (CC_<host> →
+      // HOST_CC → CC), contradicting the target-scoped isolation in cargoEnv.
+      // ARM GNU: extraEnv is empty, so this is a no-op for that provider.
+      if (profile.extraEnv['PATH'] case final String path) 'PATH': path,
       ...cargoEnv(profile, triple),
       // Override the linker with our sysroot wrapper so --sysroot reaches the
       // link step regardless of cargo version / config-file rustflags precedence.
