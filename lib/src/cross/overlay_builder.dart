@@ -54,6 +54,26 @@ class OverlayPaths {
   }
 }
 
+enum _OverlayDownloadResult {
+  success,
+  missingFile,
+  fsError,
+  invalidTarball,
+  invalidArchive,
+  failedOpen,
+  invalidSha,
+}
+
+const Map<_OverlayDownloadResult, String> _overlayDownloadErrorMessage = {
+  _OverlayDownloadResult.success: 'download successful!',
+  _OverlayDownloadResult.missingFile: 'destination file missing',
+  _OverlayDownloadResult.fsError: 'FileSystemException',
+  _OverlayDownloadResult.invalidTarball: 'corrupt tarball',
+  _OverlayDownloadResult.invalidArchive: 'not a valid archive',
+  _OverlayDownloadResult.failedOpen: 'failed to decompress archive',
+  _OverlayDownloadResult.invalidSha: 'sha256 signature is not valid',
+};
+
 /// Builds [CrossTarget.augment] libraries (libdisplay-info, Vulkan-Headers, …)
 /// from source into a per-workspace overlay prefix, against an already-resolved
 /// [CrossProfile].
@@ -269,9 +289,12 @@ class OverlayBuilder {
   /// and the failure only surfaces later as a misleading patch error against
   /// an empty tree. Anything failing here is deleted so the caller
   /// re-downloads.
-  Future<bool> _usableArchive(File tarball, String? sha) async {
+  Future<_OverlayDownloadResult> _validateArchive(
+    File tarball,
+    String? sha,
+  ) async {
     if (!tarball.existsSync()) {
-      return false;
+      return _OverlayDownloadResult.missingFile;
     }
 
     final magic = Uint8List(4);
@@ -280,13 +303,13 @@ class OverlayBuilder {
       try {
         final n = await raf.readInto(magic, 0, 4);
         if (n < 2) {
-          return false;
+          return _OverlayDownloadResult.invalidTarball;
         }
       } finally {
         await raf.close();
       }
     } on FileSystemException {
-      return false;
+      return _OverlayDownloadResult.fsError;
     }
     final isGzip = magic[0] == 0x1f && magic[1] == 0x8b;
     // PK\x03\x04 — a zip local file header.
@@ -296,20 +319,21 @@ class OverlayBuilder {
         magic[2] == 0x03 &&
         magic[3] == 0x04;
     if (!isGzip && !isZip) {
-      return false;
+      return _OverlayDownloadResult.invalidArchive;
     }
     final test = isGzip
         ? await _run('gzip', ['-t', tarball.path])
         : await _run('unzip', ['-t', '-q', tarball.path]);
     if (test.exitCode != 0) {
-      return false;
+      return _OverlayDownloadResult.failedOpen;
     }
     final expected = sha?.toLowerCase();
-    if (expected != null && await _sha256(tarball) != expected) {
-      return false;
+    final actual = await _sha256(tarball);
+    if (expected != null && actual != expected) {
+      return _OverlayDownloadResult.invalidSha;
     }
 
-    return true;
+    return _OverlayDownloadResult.success;
   }
 
   Future<Directory> _fetchSource(AugmentLib lib, {StepHandle? onStep}) async {
@@ -341,11 +365,15 @@ class OverlayBuilder {
     // "fetched" label stays on this handle until the caller completes/fails it
     // — StepHandle.complete() may only be called once per spinner.
     const maxRetries = 3;
+    late _OverlayDownloadResult? result;
+
     for (var downloadAttempts = 0; ; downloadAttempts++) {
       // Check previous attempt
       if (tarball.existsSync()) {
         // If tarball is valid, skip download
-        if (await _usableArchive(tarball, lib.sha256)) {
+        result = await _validateArchive(tarball, lib.sha256);
+
+        if (result == _OverlayDownloadResult.success) {
           // A usable archive was already in the cache before we tried to fetch.
           if (downloadAttempts == 0) {
             onStep?.update(
@@ -360,13 +388,20 @@ class OverlayBuilder {
         // If there was a previous failed download attempt, delete it
         else {
           await tarball.delete();
+
+          // If sha failed, don't retry
+          if (result == _OverlayDownloadResult.invalidSha) {
+            onStep?.fail(_overlayDownloadErrorMessage[result]);
+            break;
+          }
         }
       }
 
       // If maxRetries exceeded, fail loudly
       if (downloadAttempts == maxRetries) {
         throw OverlayBuildException(
-          '${lib.pkg}: download failed $maxRetries retries (${lib.url})',
+          '${lib.pkg}: download failed $maxRetries retries (${lib.url})\n'
+          'Last error: ${_overlayDownloadErrorMessage[result]}',
         );
       }
 
