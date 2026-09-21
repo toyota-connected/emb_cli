@@ -2779,19 +2779,23 @@ class CrossCommand extends Command<int> {
       await _runProcess('chmod', ['+x', script.path]);
       linkerWrapper = script.path;
     }
+    // Hermetic base: inherit the full parent environment but strip RUSTFLAGS
+    // sources that sit above CARGO_TARGET_*_RUSTFLAGS in cargo's four-source
+    // first-wins chain. CARGO_ENCODED_RUSTFLAGS (pos 1) and RUSTFLAGS (pos 2)
+    // both block our target-scoped flags (pos 3) entirely, even when empty.
+    final baseEnv = Map.of(Platform.environment)
+      ..remove('RUSTFLAGS')
+      ..remove('CARGO_ENCODED_RUSTFLAGS');
     final env = {
-      // Only PATH from the SDK environment: the linker wrapper needs the
-      // toolchain bin directory, and the parent env may not carry it for Yocto.
-      // Spreading the full extraEnv would leak bare CC/CXX/CFLAGS into cargo,
-      // which cc-rs picks up for host build.rs compilations (CC_<host> →
-      // HOST_CC → CC), contradicting the target-scoped isolation in cargoEnv.
-      // ARM GNU: extraEnv is empty, so this is a no-op for that provider.
+      ...baseEnv,
+      // Yocto: override PATH with the SDK toolchain bin directory so the
+      // linker wrapper can resolve the compiler. ARM GNU: no-op (extraEnv
+      // is empty; parent PATH already carries the toolchain).
       if (profile.extraEnv['PATH'] case final String path) 'PATH': path,
       ...cargoEnv(profile, triple),
-      // Override the linker with our sysroot wrapper so --sysroot reaches the
-      // link step regardless of cargo version / config-file rustflags precedence.
-      if (linkerWrapper != null)
-        'CARGO_TARGET_${upperTriple}_LINKER': linkerWrapper,
+      // Linker: wrapper injects --sysroot when the sysroot is non-empty;
+      // bare cc otherwise. cargoEnv does not set this key.
+      'CARGO_TARGET_${upperTriple}_LINKER': linkerWrapper ?? profile.cc,
       'CARGO_TARGET_DIR': buildDir.path,
       // A fast-fail under an offline build: cargo errors immediately on a
       // needed registry/git fetch instead of hanging on a network timeout.
@@ -2832,6 +2836,7 @@ class CrossCommand extends Command<int> {
       ],
       workingDirectory: src.path,
       environment: env,
+      includeParentEnvironment: false,
       output: ProcessOutputMode.stream,
       label: 'cargo:${m.name}',
     );

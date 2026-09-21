@@ -22,15 +22,13 @@ void main() {
 
   const rust = 'aarch64-unknown-linux-gnu';
 
-  test('emits target-suffixed CC/AR/LINKER from the profile', () {
+  test('emits target-suffixed CC/CXX/AR; no bare CC/CFLAGS', () {
     final env = cargoEnv(profile(), rust);
-    expect(
-      env['CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER'],
-      '/tc/bin/aarch64-none-linux-gnu-gcc',
-    );
     expect(env['CC_aarch64_unknown_linux_gnu'], contains('-gcc'));
     expect(env['CXX_aarch64_unknown_linux_gnu'], contains('-g++'));
     expect(env['AR_aarch64_unknown_linux_gnu'], contains('-ar'));
+    // LINKER is not set here; _cargoModule sets it so it can inject a wrapper.
+    expect(env.containsKey('CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER'), isFalse);
     // No bare CC/CFLAGS that would poison host build scripts.
     expect(env.containsKey('CC'), isFalse);
     expect(env.containsKey('CFLAGS'), isFalse);

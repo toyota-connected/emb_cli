@@ -54,8 +54,8 @@ Map<String, String> cargoEnv(CrossProfile profile, String rustTriple) {
   ];
 
   return {
-    // Linker driver + cc-rs compiler selection, target-scoped.
-    'CARGO_TARGET_${upper}_LINKER': profile.cc,
+    // cc-rs compiler selection, target-scoped. The linker is set by the
+    // caller (_cargoModule) so it can substitute a sysroot-injecting wrapper.
     'CC_$lower': profile.cc,
     'CXX_$lower': profile.cxx,
     'AR_$lower': profile.ar,
