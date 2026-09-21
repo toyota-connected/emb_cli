@@ -107,8 +107,10 @@ class _StopAfterFetch {
   }
 }
 
-/// Build a real `.tar.gz` at [outPath] containing the given entries — using
-/// Build a real `.tar.gz` at [outPath] whose entries all live under one top-level directory (so the builder's `--strip-components=1` produces files at the tree root). Uses the system tools because dart:io has no built-in tar writer and `gzip.encode('text')` yields a gzip that extracts to nothing.
+/// Build a real `.tar.gz` at [outPath] whose entries all live under one
+/// top-level directory (so the builder's `--strip-components=1` produces files
+/// at the tree root). Uses the system tools because dart:io has no built-in tar
+/// writer and `gzip.encode('text')` yields a gzip that extracts to nothing.
 Future<void> _makeTarGz(
   String outPath, {
   required Map<String, String> entries,
@@ -117,7 +119,7 @@ Future<void> _makeTarGz(
   final top = p.join(staging.path, 'src');
   Directory(top).createSync();
   for (final e in entries.entries) {
-    File(p.join(top, e.key))..writeAsStringSync(e.value);
+    File(p.join(top, e.key)).writeAsStringSync(e.value);
   }
   final r = await Process.run('tar', [
     '-czf',
@@ -150,9 +152,10 @@ void main() {
     )..createSync(recursive: true);
     final pkg = name.substring(0, name.lastIndexOf('-'));
 
-    // A real tarball with entries under a single top-level dir (so the builder's
-    // `--strip-components=1` produces files at the tree root). This is what
-    // `_makeTarGz` builds; we also unpack it straight into the staged tree so
+    // A real tarball with entries under a single top-level dir
+    // (so the builder's `--strip-components=1` produces files
+    // at the tree root). This is what `_makeTarGz` builds;
+    // we also unpack it straight into the staged tree so
     // pre-stage and extraction agree.
     final tarballName = '$pkg-$name.tar.gz';
     File(
