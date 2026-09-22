@@ -207,6 +207,8 @@
     "execinfo",
     "gnueabihf",
     "libunwind",
-    "softfp"
+    "softfp",
+    "libmymodule",
+    "myapp"
   ]
 }

@@ -920,7 +920,7 @@ relocatable even when they reference files across project boundaries.
 | `cross.augment[*].path` | `${embedder_root}`, `${app_root}` |
 | `cross.augment[*].patches` | `${embedder_root}`, `${app_root}` |
 
-Unknown tokens are left verbatim — a typo like `${runnabel}` surfaces as a
+Unknown tokens are left verbatim — a typo like `${runnabel}` <!-- cspell:ignore runnabel --> surfaces as a
 missing-file error rather than silently resolving to a wrong path.
 
 **Common use cases:**
