@@ -42,6 +42,16 @@ void main() {
       expect(t.provider, base.provider);
     });
 
+    test('customDevice is preserved', () {
+      final withDevice = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'triple': 'aarch64-none-linux-gnu',
+        'custom_device': {'id': 'my-board'},
+      });
+      final t = withDevice.withDefineOverrides(const {'X': '1'});
+      expect(t.customDevice?.id, 'my-board');
+    });
+
     test('empty overrides return the same instance', () {
       expect(identical(base.withDefineOverrides(const {}), base), isTrue);
     });
@@ -539,6 +549,19 @@ void main() {
       });
       final resolved = target.withResolvedPatches('/w/boards/pi5.emb.yaml');
       expect(resolved.augment.first.path, '/w/libfoo');
+    });
+
+    test('withResolvedPatches preserves customDevice', () {
+      final target = CrossTarget.fromMap({
+        'provider': 'arm-gnu',
+        'triple': 'aarch64-none-linux-gnu',
+        'custom_device': {'id': 'my-board'},
+        'augment': [
+          {'pkg': 'libfoo', 'path': '../libfoo'},
+        ],
+      });
+      final resolved = target.withResolvedPatches('/w/boards/pi5.emb.yaml');
+      expect(resolved.customDevice?.id, 'my-board');
     });
 
     test('withResolvedPatches passes vars to augment resolution', () {
