@@ -372,9 +372,16 @@ class DoctorCommand extends Command<int> {
       selectedFrom = ref.sourcePath;
     }
 
+    final embedderRoot =
+        FileSystemEntity.typeSync(inputPath) == FileSystemEntityType.file
+        ? p.dirname(p.absolute(inputPath))
+        : p.absolute(inputPath);
     final CrossTarget target;
     try {
-      target = CrossTarget.fromMap(selected).withResolvedPatches(selectedFrom);
+      target = CrossTarget.fromMap(selected).withResolvedPatches(
+        selectedFrom,
+        vars: {'embedder_root': embedderRoot},
+      );
       // fromMap throws ArgumentError on an unknown provider token.
       // ignore: avoid_catching_errors
     } on ArgumentError catch (e) {
@@ -485,11 +492,16 @@ class DoctorCommand extends Command<int> {
         json,
       );
     }
+    final embedderRoot =
+        FileSystemEntity.typeSync(inputPath) == FileSystemEntityType.file
+        ? p.dirname(p.absolute(inputPath))
+        : p.absolute(inputPath);
     final CrossTarget target;
     try {
-      target = CrossTarget.fromMap(
-        selection.cross,
-      ).withResolvedPatches(selection.sourcePath);
+      target = CrossTarget.fromMap(selection.cross).withResolvedPatches(
+        selection.sourcePath,
+        vars: {'embedder_root': embedderRoot},
+      );
       // fromMap throws ArgumentError on an unknown provider token.
       // ignore: avoid_catching_errors
     } on ArgumentError catch (e) {
