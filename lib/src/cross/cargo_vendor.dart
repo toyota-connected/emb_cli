@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:emb_cli/src/cross/cross_keys.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
+import 'package:emb_cli/src/cross/manifest_vars.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:path/path.dart' as p;
 
@@ -152,12 +153,19 @@ Future<String?> vendorTargetCargo({
   required Directory manifestDir,
   required Directory storeRoot,
   required ProcessRunner run,
+  String? appDir,
   void Function(String name)? onModule,
 }) async {
+  final moduleVars = {
+    'embedder_root': manifestDir.path,
+    if (appDir != null) 'app_root': appDir,
+  };
   final vendor = CargoVendor(run: run);
   for (final m in target.modules) {
     if (m.build != ModuleBuild.cargo) continue;
-    final src = Directory(p.join(manifestDir.path, m.path));
+    final src = Directory(
+      p.join(manifestDir.path, expandManifestVars(m.path, moduleVars)),
+    );
     if (!src.existsSync()) {
       return 'module ${m.name}: source dir not found: ${src.path}';
     }
