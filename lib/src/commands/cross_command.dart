@@ -657,8 +657,15 @@ class CrossCommand extends Command<int> {
             );
       final CrossTarget t;
       try {
+        final patchVars = {
+          'embedder_root': manifestDir.path,
+          if (appDir != null) 'app_root': _appDir(appDir)!,
+        };
         t = CrossTarget.fromMap(selected)
-            .withResolvedPatches(appLayerSource ?? selection.sourcePath)
+            .withResolvedPatches(
+              appLayerSource ?? selection.sourcePath,
+              vars: patchVars,
+            )
             .withDefineOverrides(cliDefines);
         // fromMap throws ArgumentError on an unknown provider token.
         // ignore: avoid_catching_errors
@@ -927,6 +934,7 @@ class CrossCommand extends Command<int> {
           manifestDir: manifestDir,
           storeRoot: ensureCacheDir(),
           run: _runProcess,
+          appDir: _appDir(args['app'] as String?),
           onModule: (m) => _logger.info('  module $m: vendored cargo deps'),
         );
         if (err != null) {
@@ -2183,6 +2191,7 @@ class CrossCommand extends Command<int> {
         manifestDir,
         buildRoot,
         libDir,
+        appDir: _appDir(appPath),
       );
       if (!ok) return ExitCode.software.code;
     }
@@ -3279,10 +3288,17 @@ class CrossCommand extends Command<int> {
     CrossTarget target,
     Directory manifestDir,
     Directory buildRoot,
-    Directory libDir,
-  ) async {
+    Directory libDir, {
+    String? appDir,
+  }) async {
+    final moduleVars = {
+      'embedder_root': manifestDir.path,
+      if (appDir != null) 'app_root': appDir,
+    };
     for (final m in target.modules) {
-      final src = Directory(p.join(manifestDir.path, m.path));
+      final src = Directory(
+        p.join(manifestDir.path, expandManifestVars(m.path, moduleVars)),
+      );
       if (!src.existsSync()) {
         _logger.err('  module ${m.name}: source dir not found: ${src.path}');
         return false;

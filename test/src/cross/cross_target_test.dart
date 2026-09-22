@@ -497,6 +497,65 @@ void main() {
       expect(a.path, '/src/libfoo');
     });
 
+    test(r'${embedder_root} expands in local path before absolutizing', () {
+      final a = augmentOf({'path': r'${embedder_root}/libs/libfoo'})
+          .resolvePatchesAgainst(
+            '/w/boards/pi5.emb.yaml',
+            vars: {'embedder_root': '/emb'},
+          );
+      expect(a.path, '/emb/libs/libfoo');
+    });
+
+    test(r'${app_root} expands in local path before absolutizing', () {
+      final a = augmentOf({'path': r'${app_root}/native/libfoo'})
+          .resolvePatchesAgainst(
+            '/w/boards/pi5.emb.yaml',
+            vars: {'app_root': '/myapp'},
+          );
+      expect(a.path, '/myapp/native/libfoo');
+    });
+
+    test(r'${embedder_root} expands in patches before resolving', () {
+      final a =
+          augmentOf({
+            'url': 'https://example.com/libfoo-1.0.tar.gz',
+            'patches': [r'${embedder_root}/patches/fix.patch'],
+          }).resolvePatchesAgainst(
+            '/w/boards/pi5.emb.yaml',
+            vars: {'embedder_root': '/emb'},
+          );
+      expect(a.patches, ['/emb/patches/fix.patch']);
+    });
+
+    test('withResolvedPatches resolves local path even when no patches', () {
+      // Previously the early exit `augment.every(a => a.patches.isEmpty)` would
+      // skip absolutizing a local path when there were no patches.
+      final target = CrossTarget.fromMap({
+        'provider': 'arm-gnu',
+        'triple': 'aarch64-none-linux-gnu',
+        'augment': [
+          {'pkg': 'libfoo', 'path': '../libfoo'},
+        ],
+      });
+      final resolved = target.withResolvedPatches('/w/boards/pi5.emb.yaml');
+      expect(resolved.augment.first.path, '/w/libfoo');
+    });
+
+    test('withResolvedPatches passes vars to augment resolution', () {
+      final target = CrossTarget.fromMap({
+        'provider': 'arm-gnu',
+        'triple': 'aarch64-none-linux-gnu',
+        'augment': [
+          {'pkg': 'libfoo', 'path': r'${app_root}/native/libfoo'},
+        ],
+      });
+      final resolved = target.withResolvedPatches(
+        '/w/boards/pi5.emb.yaml',
+        vars: {'embedder_root': '/emb', 'app_root': '/myapp'},
+      );
+      expect(resolved.augment.first.path, '/myapp/native/libfoo');
+    });
+
     test('two checkouts of one package key differently', () {
       final a = augmentOf({'path': '/src/a'});
       final b = augmentOf({'path': '/src/b'});
