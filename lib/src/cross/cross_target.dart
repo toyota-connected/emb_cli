@@ -156,7 +156,15 @@ class AugmentLib {
     );
   }
 
-  static String? _trimmedOrNull(dynamic v) => v == null ? null : '$v'.trim();
+  static String? _trimmedOrNull(dynamic v) {
+    if (v == null) return null;
+    final s = '$v'.trim();
+    if (s.isEmpty) {
+      return null;
+    } else {
+      return s;
+    }
+  }
 
   /// pkg-config module name to probe (and the package to build).
   final String pkg;
