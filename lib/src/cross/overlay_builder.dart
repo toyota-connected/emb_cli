@@ -215,11 +215,11 @@ class OverlayBuilder {
               await _buildCMake(lib, overlay, onStep: handle);
           }
           handle?.complete(
-            '${lib.pkg} built with ${lib.build}', //
+            '${lib.pkg}: installed to ${overlay.path}', //
           );
         } else {
           handle?.complete(
-            '${lib.pkg} cached (sysroot satisfies ${lib.minVersion})',
+            '${lib.pkg}: cached (sysroot satisfies ${lib.minVersion})',
           );
         }
       } catch (e) {
@@ -602,7 +602,6 @@ class OverlayBuilder {
         output: ProcessOutputMode.stream,
       ),
     );
-    onStep?.complete('${lib.pkg}: installed to ${overlay.path}');
   }
 
   Future<void> _buildCMake(
