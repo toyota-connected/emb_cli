@@ -752,17 +752,13 @@ class CrossCommand extends Command<int> {
 
     // --clean / --clean-all: remove working dirs and exit (no download).
     if (args['clean'] == true || args['clean-all'] == true) {
-      final sourceDir =
-          FileSystemEntity.typeSync(inputPath) == FileSystemEntityType.file
-          ? File(inputPath).parent
-          : Directory(inputPath);
       return _clean(
         provider,
         target,
         workspace,
         manifestDir,
         all: args['clean-all'] == true,
-        sourceDir: sourceDir,
+        sourceDir: manifestDir,
       );
     }
 
@@ -1218,7 +1214,7 @@ class CrossCommand extends Command<int> {
         profile,
         runProcess: _runProcess,
         launcher: launcher,
-        sourceCacheDir: source,
+        sourceCacheDir: manifestDir,
         logger: _logger,
       );
       try {
