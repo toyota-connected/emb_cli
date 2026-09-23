@@ -197,22 +197,26 @@ class OverlayBuilder {
         }
         continue;
       }
-      final handle = _steps?.start('augment ${lib.pkg}');
-      // "cached"; otherwise run fetch+build and update/complete along the way.
-      // check doesn't leave silence between libs. If satisfied, complete it as
+
       // Start the spinner *before* the sysroot probe so a slow pkg-config
+      // check doesn't leave silence between libs. If satisfied, complete it as
+      // "cached"; otherwise run fetch+build and update/complete along the way.
+      final handle = _steps?.start('augment ${lib.pkg}');
+
       // A local augment is always built: the developer is editing that tree,
       // and a previously installed copy satisfying `min` is exactly when the
       // edit under way would be skipped. See AugmentLib.path.
-      if (!lib.isLocal && await _satisfied(lib)) continue;
       try {
-        if (!await _satisfied(lib)) {
+        if (!lib.isLocal && !await _satisfied(lib)) {
           switch (lib.build) {
             case CrossGenerator.meson:
               await _buildMeson(lib, overlay, onStep: handle);
             case CrossGenerator.cmake:
               await _buildCMake(lib, overlay, onStep: handle);
           }
+          handle?.complete(
+            '${lib.pkg} built with ${lib.build}', //
+          );
         } else {
           handle?.complete(
             '${lib.pkg} cached (sysroot satisfies ${lib.minVersion})',
@@ -703,6 +707,7 @@ class OverlayBuilder {
     };
     Directory(bin).createSync(recursive: true);
     stampFile.writeAsStringSync(key);
+    onStep?.complete('${lib.pkg} host built → $bin');
     return bin;
   }
 
