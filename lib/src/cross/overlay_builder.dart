@@ -1,5 +1,6 @@
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
@@ -73,6 +74,28 @@ const Map<_OverlayDownloadResult, String> _overlayDownloadErrorMessage = {
   _OverlayDownloadResult.failedOpen: 'failed to decompress archive',
   _OverlayDownloadResult.invalidSha: 'sha256 signature is not valid',
 };
+
+// Maintainable enum of supported archive formats;
+// For each type, its magic bytes, offset and probe cmd are listed.
+// This makes adding the support of new archive formats trivial, as only
+// this enum needs updating without further patching to any logic below.
+enum _ArchiveType {
+  // dart format off
+  gzip    ([0x1f, 0x8b],                          0,   'gzip -t',),
+  zip     ([0x50, 0x4b],                          0,   'unzip -t -q',),
+  xz      ([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00],  0,   'xz -t',),
+  bzip2   ([0x42, 0x5a, 0x68],                    0,   'bzip2 -t',),
+  zstd    ([0x28, 0xb5, 0x2f, 0xfd],              0,   'zstd -t',),
+  // 'ustar' in ASCII bytes
+  tar     ([0x75, 0x73, 0x74, 0x61, 0x72, 0x0a],  257, 'tar -tf',);
+  // dart format on
+
+  const _ArchiveType(this.magicBytes, this.magicOffset, this.probeCmd);
+
+  final List<int> magicBytes;
+  final int magicOffset;
+  final String probeCmd;
+}
 
 /// Builds [CrossTarget.augment] libraries (libdisplay-info, Vulkan-Headers, …)
 /// from source into a per-workspace overlay prefix, against an already-resolved
@@ -309,12 +332,19 @@ class OverlayBuilder {
       return _OverlayDownloadResult.invalidSha;
     }
 
-    // Check 2: are the magic bytes valid for tar/gz/zip?
-    final magic = Uint8List(4);
+    // Check 2: are the magic bytes valid for archive type? A format may pin
+    // its magic at a nonzero offset (tar's 'ustar' sits at 257), so read a
+    // window wide enough to cover the deepest one and compare per-type.
+    final magicWindow = _ArchiveType
+        .values //
+        .map((e) => e.magicOffset + e.magicBytes.length)
+        .reduce(max);
+
+    final magic = Uint8List(magicWindow);
     try {
       final raf = await tarball.open();
       try {
-        final n = await raf.readInto(magic, 0, 4);
+        final n = await raf.readInto(magic, 0, magicWindow);
         if (n < 2) {
           return _OverlayDownloadResult.invalidTarball;
         }
@@ -324,21 +354,34 @@ class OverlayBuilder {
     } on FileSystemException {
       return _OverlayDownloadResult.fsError;
     }
-    final isGzip = magic[0] == 0x1f && magic[1] == 0x8b;
-    // PK\x03\x04 — a zip local file header.
-    final isZip =
-        magic[0] == 0x50 &&
-        magic[1] == 0x4b &&
-        magic[2] == 0x03 &&
-        magic[3] == 0x04;
-    if (!isGzip && !isZip) {
+
+    _ArchiveType? archiveType;
+    for (final type in _ArchiveType.values) {
+      // Shorter than the type's magic even at its offset: can't match.
+      if (magic.length < type.magicOffset + type.magicBytes.length) {
+        continue;
+      }
+      var validForType = true;
+      for (var i = 0; i < type.magicBytes.length; i++) {
+        if (magic[type.magicOffset + i] != type.magicBytes[i]) {
+          validForType = false;
+          break;
+        }
+      }
+
+      if (validForType) {
+        archiveType = type;
+        break;
+      }
+    }
+
+    if (archiveType == null) {
       return _OverlayDownloadResult.invalidArchive;
     }
 
     // Check 3: does the file open?
-    final test = isGzip
-        ? await _run('gzip', ['-t', tarball.path])
-        : await _run('unzip', ['-t', '-q', tarball.path]);
+    final probe = archiveType.probeCmd.split(' ');
+    final test = await _run(probe[0], [...(probe.sublist(1)), tarball.path]);
     if (test.exitCode != 0) {
       return _OverlayDownloadResult.failedOpen;
     }
