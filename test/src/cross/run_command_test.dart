@@ -5,10 +5,7 @@ void main() {
   group('applyRunVars', () {
     test('substitutes known variables', () {
       expect(
-        applyRunVars(
-          [r'./${embedder}', '-b', '.'],
-          {'embedder': 'homescreen'},
-        ),
+        applyRunVars([r'./${embedder}', '-b', '.'], {'embedder': 'homescreen'}),
         ['./homescreen', '-b', '.'],
       );
     });
@@ -35,17 +32,14 @@ void main() {
     });
 
     test('unknown variable expands to empty string', () {
-      expect(
-        applyRunVars([r'${nope}'], {}),
-        [''],
-      );
+      expect(applyRunVars([r'${nope}'], {}), ['']);
     });
 
     test('leaves tokens without variables unchanged', () {
-      expect(
-        applyRunVars(['--config', '/etc/app.conf'], {}),
-        ['--config', '/etc/app.conf'],
-      );
+      expect(applyRunVars(['--config', '/etc/app.conf'], {}), [
+        '--config',
+        '/etc/app.conf',
+      ]);
     });
 
     test('empty token list returns empty list', () {
@@ -67,19 +61,17 @@ void main() {
     });
 
     test('handles spaces in tokens', () {
-      expect(
-        runCmdString(['./my app', '--flag']),
-        "'./my app' '--flag'",
-      );
+      expect(runCmdString(['./my app', '--flag']), "'./my app' '--flag'");
     });
   });
 
   group('defaultRunTemplate', () {
     test('expands to the expected default', () {
-      expect(
-        applyRunVars(defaultRunTemplate, {'embedder': 'homescreen'}),
-        ['./homescreen', '-b', '.'],
-      );
+      expect(applyRunVars(defaultRunTemplate, {'embedder': 'homescreen'}), [
+        './homescreen',
+        '-b',
+        '.',
+      ]);
     });
   });
 }

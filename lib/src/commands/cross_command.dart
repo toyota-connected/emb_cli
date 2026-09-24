@@ -2257,10 +2257,9 @@ class CrossCommand extends Command<int> {
         for (final soname in staged.staged) {
           _logger.detail('  ${r.backend ?? ""}: staged lib/$soname');
         }
-        final runHint = applyRunVars(
-          target.runCommand ?? defaultRunTemplate,
-          {'embedder': p.basename(bin.path)},
-        ).join(' ');
+        final runHint = applyRunVars(target.runCommand ?? defaultRunTemplate, {
+          'embedder': p.basename(bin.path),
+        }).join(' ');
         _logger.info(
           '  ${r.backend ?? ""}: runnable → ${outDir.path}  '
           '(run: $runHint)',
@@ -2430,11 +2429,10 @@ class CrossCommand extends Command<int> {
     }
     final template = runTemplate ?? defaultRunTemplate;
     final unknowns = <String>{};
-    final expanded = applyRunVars(
-      template,
-      {'embedder': binName, 'deploy_dir': destDir},
-      unknowns: unknowns,
-    );
+    final expanded = applyRunVars(template, {
+      'embedder': binName,
+      'deploy_dir': destDir,
+    }, unknowns: unknowns);
     if (unknowns.isNotEmpty) {
       _logger.warn(
         'run_command: unknown variable(s) '
@@ -2468,11 +2466,9 @@ class CrossCommand extends Command<int> {
   }) async {
     final template = runTemplate ?? defaultRunTemplate;
     final unknowns = <String>{};
-    final argv = applyRunVars(
-      template,
-      {'embedder': p.basename(embedder.path)},
-      unknowns: unknowns,
-    );
+    final argv = applyRunVars(template, {
+      'embedder': p.basename(embedder.path),
+    }, unknowns: unknowns);
     if (unknowns.isNotEmpty) {
       _logger.warn(
         'run_command: unknown variable(s) '

@@ -279,12 +279,21 @@ void main() {
       final t = CrossTarget.fromMap(const {
         'provider': 'arm-gnu',
         'triple': 'aarch64-none-linux-gnu',
-        'run_command': [r'./${embedder}', '--config', '/etc/app.conf', '-b', '.'],
+        'run_command': [
+          r'./${embedder}',
+          '--config',
+          '/etc/app.conf',
+          '-b',
+          '.',
+        ],
       });
-      expect(
-        t.runCommand,
-        [r'./${embedder}', '--config', '/etc/app.conf', '-b', '.'],
-      );
+      expect(t.runCommand, [
+        r'./${embedder}',
+        '--config',
+        '/etc/app.conf',
+        '-b',
+        '.',
+      ]);
     });
 
     test('absent run_command: leaves the field null', () {
