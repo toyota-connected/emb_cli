@@ -34,6 +34,7 @@ import 'package:emb_cli/src/cross/overlay_builder.dart';
 import 'package:emb_cli/src/cross/package_files.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/cross/rpm_packager.dart';
+import 'package:emb_cli/src/cross/run_command.dart';
 import 'package:emb_cli/src/cross/runnable_bundle.dart';
 import 'package:emb_cli/src/cross/tarball_packager.dart';
 import 'package:emb_cli/src/engine/engine_artifacts.dart';
@@ -2256,8 +2257,8 @@ class CrossCommand extends Command<int> {
         for (final soname in staged.staged) {
           _logger.detail('  ${r.backend ?? ""}: staged lib/$soname');
         }
-        final runHint = _applyRunVars(
-          target.runCommand ?? _defaultRunTemplate,
+        final runHint = applyRunVars(
+          target.runCommand ?? defaultRunTemplate,
           {'embedder': p.basename(bin.path)},
         ).join(' ');
         _logger.info(
@@ -2427,12 +2428,21 @@ class CrossCommand extends Command<int> {
         '--deploy-dir if a removed file must not linger.',
       );
     }
-    final template = runTemplate ?? _defaultRunTemplate;
-    final expanded = _applyRunVars(template, {
-      'embedder': binName,
-      'deploy_dir': destDir,
-    });
-    final runCmd = _runCmdString(expanded);
+    final template = runTemplate ?? defaultRunTemplate;
+    final unknowns = <String>{};
+    final expanded = applyRunVars(
+      template,
+      {'embedder': binName, 'deploy_dir': destDir},
+      unknowns: unknowns,
+    );
+    if (unknowns.isNotEmpty) {
+      _logger.warn(
+        'run_command: unknown variable(s) '
+        '${unknowns.map((v) => '\${$v}').join(', ')} '
+        '(expanded to empty string)',
+      );
+    }
+    final runCmd = runCmdString(expanded);
     if (!run) {
       final argv = deployer.runArgv(device, destDir, runCmd);
       _logger.info('  run on target: ${argv.join(' ')}');
@@ -2449,18 +2459,27 @@ class CrossCommand extends Command<int> {
   }
 
   /// Launch the native [embedder] from inside [bundle] on this host,
-  /// inheriting stdio. Uses the manifest's `package.run` template when set,
-  /// otherwise `./${embedder} -b .`.
+  /// inheriting stdio. Uses the manifest's `cross.run_command` template when
+  /// set, otherwise `./${embedder} -b .`.
   Future<int> _runLocal(
     File embedder,
     Directory bundle, {
     List<String>? runTemplate,
   }) async {
-    final template = runTemplate ?? _defaultRunTemplate;
-    final argv = _applyRunVars(
+    final template = runTemplate ?? defaultRunTemplate;
+    final unknowns = <String>{};
+    final argv = applyRunVars(
       template,
       {'embedder': p.basename(embedder.path)},
+      unknowns: unknowns,
     );
+    if (unknowns.isNotEmpty) {
+      _logger.warn(
+        'run_command: unknown variable(s) '
+        '${unknowns.map((v) => '\${$v}').join(', ')} '
+        '(expanded to empty string)',
+      );
+    }
     _logger.info('  running ${argv.join(' ')} in ${bundle.path} …');
     final proc = await Process.start(
       argv.first,
@@ -3851,16 +3870,3 @@ class _StagedLibs {
   final List<String> staged;
   final List<String> errors;
 }
-
-const _defaultRunTemplate = [r'./${embedder}', '-b', '.'];
-
-List<String> _applyRunVars(List<String> tokens, Map<String, String> vars) => [
-      for (final t in tokens)
-        t.replaceAllMapped(
-          RegExp(r'\$\{([a-zA-Z0-9_]+)\}'),
-          (m) => vars[m[1]] ?? '',
-        ),
-    ];
-
-String _runCmdString(List<String> argv) =>
-    argv.map((t) => "'${t.replaceAll("'", r"'\''")}'").join(' ');
