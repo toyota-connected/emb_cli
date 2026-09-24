@@ -765,12 +765,12 @@ emb cross <project-dir|manifest.yaml> [options]
 | `--build` | off | Configure + build the embedder under the resolved profile, one build per `cross.backends` entry. Skipped when a prior `--prepare` already built it and the source is unchanged. |
 | `--backend <name>` | all | Build only the named `cross.backends` entries. Repeatable. |
 | `--deb` | off | With `--build`: package each backend binary into a root-free `.deb` (Depends auto-derived from the binary's needed libraries). |
-| `--app <dir>` | — | With `--build`: also build this Flutter app for the target and assemble a **runnable bundle** (embedder + engine + flutter_assets + icudtl + libapp), runnable as `./homescreen -b .`. |
+| `--app <dir>` | — | With `--build`: also build this Flutter app for the target and assemble a **runnable bundle** (embedder + engine + flutter_assets + icudtl + libapp), runnable as `./<embedder> -b .` (or the manifest's `cross.run_command`). |
 | `-m`, `--mode <mode>` | `release` | Runtime mode for the `--app` bundle (`debug`/`profile`/`release`). |
 | `--tar` | off | Also produce a `.tar.gz` of each runnable bundle. |
 | `--deploy <target>` | — | With `--app`: send each runnable bundle to the board. `<user@host>` uses SSH — rsync when the target has it, else a tar-over-SSH fallback (port/opts reused from `cross.sysroot` when device-sourced). `adb` or `adb:<serial>` uses adb instead; so does any value when `cross.sysroot.transport: adb`. With `--deb`: SSH only. |
 | `--deploy-dir <path>` | `ivi-homescreen` | Remote destination dir for `--deploy`. |
-| `--run` | off | After `--deploy`, run the bundle on the target over its transport (`./homescreen -b .`). |
+| `--run` | off | After `--deploy`, run the bundle on the target over its transport. Uses `cross.run_command` when set, otherwise `./<embedder> -b .`. Also runs locally (no deploy) for `--target local` builds. |
 | `--clean` | off | Remove this target's build + overlay dirs (keeps the toolchain + sysroot), then exit. |
 | `--clean-all` | off | Also remove the downloaded / extracted toolchain + sysroot and the apt / deb caches, then exit. |
 | `--update-lock` | off | Regenerate this target's `emb.lock` entry from the resolved toolchain/sysroot (accepts an intentional URL / version change). See [Reproducible builds](#reproducible-builds-emblock). |
@@ -856,6 +856,7 @@ cross:
   defines:                        # -D<name>=<value> applied to every build
     CMAKE_INSTALL_PREFIX: /usr
   cmake_args: [-Wno-dev]          # raw cmake configure flags (cmake only)
+  run_command: ["./${embedder}", "-b", "."]   # custom --run argv (default shown); ${embedder}, ${deploy_dir} substituted
   backends:                       # one build per entry; -D<key>=<value> each
     drm-kms-egl: { BUILD_BACKEND_DRM_KMS_EGL: 'ON', DISABLE_PLUGINS: 'ON' }
   package:                        # optional, consumed by --deb

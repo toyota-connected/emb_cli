@@ -883,6 +883,7 @@ class CrossTarget {
     this.hostDevPackages = const [],
     this.source,
     this.app,
+    this.runCommand,
     this.aotObfuscate,
     this.aotStrip,
   });
@@ -940,6 +941,9 @@ class CrossTarget {
       hostDevPackages: _stringList(map['host_dev_packages']),
       source: repoFrom(map['source']),
       app: repoFrom(map['app']),
+      runCommand: (map['run_command'] as List<dynamic>?)
+          ?.map((e) => e.toString())
+          .toList(),
       aotObfuscate: map['aot_obfuscate'] as bool?,
       aotStrip: map['aot_strip'] as bool?,
     );
@@ -1112,6 +1116,12 @@ class CrossTarget {
   /// `aot_strip`.)
   final bool? aotStrip;
 
+  /// Custom argv template for `--run` (Flutter custom-device style). Elements
+  /// may contain `${embedder}` and `${deploy_dir}` which are substituted before
+  /// exec; unknown variables expand to empty string. When null the default
+  /// `['./${embedder}', '-b', '.']` is used. (Manifest key `run_command`.)
+  final List<String>? runCommand;
+
   /// Parse the `backends:` block (backend name → `{define: value}` map).
   static Map<String, Map<String, String>> _parseBackends(Object? value) {
     if (value is! Map) return const {};
@@ -1174,6 +1184,7 @@ class CrossTarget {
       hostDevPackages: hostDevPackages,
       source: source,
       app: app,
+      runCommand: runCommand,
       aotObfuscate: aotObfuscate,
       aotStrip: aotStrip,
     );
@@ -1213,6 +1224,7 @@ class CrossTarget {
       hostDevPackages: hostDevPackages,
       source: source,
       app: app,
+      runCommand: runCommand,
       aotObfuscate: aotObfuscate,
       aotStrip: aotStrip,
     );

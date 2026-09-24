@@ -2256,9 +2256,13 @@ class CrossCommand extends Command<int> {
         for (final soname in staged.staged) {
           _logger.detail('  ${r.backend ?? ""}: staged lib/$soname');
         }
+        final runHint = _applyRunVars(
+          target.runCommand ?? _defaultRunTemplate,
+          {'embedder': p.basename(bin.path)},
+        ).join(' ');
         _logger.info(
           '  ${r.backend ?? ""}: runnable → ${outDir.path}  '
-          '(run: ./${p.basename(bin.path)} -b .)',
+          '(run: $runHint)',
         );
         if (tar) {
           final archive = await runnable.tar(outDir);
@@ -2289,6 +2293,7 @@ class CrossCommand extends Command<int> {
             bundleArch: archOfTriple(profile.targetTriple),
             // Auto-run only makes sense for a single embedder.
             run: run && built.length == 1,
+            runTemplate: target.runCommand,
           );
           if (rc != ExitCode.success.code) return rc;
         } else if (run && built.length == 1) {
@@ -2299,7 +2304,11 @@ class CrossCommand extends Command<int> {
             // The assembled bundle's copy, not the build tree's: the
             // embedder's RUNPATH is $ORIGIN/lib, which only resolves
             // from here. See #185.
-            final rc = await _runLocal(bin, outDir);
+            final rc = await _runLocal(
+              bin,
+              outDir,
+              runTemplate: target.runCommand,
+            );
             if (rc != ExitCode.success.code) return rc;
           } else {
             _logger.warn(
@@ -2385,6 +2394,7 @@ class CrossCommand extends Command<int> {
     required String destDir,
     required String bundleArch,
     required bool run,
+    List<String>? runTemplate,
   }) async {
     final deployer = Deployer(runProcess: _runProcess);
     final label = device.label;
@@ -2417,7 +2427,12 @@ class CrossCommand extends Command<int> {
         '--deploy-dir if a removed file must not linger.',
       );
     }
-    final runCmd = './$binName -b .';
+    final template = runTemplate ?? _defaultRunTemplate;
+    final expanded = _applyRunVars(template, {
+      'embedder': binName,
+      'deploy_dir': destDir,
+    });
+    final runCmd = _runCmdString(expanded);
     if (!run) {
       final argv = deployer.runArgv(device, destDir, runCmd);
       _logger.info('  run on target: ${argv.join(' ')}');
@@ -2433,24 +2448,23 @@ class CrossCommand extends Command<int> {
     return proc.exitCode;
   }
 
-  /// Launch the native [embedder] from inside [bundle] on this host
-  /// (`./<embedder> -b .`), inheriting stdio. Used by `--run` for a
-  /// `--target local` build, where there is no deploy step.
-  ///
-  /// [embedder] must be the bundle's own copy, not the one left in the build
-  /// tree. The embedder is linked with RUNPATH `$ORIGIN/lib:$ORIGIN`, and only
-  /// the assembled bundle has the layout that satisfies it: in the build tree a
-  /// project library such as libihs_shared sits in a sibling directory rather
-  /// than in `lib/`, so launching from there dies in the loader before main.
-  ///
-  /// Runs with the bundle as the working directory, so the invocation is the
-  /// one printed when the bundle is assembled.
-  Future<int> _runLocal(File embedder, Directory bundle) async {
-    final exe = './${p.basename(embedder.path)}';
-    _logger.info('  running $exe -b . in ${bundle.path} …');
+  /// Launch the native [embedder] from inside [bundle] on this host,
+  /// inheriting stdio. Uses the manifest's `package.run` template when set,
+  /// otherwise `./${embedder} -b .`.
+  Future<int> _runLocal(
+    File embedder,
+    Directory bundle, {
+    List<String>? runTemplate,
+  }) async {
+    final template = runTemplate ?? _defaultRunTemplate;
+    final argv = _applyRunVars(
+      template,
+      {'embedder': p.basename(embedder.path)},
+    );
+    _logger.info('  running ${argv.join(' ')} in ${bundle.path} …');
     final proc = await Process.start(
-      exe,
-      ['-b', '.'],
+      argv.first,
+      argv.sublist(1),
       workingDirectory: bundle.path,
       mode: ProcessStartMode.inheritStdio,
     );
@@ -3837,3 +3851,16 @@ class _StagedLibs {
   final List<String> staged;
   final List<String> errors;
 }
+
+const _defaultRunTemplate = [r'./${embedder}', '-b', '.'];
+
+List<String> _applyRunVars(List<String> tokens, Map<String, String> vars) => [
+      for (final t in tokens)
+        t.replaceAllMapped(
+          RegExp(r'\$\{([a-zA-Z0-9_]+)\}'),
+          (m) => vars[m[1]] ?? '',
+        ),
+    ];
+
+String _runCmdString(List<String> argv) =>
+    argv.map((t) => "'${t.replaceAll("'", r"'\''")}'").join(' ');
