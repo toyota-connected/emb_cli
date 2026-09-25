@@ -364,7 +364,7 @@ class BoardsSyncCommand extends Command<int> {
     String ref,
   ) async {
     final api = _apiBase.replace(
-      path: '/repos/${source.repo}/commits/$ref',
+      path: '/repos/${source.repo}/commits/${Uri.encodeComponent(ref)}',
     );
     final decoded = jsonDecode(utf8.decode(await _get(api, source)));
     if (decoded is Map && decoded['sha'] is String) {
@@ -444,12 +444,15 @@ class BoardsSyncCommand extends Command<int> {
     final sshUrl = 'git@github.com:${source.repo}.git';
     final tmp = Directory.systemTemp.createTempSync('emb_boards_');
     try {
+      // --branch accepts tags and branch names but not raw SHAs. For a SHA
+      // we clone without --branch and fetch the exact commit instead.
+      final isSha = RegExp(r'^[0-9a-f]{7,40}$').hasMatch(ref);
       final clone = await _runProcess('git', [
         'clone',
         '--depth',
         '1',
-        '--branch',
-        ref,
+        if (!isSha) '--branch',
+        if (!isSha) ref,
         '--filter=blob:none',
         '--sparse',
         sshUrl,
@@ -459,6 +462,28 @@ class BoardsSyncCommand extends Command<int> {
         throw StateError(
           clone.stderr.isNotEmpty ? clone.stderr : clone.stdout,
         );
+      }
+      if (isSha) {
+        final fetch = await _runProcess(
+          'git',
+          ['fetch', 'origin', ref],
+          workingDirectory: tmp.path,
+        );
+        if (fetch.exitCode != 0) {
+          throw StateError(
+            fetch.stderr.isNotEmpty ? fetch.stderr : fetch.stdout,
+          );
+        }
+        final checkout = await _runProcess(
+          'git',
+          ['checkout', ref],
+          workingDirectory: tmp.path,
+        );
+        if (checkout.exitCode != 0) {
+          throw StateError(
+            checkout.stderr.isNotEmpty ? checkout.stderr : checkout.stdout,
+          );
+        }
       }
 
       final sparseSet = await _runProcess('git', [

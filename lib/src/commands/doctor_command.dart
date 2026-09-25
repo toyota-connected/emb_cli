@@ -305,6 +305,9 @@ class DoctorCommand extends Command<int> {
           'count': boardNames.length,
           'names': boardNames,
           if (stamps.isNotEmpty) ...{
+            // Backward compat: scalar keys from the pre-multi-source schema.
+            'version': stamps.first.version,
+            'skewed': stamps.first.version != packageVersion,
             'versions': [
               for (final s in stamps) {
                 'version': s.version,

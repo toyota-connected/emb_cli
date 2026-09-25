@@ -200,6 +200,28 @@ sources:
       expect(warnings.first, contains('bad-name.yaml'));
     });
 
+    test('skips bad entry but keeps valid siblings', () {
+      final file = File('${tmp.path}/mixed.yaml')
+        ..writeAsStringSync('''
+sources:
+  - name: "../escape"
+    type: github
+    repo: org/repo
+  - name: good
+    type: local
+    path: /opt/boards
+''');
+      final warnings = <String>[];
+      final config = BoardSourceConfig.load(
+        file,
+        onWarning: warnings.add,
+      );
+      expect(config.sources, hasLength(1));
+      expect(config.sources.first.name, 'good');
+      expect(warnings, hasLength(1));
+      expect(warnings.first, contains('Skipping'));
+    });
+
     test('calls onWarning on malformed YAML', () {
       final file = File('${tmp.path}/bad.yaml')
         ..writeAsStringSync('not: a: valid: yaml: [');

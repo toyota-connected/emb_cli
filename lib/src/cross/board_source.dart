@@ -133,10 +133,17 @@ class BoardSourceConfig {
       if (list is! List || list.isEmpty) {
         return BoardSourceConfig([defaultSource]);
       }
-      final parsed = [
-        for (final e in list)
-          if (e is Map) BoardSource.fromMap(Map<String, dynamic>.from(e)),
-      ];
+      final parsed = <BoardSource>[];
+      for (final e in list) {
+        if (e is! Map) continue;
+        try {
+          parsed.add(BoardSource.fromMap(Map<String, dynamic>.from(e)));
+        } on Object catch (err) {
+          onWarning?.call(
+            'Skipping invalid source in ${file.path}: $err',
+          );
+        }
+      }
       if (parsed.isEmpty) return BoardSourceConfig([defaultSource]);
       return BoardSourceConfig(parsed);
     } on Object catch (e) {

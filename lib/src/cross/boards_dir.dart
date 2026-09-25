@@ -84,6 +84,7 @@ Directory xdgDir({
 
   final home = env['HOME'] ?? env['USERPROFILE'] ?? Directory.systemTemp.path;
 
+  // macOS has no config/data split; both land under Application Support.
   if (os == 'macos') {
     return Directory(p.join(home, 'Library', 'Application Support'));
   }

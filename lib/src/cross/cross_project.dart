@@ -741,6 +741,7 @@ class CrossProjectResolver {
     final installed = resolveBoardsDir(environment: _environment);
     final config = BoardSourceConfig.load(
       resolveBoardSourcesFile(environment: _environment),
+      onWarning: (msg) => stderr.writeln('warning: $msg'),
     );
     final sources = <String, Directory>{};
     for (final s in config.sources) {
