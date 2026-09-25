@@ -133,6 +133,28 @@ void main() {
         throwsA(isA<ArgumentError>()),
       );
     });
+
+    test('throws on path-traversal repo', () {
+      expect(
+        () => BoardSource.fromMap({
+          'type': 'github',
+          'name': 'test',
+          'repo': '../escape',
+        }),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+
+    test('throws on empty repo', () {
+      expect(
+        () => BoardSource.fromMap({
+          'type': 'github',
+          'name': 'test',
+          'repo': '',
+        }),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
   });
 
   group('BoardSourceConfig.load warnings', () {

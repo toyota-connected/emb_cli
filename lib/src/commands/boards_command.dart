@@ -406,9 +406,16 @@ class BoardsSyncCommand extends Command<int> {
     if (entries.isEmpty) return 0;
 
     dest.createSync(recursive: true);
+    for (final f in dest.listSync().whereType<File>().where(
+      (f) => f.path.endsWith('.emb.yaml'),
+    )) {
+      f.deleteSync();
+    }
     for (final e in entries) {
       progress.update('Fetching ${e.name}');
-      final bytes = await _get(e.url, source);
+      final bytes = await _get(
+        e.url, source, accept: 'application/vnd.github.raw+json',
+      );
       File(p.join(dest.path, e.name)).writeAsBytesSync(bytes);
     }
     return entries.length;
@@ -460,6 +467,11 @@ class BoardsSyncCommand extends Command<int> {
       if (files.isEmpty) return 0;
 
       dest.createSync(recursive: true);
+      for (final existing in dest.listSync().whereType<File>().where(
+        (f) => f.path.endsWith('.emb.yaml'),
+      )) {
+        existing.deleteSync();
+      }
       for (final f in files) {
         f.copySync(p.join(dest.path, p.basename(f.path)));
       }
@@ -493,15 +505,22 @@ class BoardsSyncCommand extends Command<int> {
         if (e is Map &&
             e['type'] == 'file' &&
             '${e['name']}'.endsWith('.emb.yaml') &&
-            e['download_url'] != null)
-          (name: '${e['name']}', url: Uri.parse('${e['download_url']}')),
+            e['url'] != null)
+          (name: '${e['name']}', url: Uri.parse('${e['url']}')),
     ];
   }
 
-  Future<List<int>> _get(Uri url, GithubBoardSource source) async {
+  Future<List<int>> _get(
+    Uri url,
+    GithubBoardSource source, {
+    String? accept,
+  }) async {
     final req = await _http.getUrl(url)
       ..headers.set(HttpHeaders.userAgentHeader, 'emb/$packageVersion')
-      ..headers.set(HttpHeaders.acceptHeader, 'application/vnd.github+json');
+      ..headers.set(
+        HttpHeaders.acceptHeader,
+        accept ?? 'application/vnd.github+json',
+      );
     if (source.tokenEnv != null &&
         url.host == _apiBase.host) {
       final token = _environment[source.tokenEnv!];
@@ -599,6 +618,12 @@ class BoardsAddCommand extends Command<int> {
     final BoardSource source;
     switch (type) {
       case 'github':
+        if (!validRepoRef.hasMatch(target)) {
+          _logger.err(
+            'Invalid repo "$target". Use "owner/repo" format.',
+          );
+          return ExitCode.usage.code;
+        }
         source = GithubBoardSource(
           name: sourceName,
           repo: target,

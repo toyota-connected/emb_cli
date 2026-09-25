@@ -223,6 +223,14 @@ cross:
       expect(contents, contains('type: \'local\''));
     });
 
+    test('rejects repos with path-traversal', () async {
+      final code = await runAdd([
+        'github', '../escape', '--name', 'test',
+      ]);
+      expect(code, ExitCode.usage.code);
+      expect(err.join(), contains('Invalid repo'));
+    });
+
     test('rejects duplicate source name', () async {
       when(() => logger.info(any())).thenAnswer((_) {});
       await runAdd(['github', 'org/repo', '--name', 'dup']);

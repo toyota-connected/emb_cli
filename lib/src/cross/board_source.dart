@@ -12,6 +12,10 @@ typedef WarnFn = void Function(String message);
 /// dashes, or underscores. Blocks path traversal and shell metacharacters.
 final validSourceName = RegExp(r'^[a-zA-Z0-9][a-zA-Z0-9_-]*$');
 
+/// Pattern for valid GitHub repo references: `owner/repo`. Each segment must
+/// start with an alphanumeric character to block path traversal (`../`).
+final validRepoRef = RegExp(r'^[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9][a-zA-Z0-9._-]*$');
+
 /// A configured board-library source. Boards from each source land in their
 /// own subdirectory of the data dir, so names never collide across sources.
 sealed class BoardSource {
@@ -27,21 +31,28 @@ sealed class BoardSource {
     if (!validSourceName.hasMatch(name)) {
       throw ArgumentError('invalid board source name: "$name"');
     }
-    return switch (map['type']) {
-      'github' => GithubBoardSource(
-        name: name,
-        repo: map['repo'] as String? ?? '',
-        path: map['path'] as String? ?? 'boards',
-        ref: map['ref'] as String? ?? 'main',
-        tokenEnv: map['token_env'] as String?,
-        transport: map['transport'] as String? ?? 'https',
-      ),
-      'local' => LocalBoardSource(
-        name: name,
-        path: map['path'] as String? ?? '',
-      ),
-      final t => throw ArgumentError('unknown board source type: $t'),
-    };
+    switch (map['type']) {
+      case 'github':
+        final repo = map['repo'] as String? ?? '';
+        if (!validRepoRef.hasMatch(repo)) {
+          throw ArgumentError('invalid board source repo: "$repo"');
+        }
+        return GithubBoardSource(
+          name: name,
+          repo: repo,
+          path: map['path'] as String? ?? 'boards',
+          ref: map['ref'] as String? ?? 'main',
+          tokenEnv: map['token_env'] as String?,
+          transport: map['transport'] as String? ?? 'https',
+        );
+      case 'local':
+        return LocalBoardSource(
+          name: name,
+          path: map['path'] as String? ?? '',
+        );
+      default:
+        throw ArgumentError('unknown board source type: ${map['type']}');
+    }
   }
 }
 
