@@ -210,12 +210,13 @@ class OverlayBuilder {
       // not cross-compiled into the sysroot. They have no pkg-config presence,
       // so skip the sysroot satisfied check.
       if (lib.host) {
-        final handle = _steps?.start('augment ${lib.pkg}');
+        final onStep = _steps?.start('augment ${lib.pkg}');
         try {
-          final hostBin = await _buildHostTool(lib, onStep: handle);
+          final hostBin = await _buildHostTool(lib, onStep: onStep);
           if (!binDirs.contains(hostBin)) binDirs.add(hostBin);
+          onStep?.complete('${lib.pkg} host built → $hostBin');
         } catch (e) {
-          handle?.fail(e is OverlayBuildException ? e.message : '$e');
+          onStep?.fail(e is OverlayBuildException ? e.message : '$e');
           rethrow;
         }
         continue;
@@ -224,7 +225,7 @@ class OverlayBuilder {
       // Start the spinner *before* the sysroot probe so a slow pkg-config
       // check doesn't leave silence between libs. If satisfied, complete it as
       // "cached"; otherwise run fetch+build and update/complete along the way.
-      final handle = _steps?.start('augment ${lib.pkg}');
+      final onStep = _steps?.start('augment ${lib.pkg}');
 
       // A local augment is always built: the developer is editing that tree,
       // and a previously installed copy satisfying `min` is exactly when the
@@ -233,20 +234,20 @@ class OverlayBuilder {
         if (!lib.isLocal && !await _satisfied(lib)) {
           switch (lib.build) {
             case CrossGenerator.meson:
-              await _buildMeson(lib, overlay, onStep: handle);
+              await _buildMeson(lib, overlay, onStep: onStep);
             case CrossGenerator.cmake:
-              await _buildCMake(lib, overlay, onStep: handle);
+              await _buildCMake(lib, overlay, onStep: onStep);
           }
-          handle?.complete(
+          onStep?.complete(
             '${lib.pkg}: installed to ${overlay.path}', //
           );
         } else {
-          handle?.complete(
+          onStep?.complete(
             '${lib.pkg}: cached (sysroot satisfies ${lib.minVersion})',
           );
         }
       } catch (e) {
-        handle?.fail(e is OverlayBuildException ? e.message : '$e');
+        onStep?.fail(e is OverlayBuildException ? e.message : '$e');
         rethrow;
       }
       continue;
@@ -749,7 +750,6 @@ class OverlayBuilder {
     };
     Directory(bin).createSync(recursive: true);
     stampFile.writeAsStringSync(key);
-    onStep?.complete('${lib.pkg} host built → $bin');
     return bin;
   }
 
