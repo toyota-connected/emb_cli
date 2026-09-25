@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:emb_cli/src/cross/board_source.dart';
 import 'package:emb_cli/src/cross/boards_dir.dart';
 import 'package:emb_cli/src/cross/cross_arch.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
@@ -491,35 +492,61 @@ class CrossProjectResolver {
     return _mergeCross(base, derived);
   }
 
-  /// The resolved `cross:` of a board named [name] from the shipped board
-  /// library, with its own `extends` chain applied.
+  /// The resolved `cross:` of a board named [name] from the board library,
+  /// with its own `extends` chain applied. Accepts both qualified
+  /// (`source/target`) and unqualified (`target`) names. Unqualified names
+  /// resolve when exactly one source contains them; ambiguous matches are a
+  /// hard error naming the qualified alternatives.
   Map<String, dynamic> _boardExtendsBase(
     String name,
     String? sourcePath,
     Set<String> seen,
   ) {
     final registry = _boardRegistry();
-    final base = registry[name];
-    if (base == null) {
-      final where = sourcePath ?? 'manifest';
-      // An empty registry is a different failure from a misspelled name, and
-      // saying "unknown board" for it sends people to audit a manifest that is
-      // fine. Name the real cause and where we looked.
-      if (registry.isEmpty) {
-        throw CrossProjectException(
-          'extends: board library not found — no boards are loaded '
-          '(in $where).\n'
-          'Looked in: ${_boardsTried.join(", ")}.\n'
-          'Run `emb boards sync`, or set EMB_BOARDS_DIR to an emb '
-          "checkout's boards/.",
-        );
-      }
+    final where = sourcePath ?? 'manifest';
+
+    if (registry.isEmpty) {
       throw CrossProjectException(
-        'extends: unknown board "$name" (in $where). '
-        'Known boards: ${registry.keys.join(", ")}.',
+        'extends: board library not found — no boards are loaded '
+        '(in $where).\n'
+        'Looked in: ${_boardsTried.join(", ")}.\n'
+        'Run `emb boards sync`, or set EMB_BOARDS_DIR to an emb '
+        "checkout's boards/.",
       );
     }
-    return _applyExtends(base, sourcePath, {...seen, name});
+
+    // Try qualified first (source/target).
+    final base = registry[name];
+    if (base != null) {
+      return _applyExtends(base, sourcePath, {...seen, name});
+    }
+
+    // Unqualified: find all qualified keys ending in /<name>.
+    final matches = [
+      for (final key in registry.keys)
+        if (key.endsWith('/$name')) key,
+    ];
+
+    if (matches.length == 1) {
+      return _applyExtends(
+        registry[matches.first]!,
+        sourcePath,
+        {...seen, matches.first},
+      );
+    }
+
+    if (matches.length > 1) {
+      throw CrossProjectException(
+        'extends: ambiguous board "$name" found in multiple sources '
+        '(in $where). Use a qualified name:\n'
+        '${matches.map((m) => '  extends: $m').join('\n')}',
+      );
+    }
+
+    throw CrossProjectException(
+      'extends: unknown board "$name" (in $where). '
+      'Known boards: ${registry.keys.join(", ")}.',
+    );
   }
 
   /// The resolved `cross:` of `<dir>#<target>` — a target from another emb
@@ -635,100 +662,113 @@ class CrossProjectResolver {
     return out;
   }
 
-  /// Board name -> hardware `cross:` map, loaded once from the board library.
-  /// The board names `extends:` can resolve, in load order.
-  ///
-  /// Loads through the same rungs a real resolution would, so `emb boards
-  /// list` reports what `extends:` actually sees rather than what a chosen
-  /// directory happens to contain. Read [boardsProvenance] afterwards for
-  /// which rung won.
+  /// Qualified board names (`source/target`) the registry can resolve, in load
+  /// order. Loads through the same rungs a real resolution would, so
+  /// `emb boards list` reports what `extends:` actually sees.
   List<String> boardNames() => _boardRegistry().keys.toList();
 
   Map<String, Map<String, dynamic>> _boardRegistry() {
     if (_boards case final cached?) return cached;
     final out = <String, Map<String, dynamic>>{};
-    final dir = _boardsDir();
-    if (dir != null && dir.existsSync()) {
-      for (final f in dir.listSync().whereType<File>().where(
-        (f) => f.path.endsWith('.emb.yaml'),
-      )) {
-        final m = _loader.loadManifestFile(f)?.raw;
-        if (m == null) continue;
-        final cross = _crossOf(m);
-        final shared = _withoutTargets(cross);
-        final targets = cross['targets'];
-        if (targets is Map && targets.isNotEmpty) {
-          for (final e in targets.entries) {
-            final override = e.value is Map
-                ? Map<String, dynamic>.from(e.value as Map)
-                : const <String, dynamic>{};
-            out[e.key.toString()] = _mergeSharedOverride(shared, override);
-          }
-        } else {
-          final name =
-              (m['id'] as String?) ?? p.basename(f.path).split('.').first;
-          out[name] = shared;
-        }
-      }
+    for (final MapEntry(key: sourceName, value: dir)
+        in _boardSources().entries) {
+      _loadBoardsFromDir(dir, sourceName, out);
     }
     return _boards = out;
   }
 
-  /// Where the board library came from, for `doctor` and error messages.
-  /// Null until [_boardsDir] has run.
-  String? boardsProvenance;
+  void _loadBoardsFromDir(
+    Directory dir,
+    String sourceName,
+    Map<String, Map<String, dynamic>> out,
+  ) {
+    if (!dir.existsSync()) return;
+    for (final f in dir.listSync().whereType<File>().where(
+      (f) => f.path.endsWith('.emb.yaml'),
+    )) {
+      final m = _loader.loadManifestFile(f)?.raw;
+      if (m == null) continue;
+      final cross = _crossOf(m);
+      final shared = _withoutTargets(cross);
+      final targets = cross['targets'];
+      if (targets is Map && targets.isNotEmpty) {
+        for (final e in targets.entries) {
+          final override = e.value is Map
+              ? Map<String, dynamic>.from(e.value as Map)
+              : const <String, dynamic>{};
+          out['$sourceName/${e.key}'] =
+              _mergeSharedOverride(shared, override);
+        }
+      } else {
+        final name =
+            (m['id'] as String?) ?? p.basename(f.path).split('.').first;
+        out['$sourceName/$name'] = shared;
+      }
+    }
+  }
 
-  /// The paths [_boardsDir] considered, in order, for the not-found message.
-  final List<String> _boardsTried = [];
-
-  /// The board-library directory, first hit wins. Rungs are whole-directory
-  /// selections and are deliberately **not** merged: a per-file union would let
-  /// a stale installed board silently shadow a checkout edit, which is worse
-  /// than a clean miss because it is quiet.
+  /// Resolve configured board sources to `name -> directory` entries.
   ///
-  /// 1. constructor override (tests)
-  /// 2. `EMB_BOARDS_DIR` — returned even if absent, so a wrong override fails
-  ///    loudly instead of falling through to something that happens to work
-  /// 3. the installed data dir — what `bootstrap`/`emb boards sync` writes
-  /// 4. the emb_cli package's `boards/` via package_config — `dart run`
-  /// 5. a walk up from the running script — `dart run` fallback
-  ///
-  /// Rungs 4 and 5 stay so an in-checkout run needs no install step. Neither
-  /// resolves for an AOT-compiled `emb`, which is why rung 3 exists.
-  Directory? _boardsDir() {
+  /// Override/env-var rungs produce a single source; the installed data dir
+  /// uses the multi-source layout from `boards.yaml`; package-config and
+  /// script-relative discovery are a dev-time fallback.
+  Map<String, Directory> _boardSources() {
     _boardsTried.clear();
-    // Every rung consulted is recorded, including the one that wins: a rung can
-    // resolve to a directory that exists but holds no boards, and the
-    // not-found message has to be able to name it.
+
     if (_boardsDirOverride != null) {
       _boardsTried.add(_boardsDirOverride.path);
       boardsProvenance = 'constructor override';
-      return _boardsDirOverride;
+      return {'override': _boardsDirOverride};
     }
 
     final env = _environment['EMB_BOARDS_DIR'];
     if (env != null && env.isNotEmpty) {
-      _boardsTried.add(
-        r'$EMB_BOARDS_DIR='
-        '$env',
-      );
+      _boardsTried.add(r'$EMB_BOARDS_DIR=$env');
       boardsProvenance = r'$EMB_BOARDS_DIR';
-      return Directory(env);
+      return {'env': Directory(env)};
     }
     _boardsTried.add(r'$EMB_BOARDS_DIR (unset)');
 
+    // Multi-source: read the config and map each source to its subdirectory
+    // (or direct path for local sources) under the installed data dir.
     final installed = resolveBoardsDir(environment: _environment);
-    if (installed.existsSync()) {
-      _boardsTried.add(installed.path);
-      boardsProvenance = 'installed (${installed.path})';
-      return installed;
+    final config = BoardSourceConfig.load(
+      resolveBoardSourcesFile(environment: _environment),
+    );
+    final sources = <String, Directory>{};
+    for (final s in config.sources) {
+      final dir = switch (s) {
+        LocalBoardSource(:final path) => Directory(path),
+        _ => Directory(p.join(installed.path, s.name)),
+      };
+      if (dir.existsSync()) {
+        sources[s.name] = dir;
+        _boardsTried.add('${s.name}: ${dir.path}');
+      } else {
+        _boardsTried.add('${s.name}: ${dir.path} (absent)');
+      }
+    }
+    if (sources.isNotEmpty) {
+      boardsProvenance = 'installed (${sources.keys.join(", ")})';
+      return sources;
+    }
+
+    // Legacy flat layout: boards directly in the data dir (pre-multi-source).
+    if (installed.existsSync() &&
+        installed.listSync().whereType<File>().any(
+          (f) => f.path.endsWith('.emb.yaml'),
+        )) {
+      _boardsTried.add('${installed.path} (legacy flat)');
+      boardsProvenance = 'installed legacy (${installed.path})';
+      return {defaultSource.name: installed};
     }
     _boardsTried.add('${installed.path} (absent)');
 
+    // Dev-time fallback: package_config or script-relative walk.
     final discovered = _discoverBoardsDir();
     if (discovered != null) {
       boardsProvenance = 'package/script relative (${discovered.path})';
-      return discovered;
+      return {'dev': discovered};
     }
     _boardsTried.add(
       Platform.packageConfig == null
@@ -736,8 +776,15 @@ class CrossProjectResolver {
           : '<package>/boards (absent)',
     );
     boardsProvenance = 'not found';
-    return null;
+    return {};
   }
+
+  /// Where the board library came from, for `doctor` and error messages.
+  /// Null until [_boardSources] has run.
+  String? boardsProvenance;
+
+  /// The paths [_boardSources] considered, in order, for the not-found message.
+  final List<String> _boardsTried = [];
 
   Directory? _discoverBoardsDir() {
     final pc = Platform.packageConfig;

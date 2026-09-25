@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:args/command_runner.dart';
+import 'package:emb_cli/src/cross/board_source.dart';
 import 'package:emb_cli/src/cross/boards_dir.dart';
 import 'package:emb_cli/src/cross/cross_project.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
@@ -12,9 +13,6 @@ import 'package:emb_cli/src/manifest/manifest_loader.dart';
 import 'package:emb_cli/src/version.dart';
 import 'package:mason_logger/mason_logger.dart';
 import 'package:path/path.dart' as p;
-
-/// GitHub repository the board library is fetched from.
-const _repoSlug = 'toyota-connected/emb_cli';
 
 /// {@template boards_command}
 /// `emb boards` — inspect and install the shipped board library that
@@ -44,6 +42,10 @@ class BoardsCommand extends Command<int> {
         apiBase: apiBase,
       ),
     );
+    addSubcommand(BoardsAddCommand(logger: logger, environment: environment));
+    addSubcommand(
+      BoardsRemoveCommand(logger: logger, environment: environment),
+    );
   }
 
   @override
@@ -59,7 +61,13 @@ class BoardsListCommand extends Command<int> {
   /// Creates the command.
   BoardsListCommand({required Logger logger, Map<String, String>? environment})
     : _logger = logger,
-      _environment = environment ?? Platform.environment;
+      _environment = environment ?? Platform.environment {
+    argParser.addFlag(
+      'sources',
+      help: 'List configured board sources instead of board targets.',
+      negatable: false,
+    );
+  }
 
   final Logger _logger;
   final Map<String, String> _environment;
@@ -72,27 +80,49 @@ class BoardsListCommand extends Command<int> {
 
   @override
   Future<int> run() async {
-    // Going through the resolver rather than reading the directory directly
-    // means this reports exactly what `extends:` would see, including which
-    // rung won -- the question people actually have when it misbehaves.
+    if (argResults?['sources'] == true) return _listSources();
+
     final resolver = CrossProjectResolver(
       const ManifestLoader(),
       null,
       _environment,
     );
     final names = resolver.boardNames();
+
     final dir = resolveBoardsDir(environment: _environment);
 
     _logger
       ..info('Source:  ${resolver.boardsProvenance ?? "not resolved"}')
       ..info('Install: ${dir.path}');
 
-    final stamp = dir.existsSync() ? readBoardsStamp(dir) : null;
-    if (stamp != null) {
-      _logger.info(
-        'Version: $stamp'
-        '${stamp == packageVersion ? "" : "  (emb is $packageVersion)"}',
-      );
+    // Per-source stamp reporting.
+    final config = BoardSourceConfig.load(
+      resolveBoardSourcesFile(environment: _environment),
+    );
+    for (final s in config.sources) {
+      final sourceDir = switch (s) {
+        LocalBoardSource(:final path) => Directory(path),
+        _ => Directory(p.join(dir.path, s.name)),
+      };
+      final stamp = sourceDir.existsSync()
+          ? readBoardsStamp(sourceDir)
+          : null;
+      if (stamp != null) {
+        _logger.info(
+          'Version: $stamp (${s.name})'
+          '${stamp == packageVersion ? "" : "  (emb is $packageVersion)"}',
+        );
+      }
+    }
+    // Legacy flat stamp.
+    if (config.sources.length == 1 && dir.existsSync()) {
+      final stamp = readBoardsStamp(dir);
+      if (stamp != null) {
+        _logger.info(
+          'Version: $stamp'
+          '${stamp == packageVersion ? "" : "  (emb is $packageVersion)"}',
+        );
+      }
     }
 
     if (names.isEmpty) {
@@ -101,9 +131,48 @@ class BoardsListCommand extends Command<int> {
         ..info('Run `emb boards sync` to install the board library.');
       return ExitCode.unavailable.code;
     }
-    _logger.info('');
+
+    // Group by source prefix.
+    final grouped = <String, List<String>>{};
     for (final n in names) {
-      _logger.info('  $n');
+      final slash = n.indexOf('/');
+      final source = slash >= 0 ? n.substring(0, slash) : '(unknown)';
+      final target = slash >= 0 ? n.substring(slash + 1) : n;
+      (grouped[source] ??= []).add(target);
+    }
+
+    _logger.info('');
+    for (final MapEntry(key: source, value: targets)
+        in grouped.entries) {
+      _logger.info('$source:');
+      for (final t in targets) {
+        _logger.info('  $t');
+      }
+    }
+    return ExitCode.success.code;
+  }
+
+  int _listSources() {
+    final config = BoardSourceConfig.load(
+      resolveBoardSourcesFile(environment: _environment),
+    );
+    if (config.sources.isEmpty) {
+      _logger.info('No board sources configured.');
+      return ExitCode.success.code;
+    }
+    final installed = resolveBoardsDir(environment: _environment);
+    for (final s in config.sources) {
+      final dir = switch (s) {
+        LocalBoardSource(:final path) => Directory(path),
+        _ => Directory(p.join(installed.path, s.name)),
+      };
+      final synced = dir.existsSync() ? 'synced' : 'not synced';
+      final type = s is GithubBoardSource ? 'github' : 'local';
+      _logger.info('${s.name} ($type, $synced)');
+      final map = s.toMap()..remove('name')..remove('type');
+      for (final e in map.entries) {
+        _logger.info('  ${e.key}: ${e.value}');
+      }
     }
     return ExitCode.success.code;
   }
@@ -121,12 +190,18 @@ class BoardsSyncCommand extends Command<int> {
        _http = httpClient ?? HttpClient(),
        _environment = environment ?? Platform.environment,
        _apiBase = apiBase ?? Uri.https('api.github.com', '/') {
-    argParser.addOption(
-      'ref',
-      help:
-          'Git ref to fetch from (default: the tag matching this emb, '
-          'v$packageVersion).',
-    );
+    argParser
+      ..addOption(
+        'ref',
+        help:
+            'Git ref to fetch from (default: the tag matching this emb, '
+            'v$packageVersion). Applies to all GitHub sources unless '
+            'the source config pins a specific ref.',
+      )
+      ..addOption(
+        'source',
+        help: 'Sync only the named source instead of all sources.',
+      );
   }
 
   final Logger _logger;
@@ -146,18 +221,70 @@ class BoardsSyncCommand extends Command<int> {
 
   @override
   Future<int> run() async {
-    final ref = (argResults?['ref'] as String?) ?? 'v$packageVersion';
+    final refOverride = argResults?['ref'] as String?;
+    final sourceFilter = argResults?['source'] as String?;
     final dest = resolveBoardsDir(environment: _environment);
+    final config = BoardSourceConfig.load(
+      resolveBoardSourcesFile(environment: _environment),
+    );
+
+    if (sourceFilter != null && !config.contains(sourceFilter)) {
+      _logger.err('Unknown source "$sourceFilter". '
+          'Known: ${config.sources.map((s) => s.name).join(", ")}.');
+      return ExitCode.usage.code;
+    }
+
+    var synced = 0;
+    for (final source in config.sources) {
+      if (sourceFilter != null && source.name != sourceFilter) continue;
+      switch (source) {
+        case GithubBoardSource():
+          final code = await _syncGithub(source, dest, refOverride);
+          if (code != ExitCode.success.code) return code;
+          synced++;
+        case LocalBoardSource(:final path):
+          final dir = Directory(path);
+          if (!dir.existsSync()) {
+            _logger.warn(
+              'Local source "${source.name}" at $path does not exist.',
+            );
+            continue;
+          }
+          _logger.info(
+            'Local source "${source.name}" at $path '
+            '— no sync needed.',
+          );
+          synced++;
+      }
+    }
+
+    if (synced == 0) {
+      _logger.warn('No sources to sync.');
+      return ExitCode.unavailable.code;
+    }
+    return ExitCode.success.code;
+  }
+
+  Future<int> _syncGithub(
+    GithubBoardSource source,
+    Directory boardsRoot,
+    String? refOverride,
+  ) async {
+    final ref = refOverride ??
+        (source.ref == 'auto' ? 'v$packageVersion' : source.ref);
+    final sourceDest = Directory(p.join(boardsRoot.path, source.name));
 
     // An explicit, user-invoked network step on purpose. Fetching lazily on an
     // `extends:` miss would put the network behind parse-only operations and
     // break `--offline` and `emb matrix`'s side-effect-free contract.
-    final progress = _logger.progress('Fetching board library at $ref');
+    final progress = _logger.progress(
+      'Fetching ${source.name} (${source.repo}) at $ref',
+    );
     final List<({String name, Uri url})> entries;
     try {
-      entries = await _listBoards(ref);
+      entries = await _listBoards(source, ref);
     } on Object catch (e) {
-      progress.fail('Could not list boards at $ref');
+      progress.fail('Could not list boards for ${source.name} at $ref');
       _logger
         ..err('$e')
         ..info(
@@ -167,40 +294,47 @@ class BoardsSyncCommand extends Command<int> {
       return ExitCode.unavailable.code;
     }
     if (entries.isEmpty) {
-      progress.fail('No board files found at $ref');
+      progress.fail('No board files found for ${source.name} at $ref');
       return ExitCode.unavailable.code;
     }
 
     try {
-      dest.createSync(recursive: true);
+      sourceDest.createSync(recursive: true);
       for (final e in entries) {
         progress.update('Fetching ${e.name}');
-        final bytes = await _get(e.url);
-        File(p.join(dest.path, e.name)).writeAsBytesSync(bytes);
+        final bytes = await _get(e.url, source);
+        File(p.join(sourceDest.path, e.name)).writeAsBytesSync(bytes);
       }
       File(
-        p.join(dest.path, boardsVersionStamp),
+        p.join(sourceDest.path, boardsVersionStamp),
       ).writeAsStringSync('$packageVersion\n');
     } on Object catch (e) {
-      progress.fail('Could not write ${dest.path}');
+      progress.fail('Could not write ${sourceDest.path}');
       _logger.err('$e');
       return ExitCode.cantCreate.code;
     }
 
-    progress.complete('Installed ${entries.length} board file(s)');
-    _logger.info(dest.path);
+    progress.complete(
+      '${source.name}: installed ${entries.length} board file(s)',
+    );
+    _logger.info(sourceDest.path);
     return ExitCode.success.code;
   }
 
   /// The `boards/*.emb.yaml` entries at [ref], via the GitHub contents API.
-  Future<List<({String name, Uri url})>> _listBoards(String ref) async {
+  Future<List<({String name, Uri url})>> _listBoards(
+    GithubBoardSource source,
+    String ref,
+  ) async {
     final api = _apiBase.replace(
-      path: '/repos/$_repoSlug/contents/boards',
+      path: '/repos/${source.repo}/contents/${source.path}',
       queryParameters: {'ref': ref},
     );
-    final decoded = jsonDecode(utf8.decode(await _get(api)));
+    final decoded = jsonDecode(utf8.decode(await _get(api, source)));
     if (decoded is! List) {
-      throw StateError('unexpected response listing boards at $ref');
+      throw StateError(
+        'unexpected response listing boards for ${source.name} at $ref',
+      );
     }
     return [
       for (final e in decoded)
@@ -212,15 +346,167 @@ class BoardsSyncCommand extends Command<int> {
     ];
   }
 
-  Future<List<int>> _get(Uri url) async {
+  Future<List<int>> _get(Uri url, GithubBoardSource source) async {
     final req = await _http.getUrl(url)
       ..headers.set(HttpHeaders.userAgentHeader, 'emb/$packageVersion')
       ..headers.set(HttpHeaders.acceptHeader, 'application/vnd.github+json');
+    if (source.tokenEnv != null) {
+      final token = _environment[source.tokenEnv!];
+      if (token != null && token.isNotEmpty) {
+        req.headers.set(HttpHeaders.authorizationHeader, 'Bearer $token');
+      }
+    }
     final res = await req.close();
     if (res.statusCode != HttpStatus.ok) {
       throw HttpException('HTTP ${res.statusCode} for $url');
     }
     return [for (final chunk in await res.toList()) ...chunk];
+  }
+}
+
+/// `emb boards add` — add a board source to the config.
+class BoardsAddCommand extends Command<int> {
+  /// Creates the command.
+  BoardsAddCommand({required Logger logger, Map<String, String>? environment})
+    : _logger = logger,
+      _environment = environment ?? Platform.environment {
+    argParser
+      ..addOption(
+        'name',
+        abbr: 'n',
+        help: 'Source name (required).',
+        mandatory: true,
+      )
+      ..addOption(
+        'path',
+        help: 'Subdirectory within the repo (github) '
+            'or local path.',
+      )
+      ..addOption(
+        'ref',
+        help: 'Git ref (github). '
+            '"auto" tracks emb version.',
+        defaultsTo: 'auto',
+      )
+      ..addOption(
+        'token-env',
+        help: 'Env var holding a GitHub PAT.',
+      );
+  }
+
+  final Logger _logger;
+  final Map<String, String> _environment;
+
+  @override
+  String get description => 'Add a board source (github or local).';
+
+  @override
+  String get name => 'add';
+
+  @override
+  String get invocation => 'emb boards add <type> <repo-or-path>';
+
+  @override
+  Future<int> run() async {
+    final args = argResults!;
+    if (args.rest.length < 2) {
+      _logger.err(
+        'Usage: emb boards add <github|local> <repo-or-path> --name <name>',
+      );
+      return ExitCode.usage.code;
+    }
+    final type = args.rest[0];
+    final target = args.rest[1];
+    final sourceName = args['name'] as String;
+
+    final file = resolveBoardSourcesFile(environment: _environment);
+    final config = BoardSourceConfig.load(file);
+
+    if (config.contains(sourceName)) {
+      _logger.err('Source "$sourceName" already exists. '
+          'Remove it first with `emb boards remove $sourceName`.');
+      return ExitCode.config.code;
+    }
+
+    final BoardSource source;
+    switch (type) {
+      case 'github':
+        source = GithubBoardSource(
+          name: sourceName,
+          repo: target,
+          path: args['path'] as String? ?? 'boards',
+          ref: args['ref'] as String? ?? 'auto',
+          tokenEnv: args['token-env'] as String?,
+        );
+      case 'local':
+        source = LocalBoardSource(name: sourceName, path: target);
+      default:
+        _logger.err('Unknown source type "$type". Use "github" or "local".');
+        return ExitCode.usage.code;
+    }
+
+    BoardSourceConfig([...config.sources, source]).save(file);
+    _logger.info('Added source "$sourceName" → $file');
+    if (source is GithubBoardSource) {
+      _logger.info('Run `emb boards sync --source $sourceName` to fetch.');
+    }
+    return ExitCode.success.code;
+  }
+}
+
+/// `emb boards remove` — remove a board source from the config.
+class BoardsRemoveCommand extends Command<int> {
+  /// Creates the command.
+  BoardsRemoveCommand({
+    required Logger logger,
+    Map<String, String>? environment,
+  }) : _logger = logger,
+       _environment = environment ?? Platform.environment;
+
+  final Logger _logger;
+  final Map<String, String> _environment;
+
+  @override
+  String get description => 'Remove a configured board source.';
+
+  @override
+  String get name => 'remove';
+
+  @override
+  String get invocation => 'emb boards remove <source-name>';
+
+  @override
+  Future<int> run() async {
+    final args = argResults!;
+    if (args.rest.isEmpty) {
+      _logger.err('Usage: emb boards remove <source-name>');
+      return ExitCode.usage.code;
+    }
+    final sourceName = args.rest.first;
+    final file = resolveBoardSourcesFile(environment: _environment);
+    final config = BoardSourceConfig.load(file);
+
+    if (!config.contains(sourceName)) {
+      _logger.err(
+        'No source named "$sourceName". '
+        'Known: ${config.sources.map((s) => s.name).join(", ")}.',
+      );
+      return ExitCode.usage.code;
+    }
+
+    final updated = config.sources.where((s) => s.name != sourceName).toList();
+    BoardSourceConfig(updated).save(file);
+    _logger.info('Removed source "$sourceName".');
+
+    // Clean up the synced directory if it exists.
+    final dir = Directory(
+      p.join(resolveBoardsDir(environment: _environment).path, sourceName),
+    );
+    if (dir.existsSync()) {
+      _logger.info('Removing synced boards at ${dir.path}');
+      dir.deleteSync(recursive: true);
+    }
+    return ExitCode.success.code;
   }
 }
 
