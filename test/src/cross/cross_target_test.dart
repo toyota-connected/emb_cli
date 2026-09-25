@@ -274,6 +274,69 @@ void main() {
     });
   });
 
+  group('CrossTarget.fromMap run_command', () {
+    test('parses run_command: as a list of strings', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'triple': 'aarch64-none-linux-gnu',
+        'run_command': [
+          r'./${embedder}',
+          '--config',
+          '/etc/app.conf',
+          '-b',
+          '.',
+        ],
+      });
+      expect(t.runCommand, [
+        r'./${embedder}',
+        '--config',
+        '/etc/app.conf',
+        '-b',
+        '.',
+      ]);
+    });
+
+    test('absent run_command: leaves the field null', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'triple': 'aarch64-none-linux-gnu',
+      });
+      expect(t.runCommand, isNull);
+    });
+
+    test('rejects a bare string with ArgumentError', () {
+      expect(
+        () => CrossTarget.fromMap(const {
+          'provider': 'arm-gnu',
+          'triple': 'aarch64-none-linux-gnu',
+          'run_command': './app -b .',
+        }),
+        throwsArgumentError,
+      );
+    });
+
+    test('rejects an empty list with ArgumentError', () {
+      expect(
+        () => CrossTarget.fromMap(const {
+          'provider': 'arm-gnu',
+          'triple': 'aarch64-none-linux-gnu',
+          'run_command': <String>[],
+        }),
+        throwsArgumentError,
+      );
+    });
+
+    test('survives withDefineOverrides', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'triple': 'aarch64-none-linux-gnu',
+        'run_command': ['./custom', '-b', '.'],
+      });
+      final overridden = t.withDefineOverrides(const {'X': '1'});
+      expect(overridden.runCommand, ['./custom', '-b', '.']);
+    });
+  });
+
   group('CrossTarget.gatedAugments', () {
     // Two variants of one package, gated against each other. They install into
     // the same overlay prefix, so building both means the last one wins and

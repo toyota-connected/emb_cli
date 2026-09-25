@@ -883,6 +883,7 @@ class CrossTarget {
     this.hostDevPackages = const [],
     this.source,
     this.app,
+    this.runCommand,
     this.aotObfuscate,
     this.aotStrip,
   });
@@ -940,6 +941,7 @@ class CrossTarget {
       hostDevPackages: _stringList(map['host_dev_packages']),
       source: repoFrom(map['source']),
       app: repoFrom(map['app']),
+      runCommand: _runCommandList(map['run_command']),
       aotObfuscate: map['aot_obfuscate'] as bool?,
       aotStrip: map['aot_strip'] as bool?,
     );
@@ -1112,6 +1114,13 @@ class CrossTarget {
   /// `aot_strip`.)
   final bool? aotStrip;
 
+  /// Custom argv template for `--run` (Flutter custom-device style). Elements
+  /// may contain `${embedder}` (always available) and `${deploy_dir}` (bound
+  /// only for `--deploy --run`, not `--target local --run`); unknown variables
+  /// are left verbatim with a warning. When null the default
+  /// `['./${embedder}', '-b', '.']` is used. (Manifest key `run_command`.)
+  final List<String>? runCommand;
+
   /// Parse the `backends:` block (backend name → `{define: value}` map).
   static Map<String, Map<String, String>> _parseBackends(Object? value) {
     if (value is! Map) return const {};
@@ -1174,6 +1183,7 @@ class CrossTarget {
       hostDevPackages: hostDevPackages,
       source: source,
       app: app,
+      runCommand: runCommand,
       aotObfuscate: aotObfuscate,
       aotStrip: aotStrip,
     );
@@ -1213,6 +1223,7 @@ class CrossTarget {
       hostDevPackages: hostDevPackages,
       source: source,
       app: app,
+      runCommand: runCommand,
       aotObfuscate: aotObfuscate,
       aotStrip: aotStrip,
     );
@@ -1286,5 +1297,16 @@ class CrossTarget {
     if (v is List) return v.map((e) => e.toString()).toList();
     if (v is String && v.isNotEmpty) return v.split(RegExp(r'\s+'));
     return const [];
+  }
+
+  static List<String>? _runCommandList(Object? v) {
+    if (v == null) return null;
+    if (v is! List) {
+      throw ArgumentError('run_command must be a list of strings');
+    }
+    if (v.isEmpty) {
+      throw ArgumentError('run_command must not be empty');
+    }
+    return v.map((e) => e.toString()).toList();
   }
 }
