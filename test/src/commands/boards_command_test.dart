@@ -130,8 +130,11 @@ cross:
       calls = [];
     });
 
+    const fakeSha = 'abc123def456';
+
     ProcessRunner fakeRunner({
       bool Function(String, List<String>)? failOn,
+      String sha = fakeSha,
     }) {
       return (
         String exe,
@@ -147,6 +150,9 @@ cross:
         final fail = failOn?.call(exe, args) ?? false;
         if (fail) return const RunResult(1, '', 'simulated failure');
 
+        if (exe == 'git' && args.contains('ls-remote')) {
+          return RunResult(0, '$sha\trefs/heads/main', '');
+        }
         if (exe == 'git' && args.contains('clone')) {
           final dest = args.last;
           final boardsDir = Directory(p.join(dest, 'boards'))
@@ -168,7 +174,6 @@ cross:
         const GithubBoardSource(
           name: 'priv',
           repo: 'org/priv-boards',
-          ref: 'main',
           transport: 'ssh',
         ),
       ]).save(File(p.join(configDir.path, 'boards.yaml')));
@@ -200,14 +205,18 @@ cross:
       final code = await runSync(runner: fakeRunner());
       expect(code, ExitCode.success.code);
 
-      expect(calls[0][0], 'git');
-      expect(calls[0], contains('clone'));
-      expect(calls[0], contains('git@github.com:org/priv-boards.git'));
-      expect(calls[0], contains('--branch'));
-      expect(calls[0], contains('main'));
+      expect(calls[0], contains('ls-remote'));
+      expect(
+        calls[0],
+        contains('git@github.com:org/priv-boards.git'),
+      );
 
-      expect(calls[1], contains('sparse-checkout'));
-      expect(calls[1], contains('boards'));
+      expect(calls[1], contains('clone'));
+      expect(calls[1], contains('--branch'));
+      expect(calls[1], contains('main'));
+
+      expect(calls[2], contains('sparse-checkout'));
+      expect(calls[2], contains('boards'));
 
       final installed = File(
         p.join(
@@ -218,7 +227,23 @@ cross:
       expect(installed.existsSync(), isTrue);
 
       verify(
-        () => progress.complete(any(that: contains('1 board file'))),
+        () => progress.complete(
+          any(that: contains('1 board file')),
+        ),
+      ).called(1);
+    });
+
+    test('skips clone when SHA is unchanged', () async {
+      final runner = fakeRunner();
+      await runSync(runner: runner);
+      calls.clear();
+
+      final code = await runSync(runner: runner);
+      expect(code, ExitCode.success.code);
+      expect(calls, hasLength(1));
+      expect(calls[0], contains('ls-remote'));
+      verify(
+        () => progress.complete(any(that: contains('up to date'))),
       ).called(1);
     });
 
@@ -230,13 +255,16 @@ cross:
       );
       expect(code, ExitCode.unavailable.code);
       verify(
-        () => progress.fail(any(that: contains('Could not clone'))),
+        () => progress.fail(any(that: contains('Could not sync'))),
       ).called(1);
     });
 
     test('passes --ref override to clone --branch', () async {
-      await runSync(runner: fakeRunner(), extra: ['--ref', 'v1.0.0']);
-      expect(calls[0], contains('v1.0.0'));
+      await runSync(
+        runner: fakeRunner(),
+        extra: ['--ref', 'v1.0.0'],
+      );
+      expect(calls[1], contains('v1.0.0'));
     });
   });
 }

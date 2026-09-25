@@ -271,84 +271,143 @@ class BoardsSyncCommand extends Command<int> {
     return ExitCode.success.code;
   }
 
+  static const _shaStamp = '.emb-boards-sha';
+
   Future<int> _syncGithub(
     GithubBoardSource source,
     Directory boardsRoot,
     String? refOverride,
   ) async {
-    if (source.useSsh) {
-      return _syncGithubSsh(source, boardsRoot, refOverride);
-    }
-    return _syncGithubApi(source, boardsRoot, refOverride);
-  }
-
-  Future<int> _syncGithubApi(
-    GithubBoardSource source,
-    Directory boardsRoot,
-    String? refOverride,
-  ) async {
     final ref = refOverride ??
         (source.ref == 'auto' ? 'v$packageVersion' : source.ref);
     final sourceDest = Directory(p.join(boardsRoot.path, source.name));
+    final shaFile = File(p.join(sourceDest.path, _shaStamp));
 
     final progress = _logger.progress(
+      'Checking ${source.name} (${source.repo}) at $ref',
+    );
+
+    final String remoteSha;
+    try {
+      remoteSha = source.useSsh
+          ? await _remoteSshSha(source, ref)
+          : await _remoteApiSha(source, ref);
+    } on Object catch (e) {
+      progress.fail(
+        'Could not check ${source.name} at $ref',
+      );
+      _logger.err('$e');
+      return ExitCode.unavailable.code;
+    }
+
+    final localSha = shaFile.existsSync()
+        ? shaFile.readAsStringSync().trim()
+        : '';
+    if (localSha == remoteSha) {
+      progress.complete('${source.name}: up to date ($ref)');
+      return ExitCode.success.code;
+    }
+
+    progress.update(
       'Fetching ${source.name} (${source.repo}) at $ref',
     );
-    final List<({String name, Uri url})> entries;
+
+    final int count;
     try {
-      entries = await _listBoards(source, ref);
+      count = source.useSsh
+          ? await _fetchBoardsSsh(source, ref, sourceDest, progress)
+          : await _fetchBoardsApi(source, ref, sourceDest, progress);
     } on Object catch (e) {
-      progress.fail('Could not list boards for ${source.name} at $ref');
-      _logger
-        ..err('$e')
-        ..info(
-          'If this emb is newer than the published tag, pass an existing ref: '
-          'emb boards sync --ref main',
-        );
+      progress.fail('Could not sync ${source.name} at $ref');
+      _logger.err('$e');
       return ExitCode.unavailable.code;
     }
-    if (entries.isEmpty) {
-      progress.fail('No board files found for ${source.name} at $ref');
+    if (count == 0) {
+      progress.fail(
+        'No board files found for ${source.name} at $ref',
+      );
       return ExitCode.unavailable.code;
     }
 
-    try {
-      sourceDest.createSync(recursive: true);
-      for (final e in entries) {
-        progress.update('Fetching ${e.name}');
-        final bytes = await _get(e.url, source);
-        File(p.join(sourceDest.path, e.name)).writeAsBytesSync(bytes);
-      }
-      File(
-        p.join(sourceDest.path, boardsVersionStamp),
-      ).writeAsStringSync('$packageVersion\n');
-    } on Object catch (e) {
-      progress.fail('Could not write ${sourceDest.path}');
-      _logger.err('$e');
-      return ExitCode.cantCreate.code;
-    }
+    File(
+      p.join(sourceDest.path, boardsVersionStamp),
+    ).writeAsStringSync('$packageVersion\n');
+    shaFile.writeAsStringSync('$remoteSha\n');
 
     progress.complete(
-      '${source.name}: installed ${entries.length} board file(s)',
+      '${source.name}: installed $count board file(s)',
     );
     _logger.info(sourceDest.path);
     return ExitCode.success.code;
   }
 
-  Future<int> _syncGithubSsh(
+  // -- Transport: remote SHA -------------------------------------------
+
+  Future<String> _remoteApiSha(
     GithubBoardSource source,
-    Directory boardsRoot,
-    String? refOverride,
+    String ref,
   ) async {
-    final ref = refOverride ??
-        (source.ref == 'auto' ? 'v$packageVersion' : source.ref);
-    final sourceDest = Directory(p.join(boardsRoot.path, source.name));
-    final sshUrl = 'git@github.com:${source.repo}.git';
-
-    final progress = _logger.progress(
-      'Cloning ${source.name} (${source.repo}) at $ref via SSH',
+    final api = _apiBase.replace(
+      path: '/repos/${source.repo}/commits/$ref',
+      queryParameters: {'per_page': '1'},
     );
+    final decoded = jsonDecode(utf8.decode(await _get(api, source)));
+    if (decoded is Map && decoded['sha'] is String) {
+      return decoded['sha'] as String;
+    }
+    throw StateError(
+      'unexpected response fetching commit SHA for $ref',
+    );
+  }
 
+  Future<String> _remoteSshSha(
+    GithubBoardSource source,
+    String ref,
+  ) async {
+    final sshUrl = 'git@github.com:${source.repo}.git';
+    final result = await _runProcess(
+      'git',
+      ['ls-remote', sshUrl, ref],
+    );
+    if (result.exitCode != 0) {
+      throw StateError(
+        result.stderr.isNotEmpty ? result.stderr : result.stdout,
+      );
+    }
+    final sha = result.stdout.split(RegExp(r'\s')).first;
+    if (sha.isEmpty) {
+      throw StateError('ref "$ref" not found in ${source.repo}');
+    }
+    return sha;
+  }
+
+  // -- Transport: fetch board files ------------------------------------
+
+  Future<int> _fetchBoardsApi(
+    GithubBoardSource source,
+    String ref,
+    Directory dest,
+    Progress progress,
+  ) async {
+    final entries = await _listBoards(source, ref);
+    if (entries.isEmpty) return 0;
+
+    dest.createSync(recursive: true);
+    for (final e in entries) {
+      progress.update('Fetching ${e.name}');
+      final bytes = await _get(e.url, source);
+      File(p.join(dest.path, e.name)).writeAsBytesSync(bytes);
+    }
+    return entries.length;
+  }
+
+  Future<int> _fetchBoardsSsh(
+    GithubBoardSource source,
+    String ref,
+    Directory dest,
+    Progress progress,
+  ) async {
+    final sshUrl = 'git@github.com:${source.repo}.git';
     final tmp = Directory.systemTemp.createTempSync('emb_boards_');
     try {
       final clone = await _runProcess('git', [
@@ -363,9 +422,9 @@ class BoardsSyncCommand extends Command<int> {
         tmp.path,
       ]);
       if (clone.exitCode != 0) {
-        progress.fail('Could not clone ${source.name} at $ref');
-        _logger.err(clone.stderr.isNotEmpty ? clone.stderr : clone.stdout);
-        return ExitCode.unavailable.code;
+        throw StateError(
+          clone.stderr.isNotEmpty ? clone.stderr : clone.stdout,
+        );
       }
 
       final sparseSet = await _runProcess('git', [
@@ -374,46 +433,24 @@ class BoardsSyncCommand extends Command<int> {
         source.path,
       ], workingDirectory: tmp.path);
       if (sparseSet.exitCode != 0) {
-        progress.fail('Could not sparse-checkout ${source.path}');
-        _logger.err(sparseSet.stderr);
-        return ExitCode.unavailable.code;
+        throw StateError(sparseSet.stderr);
       }
 
       final srcDir = Directory(p.join(tmp.path, source.path));
-      if (!srcDir.existsSync()) {
-        progress.fail(
-          'No ${source.path}/ directory in ${source.repo} at $ref',
-        );
-        return ExitCode.unavailable.code;
-      }
+      if (!srcDir.existsSync()) return 0;
 
       final files = srcDir
           .listSync()
           .whereType<File>()
           .where((f) => f.path.endsWith('.emb.yaml'))
           .toList();
-      if (files.isEmpty) {
-        progress.fail('No board files found for ${source.name} at $ref');
-        return ExitCode.unavailable.code;
-      }
+      if (files.isEmpty) return 0;
 
-      sourceDest.createSync(recursive: true);
+      dest.createSync(recursive: true);
       for (final f in files) {
-        f.copySync(p.join(sourceDest.path, p.basename(f.path)));
+        f.copySync(p.join(dest.path, p.basename(f.path)));
       }
-      File(
-        p.join(sourceDest.path, boardsVersionStamp),
-      ).writeAsStringSync('$packageVersion\n');
-
-      progress.complete(
-        '${source.name}: installed ${files.length} board file(s)',
-      );
-      _logger.info(sourceDest.path);
-      return ExitCode.success.code;
-    } on Object catch (e) {
-      progress.fail('Could not sync ${source.name} via SSH');
-      _logger.err('$e');
-      return ExitCode.unavailable.code;
+      return files.length;
     } finally {
       try {
         tmp.deleteSync(recursive: true);
@@ -488,7 +525,7 @@ class BoardsAddCommand extends Command<int> {
         'ref',
         help: 'Git ref (github). '
             '"auto" tracks emb version.',
-        defaultsTo: 'auto',
+        defaultsTo: 'main',
       )
       ..addOption(
         'token-env',

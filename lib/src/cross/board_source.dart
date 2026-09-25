@@ -21,7 +21,7 @@ sealed class BoardSource {
         name: name,
         repo: map['repo'] as String? ?? '',
         path: map['path'] as String? ?? 'boards',
-        ref: map['ref'] as String? ?? 'auto',
+        ref: map['ref'] as String? ?? 'main',
         tokenEnv: map['token_env'] as String?,
         transport: map['transport'] as String? ?? 'https',
       ),
@@ -40,7 +40,7 @@ class GithubBoardSource extends BoardSource {
     required super.name,
     required this.repo,
     this.path = 'boards',
-    this.ref = 'auto',
+    this.ref = 'main',
     this.tokenEnv,
     this.transport = 'https',
   });
@@ -83,6 +83,7 @@ class LocalBoardSource extends BoardSource {
 const defaultSource = GithubBoardSource(
   name: 'emb-public',
   repo: 'toyota-connected/emb_cli',
+  ref: 'auto',
 );
 
 /// Loaded board-sources config. Reads `boards.yaml` from the emb config dir.
