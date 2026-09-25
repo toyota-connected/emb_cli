@@ -1,5 +1,7 @@
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:emb_cli/src/cross/build_jobs.dart';
@@ -10,7 +12,9 @@ import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/cross/toolchain_emitter.dart';
 import 'package:emb_cli/src/repo/patch_series.dart';
+import 'package:emb_cli/src/step_reporter.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
+import 'package:mason_logger/mason_logger.dart';
 import 'package:path/path.dart' as p;
 
 /// The include/lib/pkg-config search dirs an overlay contributes. The build
@@ -51,6 +55,64 @@ class OverlayPaths {
   }
 }
 
+enum _OverlayDownloadResult {
+  success,
+  missingFile,
+  fsError,
+  invalidTarball,
+  invalidArchive,
+  failedOpen,
+  invalidSha,
+  missingCmd,
+}
+
+class _BinResult {
+  _BinResult({required this.wasCached, required this.binPath});
+
+  final bool wasCached;
+  final String binPath;
+}
+
+const Map<_OverlayDownloadResult, String> _overlayDownloadErrorMessage = {
+  _OverlayDownloadResult.success: 'download successful!',
+  _OverlayDownloadResult.missingFile: 'destination file missing',
+  _OverlayDownloadResult.fsError: 'FileSystemException',
+  _OverlayDownloadResult.invalidTarball: 'corrupt tarball',
+  _OverlayDownloadResult.invalidArchive: 'not a valid archive',
+  _OverlayDownloadResult.failedOpen: 'failed to decompress archive',
+  _OverlayDownloadResult.invalidSha: 'sha256 signature is not valid',
+  _OverlayDownloadResult.missingCmd: 'required command is missing',
+};
+
+// Maintainable enum of supported archive formats;
+// For each type, its magic bytes, offset and probe cmd are listed.
+// This makes adding the support of new archive formats trivial, as only
+// this enum needs updating without further patching to any logic below.
+enum _ArchiveType {
+  // dart format off
+  gzip    ([0x1f, 0x8b],                          0,   'gzip -t', ['.gz']),
+  zip     ([0x50, 0x4b],                          0,   'unzip -t -q', [
+                                                '.zip','.jar', '.war', '.apk']),
+  xz      ([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00],  0,   'xz -t', ['.xz']),
+  bzip2   ([0x42, 0x5a, 0x68],                    0,   'bzip2 -t', ['.bz2']),
+  zstd    ([0x28, 0xb5, 0x2f, 0xfd],              0,   'zstd -t', ['.zst']),
+  // 'ustar' in ASCII bytes
+  tar     ([0x75, 0x73, 0x74, 0x61, 0x72],        257, 'tar -tf', ['.tar']);
+  // dart format on
+
+  const _ArchiveType(
+    this.magicBytes,
+    this.magicOffset,
+    this.probeCmd,
+    this.extensions,
+  );
+
+  final List<int> magicBytes;
+  final int magicOffset;
+  final String probeCmd;
+  final List<String> extensions;
+}
+
 /// Builds [CrossTarget.augment] libraries (libdisplay-info, Vulkan-Headers, …)
 /// from source into a per-workspace overlay prefix, against an already-resolved
 /// [CrossProfile].
@@ -69,10 +131,14 @@ class OverlayBuilder {
     ProcessRunner runProcess = defaultProcessRunner,
     HttpClient? httpClient,
     String? launcher,
+    Directory? sourceCacheDir,
+    Logger? logger,
   }) : _emitter = emitter,
        _run = runProcess,
        _http = httpClient ?? HttpClient(),
-       _launcher = launcher;
+       _launcher = launcher,
+       _sourceCacheDir = sourceCacheDir,
+       _steps = logger == null ? null : StepReporter(logger);
 
   final Workspace workspace;
   final CrossProfile profile;
@@ -85,7 +151,29 @@ class OverlayBuilder {
   /// not the host-tool builds (those use the host compiler).
   final String? _launcher;
 
+  /// Project root whose `.cache/overlay-src` holds fetched augment tarballs —
+  /// isolating sources per project rather than sharing them in the workspace.
+  /// When unset, falls back to today's shared `<workspace>/overlay-src`.
+  final Directory? _sourceCacheDir;
+
+  /// Spinner/banners for long steps (per-lib augment fetches + builds). Null
+  /// when no logger was injected — keeps unit tests free of console output.
+  final StepReporter? _steps;
+
   String? _cachedCompilerVersions;
+
+  /// Format a byte count as e.g. `12.3 MB`, matching `_human` style used by
+  /// other emb commands (`cross_command.dart`).
+  static String _bytes(int n) {
+    const units = ['B', 'KB', 'MB', 'GB'];
+    var v = n.toDouble();
+    var i = 0;
+    while (v >= 1024 && i < units.length - 1) {
+      v /= 1024;
+      i++;
+    }
+    return '${v.toStringAsFixed(i == 0 || v >= 100 ? 0 : 1)} ${units[i]}';
+  }
 
   /// First line of `$CC --version` and `$CXX --version`, joined, used to key
   /// host-tool stamps so a compiler upgrade invalidates the cached binary.
@@ -138,20 +226,54 @@ class OverlayBuilder {
       // not cross-compiled into the sysroot. They have no pkg-config presence,
       // so skip the sysroot satisfied check.
       if (lib.host) {
-        final hostBin = await _buildHostTool(lib);
-        if (!binDirs.contains(hostBin)) binDirs.add(hostBin);
+        final onStep = _steps?.start('augment ${lib.pkg}');
+        try {
+          final buildResult = await _buildHostTool(lib, onStep: onStep);
+          if (!binDirs.contains(buildResult.binPath)) {
+            binDirs.add(buildResult.binPath);
+          }
+
+          if (buildResult.wasCached) {
+            onStep?.complete('${lib.pkg} host cached → ${buildResult.binPath}');
+          } else {
+            onStep?.complete('${lib.pkg} host built → ${buildResult.binPath}');
+          }
+        } catch (e) {
+          onStep?.fail(e is OverlayBuildException ? e.message : '$e');
+          rethrow;
+        }
         continue;
       }
+
+      // Start the spinner *before* the sysroot probe so a slow pkg-config
+      // check doesn't leave silence between libs. If satisfied, complete it as
+      // "cached"; otherwise run fetch+build and update/complete along the way.
+      final onStep = _steps?.start('augment ${lib.pkg}');
+
       // A local augment is always built: the developer is editing that tree,
       // and a previously installed copy satisfying `min` is exactly when the
       // edit under way would be skipped. See AugmentLib.path.
-      if (!lib.isLocal && await _satisfied(lib)) continue;
-      switch (lib.build) {
-        case CrossGenerator.meson:
-          await _buildMeson(lib, overlay);
-        case CrossGenerator.cmake:
-          await _buildCMake(lib, overlay);
+      try {
+        if (lib.isLocal || !await _satisfied(lib)) {
+          switch (lib.build) {
+            case CrossGenerator.meson:
+              await _buildMeson(lib, overlay, onStep: onStep);
+            case CrossGenerator.cmake:
+              await _buildCMake(lib, overlay, onStep: onStep);
+          }
+          onStep?.complete(
+            '${lib.pkg}: installed to ${overlay.path}', //
+          );
+        } else {
+          onStep?.complete(
+            '${lib.pkg}: cached (sysroot satisfies ${lib.minVersion})',
+          );
+        }
+      } catch (e) {
+        onStep?.fail(e is OverlayBuildException ? e.message : '$e');
+        rethrow;
       }
+      continue;
     }
     return OverlayPaths(
       prefix: overlay.path,
@@ -200,7 +322,133 @@ class OverlayBuilder {
     return r.exitCode == 0;
   }
 
-  Future<Directory> _fetchSource(AugmentLib lib) async {
+  /// Where fetched augment tarballs + unpacked trees live. Project-local when a
+  /// sourceCacheDir was passed (so projects don't collide on the shared
+  /// workspace dir), else the legacy workspace `overlay-src` location.
+  Directory _overlaySrcDir() {
+    final root = _sourceCacheDir;
+    if (root == null) return workspace.ensurePlatformDir('overlay-src');
+    return Directory(p.join(root.path, '.cache', 'overlay-src'))
+      ..createSync(recursive: true);
+  }
+
+  /// Whether [tarball] is a usable archive: recognized magic bytes, passing
+  /// an integrity test, and — when the manifest pinsa [sha]
+  /// — a matching sha256. A cached download can be truncated (an
+  /// interrupted fetch, a disk-full write) or hold an HTML error page saved
+  /// under a tarball name; trusting `existsSync()` alone lets those through,
+  /// and the failure only surfaces later as a misleading patch error against
+  /// an empty tree. Anything failing here is deleted so the caller
+  /// re-downloads.
+  Future<_OverlayDownloadResult> _validateArchive(
+    File tarball,
+    String? sha,
+  ) async {
+    // Check 0: is the file present?
+    if (!tarball.existsSync()) {
+      return _OverlayDownloadResult.missingFile;
+    }
+
+    // Check 1: is SHA256 valid?
+    final expected = sha?.toLowerCase();
+    if (expected != null) {
+      final actual = await _sha256(tarball);
+      if (actual != expected) {
+        return _OverlayDownloadResult.invalidSha;
+      }
+    }
+
+    // Check 2: are the magic bytes valid for archive type? A format may pin
+    // its magic at a nonzero offset (tar's 'ustar' sits at 257), so read a
+    // window wide enough to cover the deepest one and compare per-type.
+    final magicWindow = _ArchiveType
+        .values //
+        .map((e) => e.magicOffset + e.magicBytes.length)
+        .reduce(max);
+
+    final magic = Uint8List(magicWindow);
+    try {
+      final raf = await tarball.open();
+      try {
+        final n = await raf.readInto(magic, 0, magicWindow);
+        if (n < 2) {
+          return _OverlayDownloadResult.invalidTarball;
+        }
+      } finally {
+        await raf.close();
+      }
+    } on FileSystemException {
+      return _OverlayDownloadResult.fsError;
+    }
+
+    _ArchiveType? archiveType;
+    for (final type in _ArchiveType.values) {
+      var matchesExtension = false;
+      for (final ext in type.extensions) {
+        if (tarball.path.endsWith(ext)) {
+          matchesExtension = true;
+          break;
+        }
+      }
+
+      if (!matchesExtension) {
+        continue;
+      }
+
+      // Shorter than the type's magic even at its offset: can't match.
+      if (magic.length < type.magicOffset + type.magicBytes.length) {
+        continue;
+      }
+      var validForType = true;
+      for (var i = 0; i < type.magicBytes.length; i++) {
+        if (magic[type.magicOffset + i] != type.magicBytes[i]) {
+          validForType = false;
+          break;
+        }
+      }
+
+      if (validForType) {
+        archiveType = type;
+        break;
+      }
+
+      // NOTE(future-proof): continued iteration allowed when the
+      // extension matches but the magic bytes do not:
+      // it's possible that another archive type with the same extension
+      // but different magic bytes will match, so we continue iterating.
+    }
+
+    if (archiveType == null) {
+      return _OverlayDownloadResult.invalidArchive;
+    }
+
+    // Check 3: does the file open?
+    final probe = archiveType.probeCmd.split(' ');
+    final cmd = probe[0];
+    final args = [...(probe.sublist(1)), tarball.path];
+
+    try {
+      final test = await _run('which', [cmd]);
+      if (test.exitCode != 0) {
+        return _OverlayDownloadResult.missingCmd;
+      }
+    } on ProcessException {
+      return _OverlayDownloadResult.missingCmd;
+    }
+
+    try {
+      final test = await _run(cmd, args);
+      if (test.exitCode != 0) {
+        return _OverlayDownloadResult.failedOpen;
+      }
+    } on ProcessException {
+      return _OverlayDownloadResult.failedOpen;
+    }
+
+    return _OverlayDownloadResult.success;
+  }
+
+  Future<Directory> _fetchSource(AugmentLib lib, {StepHandle? onStep}) async {
     // A local tree is the source: nothing to download, nothing to unpack, and
     // nothing to patch (CrossTarget rejects `patches:` with `path:`, because
     // applying them would rewrite files emb did not create).
@@ -214,11 +462,69 @@ class OverlayBuilder {
       return dir;
     }
 
-    final src = workspace.ensurePlatformDir('overlay-src');
-    final tarball = File(p.join(src.path, p.basename(Uri.parse(lib.url).path)));
-    if (!tarball.existsSync()) {
-      await _download(lib.url, tarball);
+    final src = _overlaySrcDir();
+    // Prefix the package name so two augments whose URLs share a basename
+    // (e.g. two vendors both publishing `v1.0.0.tar.gz`) can't collide on,
+    // and then cross-validate, the same cached tarball.
+    final tarball = File(
+      p.join(src.path, '${lib.pkg}-${p.basename(Uri.parse(lib.url).path)}'),
+    );
+
+    // Retry downloading: a sha-pinned source whose bytes don't match the
+    // pin is deleted and re-fetched once (an upstream mirror swap or a
+    // half-written body recover cleanly), and the last mismatch is a real
+    // manifest/upstream divergence that must fail loudly, not loop. The final
+    // "fetched" label stays on this handle until the caller completes/fails it
+    // — StepHandle.complete() may only be called once per spinner.
+    const maxRetries = 3;
+    late _OverlayDownloadResult? result;
+
+    for (var downloadAttempts = 0; ; downloadAttempts++) {
+      // Check previous attempt
+      if (tarball.existsSync()) {
+        // If tarball is valid, skip download
+        result = await _validateArchive(tarball, lib.sha256);
+
+        if (result == _OverlayDownloadResult.success) {
+          // A usable archive was already in the cache before we tried to fetch.
+          if (downloadAttempts == 0) {
+            onStep?.update(
+              '${lib.pkg} (${_bytes(tarball.lengthSync())}, cached)',
+            );
+          } else {
+            final size = tarball.lengthSync();
+            onStep?.update('${lib.pkg} fetched (${_bytes(size)})');
+          }
+          break;
+        }
+        // If there was a previous failed download attempt, delete it
+        else {
+          await tarball.delete();
+        }
+      }
+
+      // If maxRetries exceeded, fail loudly
+      if (downloadAttempts == maxRetries) {
+        throw OverlayBuildException(
+          '${lib.pkg}: download failed $maxRetries retries (${lib.url})\n'
+          'Last error: ${_overlayDownloadErrorMessage[result]}',
+        );
+      }
+
+      // Try downloading
+      onStep?.update(
+        'Downloading ${lib.pkg} (attempt ${downloadAttempts + 1}/$maxRetries)',
+      );
+      try {
+        await _download(lib.url, tarball);
+      } catch (e) {
+        // `_download` retries transient failures internally; reaching here
+        // means a hard error. Propagate so `build()`'s handler fails the
+        // spinner with this message instead of leaving it spinning
+        rethrow;
+      }
     }
+
     final dir = Directory(p.join(src.path, '${lib.pkg}-${lib.minVersion}'));
 
     // An unpacked tree is reused as-is, which stays correct only while the
@@ -229,25 +535,76 @@ class OverlayBuilder {
     // Already absolute: CrossTarget.withResolvedPatches rebases them against
     // the declaring manifest at load, so the paths hashed into the cache keys
     // and the paths applied here are the same files.
+    // The stamp is written even when there are no patches (empty digest), so a
+    // directory only survives reuse when this code created it — stale trees
+    // from older runs or hand-made dirs carry no stamp, mismatch the current
+    // series, and get re-unpacked; without that guard a no-patch augment could
+    // silently reuse an empty foreign dir (the original bug we are fixing).
     final patches = lib.patches;
     final digest = patches.isEmpty ? '' : patchSeriesDigest(patches);
     final stamp = File(p.join(dir.path, '.emb-patch-stamp'));
-    if (dir.existsSync() && patches.isNotEmpty) {
-      final stamped = stamp.existsSync() ? stamp.readAsStringSync().trim() : '';
-      if (stamped != digest) dir.deleteSync(recursive: true);
+    if (dir.existsSync()) {
+      // Reuse is only safe when this code wrote the tree: a matching
+      // `.emb-patch-stamp` proves it. Anything else — an absent dir, a
+      // missing stamp, or a stale digest from before patches were added/edited
+      // — gets wiped so we re-unpack clean rather than silently reuse it.
+      if (!stamp.existsSync()) {
+        dir.deleteSync(recursive: true);
+      } else {
+        final stamped = stamp.readAsStringSync().trim();
+        if (stamped != digest) dir.deleteSync(recursive: true);
+      }
     }
 
     if (!dir.existsSync()) {
+      onStep?.update('Extracting ${lib.pkg}…');
+      // Extract into a staging dir and promote it only on success, so a
+      // failing extraction (corrupt tarball, `tar` exit != 0) can never leave
+      // a pre-created empty [dir] behind for the next run to reuse — that
+      // hole is what turned a bad download into a misleading patch error
+      // against an empty tree.
+      final stage = Directory('${dir.path}.unzip');
+      if (stage.existsSync()) stage.deleteSync(recursive: true);
+      stage.createSync(recursive: true);
+      final RunResult extracted;
       if (tarball.path.toLowerCase().endsWith('.zip')) {
         // GNU `tar` can't read a zip and `unzip` has no `--strip-components`,
         // so unzip into a staging dir and promote a lone top-level directory to
         // reproduce the tar path's `--strip-components=1`. Release zips that
         // bundle vendored subtrees (e.g. sentry-native's crashpad/breakpad) come
         // this way.
-        final stage = Directory('${dir.path}.unzip');
-        if (stage.existsSync()) stage.deleteSync(recursive: true);
-        stage.createSync(recursive: true);
-        await _run('unzip', ['-q', tarball.path, '-d', stage.path]);
+        extracted = await _run('unzip', ['-q', tarball.path, '-d', stage.path]);
+      } else {
+        extracted = await _run('tar', [
+          '-xf',
+          tarball.path,
+          '-C',
+          stage.path,
+          '--strip-components=1',
+        ]);
+      }
+      final detail = [
+        extracted.stdout,
+        extracted.stderr,
+      ].map((s) => s.trim()).where((s) => s.isNotEmpty).join('\n');
+      if (extracted.exitCode != 0) {
+        stage.deleteSync(recursive: true);
+        throw OverlayBuildException(
+          '${lib.pkg}: extract failed (exit ${extracted.exitCode}) '
+          'from ${tarball.path}'
+          '${detail.isEmpty ? '' : '\n$detail'}',
+        );
+      }
+      if (stage.listSync().isEmpty) {
+        // Exit 0 on an empty archive (e.g. a stub tarball) would otherwise
+        // produce an empty source tree that "builds" into nothing.
+        stage.deleteSync(recursive: true);
+        throw OverlayBuildException(
+          '${lib.pkg}: extract produced no files from ${tarball.path}'
+          '${detail.isEmpty ? '' : '\n$detail'}',
+        );
+      }
+      if (tarball.path.toLowerCase().endsWith('.zip')) {
         final top = stage.listSync();
         if (top.length == 1 && top.single is Directory) {
           (top.single as Directory).renameSync(dir.path);
@@ -256,14 +613,7 @@ class OverlayBuilder {
           stage.renameSync(dir.path);
         }
       } else {
-        dir.createSync(recursive: true);
-        await _run('tar', [
-          '-xf',
-          tarball.path,
-          '-C',
-          dir.path,
-          '--strip-components=1',
-        ]);
+        stage.renameSync(dir.path);
       }
 
       // Patch the freshly unpacked tree, then stamp it. On failure the tree is
@@ -289,14 +639,18 @@ class OverlayBuilder {
           // `sync`, and keeps every OverlayBuilder caller consistent.
           throw OverlayBuildException('${lib.pkg}: ${e.message}');
         }
-        stamp.writeAsStringSync(digest);
       }
+      stamp.writeAsStringSync(digest);
     }
     return dir;
   }
 
-  Future<void> _buildMeson(AugmentLib lib, Directory overlay) async {
-    final src = await _fetchSource(lib);
+  Future<void> _buildMeson(
+    AugmentLib lib,
+    Directory overlay, {
+    StepHandle? onStep,
+  }) async {
+    final src = await _fetchSource(lib, onStep: onStep);
     final bld = _freshBuildDir(lib, src);
     // Prefer the profile's meson cross file; else emit one from its fields.
     final cross =
@@ -332,7 +686,9 @@ class OverlayBuilder {
       environment: profile.buildEnv(),
       output: ProcessOutputMode.stream,
     );
+    onStep?.update('${lib.pkg}: meson setup');
     _check(lib, 'meson setup', setup);
+    onStep?.update('${lib.pkg}: building (ninja)');
     _check(
       lib,
       'ninja',
@@ -350,8 +706,12 @@ class OverlayBuilder {
     );
   }
 
-  Future<void> _buildCMake(AugmentLib lib, Directory overlay) async {
-    final src = await _fetchSource(lib);
+  Future<void> _buildCMake(
+    AugmentLib lib,
+    Directory overlay, {
+    StepHandle? onStep,
+  }) async {
+    final src = await _fetchSource(lib, onStep: onStep);
     // Configure a subtree when the augment asks for one (patches still applied
     // against the unpacked root by _fetchSource). Lets a repository whose root
     // builds a whole app expose a self-contained library under a subdir.
@@ -384,6 +744,7 @@ class OverlayBuilder {
       environment: profile.buildEnv(),
       output: ProcessOutputMode.stream,
     );
+    onStep?.update('${lib.pkg}: cmake configure');
     _check(lib, 'cmake configure', configure);
     // Build before install. A no-op for header-only libs (e.g. Vulkan-Headers,
     // which expose no compiled targets), but required for compiled libs (e.g.
@@ -428,7 +789,10 @@ class OverlayBuilder {
   /// cmake dir. The stamp is deleted before each build so a failed install
   /// doesn't leave a stale hit; the payload dir is also checked so a partial
   /// prune falls through to a rebuild rather than returning a bad path.
-  Future<String> _buildHostTool(AugmentLib lib) async {
+  Future<_BinResult> _buildHostTool(
+    AugmentLib lib, {
+    StepHandle? onStep,
+  }) async {
     final hostTools = workspace.ensurePlatformDir('host-tools');
     final toolDir = Directory(p.join(hostTools.path, lib.pkg))
       ..createSync(recursive: true);
@@ -438,16 +802,16 @@ class OverlayBuilder {
     if (stampFile.existsSync() &&
         stampFile.readAsStringSync().trim() == key &&
         Directory(binDir).existsSync()) {
-      return binDir;
+      return _BinResult(wasCached: true, binPath: binDir);
     }
     if (stampFile.existsSync()) stampFile.deleteSync();
     final bin = await switch (lib.build) {
-      CrossGenerator.cmake => _buildCMakeHost(lib, toolDir),
-      CrossGenerator.meson => _buildMesonHost(lib, toolDir),
+      CrossGenerator.cmake => _buildCMakeHost(lib, toolDir, onStep: onStep),
+      CrossGenerator.meson => _buildMesonHost(lib, toolDir, onStep: onStep),
     };
     Directory(bin).createSync(recursive: true);
     stampFile.writeAsStringSync(key);
-    return bin;
+    return _BinResult(wasCached: false, binPath: bin);
   }
 
   Future<String> _hostToolKey(AugmentLib lib) async => contentHash([
@@ -457,8 +821,12 @@ class OverlayBuilder {
     await _compilerVersions(),
   ]);
 
-  Future<String> _buildCMakeHost(AugmentLib lib, Directory toolDir) async {
-    final src = await _fetchSource(lib);
+  Future<String> _buildCMakeHost(
+    AugmentLib lib,
+    Directory toolDir, {
+    StepHandle? onStep,
+  }) async {
+    final src = await _fetchSource(lib, onStep: onStep);
     final bld = _freshBuildDir(lib, src);
     _check(
       lib,
@@ -473,6 +841,7 @@ class OverlayBuilder {
         for (final e in lib.defines.entries) '-D${e.key}=${e.value}',
       ], output: ProcessOutputMode.stream),
     );
+    onStep?.update('${lib.pkg}: cmake configure');
     _check(
       lib,
       'cmake build (host)',
@@ -496,8 +865,12 @@ class OverlayBuilder {
     return p.join(toolDir.path, 'usr', 'bin');
   }
 
-  Future<String> _buildMesonHost(AugmentLib lib, Directory toolDir) async {
-    final src = await _fetchSource(lib);
+  Future<String> _buildMesonHost(
+    AugmentLib lib,
+    Directory toolDir, {
+    StepHandle? onStep,
+  }) async {
+    final src = await _fetchSource(lib, onStep: onStep);
     final bld = _freshBuildDir(lib, src);
     _check(
       lib,
@@ -515,6 +888,7 @@ class OverlayBuilder {
         for (final e in lib.defines.entries) '-D${e.key}=${e.value}',
       ], output: ProcessOutputMode.stream),
     );
+    onStep?.update('${lib.pkg}: meson setup');
     _check(
       lib,
       'ninja (host)',
@@ -553,24 +927,32 @@ class OverlayBuilder {
     // Retry transient failures (5xx / 429 / network) with backoff — a CI run
     // fetches augment sources on every job, so a single upstream hiccup (e.g.
     // a gitlab 500) shouldn't fail the build. 4xx and the like fail fast.
+    // Write to a `.part` file and rename into place only on success, so an
+    // interrupted fetch (Ctrl-C, kill, disk-full) can never leave a truncated
+    // body at [dest] for the next run to trust as a complete download.
     const maxAttempts = 4;
+    final part = File('${dest.path}.part');
     for (var attempt = 1; ; attempt++) {
       try {
         final req = await _http.getUrl(Uri.parse(url));
         req.followRedirects = true;
         final resp = await req.close();
         if (resp.statusCode == 200) {
-          await resp.pipe(dest.openWrite());
+          if (part.existsSync()) part.deleteSync();
+          await resp.pipe(part.openWrite());
+          part.renameSync(dest.path);
           return;
         }
         await resp.drain<void>();
         final transient = resp.statusCode >= 500 || resp.statusCode == 429;
         if (!transient || attempt == maxAttempts) {
+          if (part.existsSync()) part.deleteSync();
           throw OverlayBuildException(
             'download failed ($url): ${resp.statusCode}',
           );
         }
       } on IOException catch (e) {
+        if (part.existsSync()) part.deleteSync();
         if (attempt == maxAttempts) {
           throw OverlayBuildException('download failed ($url): $e');
         }
@@ -582,9 +964,10 @@ class OverlayBuilder {
   /// Close the underlying HTTP client.
   void close() => _http.close(force: true);
 
-  // Retained for sha-pinned augment sources (parity with EngineArtifacts).
-  // ignore: unused_element
-  String _sha256(File f) => sha256.convert(f.readAsBytesSync()).toString();
+  Future<String> _sha256(File f) async {
+    final digest = await sha256.bind(f.openRead()).first;
+    return digest.toString();
+  }
 }
 
 /// Thrown when an augment library fails to build into the overlay.

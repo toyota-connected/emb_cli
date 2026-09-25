@@ -101,6 +101,7 @@ class AugmentLib {
     this.requiresDefine,
     this.patches = const [],
     this.subdir,
+    this.sha256,
   });
 
   factory AugmentLib.fromMap(Map<dynamic, dynamic> map) {
@@ -151,7 +152,18 @@ class AugmentLib {
       requiresDefine: (map['requires_define'] ?? map['when'])?.toString(),
       patches: patches,
       subdir: (map['subdir'] ?? map['source_subdir'])?.toString(),
+      sha256: _trimmedOrNull(map['sha256']),
     );
+  }
+
+  static String? _trimmedOrNull(dynamic v) {
+    if (v == null) return null;
+    final s = '$v'.trim();
+    if (s.isEmpty) {
+      return null;
+    } else {
+      return s;
+    }
   }
 
   /// pkg-config module name to probe (and the package to build).
@@ -210,6 +222,7 @@ class AugmentLib {
       requiresDefine: requiresDefine,
       patches: resolvePatchPaths(patches, base),
       subdir: subdir,
+      sha256: sha256,
     );
   }
 
@@ -256,6 +269,12 @@ class AugmentLib {
   /// `<unpacked>/<subdir>`; patches still apply against the unpacked root, so a
   /// patch path is repo-relative regardless of this. Null means the root.
   final String? subdir;
+
+  /// Optional expected sha256 (lowercase hex) of [url]'s tarball. When set,
+  /// both a cached copy and any freshly-downloaded bytes are verified against
+  /// it before use; on mismatch the file is deleted and re-fetched — turning an
+  /// upstream mirror swap or a half-written download into a clean recovery.
+  final String? sha256;
 }
 
 /// How an app-owned [ModuleSpec] is built. Unlike [CrossGenerator] (which

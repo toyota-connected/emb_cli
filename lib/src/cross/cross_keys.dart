@@ -102,10 +102,15 @@ String sysrootKey(CrossTarget t) {
 /// path here would hash whatever it resolves to from the current directory.
 /// Defines are sorted before hashing so key order is stable regardless of
 /// insertion order.
+/// The optional `sha256` pin is folded in too: it does not change what gets
+/// built for a given URL+revision, but a manifest that pins one and another
+/// that doesn't are different enough to warrant separate store entries — the
+/// pinned variant has stricter guarantees (and its cache key can encode them).
 String augmentIdentity(AugmentLib a) => [
   a.pkg,
   a.minVersion,
   a.url,
+  if (a.sha256 != null && a.sha256!.isNotEmpty) 'sha:${a.sha256}',
   // Absolute by the time it is hashed (resolvePatchesAgainst), so two
   // checkouts of the same dependency key differently. The tree's *contents*
   // are deliberately not hashed: a local augment is always rebuilt, so an
