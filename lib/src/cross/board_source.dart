@@ -41,13 +41,20 @@ sealed class BoardSource {
         if (path.split('/').contains('..')) {
           throw ArgumentError('invalid board source path: "$path"');
         }
+        final transport = map['transport'] as String? ?? 'https';
+        if (transport != 'https' && transport != 'ssh') {
+          throw ArgumentError(
+            'invalid board source transport: "$transport" '
+            '(expected "https" or "ssh")',
+          );
+        }
         return GithubBoardSource(
           name: name,
           repo: repo,
           path: path,
           ref: map['ref'] as String? ?? 'main',
           tokenEnv: map['token_env'] as String?,
-          transport: map['transport'] as String? ?? 'https',
+          transport: transport,
         );
       case 'local':
         return LocalBoardSource(

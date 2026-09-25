@@ -167,6 +167,18 @@ void main() {
         throwsA(isA<ArgumentError>()),
       );
     });
+
+    test('throws on invalid transport', () {
+      expect(
+        () => BoardSource.fromMap({
+          'type': 'github',
+          'name': 'test',
+          'repo': 'org/repo',
+          'transport': 'ftp',
+        }),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
   });
 
   group('BoardSourceConfig.load warnings', () {

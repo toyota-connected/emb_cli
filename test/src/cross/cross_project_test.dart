@@ -914,6 +914,114 @@ cross:
         ),
       );
     });
+
+    test('unqualified name resolves when unique across sources', () {
+      // Two source subdirectories with different targets.
+      final srcA = Directory(p.join(tmp.path, 'data', 'emb', 'boards', 'a'))
+        ..createSync(recursive: true);
+      File(p.join(srcA.path, 'board.emb.yaml')).writeAsStringSync('''
+id: rpi5
+type: board
+cross:
+  provider: arm-gnu
+  triple: aarch64-none-linux-gnu
+  targets:
+    rpi5-bookworm: { toolchain_version: '12.3.rel1' }
+''');
+      final srcB = Directory(p.join(tmp.path, 'data', 'emb', 'boards', 'b'))
+        ..createSync(recursive: true);
+      File(p.join(srcB.path, 'board.emb.yaml')).writeAsStringSync('''
+id: imx8
+type: board
+cross:
+  provider: arm-gnu
+  triple: aarch64-none-linux-gnu
+  targets:
+    imx8-bookworm: { toolchain_version: '14.1.rel1' }
+''');
+      // Config file with both sources.
+      final configDir = Directory(p.join(tmp.path, 'config', 'emb'))
+        ..createSync(recursive: true);
+      File(p.join(configDir.path, 'boards.yaml')).writeAsStringSync('''
+sources:
+  - name: a
+    type: github
+    repo: org/a
+  - name: b
+    type: github
+    repo: org/b
+''');
+      final env = {
+        'HOME': tmp.path,
+        'XDG_DATA_HOME': p.join(tmp.path, 'data'),
+        'XDG_CONFIG_HOME': p.join(tmp.path, 'config'),
+      };
+      // rpi5-bookworm is only in source 'a' — unqualified resolves fine.
+      final project = CrossProjectResolver(
+        const ManifestLoader(), null, env,
+      ).resolve(appExtending('rpi5-bookworm').path)!;
+      expect(
+        project.targets['x']!.cross['toolchain_version'],
+        '12.3.rel1',
+      );
+    });
+
+    test('ambiguous unqualified name across sources throws', () {
+      final srcA = Directory(p.join(tmp.path, 'data', 'emb', 'boards', 'a'))
+        ..createSync(recursive: true);
+      File(p.join(srcA.path, 'board.emb.yaml')).writeAsStringSync('''
+id: rpi5
+type: board
+cross:
+  provider: arm-gnu
+  triple: aarch64-none-linux-gnu
+  targets:
+    rpi5-bookworm: { toolchain_version: '12.3.rel1' }
+''');
+      final srcB = Directory(p.join(tmp.path, 'data', 'emb', 'boards', 'b'))
+        ..createSync(recursive: true);
+      File(p.join(srcB.path, 'board.emb.yaml')).writeAsStringSync('''
+id: rpi5-dup
+type: board
+cross:
+  provider: arm-gnu
+  triple: aarch64-none-linux-gnu
+  targets:
+    rpi5-bookworm: { toolchain_version: '14.1.rel1' }
+''');
+      final configDir = Directory(p.join(tmp.path, 'config', 'emb'))
+        ..createSync(recursive: true);
+      File(p.join(configDir.path, 'boards.yaml')).writeAsStringSync('''
+sources:
+  - name: a
+    type: github
+    repo: org/a
+  - name: b
+    type: github
+    repo: org/b
+''');
+      final env = {
+        'HOME': tmp.path,
+        'XDG_DATA_HOME': p.join(tmp.path, 'data'),
+        'XDG_CONFIG_HOME': p.join(tmp.path, 'config'),
+      };
+      expect(
+        () => CrossProjectResolver(
+          const ManifestLoader(), null, env,
+        ).resolve(appExtending('rpi5-bookworm').path),
+        throwsA(
+          isA<CrossProjectException>().having(
+            (e) => e.message,
+            'message',
+            allOf(
+              contains('ambiguous'),
+              contains('a/rpi5-bookworm'),
+              contains('b/rpi5-bookworm'),
+            ),
+          ),
+        ),
+      );
+    });
   });
 
   group('selectTarget', () {

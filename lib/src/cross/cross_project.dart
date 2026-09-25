@@ -529,10 +529,16 @@ class CrossProjectResolver {
     ];
 
     if (matches.length == 1) {
+      final qualified = matches.first;
+      if (seen.contains(qualified)) {
+        throw CrossProjectException(
+          'extends: cycle through "$name" (in $where).',
+        );
+      }
       return _applyExtends(
-        registry[matches.first]!,
+        registry[qualified]!,
         sourcePath,
-        {...seen, matches.first},
+        {...seen, name, qualified},
       );
     }
 

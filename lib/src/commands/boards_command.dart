@@ -163,10 +163,6 @@ class BoardsListCommand extends Command<int> {
       resolveBoardSourcesFile(environment: _environment),
       onWarning: _logger.warn,
     );
-    if (config.sources.isEmpty) {
-      _logger.info('No board sources configured.');
-      return ExitCode.success.code;
-    }
     final installed = resolveBoardsDir(environment: _environment);
     for (final s in config.sources) {
       final dir = switch (s) {
@@ -250,13 +246,17 @@ class BoardsSyncCommand extends Command<int> {
       }
 
       var synced = 0;
+      final failed = <String>[];
       for (final source in config.sources) {
         if (sourceFilter != null && source.name != sourceFilter) continue;
         switch (source) {
           case GithubBoardSource():
             final code = await _syncGithub(source, dest, refOverride);
-            if (code != ExitCode.success.code) return code;
-            synced++;
+            if (code != ExitCode.success.code) {
+              failed.add(source.name);
+            } else {
+              synced++;
+            }
           case LocalBoardSource(:final path):
             final dir = Directory(path);
             if (!dir.existsSync()) {
@@ -273,8 +273,12 @@ class BoardsSyncCommand extends Command<int> {
         }
       }
 
-      if (synced == 0) {
+      if (synced == 0 && failed.isEmpty) {
         _logger.warn('No sources to sync.');
+        return ExitCode.unavailable.code;
+      }
+      if (failed.isNotEmpty) {
+        _logger.err('Failed to sync: ${failed.join(", ")}.');
         return ExitCode.unavailable.code;
       }
       return ExitCode.success.code;
