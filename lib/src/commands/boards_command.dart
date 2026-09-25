@@ -349,7 +349,6 @@ class BoardsSyncCommand extends Command<int> {
   ) async {
     final api = _apiBase.replace(
       path: '/repos/${source.repo}/commits/$ref',
-      queryParameters: {'per_page': '1'},
     );
     final decoded = jsonDecode(utf8.decode(await _get(api, source)));
     if (decoded is Map && decoded['sha'] is String) {
@@ -454,8 +453,8 @@ class BoardsSyncCommand extends Command<int> {
     } finally {
       try {
         tmp.deleteSync(recursive: true);
-      } on Object {
-        // Best-effort cleanup.
+      } on Object catch (e) {
+        _logger.detail('cleanup of ${tmp.path} failed: $e');
       }
     }
   }
@@ -502,6 +501,8 @@ class BoardsSyncCommand extends Command<int> {
     return [for (final chunk in await res.toList()) ...chunk];
   }
 }
+
+final _validSourceName = RegExp(r'^[a-zA-Z0-9][a-zA-Z0-9_-]*$');
 
 /// `emb boards add` — add a board source to the config.
 class BoardsAddCommand extends Command<int> {
@@ -566,6 +567,14 @@ class BoardsAddCommand extends Command<int> {
 
     final file = resolveBoardSourcesFile(environment: _environment);
     final config = BoardSourceConfig.load(file);
+
+    if (!_validSourceName.hasMatch(sourceName)) {
+      _logger.err(
+        'Invalid source name "$sourceName". '
+        'Use only letters, digits, dashes, and underscores.',
+      );
+      return ExitCode.usage.code;
+    }
 
     if (config.contains(sourceName)) {
       _logger.err('Source "$sourceName" already exists. '

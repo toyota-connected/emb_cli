@@ -100,10 +100,12 @@ class BoardSourceConfig {
       if (list is! List || list.isEmpty) {
         return BoardSourceConfig([defaultSource]);
       }
-      return BoardSourceConfig([
+      final parsed = [
         for (final e in list)
           if (e is Map) BoardSource.fromMap(Map<String, dynamic>.from(e)),
-      ]);
+      ];
+      if (parsed.isEmpty) return BoardSourceConfig([defaultSource]);
+      return BoardSourceConfig(parsed);
     } on Object {
       return BoardSourceConfig([defaultSource]);
     }
@@ -145,35 +147,6 @@ class BoardSourceConfig {
 File resolveBoardSourcesFile({Map<String, String>? environment}) {
   final env = environment ?? Platform.environment;
   return File(
-    p.join(resolveConfigDir(environment: env).path, 'emb', 'boards.yaml'),
+    p.join(configHomeDir(environment: env).path, 'emb', 'boards.yaml'),
   );
-}
-
-/// XDG config home (or platform equivalent). Parallels [dataHomeDir].
-Directory resolveConfigDir({
-  Map<String, String>? environment,
-  String? operatingSystem,
-}) {
-  final env = environment ?? Platform.environment;
-  final os = operatingSystem ?? Platform.operatingSystem;
-
-  if (os == 'windows') {
-    final local = env['LOCALAPPDATA'];
-    if (local != null && local.isNotEmpty) return Directory(local);
-    final profile = env['USERPROFILE'];
-    if (profile != null && profile.isNotEmpty) {
-      return Directory(p.join(profile, 'AppData', 'Local'));
-    }
-    return Directory(Directory.systemTemp.path);
-  }
-
-  final home = env['HOME'] ?? env['USERPROFILE'] ?? Directory.systemTemp.path;
-
-  if (os == 'macos') {
-    return Directory(p.join(home, 'Library', 'Application Support'));
-  }
-
-  final xdg = env['XDG_CONFIG_HOME'];
-  if (xdg != null && xdg.isNotEmpty) return Directory(xdg);
-  return Directory(p.join(home, '.config'));
 }

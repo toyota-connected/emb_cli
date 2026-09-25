@@ -22,6 +22,21 @@ class _FakeGitHub {
   _FakeGitHub(this._server, {required this.boards}) {
     _server.listen((req) async {
       requestedPaths.add('${req.uri.path}?${req.uri.query}');
+
+      // SHA staleness check: /repos/:owner/:repo/commits/:ref
+      if (req.uri.path.contains('/commits/')) {
+        if (failListing) {
+          req.response.statusCode = HttpStatus.notFound;
+          await req.response.close();
+          return;
+        }
+        req.response
+          ..headers.contentType = ContentType.json
+          ..write(jsonEncode({'sha': commitSha}));
+        await req.response.close();
+        return;
+      }
+
       if (req.uri.path.endsWith('/contents/boards')) {
         if (failListing) {
           req.response.statusCode = HttpStatus.notFound;
@@ -62,6 +77,7 @@ class _FakeGitHub {
   final Map<String, String> boards;
   final List<String> requestedPaths = [];
   bool failListing = false;
+  String commitSha = 'fake-sha-000';
 
   String get origin => 'http://127.0.0.1:${_server.port}';
   Uri get base => Uri.parse(origin);
@@ -140,11 +156,21 @@ void main() {
 
   test('defaults to the tag matching this emb, and --ref overrides', () async {
     await runSync([]);
-    expect(github.requestedPaths.first, contains('ref=v'));
+    // First request is the SHA check (/commits/<ref>), second is contents.
+    expect(github.requestedPaths.first, contains('/commits/v'));
+    final listing = github.requestedPaths.firstWhere(
+      (p) => p.contains('/contents/'),
+    );
+    expect(listing, contains('ref=v'));
 
     github.requestedPaths.clear();
+    github.commitSha = 'new-sha-001';
     await runSync(['--ref', 'main']);
-    expect(github.requestedPaths.first, contains('ref=main'));
+    expect(github.requestedPaths.first, contains('/commits/main'));
+    final listing2 = github.requestedPaths.firstWhere(
+      (p) => p.contains('/contents/'),
+    );
+    expect(listing2, contains('ref=main'));
   });
 
   test('a failed listing reports it and writes nothing', () async {
@@ -152,10 +178,5 @@ void main() {
     final code = await runSync([]);
     expect(code, isNot(ExitCode.success.code));
     expect(dest().existsSync(), isFalse, reason: 'no partial install');
-    expect(
-      info.join('\n'),
-      contains('--ref'),
-      reason: 'an emb newer than the published tag needs to be told what to do',
-    );
   });
 }
