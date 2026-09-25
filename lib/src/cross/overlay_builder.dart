@@ -65,6 +65,13 @@ enum _OverlayDownloadResult {
   invalidSha,
 }
 
+class _BinResult {
+  _BinResult({required this.wasCached, required this.binPath});
+
+  final bool wasCached;
+  final String binPath;
+}
+
 const Map<_OverlayDownloadResult, String> _overlayDownloadErrorMessage = {
   _OverlayDownloadResult.success: 'download successful!',
   _OverlayDownloadResult.missingFile: 'destination file missing',
@@ -212,9 +219,16 @@ class OverlayBuilder {
       if (lib.host) {
         final onStep = _steps?.start('augment ${lib.pkg}');
         try {
-          final hostBin = await _buildHostTool(lib, onStep: onStep);
-          if (!binDirs.contains(hostBin)) binDirs.add(hostBin);
-          onStep?.complete('${lib.pkg} host built → $hostBin');
+          final buildResult = await _buildHostTool(lib, onStep: onStep);
+          if (!binDirs.contains(buildResult.binPath)) {
+            binDirs.add(buildResult.binPath);
+          }
+
+          if (buildResult.wasCached) {
+            onStep?.complete('${lib.pkg} host cached → ${buildResult.binPath}');
+          } else {
+            onStep?.complete('${lib.pkg} host built → ${buildResult.binPath}');
+          }
         } catch (e) {
           onStep?.fail(e is OverlayBuildException ? e.message : '$e');
           rethrow;
@@ -733,7 +747,10 @@ class OverlayBuilder {
   /// cmake dir. The stamp is deleted before each build so a failed install
   /// doesn't leave a stale hit; the payload dir is also checked so a partial
   /// prune falls through to a rebuild rather than returning a bad path.
-  Future<String> _buildHostTool(AugmentLib lib, {StepHandle? onStep}) async {
+  Future<_BinResult> _buildHostTool(
+    AugmentLib lib, {
+    StepHandle? onStep,
+  }) async {
     final hostTools = workspace.ensurePlatformDir('host-tools');
     final toolDir = Directory(p.join(hostTools.path, lib.pkg))
       ..createSync(recursive: true);
@@ -743,7 +760,7 @@ class OverlayBuilder {
     if (stampFile.existsSync() &&
         stampFile.readAsStringSync().trim() == key &&
         Directory(binDir).existsSync()) {
-      return binDir;
+      return _BinResult(wasCached: true, binPath: binDir);
     }
     if (stampFile.existsSync()) stampFile.deleteSync();
     final bin = await switch (lib.build) {
@@ -752,7 +769,7 @@ class OverlayBuilder {
     };
     Directory(bin).createSync(recursive: true);
     stampFile.writeAsStringSync(key);
-    return bin;
+    return _BinResult(wasCached: false, binPath: bin);
   }
 
   Future<String> _hostToolKey(AugmentLib lib) async => contentHash([
