@@ -126,11 +126,16 @@ class FetchCommand extends Command<int> {
       );
       return ExitCode.usage.code;
     }
+    final embedderRoot =
+        FileSystemEntity.typeSync(inputPath) == FileSystemEntityType.file
+        ? p.dirname(p.absolute(inputPath))
+        : p.absolute(inputPath);
     final CrossTarget target;
     try {
-      target = CrossTarget.fromMap(
-        selection.cross,
-      ).withResolvedPatches(selection.sourcePath);
+      target = CrossTarget.fromMap(selection.cross).withResolvedPatches(
+        selection.sourcePath,
+        vars: {'embedder_root': embedderRoot},
+      );
       // fromMap throws ArgumentError on an unknown provider token.
       // ignore: avoid_catching_errors
     } on ArgumentError catch (e) {

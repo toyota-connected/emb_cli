@@ -1,4 +1,5 @@
 import 'package:emb_cli/src/cross/cross_profile.dart';
+import 'package:emb_cli/src/cross/manifest_vars.dart';
 import 'package:emb_cli/src/manifest/source_repo.dart';
 import 'package:emb_cli/src/repo/patch_series.dart';
 import 'package:path/path.dart' as p;
@@ -194,7 +195,10 @@ class AugmentLib {
   /// reason: it is hashed into the augment identity as well as read at build
   /// time, so a relative value would key on the working directory rather than
   /// on the tree that gets built.
-  AugmentLib resolvePatchesAgainst(String? declaringFile) {
+  AugmentLib resolvePatchesAgainst(
+    String? declaringFile, {
+    Map<String, String> vars = const {},
+  }) {
     if (declaringFile == null) return this;
     if (patches.isEmpty && !isLocal) return this;
     final base = p.dirname(p.absolute(declaringFile));
@@ -202,13 +206,17 @@ class AugmentLib {
       pkg: pkg,
       minVersion: minVersion,
       url: url,
-      path: isLocal ? p.normalize(p.join(base, path)) : path,
+      path: isLocal
+          ? p.normalize(p.join(base, expandManifestVars(path!, vars)))
+          : path,
       build: build,
       staticLink: staticLink,
       defines: defines,
       host: host,
       requiresDefine: requiresDefine,
-      patches: resolvePatchPaths(patches, base),
+      patches: resolvePatchPaths([
+        for (final pat in patches) expandManifestVars(pat, vars),
+      ], base),
       subdir: subdir,
     );
   }
@@ -1153,6 +1161,7 @@ class CrossTarget {
       toolchainUrl: toolchainUrl,
       versionPolicy: versionPolicy,
       sysroot: sysroot,
+      customDevice: customDevice,
       yoctoBuild: yoctoBuild,
       machineTuple: machineTuple,
       recipe: recipe,
@@ -1181,9 +1190,14 @@ class CrossTarget {
 
   /// A copy whose augment patch paths resolve against the manifest at
   /// [declaringFile]. See [AugmentLib.resolvePatchesAgainst].
-  CrossTarget withResolvedPatches(String? declaringFile) {
+  CrossTarget withResolvedPatches(
+    String? declaringFile, {
+    Map<String, String> vars = const {},
+  }) {
     if (declaringFile == null) return this;
-    if (augment.every((a) => a.patches.isEmpty)) return this;
+    if (vars.isEmpty && augment.every((a) => a.patches.isEmpty && !a.isLocal)) {
+      return this;
+    }
     return CrossTarget(
       provider: provider,
       targetTriple: targetTriple,
@@ -1192,6 +1206,7 @@ class CrossTarget {
       toolchainUrl: toolchainUrl,
       versionPolicy: versionPolicy,
       sysroot: sysroot,
+      customDevice: customDevice,
       yoctoBuild: yoctoBuild,
       machineTuple: machineTuple,
       recipe: recipe,
@@ -1199,7 +1214,8 @@ class CrossTarget {
       sdkUrl: sdkUrl,
       sdkEnvSetup: sdkEnvSetup,
       augment: [
-        for (final a in augment) a.resolvePatchesAgainst(declaringFile),
+        for (final a in augment)
+          a.resolvePatchesAgainst(declaringFile, vars: vars),
       ],
       modules: modules,
       embedderExports: embedderExports,

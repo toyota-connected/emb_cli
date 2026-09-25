@@ -899,6 +899,50 @@ Symlinks to files are followed and shipped as regular files. A symlink to a
 directory is skipped with a warning rather than descended into — name the real
 directory, or the individual files, to include it.
 
+##### Manifest path variables
+
+Several path-bearing fields support `${variable}` substitution so manifests stay
+relocatable even when they reference files across project boundaries.
+
+| Variable | Expands to | Available when |
+|---|---|---|
+| `${embedder_root}` | Embedder project directory (where `.emb/` or the flat manifest lives) | Always |
+| `${app_root}` | App project directory (`--app <dir>`) | `--app` is given |
+| `${runnable}` | Assembled runnable output directory (`<buildRoot>/runnable`, or `<buildRoot>/runnable-<backend>` for multi-backend builds) | Always (packaging only) |
+
+**Supported fields:**
+
+| Field | Variables |
+|---|---|
+| `cross.package.files` source keys | all three |
+| `cross.package.scripts` values (maintainer script paths) | all three |
+| `cross.modules[*].path` | `${embedder_root}`, `${app_root}` |
+| `cross.augment[*].path` | `${embedder_root}`, `${app_root}` |
+| `cross.augment[*].patches` | `${embedder_root}`, `${app_root}` |
+
+Unknown tokens are left verbatim — a typo like `${runnabel}` <!-- cspell:ignore runnabel --> surfaces as a
+missing-file error rather than silently resolving to a wrong path.
+
+**Common use cases:**
+
+```yaml
+# Package a module built by cross.modules into the .deb alongside the embedder
+package:
+  files:
+    ${runnable}/lib/libmymodule.so: { to: /usr/lib/libmymodule.so }
+
+# Reference a config file that lives in the app's source tree (app layer manifest)
+package:
+  files:
+    ${app_root}/config/myapp.conf: { to: /etc/myapp.conf }
+
+# A local augment library in the app's own source tree
+augment:
+  - pkg: libfoo
+    path: ${app_root}/native/libfoo
+    build: cmake
+```
+
 ##### `host_dev_packages` — build-machine deps
 
 An `augment` entry marked `host: true` is a codegen tool emb compiles with the
