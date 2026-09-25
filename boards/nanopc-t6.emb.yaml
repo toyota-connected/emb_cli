@@ -1,0 +1,71 @@
+# FriendlyElec NanoPC-T6 — Rockchip RK3588.
+#
+# Mali-G610 through the mainline `panthor` kernel driver, with PanVK as the
+# Vulkan ICD. The board this was written against reports Vulkan 1.4.335 and
+# ships weston.
+#
+# ## The sysroot is Debian, the board is not
+#
+# The image these boards ship is a Yocto/Poky rootfs, and a Yocto *runtime*
+# image carries no headers and no pkg-config files -- so it cannot be rsync'd
+# into a sysroot the way emb's `source: device` allows. There is no
+# populate_sdk installer to point `provider: yocto-sdk` at either.
+#
+# So this builds against a Debian trixie arm64 rootfs and runs against the
+# board's own libraries. That is sound in the direction it is used: trixie is
+# glibc 2.41 and the Yocto image is 2.43, and glibc is backward compatible, so
+# a binary built against the older one loads on the newer. The same holds for
+# everything else here -- sonames are what get linked, the board supplies the
+# implementations, and its stack is the newer of the two.
+#
+# Replace this with `provider: yocto-sdk` and a populate_sdk tarball from the
+# image the board actually runs when one exists: then the headers and the
+# runtime come from the same build and the paragraph above stops being an
+# argument.
+#
+# The image below is a raspios one. Only its ext4 rootfs is used, as a source
+# of arm64 Debian headers and dev libraries; nothing Pi-specific is referenced
+# and no part of it is deployed.
+id: nanopc-t6
+type: board
+supported_archs: [arm64]
+supported_host_types: [ubuntu, fedora]
+
+cross:
+  provider: arm-gnu
+  version_policy: pinned
+  triple: aarch64-none-linux-gnu
+  sysroot:
+    partition: 2
+    dev_packages:
+      - libegl-dev
+      - libgles2-mesa-dev
+      - libwayland-dev
+      - wayland-protocols
+      - libxkbcommon-dev
+      - libudev-dev
+      - libdrm-dev
+      - libgbm-dev
+      - libinput-dev
+      - libseat-dev
+      - libxcursor-dev
+      - libvulkan-dev
+      - mesa-vulkan-drivers
+      - libglib2.0-dev
+      - libsystemd-dev
+      - zlib1g-dev
+  targets:
+    nanopc-t6:
+      toolchain_version: 15.2.rel1
+      image_url: https://downloads.raspberrypi.com/raspios_lite_arm64/images/raspios_lite_arm64-2026-04-21/2026-04-21-raspios-trixie-arm64-lite.img.xz
+      # RK3588 pairs four Cortex-A76 with four Cortex-A55 under DynamIQ, and
+      # GCC has a combined -mcpu=cortex-a76.cortex-a55 for exactly that. It
+      # cannot be used: these flags reach two compilers, because a project may
+      # build the embedder with the provider's GCC and an augment such as
+      # Filament with clang, and clang rejects the combined form --
+      # "unsupported argument 'cortex-a76.cortex-a55' to option '-mcpu='".
+      #
+      # Plain cortex-a76 is accepted by both, and still emits ARMv8.2-A, which
+      # the A55 implements -- so a thread the scheduler migrates to a little
+      # core runs. What is lost is a scheduling hint clang has no syntax for.
+      cpu_flags: [-mcpu=cortex-a76]
