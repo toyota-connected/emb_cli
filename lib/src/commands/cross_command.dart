@@ -2437,7 +2437,7 @@ class CrossCommand extends Command<int> {
       _logger.warn(
         'run_command: unknown variable(s) '
         '${unknowns.map((v) => '\${$v}').join(', ')} '
-        '(expanded to empty string)',
+        '(left verbatim)',
       );
     }
     final runCmd = runCmdString(expanded);
@@ -2473,7 +2473,7 @@ class CrossCommand extends Command<int> {
       _logger.warn(
         'run_command: unknown variable(s) '
         '${unknowns.map((v) => '\${$v}').join(', ')} '
-        '(expanded to empty string)',
+        '(left verbatim)',
       );
     }
     _logger.info('  running ${argv.join(' ')} in ${bundle.path} …');

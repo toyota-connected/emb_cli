@@ -8,8 +8,11 @@ List<String> applyRunVars(
   for (final t in tokens)
     t.replaceAllMapped(RegExp(r'\$\{([a-zA-Z0-9_]+)\}'), (m) {
       final name = m[1]!;
-      if (!vars.containsKey(name)) unknowns?.add(name);
-      return vars[name] ?? '';
+      if (!vars.containsKey(name)) {
+        unknowns?.add(name);
+        return m[0]!;
+      }
+      return vars[name]!;
     }),
 ];
 

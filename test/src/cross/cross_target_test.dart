@@ -304,6 +304,28 @@ void main() {
       expect(t.runCommand, isNull);
     });
 
+    test('rejects a bare string with ArgumentError', () {
+      expect(
+        () => CrossTarget.fromMap(const {
+          'provider': 'arm-gnu',
+          'triple': 'aarch64-none-linux-gnu',
+          'run_command': './app -b .',
+        }),
+        throwsArgumentError,
+      );
+    });
+
+    test('rejects an empty list with ArgumentError', () {
+      expect(
+        () => CrossTarget.fromMap(const {
+          'provider': 'arm-gnu',
+          'triple': 'aarch64-none-linux-gnu',
+          'run_command': <String>[],
+        }),
+        throwsArgumentError,
+      );
+    });
+
     test('survives withDefineOverrides', () {
       final t = CrossTarget.fromMap(const {
         'provider': 'arm-gnu',

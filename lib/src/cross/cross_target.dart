@@ -941,9 +941,7 @@ class CrossTarget {
       hostDevPackages: _stringList(map['host_dev_packages']),
       source: repoFrom(map['source']),
       app: repoFrom(map['app']),
-      runCommand: (map['run_command'] as List<dynamic>?)
-          ?.map((e) => e.toString())
-          .toList(),
+      runCommand: _runCommandList(map['run_command']),
       aotObfuscate: map['aot_obfuscate'] as bool?,
       aotStrip: map['aot_strip'] as bool?,
     );
@@ -1117,8 +1115,9 @@ class CrossTarget {
   final bool? aotStrip;
 
   /// Custom argv template for `--run` (Flutter custom-device style). Elements
-  /// may contain `${embedder}` and `${deploy_dir}` which are substituted before
-  /// exec; unknown variables expand to empty string. When null the default
+  /// may contain `${embedder}` (always available) and `${deploy_dir}` (bound
+  /// only for `--deploy --run`, not `--target local --run`); unknown variables
+  /// are left verbatim with a warning. When null the default
   /// `['./${embedder}', '-b', '.']` is used. (Manifest key `run_command`.)
   final List<String>? runCommand;
 
@@ -1298,5 +1297,16 @@ class CrossTarget {
     if (v is List) return v.map((e) => e.toString()).toList();
     if (v is String && v.isNotEmpty) return v.split(RegExp(r'\s+'));
     return const [];
+  }
+
+  static List<String>? _runCommandList(Object? v) {
+    if (v == null) return null;
+    if (v is! List) {
+      throw ArgumentError('run_command must be a list of strings');
+    }
+    if (v.isEmpty) {
+      throw ArgumentError('run_command must not be empty');
+    }
+    return v.map((e) => e.toString()).toList();
   }
 }

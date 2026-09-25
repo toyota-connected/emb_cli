@@ -28,11 +28,11 @@ void main() {
         unknowns: unknowns,
       );
       expect(unknowns, {'embeder'});
-      expect(result, ['./', '-b', '.']);
+      expect(result, [r'./${embeder}', '-b', '.']);
     });
 
-    test('unknown variable expands to empty string', () {
-      expect(applyRunVars([r'${nope}'], {}), ['']);
+    test('unknown variable is left verbatim', () {
+      expect(applyRunVars([r'${nope}'], {}), [r'${nope}']);
     });
 
     test('leaves tokens without variables unchanged', () {
