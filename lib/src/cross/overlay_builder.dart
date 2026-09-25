@@ -63,6 +63,7 @@ enum _OverlayDownloadResult {
   invalidArchive,
   failedOpen,
   invalidSha,
+  missingCmd,
 }
 
 class _BinResult {
@@ -80,6 +81,7 @@ const Map<_OverlayDownloadResult, String> _overlayDownloadErrorMessage = {
   _OverlayDownloadResult.invalidArchive: 'not a valid archive',
   _OverlayDownloadResult.failedOpen: 'failed to decompress archive',
   _OverlayDownloadResult.invalidSha: 'sha256 signature is not valid',
+  _OverlayDownloadResult.missingCmd: 'required command is missing',
 };
 
 // Maintainable enum of supported archive formats;
@@ -324,8 +326,8 @@ class OverlayBuilder {
   }
 
   /// Whether [tarball] is a usable archive: recognized magic bytes, passing
-  /// an integrity test (`gzip -t` / `unzip -t`), and — when the manifest pins
-  /// a [sha] — a matching sha256. A cached download can be truncated (an
+  /// an integrity test, and — when the manifest pinsa [sha]
+  /// — a matching sha256. A cached download can be truncated (an
   /// interrupted fetch, a disk-full write) or hold an HTML error page saved
   /// under a tarball name; trusting `existsSync()` alone lets those through,
   /// and the failure only surfaces later as a misleading patch error against
@@ -398,8 +400,24 @@ class OverlayBuilder {
 
     // Check 3: does the file open?
     final probe = archiveType.probeCmd.split(' ');
-    final test = await _run(probe[0], [...(probe.sublist(1)), tarball.path]);
-    if (test.exitCode != 0) {
+    final cmd = probe[0];
+    final args = [...(probe.sublist(1)), tarball.path];
+
+    try {
+      final test = await _run('which', [cmd]);
+      if (test.exitCode != 0) {
+        return _OverlayDownloadResult.missingCmd;
+      }
+    } on ProcessException {
+      return _OverlayDownloadResult.missingCmd;
+    }
+
+    try {
+      final test = await _run(cmd, args);
+      if (test.exitCode != 0) {
+        return _OverlayDownloadResult.failedOpen;
+      }
+    } on ProcessException {
       return _OverlayDownloadResult.failedOpen;
     }
 
