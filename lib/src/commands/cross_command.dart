@@ -24,6 +24,7 @@ import 'package:emb_cli/src/cross/elf_check.dart';
 import 'package:emb_cli/src/cross/emb_lock.dart';
 import 'package:emb_cli/src/cross/flatpak_packager.dart';
 import 'package:emb_cli/src/cross/flatpak_vendor.dart';
+import 'package:emb_cli/src/cross/hook_cargo.dart';
 import 'package:emb_cli/src/cross/image_publisher.dart';
 import 'package:emb_cli/src/cross/ipk_packager.dart';
 import 'package:emb_cli/src/cross/local_cross_provider.dart';
@@ -1742,8 +1743,9 @@ class CrossCommand extends Command<int> {
 
   Map<String, String> _writeHookToolchain(
     CrossProfile profile,
-    Directory buildRoot,
-  ) {
+    Directory buildRoot, {
+    String? overlayPrefix,
+  }) {
     final dir = Directory(p.join(buildRoot.path, 'hook-toolchain'))
       ..createSync(recursive: true);
 
@@ -1830,6 +1832,35 @@ class CrossCommand extends Command<int> {
         )
         ..parent;
       Process.runSync('chmod', ['+x', p.join(dir.path, 'cmake')]);
+    }
+
+    // A `cargo` wrapper, for a hook that builds a Rust crate itself: the same
+    // env a `build: cargo` module gets, which the runner would otherwise drop.
+    final realCargo = _which('cargo');
+    if (realCargo != null) {
+      var linker = profile.cc;
+      if (hookCargoLinkerScript(profile) case final script?) {
+        final f = File(p.join(dir.path, 'emb-hook-cargo-linker'))
+          ..writeAsStringSync(script);
+        Process.runSync('chmod', ['+x', f.path]);
+        linker = f.path;
+      }
+      final f = File(p.join(dir.path, 'cargo'))
+        ..writeAsStringSync(
+          hookCargoScript(
+            profile: profile,
+            linker: linker,
+            realCargo: realCargo,
+            overlayPkgConfigDirs: overlayPrefix == null
+                ? const []
+                : [
+                    p.join(overlayPrefix, 'usr', 'lib', 'pkgconfig'),
+                    p.join(overlayPrefix, 'usr', 'share', 'pkgconfig'),
+                  ],
+            addTarget: _offlineMode == OfflineMode.off,
+          ),
+        );
+      Process.runSync('chmod', ['+x', f.path]);
     }
 
     for (final f in [ccFile, cxxFile, arFile, ldFile]) {
@@ -2130,7 +2161,10 @@ class CrossCommand extends Command<int> {
     // hook's find_package() unable to see an overlay emb had just built for it.
     if (!native) {
       _warnIfSdkIgnoresHookToolchain(workspace);
-      appRunner = withEnv(appRunner, _writeHookToolchain(profile, buildRoot));
+      appRunner = withEnv(
+        appRunner,
+        _writeHookToolchain(profile, buildRoot, overlayPrefix: overlayPrefix),
+      );
     } else {
       final overlayEnv = _writeHookOverlayPrefix(profile, buildRoot, workspace);
       if (overlayEnv != null) appRunner = withEnv(appRunner, overlayEnv);
