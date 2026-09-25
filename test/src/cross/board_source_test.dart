@@ -111,5 +111,55 @@ void main() {
         throwsA(isA<ArgumentError>()),
       );
     });
+
+    test('throws on path-traversal name', () {
+      expect(
+        () => BoardSource.fromMap({
+          'type': 'github',
+          'name': '../escape',
+          'repo': 'org/repo',
+        }),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+
+    test('throws on empty name', () {
+      expect(
+        () => BoardSource.fromMap({
+          'type': 'github',
+          'name': '',
+          'repo': 'org/repo',
+        }),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+  });
+
+  group('BoardSourceConfig.load warnings', () {
+    test('calls onWarning when config has invalid source names', () {
+      final file = File('${tmp.path}/bad-name.yaml')
+        ..writeAsStringSync('''
+sources:
+  - name: "../escape"
+    type: github
+    repo: org/repo
+''');
+      final warnings = <String>[];
+      final config = BoardSourceConfig.load(
+        file,
+        onWarning: warnings.add,
+      );
+      expect(config.sources.first.name, 'emb-public');
+      expect(warnings, hasLength(1));
+      expect(warnings.first, contains('bad-name.yaml'));
+    });
+
+    test('calls onWarning on malformed YAML', () {
+      final file = File('${tmp.path}/bad.yaml')
+        ..writeAsStringSync('not: a: valid: yaml: [');
+      final warnings = <String>[];
+      BoardSourceConfig.load(file, onWarning: warnings.add);
+      expect(warnings, hasLength(1));
+    });
   });
 }

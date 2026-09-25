@@ -4,6 +4,14 @@ import 'package:emb_cli/src/cross/boards_dir.dart';
 import 'package:path/path.dart' as p;
 import 'package:yaml/yaml.dart';
 
+/// Callback for reporting non-fatal config issues. Set by the command layer
+/// so the model stays logger-free.
+typedef WarnFn = void Function(String message);
+
+/// Pattern for valid source names: alphanumeric start, then alphanumeric,
+/// dashes, or underscores. Blocks path traversal and shell metacharacters.
+final validSourceName = RegExp(r'^[a-zA-Z0-9][a-zA-Z0-9_-]*$');
+
 /// A configured board-library source. Boards from each source land in their
 /// own subdirectory of the data dir, so names never collide across sources.
 sealed class BoardSource {
@@ -16,6 +24,9 @@ sealed class BoardSource {
 
   static BoardSource fromMap(Map<String, dynamic> map) {
     final name = map['name'] as String? ?? '';
+    if (!validSourceName.hasMatch(name)) {
+      throw ArgumentError('invalid board source name: "$name"');
+    }
     return switch (map['type']) {
       'github' => GithubBoardSource(
         name: name,
@@ -91,7 +102,7 @@ class BoardSourceConfig {
   BoardSourceConfig(this.sources);
 
   /// Load from [file], falling back to the single default source.
-  factory BoardSourceConfig.load(File file) {
+  factory BoardSourceConfig.load(File file, {WarnFn? onWarning}) {
     if (!file.existsSync()) return BoardSourceConfig([defaultSource]);
     try {
       final yaml = loadYaml(file.readAsStringSync());
@@ -106,7 +117,8 @@ class BoardSourceConfig {
       ];
       if (parsed.isEmpty) return BoardSourceConfig([defaultSource]);
       return BoardSourceConfig(parsed);
-    } on Object {
+    } on Object catch (e) {
+      onWarning?.call('Failed to parse ${file.path}: $e — using defaults.');
       return BoardSourceConfig([defaultSource]);
     }
   }

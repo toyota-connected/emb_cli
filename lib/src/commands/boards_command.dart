@@ -101,6 +101,7 @@ class BoardsListCommand extends Command<int> {
     // Per-source stamp reporting.
     final config = BoardSourceConfig.load(
       resolveBoardSourcesFile(environment: _environment),
+      onWarning: _logger.warn,
     );
     var stampReported = false;
     for (final s in config.sources) {
@@ -160,6 +161,7 @@ class BoardsListCommand extends Command<int> {
   int _listSources() {
     final config = BoardSourceConfig.load(
       resolveBoardSourcesFile(environment: _environment),
+      onWarning: _logger.warn,
     );
     if (config.sources.isEmpty) {
       _logger.info('No board sources configured.');
@@ -234,6 +236,7 @@ class BoardsSyncCommand extends Command<int> {
     final dest = resolveBoardsDir(environment: _environment);
     final config = BoardSourceConfig.load(
       resolveBoardSourcesFile(environment: _environment),
+      onWarning: _logger.warn,
     );
 
     if (sourceFilter != null && !config.contains(sourceFilter)) {
@@ -499,7 +502,8 @@ class BoardsSyncCommand extends Command<int> {
     final req = await _http.getUrl(url)
       ..headers.set(HttpHeaders.userAgentHeader, 'emb/$packageVersion')
       ..headers.set(HttpHeaders.acceptHeader, 'application/vnd.github+json');
-    if (source.tokenEnv != null) {
+    if (source.tokenEnv != null &&
+        url.host == _apiBase.host) {
       final token = _environment[source.tokenEnv!];
       if (token != null && token.isNotEmpty) {
         req.headers.set(HttpHeaders.authorizationHeader, 'Bearer $token');
@@ -513,7 +517,6 @@ class BoardsSyncCommand extends Command<int> {
   }
 }
 
-final _validSourceName = RegExp(r'^[a-zA-Z0-9][a-zA-Z0-9_-]*$');
 
 /// `emb boards add` — add a board source to the config.
 class BoardsAddCommand extends Command<int> {
@@ -577,9 +580,9 @@ class BoardsAddCommand extends Command<int> {
     final sourceName = args['name'] as String;
 
     final file = resolveBoardSourcesFile(environment: _environment);
-    final config = BoardSourceConfig.load(file);
+    final config = BoardSourceConfig.load(file, onWarning: _logger.warn);
 
-    if (!_validSourceName.hasMatch(sourceName)) {
+    if (!validSourceName.hasMatch(sourceName)) {
       _logger.err(
         'Invalid source name "$sourceName". '
         'Use only letters, digits, dashes, and underscores.',
@@ -650,7 +653,7 @@ class BoardsRemoveCommand extends Command<int> {
     }
     final sourceName = args.rest.first;
 
-    if (!_validSourceName.hasMatch(sourceName)) {
+    if (!validSourceName.hasMatch(sourceName)) {
       _logger.err(
         'Invalid source name "$sourceName". '
         'Use only letters, digits, dashes, and underscores.',
@@ -659,7 +662,7 @@ class BoardsRemoveCommand extends Command<int> {
     }
 
     final file = resolveBoardSourcesFile(environment: _environment);
-    final config = BoardSourceConfig.load(file);
+    final config = BoardSourceConfig.load(file, onWarning: _logger.warn);
 
     if (!config.contains(sourceName)) {
       _logger.err(

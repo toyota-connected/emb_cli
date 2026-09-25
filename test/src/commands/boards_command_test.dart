@@ -115,6 +115,49 @@ cross:
     });
   });
 
+  group('emb boards list --sources', () {
+    Future<int> runListSources(Map<String, String> env) async {
+      final runner = CommandRunner<int>('emb', 'test')
+        ..addCommand(BoardsCommand(logger: logger, environment: env));
+      return await runner.run(['boards', 'list', '--sources']) ?? 0;
+    }
+
+    test('lists configured sources with sync status', () async {
+      final configDir = Directory(p.join(tmp.path, 'config', 'emb'))
+        ..createSync(recursive: true);
+      BoardSourceConfig([
+        const GithubBoardSource(name: 'pub', repo: 'org/pub'),
+        const LocalBoardSource(name: 'loc', path: '/opt/boards'),
+      ]).save(File(p.join(configDir.path, 'boards.yaml')));
+
+      // Create the synced dir for 'pub' so it shows as synced.
+      Directory(
+        p.join(tmp.path, 'data', 'emb', 'boards', 'pub'),
+      ).createSync(recursive: true);
+
+      final env = {
+        'HOME': tmp.path,
+        'XDG_CONFIG_HOME': p.join(tmp.path, 'config'),
+        'XDG_DATA_HOME': p.join(tmp.path, 'data'),
+      };
+      final code = await runListSources(env);
+      expect(code, ExitCode.success.code);
+      final out = info.join('\n');
+      expect(out, contains('pub'));
+      expect(out, contains('synced'));
+      expect(out, contains('loc'));
+    });
+
+    test('reports no sources when config is empty', () async {
+      final env = {
+        'HOME': tmp.path,
+        'XDG_CONFIG_HOME': p.join(tmp.path, 'config'),
+      };
+      final code = await runListSources(env);
+      expect(code, ExitCode.success.code);
+    });
+  });
+
   group('emb boards add', () {
     final err = <String>[];
 
@@ -163,6 +206,29 @@ cross:
         'github', 'org/repo', '--name', 'my-boards_2',
       ]);
       expect(code, ExitCode.success.code);
+    });
+
+    test('adds a local source', () async {
+      when(() => logger.info(any())).thenAnswer((_) {});
+      final code = await runAdd([
+        'local', '/opt/my-boards', '--name', 'mylocal',
+      ]);
+      expect(code, ExitCode.success.code);
+      final file = File(
+        p.join(tmp.path, 'config', 'emb', 'boards.yaml'),
+      );
+      final contents = file.readAsStringSync();
+      expect(contents, contains('mylocal'));
+      expect(contents, contains('/opt/my-boards'));
+      expect(contents, contains('type: \'local\''));
+    });
+
+    test('rejects duplicate source name', () async {
+      when(() => logger.info(any())).thenAnswer((_) {});
+      await runAdd(['github', 'org/repo', '--name', 'dup']);
+      final code = await runAdd(['github', 'org/other', '--name', 'dup']);
+      expect(code, ExitCode.config.code);
+      expect(err.join(), contains('already exists'));
     });
   });
 
