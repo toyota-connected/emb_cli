@@ -521,10 +521,11 @@ class CrossProjectResolver {
       return _applyExtends(base, sourcePath, {...seen, name});
     }
 
-    // Unqualified: find all qualified keys ending in /<name>.
+    // Unqualified: exact match on the target segment after the source prefix.
     final matches = [
       for (final key in registry.keys)
-        if (key.endsWith('/$name')) key,
+        if (key.substring(key.indexOf('/') + 1) == name)
+          key,
     ];
 
     if (matches.length == 1) {
@@ -723,7 +724,7 @@ class CrossProjectResolver {
 
     final env = _environment['EMB_BOARDS_DIR'];
     if (env != null && env.isNotEmpty) {
-      _boardsTried.add(r'$EMB_BOARDS_DIR=$env');
+      _boardsTried.add('\$EMB_BOARDS_DIR=$env');
       boardsProvenance = r'$EMB_BOARDS_DIR';
       return {'env': Directory(env)};
     }

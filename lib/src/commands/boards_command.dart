@@ -102,6 +102,7 @@ class BoardsListCommand extends Command<int> {
     final config = BoardSourceConfig.load(
       resolveBoardSourcesFile(environment: _environment),
     );
+    var stampReported = false;
     for (final s in config.sources) {
       final sourceDir = switch (s) {
         LocalBoardSource(:final path) => Directory(path),
@@ -111,14 +112,15 @@ class BoardsListCommand extends Command<int> {
           ? readBoardsStamp(sourceDir)
           : null;
       if (stamp != null) {
+        stampReported = true;
         _logger.info(
           'Version: $stamp (${s.name})'
           '${stamp == packageVersion ? "" : "  (emb is $packageVersion)"}',
         );
       }
     }
-    // Legacy flat stamp.
-    if (config.sources.length == 1 && dir.existsSync()) {
+    // Legacy flat stamp — only if no per-source stamp was found.
+    if (!stampReported && config.sources.length == 1 && dir.existsSync()) {
       final stamp = readBoardsStamp(dir);
       if (stamp != null) {
         _logger.info(

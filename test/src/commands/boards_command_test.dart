@@ -115,6 +115,57 @@ cross:
     });
   });
 
+  group('emb boards add', () {
+    final err = <String>[];
+
+    setUp(() {
+      when(() => logger.err(any())).thenAnswer((i) {
+        err.add('${i.positionalArguments.first}');
+      });
+      err.clear();
+    });
+
+    Future<int> runAdd(List<String> args) async {
+      Directory(p.join(tmp.path, 'config', 'emb'))
+          .createSync(recursive: true);
+      final runner = CommandRunner<int>('emb', 'test')
+        ..addCommand(
+          BoardsCommand(
+            logger: logger,
+            environment: {
+              'HOME': tmp.path,
+              'XDG_CONFIG_HOME': p.join(tmp.path, 'config'),
+            },
+          ),
+        );
+      return await runner.run(['boards', 'add', ...args]) ?? 0;
+    }
+
+    test('rejects names with path-traversal characters', () async {
+      final code = await runAdd([
+        'github', 'org/repo', '--name', '../escape',
+      ]);
+      expect(code, ExitCode.usage.code);
+      expect(err.join(), contains('Invalid source name'));
+    });
+
+    test('rejects names starting with a dash', () async {
+      final code = await runAdd([
+        'github', 'org/repo', '--name', '-bad',
+      ]);
+      expect(code, ExitCode.usage.code);
+      expect(err.join(), contains('Invalid source name'));
+    });
+
+    test('accepts valid names', () async {
+      when(() => logger.info(any())).thenAnswer((_) {});
+      final code = await runAdd([
+        'github', 'org/repo', '--name', 'my-boards_2',
+      ]);
+      expect(code, ExitCode.success.code);
+    });
+  });
+
   group('emb boards sync (ssh)', () {
     late Progress progress;
     late List<List<String>> calls;
