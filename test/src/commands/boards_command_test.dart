@@ -2,12 +2,16 @@ import 'dart:io';
 
 import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/commands/boards_command.dart';
+import 'package:emb_cli/src/cross/board_source.dart';
+import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:mason_logger/mason_logger.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 class _MockLogger extends Mock implements Logger {}
+
+class _MockProgress extends Mock implements Progress {}
 
 void main() {
   late Logger logger;
@@ -108,6 +112,131 @@ cross:
       final out = info.join('\n');
       expect(out, contains('only-here'));
       expect(out, isNot(contains('rpi5-trixie')));
+    });
+  });
+
+  group('emb boards sync (ssh)', () {
+    late Progress progress;
+    late List<List<String>> calls;
+    final err = <String>[];
+
+    setUp(() {
+      progress = _MockProgress();
+      when(() => logger.progress(any())).thenReturn(progress);
+      when(() => logger.err(any())).thenAnswer((i) {
+        err.add('${i.positionalArguments.first}');
+      });
+      err.clear();
+      calls = [];
+    });
+
+    ProcessRunner fakeRunner({
+      bool Function(String, List<String>)? failOn,
+    }) {
+      return (
+        String exe,
+        List<String> args, {
+        String? workingDirectory,
+        Map<String, String>? environment,
+        bool includeParentEnvironment = true,
+        bool runInShell = false,
+        ProcessOutputMode output = ProcessOutputMode.capture,
+        String? label,
+      }) async {
+        calls.add([exe, ...args]);
+        final fail = failOn?.call(exe, args) ?? false;
+        if (fail) return const RunResult(1, '', 'simulated failure');
+
+        if (exe == 'git' && args.contains('clone')) {
+          final dest = args.last;
+          final boardsDir = Directory(p.join(dest, 'boards'))
+            ..createSync(recursive: true);
+          File(p.join(boardsDir.path, 'test-board.emb.yaml'))
+              .writeAsStringSync('id: test-board\n');
+        }
+        return const RunResult(0, '', '');
+      };
+    }
+
+    Future<int> runSync({
+      required ProcessRunner runner,
+      List<String> extra = const [],
+    }) async {
+      final configDir = Directory(p.join(tmp.path, 'config', 'emb'))
+        ..createSync(recursive: true);
+      BoardSourceConfig([
+        const GithubBoardSource(
+          name: 'priv',
+          repo: 'org/priv-boards',
+          ref: 'main',
+          transport: 'ssh',
+        ),
+      ]).save(File(p.join(configDir.path, 'boards.yaml')));
+
+      final env = {
+        'HOME': tmp.path,
+        'XDG_CONFIG_HOME': p.join(tmp.path, 'config'),
+        'XDG_DATA_HOME': p.join(tmp.path, 'data'),
+      };
+      final cmdRunner = CommandRunner<int>('emb', 'test')
+        ..addCommand(
+          BoardsCommand(
+            logger: logger,
+            environment: env,
+            processRunner: runner,
+          ),
+        );
+      return await cmdRunner.run([
+        'boards',
+        'sync',
+        '--source',
+        'priv',
+        ...extra,
+      ]) ??
+          0;
+    }
+
+    test('clones via SSH and copies board files', () async {
+      final code = await runSync(runner: fakeRunner());
+      expect(code, ExitCode.success.code);
+
+      expect(calls[0][0], 'git');
+      expect(calls[0], contains('clone'));
+      expect(calls[0], contains('git@github.com:org/priv-boards.git'));
+      expect(calls[0], contains('--branch'));
+      expect(calls[0], contains('main'));
+
+      expect(calls[1], contains('sparse-checkout'));
+      expect(calls[1], contains('boards'));
+
+      final installed = File(
+        p.join(
+          tmp.path, 'data', 'emb', 'boards', 'priv',
+          'test-board.emb.yaml',
+        ),
+      );
+      expect(installed.existsSync(), isTrue);
+
+      verify(
+        () => progress.complete(any(that: contains('1 board file'))),
+      ).called(1);
+    });
+
+    test('reports failure when clone fails', () async {
+      final code = await runSync(
+        runner: fakeRunner(
+          failOn: (exe, args) => args.contains('clone'),
+        ),
+      );
+      expect(code, ExitCode.unavailable.code);
+      verify(
+        () => progress.fail(any(that: contains('Could not clone'))),
+      ).called(1);
+    });
+
+    test('passes --ref override to clone --branch', () async {
+      await runSync(runner: fakeRunner(), extra: ['--ref', 'v1.0.0']);
+      expect(calls[0], contains('v1.0.0'));
     });
   });
 }

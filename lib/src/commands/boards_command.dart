@@ -8,6 +8,7 @@ import 'package:emb_cli/src/cross/cross_project.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/cross/custom_device_builder.dart';
 import 'package:emb_cli/src/cross/deployer.dart';
+import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/flutter/custom_devices_config.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
 import 'package:emb_cli/src/version.dart';
@@ -29,6 +30,7 @@ class BoardsCommand extends Command<int> {
     HttpClient? httpClient,
     Map<String, String>? environment,
     Uri? apiBase,
+    ProcessRunner? processRunner,
   }) {
     addSubcommand(BoardsListCommand(logger: logger, environment: environment));
     addSubcommand(
@@ -40,6 +42,7 @@ class BoardsCommand extends Command<int> {
         httpClient: httpClient,
         environment: environment,
         apiBase: apiBase,
+        processRunner: processRunner,
       ),
     );
     addSubcommand(BoardsAddCommand(logger: logger, environment: environment));
@@ -186,10 +189,12 @@ class BoardsSyncCommand extends Command<int> {
     HttpClient? httpClient,
     Map<String, String>? environment,
     Uri? apiBase,
+    ProcessRunner? processRunner,
   }) : _logger = logger,
        _http = httpClient ?? HttpClient(),
        _environment = environment ?? Platform.environment,
-       _apiBase = apiBase ?? Uri.https('api.github.com', '/') {
+       _apiBase = apiBase ?? Uri.https('api.github.com', '/'),
+       _runProcess = processRunner ?? defaultProcessRunner {
     argParser
       ..addOption(
         'ref',
@@ -207,6 +212,7 @@ class BoardsSyncCommand extends Command<int> {
   final Logger _logger;
   final HttpClient _http;
   final Map<String, String> _environment;
+  final ProcessRunner _runProcess;
 
   /// Base of the contents API. Overridable so the fetch path can be tested
   /// against a local server instead of reaching GitHub.
@@ -270,13 +276,21 @@ class BoardsSyncCommand extends Command<int> {
     Directory boardsRoot,
     String? refOverride,
   ) async {
+    if (source.useSsh) {
+      return _syncGithubSsh(source, boardsRoot, refOverride);
+    }
+    return _syncGithubApi(source, boardsRoot, refOverride);
+  }
+
+  Future<int> _syncGithubApi(
+    GithubBoardSource source,
+    Directory boardsRoot,
+    String? refOverride,
+  ) async {
     final ref = refOverride ??
         (source.ref == 'auto' ? 'v$packageVersion' : source.ref);
     final sourceDest = Directory(p.join(boardsRoot.path, source.name));
 
-    // An explicit, user-invoked network step on purpose. Fetching lazily on an
-    // `extends:` miss would put the network behind parse-only operations and
-    // break `--offline` and `emb matrix`'s side-effect-free contract.
     final progress = _logger.progress(
       'Fetching ${source.name} (${source.repo}) at $ref',
     );
@@ -319,6 +333,94 @@ class BoardsSyncCommand extends Command<int> {
     );
     _logger.info(sourceDest.path);
     return ExitCode.success.code;
+  }
+
+  Future<int> _syncGithubSsh(
+    GithubBoardSource source,
+    Directory boardsRoot,
+    String? refOverride,
+  ) async {
+    final ref = refOverride ??
+        (source.ref == 'auto' ? 'v$packageVersion' : source.ref);
+    final sourceDest = Directory(p.join(boardsRoot.path, source.name));
+    final sshUrl = 'git@github.com:${source.repo}.git';
+
+    final progress = _logger.progress(
+      'Cloning ${source.name} (${source.repo}) at $ref via SSH',
+    );
+
+    final tmp = Directory.systemTemp.createTempSync('emb_boards_');
+    try {
+      final clone = await _runProcess('git', [
+        'clone',
+        '--depth',
+        '1',
+        '--branch',
+        ref,
+        '--filter=blob:none',
+        '--sparse',
+        sshUrl,
+        tmp.path,
+      ]);
+      if (clone.exitCode != 0) {
+        progress.fail('Could not clone ${source.name} at $ref');
+        _logger.err(clone.stderr.isNotEmpty ? clone.stderr : clone.stdout);
+        return ExitCode.unavailable.code;
+      }
+
+      final sparseSet = await _runProcess('git', [
+        'sparse-checkout',
+        'set',
+        source.path,
+      ], workingDirectory: tmp.path);
+      if (sparseSet.exitCode != 0) {
+        progress.fail('Could not sparse-checkout ${source.path}');
+        _logger.err(sparseSet.stderr);
+        return ExitCode.unavailable.code;
+      }
+
+      final srcDir = Directory(p.join(tmp.path, source.path));
+      if (!srcDir.existsSync()) {
+        progress.fail(
+          'No ${source.path}/ directory in ${source.repo} at $ref',
+        );
+        return ExitCode.unavailable.code;
+      }
+
+      final files = srcDir
+          .listSync()
+          .whereType<File>()
+          .where((f) => f.path.endsWith('.emb.yaml'))
+          .toList();
+      if (files.isEmpty) {
+        progress.fail('No board files found for ${source.name} at $ref');
+        return ExitCode.unavailable.code;
+      }
+
+      sourceDest.createSync(recursive: true);
+      for (final f in files) {
+        f.copySync(p.join(sourceDest.path, p.basename(f.path)));
+      }
+      File(
+        p.join(sourceDest.path, boardsVersionStamp),
+      ).writeAsStringSync('$packageVersion\n');
+
+      progress.complete(
+        '${source.name}: installed ${files.length} board file(s)',
+      );
+      _logger.info(sourceDest.path);
+      return ExitCode.success.code;
+    } on Object catch (e) {
+      progress.fail('Could not sync ${source.name} via SSH');
+      _logger.err('$e');
+      return ExitCode.unavailable.code;
+    } finally {
+      try {
+        tmp.deleteSync(recursive: true);
+      } on Object {
+        // Best-effort cleanup.
+      }
+    }
   }
 
   /// The `boards/*.emb.yaml` entries at [ref], via the GitHub contents API.
@@ -391,6 +493,12 @@ class BoardsAddCommand extends Command<int> {
       ..addOption(
         'token-env',
         help: 'Env var holding a GitHub PAT.',
+      )
+      ..addOption(
+        'transport',
+        help: 'Transport protocol: https (GitHub API) or ssh (git clone).',
+        allowed: ['https', 'ssh'],
+        defaultsTo: 'https',
       );
   }
 
@@ -437,6 +545,7 @@ class BoardsAddCommand extends Command<int> {
           path: args['path'] as String? ?? 'boards',
           ref: args['ref'] as String? ?? 'auto',
           tokenEnv: args['token-env'] as String?,
+          transport: args['transport'] as String? ?? 'https',
         );
       case 'local':
         source = LocalBoardSource(name: sourceName, path: target);

@@ -48,6 +48,23 @@ void main() {
       expect(loc.path, '/opt/boards');
     });
 
+    test('round-trips ssh transport through save and load', () {
+      final file = File('${tmp.path}/boards.yaml');
+      final original = BoardSourceConfig([
+        const GithubBoardSource(
+          name: 'private',
+          repo: 'org/private-repo',
+          transport: 'ssh',
+        ),
+      ]);
+      original.save(file);
+
+      final loaded = BoardSourceConfig.load(file);
+      final gh = loaded.sources[0] as GithubBoardSource;
+      expect(gh.transport, 'ssh');
+      expect(gh.useSsh, isTrue);
+    });
+
     test('contains and operator[] find sources by name', () {
       final config = BoardSourceConfig([
         const GithubBoardSource(name: 'a', repo: 'x/y'),

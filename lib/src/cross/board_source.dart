@@ -23,6 +23,7 @@ sealed class BoardSource {
         path: map['path'] as String? ?? 'boards',
         ref: map['ref'] as String? ?? 'auto',
         tokenEnv: map['token_env'] as String?,
+        transport: map['transport'] as String? ?? 'https',
       ),
       'local' => LocalBoardSource(
         name: name,
@@ -41,12 +42,16 @@ class GithubBoardSource extends BoardSource {
     this.path = 'boards',
     this.ref = 'auto',
     this.tokenEnv,
+    this.transport = 'https',
   });
 
   final String repo;
   final String path;
   final String ref;
   final String? tokenEnv;
+  final String transport;
+
+  bool get useSsh => transport == 'ssh';
 
   @override
   Map<String, dynamic> toMap() => {
@@ -56,6 +61,7 @@ class GithubBoardSource extends BoardSource {
     'path': path,
     'ref': ref,
     if (tokenEnv != null) 'token_env': tokenEnv,
+    if (transport != 'https') 'transport': transport,
   };
 }
 
