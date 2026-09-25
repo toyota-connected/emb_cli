@@ -173,7 +173,10 @@ class BoardsListCommand extends Command<int> {
         LocalBoardSource(:final path) => Directory(path),
         _ => Directory(p.join(installed.path, s.name)),
       };
-      final synced = dir.existsSync() ? 'synced' : 'not synced';
+      final synced = switch (s) {
+        LocalBoardSource() => dir.existsSync() ? 'found' : 'missing',
+        _ => dir.existsSync() ? 'synced' : 'not synced',
+      };
       final type = s is GithubBoardSource ? 'github' : 'local';
       _logger.info('${s.name} ($type, $synced)');
       final map = s.toMap()..remove('name')..remove('type');
@@ -231,49 +234,53 @@ class BoardsSyncCommand extends Command<int> {
 
   @override
   Future<int> run() async {
-    final refOverride = argResults?['ref'] as String?;
-    final sourceFilter = argResults?['source'] as String?;
-    final dest = resolveBoardsDir(environment: _environment);
-    final config = BoardSourceConfig.load(
-      resolveBoardSourcesFile(environment: _environment),
-      onWarning: _logger.warn,
-    );
+    try {
+      final refOverride = argResults?['ref'] as String?;
+      final sourceFilter = argResults?['source'] as String?;
+      final dest = resolveBoardsDir(environment: _environment);
+      final config = BoardSourceConfig.load(
+        resolveBoardSourcesFile(environment: _environment),
+        onWarning: _logger.warn,
+      );
 
-    if (sourceFilter != null && !config.contains(sourceFilter)) {
-      _logger.err('Unknown source "$sourceFilter". '
-          'Known: ${config.sources.map((s) => s.name).join(", ")}.');
-      return ExitCode.usage.code;
-    }
-
-    var synced = 0;
-    for (final source in config.sources) {
-      if (sourceFilter != null && source.name != sourceFilter) continue;
-      switch (source) {
-        case GithubBoardSource():
-          final code = await _syncGithub(source, dest, refOverride);
-          if (code != ExitCode.success.code) return code;
-          synced++;
-        case LocalBoardSource(:final path):
-          final dir = Directory(path);
-          if (!dir.existsSync()) {
-            _logger.warn(
-              'Local source "${source.name}" at $path does not exist.',
-            );
-            continue;
-          }
-          _logger.info(
-            'Local source "${source.name}" at $path '
-            '— no sync needed.',
-          );
-          synced++;
+      if (sourceFilter != null && !config.contains(sourceFilter)) {
+        _logger.err('Unknown source "$sourceFilter". '
+            'Known: ${config.sources.map((s) => s.name).join(", ")}.');
+        return ExitCode.usage.code;
       }
-    }
 
-    if (synced == 0) {
-      _logger.warn('No sources to sync.');
-      return ExitCode.unavailable.code;
+      var synced = 0;
+      for (final source in config.sources) {
+        if (sourceFilter != null && source.name != sourceFilter) continue;
+        switch (source) {
+          case GithubBoardSource():
+            final code = await _syncGithub(source, dest, refOverride);
+            if (code != ExitCode.success.code) return code;
+            synced++;
+          case LocalBoardSource(:final path):
+            final dir = Directory(path);
+            if (!dir.existsSync()) {
+              _logger.warn(
+                'Local source "${source.name}" at $path does not exist.',
+              );
+              continue;
+            }
+            _logger.info(
+              'Local source "${source.name}" at $path '
+              '— no sync needed.',
+            );
+            synced++;
+        }
+      }
+
+      if (synced == 0) {
+        _logger.warn('No sources to sync.');
+        return ExitCode.unavailable.code;
+      }
+      return ExitCode.success.code;
+    } finally {
+      _http.close();
     }
-    return ExitCode.success.code;
   }
 
   static const _shaStamp = '.emb-boards-sha';
@@ -406,17 +413,20 @@ class BoardsSyncCommand extends Command<int> {
     if (entries.isEmpty) return 0;
 
     dest.createSync(recursive: true);
-    for (final f in dest.listSync().whereType<File>().where(
-      (f) => f.path.endsWith('.emb.yaml'),
-    )) {
-      f.deleteSync();
-    }
+    final written = <String>{};
     for (final e in entries) {
       progress.update('Fetching ${e.name}');
       final bytes = await _get(
         e.url, source, accept: 'application/vnd.github.raw+json',
       );
       File(p.join(dest.path, e.name)).writeAsBytesSync(bytes);
+      written.add(e.name);
+    }
+    for (final f in dest.listSync().whereType<File>().where(
+      (f) => f.path.endsWith('.emb.yaml') &&
+          !written.contains(p.basename(f.path)),
+    )) {
+      f.deleteSync();
     }
     return entries.length;
   }
@@ -467,13 +477,17 @@ class BoardsSyncCommand extends Command<int> {
       if (files.isEmpty) return 0;
 
       dest.createSync(recursive: true);
+      final written = <String>{};
+      for (final f in files) {
+        final name = p.basename(f.path);
+        f.copySync(p.join(dest.path, name));
+        written.add(name);
+      }
       for (final existing in dest.listSync().whereType<File>().where(
-        (f) => f.path.endsWith('.emb.yaml'),
+        (f) => f.path.endsWith('.emb.yaml') &&
+            !written.contains(p.basename(f.path)),
       )) {
         existing.deleteSync();
-      }
-      for (final f in files) {
-        f.copySync(p.join(dest.path, p.basename(f.path)));
       }
       return files.length;
     } finally {
@@ -530,6 +544,7 @@ class BoardsSyncCommand extends Command<int> {
     }
     final res = await req.close();
     if (res.statusCode != HttpStatus.ok) {
+      await res.drain<void>();
       throw HttpException('HTTP ${res.statusCode} for $url');
     }
     return [for (final chunk in await res.toList()) ...chunk];
@@ -624,13 +639,20 @@ class BoardsAddCommand extends Command<int> {
           );
           return ExitCode.usage.code;
         }
+        final sourcePath = args['path'] as String? ?? 'boards';
+        if (sourcePath.split('/').contains('..')) {
+          _logger.err(
+            'Invalid path "$sourcePath". Must not contain "..".',
+          );
+          return ExitCode.usage.code;
+        }
         source = GithubBoardSource(
           name: sourceName,
           repo: target,
-          path: args['path'] as String? ?? 'boards',
-          ref: args['ref'] as String? ?? 'auto',
+          path: sourcePath,
+          ref: args['ref'] as String,
           tokenEnv: args['token-env'] as String?,
-          transport: args['transport'] as String? ?? 'https',
+          transport: args['transport'] as String,
         );
       case 'local':
         source = LocalBoardSource(name: sourceName, path: target);
@@ -700,6 +722,11 @@ class BoardsRemoveCommand extends Command<int> {
     final updated = config.sources.where((s) => s.name != sourceName).toList();
     BoardSourceConfig(updated).save(file);
     _logger.info('Removed source "$sourceName".');
+    if (updated.isEmpty) {
+      _logger.warn(
+        'No sources remain. The default source will be restored on next load.',
+      );
+    }
 
     // Clean up the synced directory if it exists.
     final dir = Directory(

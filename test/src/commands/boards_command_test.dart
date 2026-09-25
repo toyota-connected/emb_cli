@@ -231,6 +231,14 @@ cross:
       expect(err.join(), contains('Invalid repo'));
     });
 
+    test('rejects paths with traversal', () async {
+      final code = await runAdd([
+        'github', 'org/repo', '--name', 'test', '--path', '../.git',
+      ]);
+      expect(code, ExitCode.usage.code);
+      expect(err.join(), contains('Invalid path'));
+    });
+
     test('rejects duplicate source name', () async {
       when(() => logger.info(any())).thenAnswer((_) {});
       await runAdd(['github', 'org/repo', '--name', 'dup']);
@@ -447,6 +455,61 @@ cross:
       final code = await runRemove(['../escape']);
       expect(code, ExitCode.usage.code);
       expect(err.join(), contains('Invalid source name'));
+    });
+
+    test('removes a source and cleans synced directory', () async {
+      when(() => logger.info(any())).thenAnswer((_) {});
+
+      // Set up config with one source.
+      final configDir = Directory(p.join(tmp.path, 'config', 'emb'))
+        ..createSync(recursive: true);
+      BoardSourceConfig([
+        const GithubBoardSource(name: 'priv', repo: 'org/priv'),
+        const GithubBoardSource(name: 'other', repo: 'org/other'),
+      ]).save(File(p.join(configDir.path, 'boards.yaml')));
+
+      // Create a synced dir for 'priv'.
+      final syncedDir = Directory(
+        p.join(tmp.path, 'data', 'emb', 'boards', 'priv'),
+      )..createSync(recursive: true);
+
+      final env = {
+        'HOME': tmp.path,
+        'XDG_CONFIG_HOME': p.join(tmp.path, 'config'),
+        'XDG_DATA_HOME': p.join(tmp.path, 'data'),
+      };
+      final runner = CommandRunner<int>('emb', 'test')
+        ..addCommand(BoardsCommand(logger: logger, environment: env));
+      final code = await runner.run(['boards', 'remove', 'priv']) ?? 0;
+      expect(code, ExitCode.success.code);
+      expect(syncedDir.existsSync(), isFalse);
+
+      // Config should still have the other source.
+      final reloaded = BoardSourceConfig.load(
+        File(p.join(configDir.path, 'boards.yaml')),
+      );
+      expect(reloaded.sources, hasLength(1));
+      expect(reloaded.sources.first.name, 'other');
+    });
+
+    test('warns when removing the last source', () async {
+      when(() => logger.info(any())).thenAnswer((_) {});
+
+      final configDir = Directory(p.join(tmp.path, 'config', 'emb'))
+        ..createSync(recursive: true);
+      BoardSourceConfig([
+        const GithubBoardSource(name: 'only', repo: 'org/only'),
+      ]).save(File(p.join(configDir.path, 'boards.yaml')));
+
+      final env = {
+        'HOME': tmp.path,
+        'XDG_CONFIG_HOME': p.join(tmp.path, 'config'),
+      };
+      final runner = CommandRunner<int>('emb', 'test')
+        ..addCommand(BoardsCommand(logger: logger, environment: env));
+      final code = await runner.run(['boards', 'remove', 'only']) ?? 0;
+      expect(code, ExitCode.success.code);
+      expect(warn.join(), contains('No sources remain'));
     });
   });
 }

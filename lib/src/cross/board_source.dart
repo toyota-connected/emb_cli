@@ -37,10 +37,14 @@ sealed class BoardSource {
         if (!validRepoRef.hasMatch(repo)) {
           throw ArgumentError('invalid board source repo: "$repo"');
         }
+        final path = map['path'] as String? ?? 'boards';
+        if (path.split('/').contains('..')) {
+          throw ArgumentError('invalid board source path: "$path"');
+        }
         return GithubBoardSource(
           name: name,
           repo: repo,
-          path: map['path'] as String? ?? 'boards',
+          path: path,
           ref: map['ref'] as String? ?? 'main',
           tokenEnv: map['token_env'] as String?,
           transport: map['transport'] as String? ?? 'https',

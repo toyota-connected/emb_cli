@@ -155,6 +155,18 @@ void main() {
         throwsA(isA<ArgumentError>()),
       );
     });
+
+    test('throws on path-traversal path', () {
+      expect(
+        () => BoardSource.fromMap({
+          'type': 'github',
+          'name': 'test',
+          'repo': 'org/repo',
+          'path': '../.git',
+        }),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
   });
 
   group('BoardSourceConfig.load warnings', () {
