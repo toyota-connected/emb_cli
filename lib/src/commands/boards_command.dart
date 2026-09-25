@@ -368,15 +368,24 @@ class BoardsSyncCommand extends Command<int> {
     final sshUrl = 'git@github.com:${source.repo}.git';
     final result = await _runProcess(
       'git',
-      ['ls-remote', sshUrl, ref],
+      ['ls-remote', sshUrl, ref, '$ref^{}'],
     );
     if (result.exitCode != 0) {
       throw StateError(
         result.stderr.isNotEmpty ? result.stderr : result.stdout,
       );
     }
-    final sha = result.stdout.split(RegExp(r'\s')).first;
-    if (sha.isEmpty) {
+    // For annotated tags ls-remote returns both the tag object and the
+    // dereferenced commit (the ^{} line). Prefer the commit SHA so the
+    // staleness check is consistent with the HTTPS /commits/ endpoint.
+    String? sha;
+    for (final line in result.stdout.split('\n')) {
+      final parts = line.split(RegExp(r'\s+'));
+      if (parts.length < 2 || parts[0].isEmpty) continue;
+      sha = parts[0];
+      if (line.contains('^{}')) break;
+    }
+    if (sha == null || sha.isEmpty) {
       throw StateError('ref "$ref" not found in ${source.repo}');
     }
     return sha;
@@ -640,6 +649,15 @@ class BoardsRemoveCommand extends Command<int> {
       return ExitCode.usage.code;
     }
     final sourceName = args.rest.first;
+
+    if (!_validSourceName.hasMatch(sourceName)) {
+      _logger.err(
+        'Invalid source name "$sourceName". '
+        'Use only letters, digits, dashes, and underscores.',
+      );
+      return ExitCode.usage.code;
+    }
+
     final file = resolveBoardSourcesFile(environment: _environment);
     final config = BoardSourceConfig.load(file);
 

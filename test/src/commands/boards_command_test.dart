@@ -202,6 +202,15 @@ cross:
         if (fail) return const RunResult(1, '', 'simulated failure');
 
         if (exe == 'git' && args.contains('ls-remote')) {
+          final hasDeref = args.any((a) => a.contains('^{}'));
+          if (hasDeref) {
+            return RunResult(
+              0,
+              'tag-object-sha\trefs/tags/main\n'
+              '$sha\trefs/tags/main^{}\n',
+              '',
+            );
+          }
           return RunResult(0, '$sha\trefs/heads/main', '');
         }
         if (exe == 'git' && args.contains('clone')) {
@@ -316,6 +325,54 @@ cross:
         extra: ['--ref', 'v1.0.0'],
       );
       expect(calls[1], contains('v1.0.0'));
+    });
+
+    test('prefers dereferenced commit SHA over tag-object SHA', () async {
+      final runner = fakeRunner(sha: 'commit-sha-real');
+      await runSync(runner: runner);
+      calls.clear();
+
+      // Second sync — the stamp holds the commit SHA from the ^{} line,
+      // so ls-remote returning it again means up-to-date.
+      final code = await runSync(runner: runner);
+      expect(code, ExitCode.success.code);
+      expect(calls, hasLength(1));
+      verify(
+        () => progress.complete(any(that: contains('up to date'))),
+      ).called(1);
+    });
+  });
+
+  group('emb boards remove', () {
+    final err = <String>[];
+
+    setUp(() {
+      when(() => logger.err(any())).thenAnswer((i) {
+        err.add('${i.positionalArguments.first}');
+      });
+      err.clear();
+    });
+
+    Future<int> runRemove(List<String> args) async {
+      Directory(p.join(tmp.path, 'config', 'emb'))
+          .createSync(recursive: true);
+      final runner = CommandRunner<int>('emb', 'test')
+        ..addCommand(
+          BoardsCommand(
+            logger: logger,
+            environment: {
+              'HOME': tmp.path,
+              'XDG_CONFIG_HOME': p.join(tmp.path, 'config'),
+            },
+          ),
+        );
+      return await runner.run(['boards', 'remove', ...args]) ?? 0;
+    }
+
+    test('rejects names with path-traversal characters', () async {
+      final code = await runRemove(['../escape']);
+      expect(code, ExitCode.usage.code);
+      expect(err.join(), contains('Invalid source name'));
     });
   });
 }
