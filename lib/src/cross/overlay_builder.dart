@@ -90,20 +90,27 @@ const Map<_OverlayDownloadResult, String> _overlayDownloadErrorMessage = {
 // this enum needs updating without further patching to any logic below.
 enum _ArchiveType {
   // dart format off
-  gzip    ([0x1f, 0x8b],                          0,   'gzip -t',),
-  zip     ([0x50, 0x4b],                          0,   'unzip -t -q',),
-  xz      ([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00],  0,   'xz -t',),
-  bzip2   ([0x42, 0x5a, 0x68],                    0,   'bzip2 -t',),
-  zstd    ([0x28, 0xb5, 0x2f, 0xfd],              0,   'zstd -t',),
+  gzip    ([0x1f, 0x8b],                          0,   'gzip -t', ['.gz']),
+  zip     ([0x50, 0x4b],                          0,   'unzip -t -q', [
+                                                '.zip','.jar', '.war', '.apk']),
+  xz      ([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00],  0,   'xz -t', ['.xz']),
+  bzip2   ([0x42, 0x5a, 0x68],                    0,   'bzip2 -t', ['.bz2']),
+  zstd    ([0x28, 0xb5, 0x2f, 0xfd],              0,   'zstd -t', ['.zst']),
   // 'ustar' in ASCII bytes
-  tar     ([0x75, 0x73, 0x74, 0x61, 0x72],        257, 'tar -tf',);
+  tar     ([0x75, 0x73, 0x74, 0x61, 0x72],        257, 'tar -tf', ['.tar']);
   // dart format on
 
-  const _ArchiveType(this.magicBytes, this.magicOffset, this.probeCmd);
+  const _ArchiveType(
+    this.magicBytes,
+    this.magicOffset,
+    this.probeCmd,
+    this.extensions,
+  );
 
   final List<int> magicBytes;
   final int magicOffset;
   final String probeCmd;
+  final List<String> extensions;
 }
 
 /// Builds [CrossTarget.augment] libraries (libdisplay-info, Vulkan-Headers, …)
@@ -376,6 +383,18 @@ class OverlayBuilder {
 
     _ArchiveType? archiveType;
     for (final type in _ArchiveType.values) {
+      var matchesExtension = false;
+      for (final ext in type.extensions) {
+        if (tarball.path.endsWith(ext)) {
+          matchesExtension = true;
+          break;
+        }
+      }
+
+      if (!matchesExtension) {
+        continue;
+      }
+
       // Shorter than the type's magic even at its offset: can't match.
       if (magic.length < type.magicOffset + type.magicBytes.length) {
         continue;
@@ -392,6 +411,11 @@ class OverlayBuilder {
         archiveType = type;
         break;
       }
+
+      // NOTE(future-proof): continued iteration allowed when the
+      // extension matches but the magic bytes do not:
+      // it's possible that another archive type with the same extension
+      // but different magic bytes will match, so we continue iterating.
     }
 
     if (archiveType == null) {
