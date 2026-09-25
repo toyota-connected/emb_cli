@@ -87,7 +87,7 @@ enum _ArchiveType {
   bzip2   ([0x42, 0x5a, 0x68],                    0,   'bzip2 -t',),
   zstd    ([0x28, 0xb5, 0x2f, 0xfd],              0,   'zstd -t',),
   // 'ustar' in ASCII bytes
-  tar     ([0x75, 0x73, 0x74, 0x61, 0x72, 0x0a],  257, 'tar -tf',);
+  tar     ([0x75, 0x73, 0x74, 0x61, 0x72],        257, 'tar -tf',);
   // dart format on
 
   const _ArchiveType(this.magicBytes, this.magicOffset, this.probeCmd);
