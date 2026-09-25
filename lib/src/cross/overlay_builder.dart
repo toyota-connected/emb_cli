@@ -328,9 +328,11 @@ class OverlayBuilder {
 
     // Check 1: is SHA256 valid?
     final expected = sha?.toLowerCase();
-    final actual = await _sha256(tarball);
-    if (expected != null && actual != expected) {
-      return _OverlayDownloadResult.invalidSha;
+    if (expected != null) {
+      final actual = await _sha256(tarball);
+      if (actual != expected) {
+        return _OverlayDownloadResult.invalidSha;
+      }
     }
 
     // Check 2: are the magic bytes valid for archive type? A format may pin
