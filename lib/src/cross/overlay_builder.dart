@@ -231,7 +231,7 @@ class OverlayBuilder {
       // and a previously installed copy satisfying `min` is exactly when the
       // edit under way would be skipped. See AugmentLib.path.
       try {
-        if (!lib.isLocal && !await _satisfied(lib)) {
+        if (lib.isLocal || !await _satisfied(lib)) {
           switch (lib.build) {
             case CrossGenerator.meson:
               await _buildMeson(lib, overlay, onStep: onStep);
