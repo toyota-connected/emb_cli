@@ -634,7 +634,7 @@ void main() {
       _FakeOrigin.start(gzip.encode(utf8.encode('payload\n')));
 
   test(
-    'corrupt cached tarball is re-downloaded, not patched against',
+    'corrupt (sha-less) cached tarball is re-downloaded, not patched against',
     () async {
       // The regression: a truncated cached download was trusted on
       // existsSync(), extracted to nothing (exit code ignored), and the failure
@@ -811,7 +811,7 @@ void main() {
         isA<OverlayBuildException>().having(
           (e) => e.message,
           'message',
-          contains('not a valid archive'),
+          contains('corrupt archive data'),
         ),
       ),
     );

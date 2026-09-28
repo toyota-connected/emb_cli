@@ -94,14 +94,17 @@ const Map<_ValidationCode, String> _overlayDownloadErrorMessage = {
 // this enum needs updating without further patching to any logic below.
 enum _ArchiveType {
   // dart format off
-  gzip    ([0x1f, 0x8b],                          0,   'gzip -t', ['.gz'],
+  gzip    ([0x1f, 0x8b],                          0,   'gzip -t', ['.gz',
+                                                '.tgz'],
             'tar -xf %1 -C %2 --strip-components=1'),
   zip     ([0x50, 0x4b],                          0,   'unzip -t -q', [
                                                 '.zip','.jar', '.war', '.apk'],
             'unzip -q %1 -d %2'),
-  xz      ([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00],  0,   'xz -t', ['.xz'],
+  xz      ([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00],  0,   'xz -t', ['.xz',
+                                                '.txz'],
             'tar -xf %1 -C %2 --strip-components=1'),
-  bzip2   ([0x42, 0x5a, 0x68],                    0,   'bzip2 -t', ['.bz2'],
+  bzip2   ([0x42, 0x5a, 0x68],                    0,   'bzip2 -t', ['.bz2',
+                                                '.tbz2'],
             'tar -xf %1 -C %2 --strip-components=1'),
   zstd    ([0x28, 0xb5, 0x2f, 0xfd],              0,   'zstd -t', ['.zst'],
             'tar -xf %1 -C %2 --strip-components=1'),
@@ -408,47 +411,59 @@ class OverlayBuilder {
       return const _OverlayValidationResult(code: _ValidationCode.fsError);
     }
 
+    var atLeastOneExtension = false;
     _ArchiveType? archiveType;
     for (final type in _ArchiveType.values) {
       var matchesExtension = false;
       for (final ext in type.extensions) {
         if (tarball.path.toLowerCase().endsWith(ext)) {
           matchesExtension = true;
+          atLeastOneExtension = true;
           break;
         }
-      }
-
-      if (!matchesExtension) {
-        continue;
       }
 
       // Shorter than the type's magic even at its offset: can't match.
       if (magic.length < type.magicOffset + type.magicBytes.length) {
         continue;
       }
-      var validForType = true;
+      var matchesMagic = true;
       for (var i = 0; i < type.magicBytes.length; i++) {
         if (magic[type.magicOffset + i] != type.magicBytes[i]) {
-          validForType = false;
+          matchesMagic = false;
           break;
         }
       }
 
-      if (validForType) {
-        archiveType = type;
-        break;
+      if (matchesMagic) {
+        // Magic AND extension match -> unambiguous
+        if (matchesExtension) {
+          archiveType = type;
+          break;
+        }
+        // Magic only: keep scanning for a type whose extension also matches —
+        // e.g. a .tar whose first member is PK… matches zip's 2-byte PK magic
+        // at offset 0 before tar's ustar at offset 257 is reached.
+        else {
+          archiveType ??= type;
+        }
       }
-
-      // NOTE(future-proof): continued iteration allowed when the
-      // extension matches but the magic bytes do not:
-      // it's possible that another archive type with the same extension
-      // but different magic bytes will match, so we continue iterating.
     }
 
+    /// If no archive type matched, return an appropriate validation result.
+    /// Returns `unsupportedArchive` if no known archive extension was found,
+    /// returns `corruptArchive` if at least one known archive extension
+    /// was found but the magic bytes did not match.
     if (archiveType == null) {
-      return const _OverlayValidationResult(
-        code: _ValidationCode.unsupportedArchive,
-      );
+      if (!atLeastOneExtension) {
+        return const _OverlayValidationResult(
+          code: _ValidationCode.unsupportedArchive,
+        );
+      } else {
+        return const _OverlayValidationResult(
+          code: _ValidationCode.corruptArchive,
+        );
+      }
     }
 
     // Check 3: does the file open?
