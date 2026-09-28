@@ -59,8 +59,8 @@ enum _ValidationCode {
   success(fatal: false),
   missingFile(fatal: false),
   fsError(fatal: false),
-  invalidTarball(fatal: false),
-  invalidArchive(fatal: false),
+  corruptArchive(fatal: false),
+  unsupportedArchive(fatal: true),
   failedOpen(fatal: false),
   invalidSha(fatal: false),
   missingCmd(fatal: true);
@@ -81,8 +81,8 @@ const Map<_ValidationCode, String> _overlayDownloadErrorMessage = {
   _ValidationCode.success: 'download successful!',
   _ValidationCode.missingFile: 'destination file missing',
   _ValidationCode.fsError: 'FileSystemException',
-  _ValidationCode.invalidTarball: 'corrupt tarball',
-  _ValidationCode.invalidArchive: 'not a valid archive',
+  _ValidationCode.corruptArchive: 'corrupt archive data',
+  _ValidationCode.unsupportedArchive: 'unsupported archive format',
   _ValidationCode.failedOpen: 'failed to decompress archive',
   _ValidationCode.invalidSha: 'sha256 signature is not valid',
   _ValidationCode.missingCmd: 'required command is missing',
@@ -398,7 +398,7 @@ class OverlayBuilder {
         final n = await raf.readInto(magic, 0, magicWindow);
         if (n < 2) {
           return const _OverlayValidationResult(
-            code: _ValidationCode.invalidTarball,
+            code: _ValidationCode.corruptArchive,
           );
         }
       } finally {
@@ -447,7 +447,7 @@ class OverlayBuilder {
 
     if (archiveType == null) {
       return const _OverlayValidationResult(
-        code: _ValidationCode.invalidArchive,
+        code: _ValidationCode.unsupportedArchive,
       );
     }
 
