@@ -1091,7 +1091,7 @@ shows every path that was tried.
 
 Board files can come from more than one repository. Each source is named and
 installed into its own subdirectory, so names never collide. `extends:` resolves
-as `<source>/<target>` (e.g. `extends: arene-emb/my-board`).
+as `<source>/<target>` (e.g. `extends: raspi-emb/my-board`).
 
 ```sh
 # Add a source (GitHub, HTTPS transport — uses the contents API + a PAT):
