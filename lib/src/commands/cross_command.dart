@@ -2257,9 +2257,12 @@ class CrossCommand extends Command<int> {
         for (final soname in staged.staged) {
           _logger.detail('  ${r.backend ?? ""}: staged lib/$soname');
         }
-        final runHint = applyRunVars(target.runCommand ?? defaultRunTemplate, {
-          'embedder': p.basename(bin.path),
-        }).join(' ');
+        final runHint = runCmdString(
+          applyRunVars(target.runCommand ?? defaultRunTemplate, {
+            'embedder': p.basename(bin.path),
+          }),
+          env: target.runEnv,
+        );
         _logger.info(
           '  ${r.backend ?? ""}: runnable → ${outDir.path}  '
           '(run: $runHint)',
@@ -2294,6 +2297,7 @@ class CrossCommand extends Command<int> {
             // Auto-run only makes sense for a single embedder.
             run: run && built.length == 1,
             runTemplate: target.runCommand,
+            runEnv: target.runEnv,
           );
           if (rc != ExitCode.success.code) return rc;
         } else if (run && built.length == 1) {
@@ -2308,6 +2312,7 @@ class CrossCommand extends Command<int> {
               bin,
               outDir,
               runTemplate: target.runCommand,
+              runEnv: target.runEnv,
             );
             if (rc != ExitCode.success.code) return rc;
           } else {
@@ -2395,6 +2400,7 @@ class CrossCommand extends Command<int> {
     required String bundleArch,
     required bool run,
     List<String>? runTemplate,
+    Map<String, String> runEnv = const {},
   }) async {
     final deployer = Deployer(runProcess: _runProcess);
     final label = device.label;
@@ -2431,16 +2437,16 @@ class CrossCommand extends Command<int> {
     final unknowns = <String>{};
     final expanded = applyRunVars(template, {
       'embedder': binName,
-      'deploy_dir': destDir,
+      'deploy_dir': '.',
     }, unknowns: unknowns);
     if (unknowns.isNotEmpty) {
       _logger.warn(
-        'run_command: unknown variable(s) '
+        'run.command: unknown variable(s) '
         '${unknowns.map((v) => '\${$v}').join(', ')} '
         '(left verbatim)',
       );
     }
-    final runCmd = runCmdString(expanded);
+    final runCmd = runCmdString(expanded, env: runEnv);
     if (!run) {
       final argv = deployer.runArgv(device, destDir, runCmd);
       _logger.info('  run on target: ${argv.join(' ')}');
@@ -2448,42 +2454,57 @@ class CrossCommand extends Command<int> {
     }
     _logger.info('  running on $label …');
     final argv = deployer.runArgv(device, destDir, runCmd);
-    final proc = await Process.start(
-      argv.first,
-      argv.sublist(1),
-      mode: ProcessStartMode.inheritStdio,
-    );
-    return proc.exitCode;
+    try {
+      final proc = await Process.start(
+        argv.first,
+        argv.sublist(1),
+        mode: ProcessStartMode.inheritStdio,
+      );
+      return proc.exitCode;
+    } on ProcessException catch (e) {
+      _logger.err('run failed on $label: ${e.message}');
+      return ExitCode.software.code;
+    }
   }
 
   /// Launch the native [embedder] from inside [bundle] on this host,
-  /// inheriting stdio. Uses the manifest's `cross.run_command` template when
-  /// set, otherwise `./${embedder} -b .`.
+  /// inheriting stdio. Uses the manifest's `cross.run` template when set,
+  /// otherwise `./${embedder} -b .`.
   Future<int> _runLocal(
     File embedder,
     Directory bundle, {
     List<String>? runTemplate,
+    Map<String, String> runEnv = const {},
   }) async {
     final template = runTemplate ?? defaultRunTemplate;
     final unknowns = <String>{};
-    final argv = applyRunVars(template, {
+    final expanded = applyRunVars(template, {
       'embedder': p.basename(embedder.path),
+      'deploy_dir': '.',
     }, unknowns: unknowns);
     if (unknowns.isNotEmpty) {
       _logger.warn(
-        'run_command: unknown variable(s) '
+        'run.command: unknown variable(s) '
         '${unknowns.map((v) => '\${$v}').join(', ')} '
         '(left verbatim)',
       );
     }
-    _logger.info('  running ${argv.join(' ')} in ${bundle.path} …');
-    final proc = await Process.start(
-      argv.first,
-      argv.sublist(1),
-      workingDirectory: bundle.path,
-      mode: ProcessStartMode.inheritStdio,
-    );
-    return proc.exitCode;
+    _logger.info('  running ${expanded.join(' ')} in ${bundle.path} …');
+    try {
+      final proc = await Process.start(
+        expanded.first,
+        expanded.sublist(1),
+        workingDirectory: bundle.path,
+        environment: runEnv.isNotEmpty
+            ? {...Platform.environment, ...runEnv}
+            : null,
+        mode: ProcessStartMode.inheritStdio,
+      );
+      return proc.exitCode;
+    } on ProcessException catch (e) {
+      _logger.err('run failed: ${e.message}');
+      return ExitCode.software.code;
+    }
   }
 
   /// Recursively copy the contents of [src] into [dst] (preserving symlinks +

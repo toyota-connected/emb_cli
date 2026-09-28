@@ -274,18 +274,14 @@ void main() {
     });
   });
 
-  group('CrossTarget.fromMap run_command', () {
-    test('parses run_command: as a list of strings', () {
+  group('CrossTarget.fromMap run', () {
+    test('parses run.command as a list of strings', () {
       final t = CrossTarget.fromMap(const {
         'provider': 'arm-gnu',
         'triple': 'aarch64-none-linux-gnu',
-        'run_command': [
-          r'./${embedder}',
-          '--config',
-          '/etc/app.conf',
-          '-b',
-          '.',
-        ],
+        'run': {
+          'command': [r'./${embedder}', '--config', '/etc/app.conf', '-b', '.'],
+        },
       });
       expect(t.runCommand, [
         r'./${embedder}',
@@ -296,31 +292,55 @@ void main() {
       ]);
     });
 
-    test('absent run_command: leaves the field null', () {
+    test('parses run.env as a string map', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'triple': 'aarch64-none-linux-gnu',
+        'run': {
+          'env': {'XDG_RUNTIME_DIR': '/run/user/0'},
+        },
+      });
+      expect(t.runEnv, {'XDG_RUNTIME_DIR': '/run/user/0'});
+      expect(t.runCommand, isNull);
+    });
+
+    test('absent run: leaves fields at defaults', () {
       final t = CrossTarget.fromMap(const {
         'provider': 'arm-gnu',
         'triple': 'aarch64-none-linux-gnu',
       });
       expect(t.runCommand, isNull);
+      expect(t.runEnv, isEmpty);
     });
 
-    test('rejects a bare string with ArgumentError', () {
+    test('rejects a bare string for run.command', () {
       expect(
         () => CrossTarget.fromMap(const {
           'provider': 'arm-gnu',
           'triple': 'aarch64-none-linux-gnu',
-          'run_command': './app -b .',
+          'run': {'command': './app -b .'},
         }),
         throwsArgumentError,
       );
     });
 
-    test('rejects an empty list with ArgumentError', () {
+    test('rejects an empty list for run.command', () {
       expect(
         () => CrossTarget.fromMap(const {
           'provider': 'arm-gnu',
           'triple': 'aarch64-none-linux-gnu',
-          'run_command': <String>[],
+          'run': {'command': <String>[]},
+        }),
+        throwsArgumentError,
+      );
+    });
+
+    test('rejects non-map run: value', () {
+      expect(
+        () => CrossTarget.fromMap(const {
+          'provider': 'arm-gnu',
+          'triple': 'aarch64-none-linux-gnu',
+          'run': './app -b .',
         }),
         throwsArgumentError,
       );
@@ -330,10 +350,14 @@ void main() {
       final t = CrossTarget.fromMap(const {
         'provider': 'arm-gnu',
         'triple': 'aarch64-none-linux-gnu',
-        'run_command': ['./custom', '-b', '.'],
+        'run': {
+          'command': ['./custom', '-b', '.'],
+          'env': {'FOO': 'bar'},
+        },
       });
       final overridden = t.withDefineOverrides(const {'X': '1'});
       expect(overridden.runCommand, ['./custom', '-b', '.']);
+      expect(overridden.runEnv, {'FOO': 'bar'});
     });
   });
 

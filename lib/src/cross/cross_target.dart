@@ -884,6 +884,7 @@ class CrossTarget {
     this.source,
     this.app,
     this.runCommand,
+    this.runEnv = const {},
     this.aotObfuscate,
     this.aotStrip,
   });
@@ -941,7 +942,8 @@ class CrossTarget {
       hostDevPackages: _stringList(map['host_dev_packages']),
       source: repoFrom(map['source']),
       app: repoFrom(map['app']),
-      runCommand: _runCommandList(map['run_command']),
+      runCommand: _runCommandList(_runBlock(map['run'])?.command),
+      runEnv: _runBlock(map['run'])?.env ?? const {},
       aotObfuscate: map['aot_obfuscate'] as bool?,
       aotStrip: map['aot_strip'] as bool?,
     );
@@ -1115,11 +1117,15 @@ class CrossTarget {
   final bool? aotStrip;
 
   /// Custom argv template for `--run` (Flutter custom-device style). Elements
-  /// may contain `${embedder}` (always available) and `${deploy_dir}` (bound
-  /// only for `--deploy --run`, not `--target local --run`); unknown variables
-  /// are left verbatim with a warning. When null the default
-  /// `['./${embedder}', '-b', '.']` is used. (Manifest key `run_command`.)
+  /// may contain `${embedder}` and `${deploy_dir}` (both always available;
+  /// `deploy_dir` is `.` since the runner `cd`s into the target directory);
+  /// unknown variables are left verbatim with a warning. When null the default
+  /// `['./${embedder}', '-b', '.']` is used. (Manifest key `run.command`.)
   final List<String>? runCommand;
+
+  /// Environment variables prepended to the run command as shell assignments.
+  /// (Manifest key `run.env`.)
+  final Map<String, String> runEnv;
 
   /// Parse the `backends:` block (backend name → `{define: value}` map).
   static Map<String, Map<String, String>> _parseBackends(Object? value) {
@@ -1184,6 +1190,7 @@ class CrossTarget {
       source: source,
       app: app,
       runCommand: runCommand,
+      runEnv: runEnv,
       aotObfuscate: aotObfuscate,
       aotStrip: aotStrip,
     );
@@ -1224,6 +1231,7 @@ class CrossTarget {
       source: source,
       app: app,
       runCommand: runCommand,
+      runEnv: runEnv,
       aotObfuscate: aotObfuscate,
       aotStrip: aotStrip,
     );
@@ -1302,11 +1310,26 @@ class CrossTarget {
   static List<String>? _runCommandList(Object? v) {
     if (v == null) return null;
     if (v is! List) {
-      throw ArgumentError('run_command must be a list of strings');
+      throw ArgumentError('run.command must be a list of strings');
     }
     if (v.isEmpty) {
-      throw ArgumentError('run_command must not be empty');
+      throw ArgumentError('run.command must not be empty');
     }
     return v.map((e) => e.toString()).toList();
+  }
+
+  static ({Object? command, Map<String, String> env})? _runBlock(Object? v) {
+    if (v == null) return null;
+    if (v is! Map) {
+      throw ArgumentError('run must be a map with command and/or env');
+    }
+    final env = <String, String>{};
+    final rawEnv = v['env'];
+    if (rawEnv is Map) {
+      rawEnv.forEach((k, val) => env[k.toString()] = val.toString());
+    } else if (rawEnv != null) {
+      throw ArgumentError('run.env must be a map of strings');
+    }
+    return (command: v['command'], env: env);
   }
 }

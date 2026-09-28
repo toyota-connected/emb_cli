@@ -16,5 +16,12 @@ List<String> applyRunVars(
     }),
 ];
 
-String runCmdString(List<String> argv) =>
-    argv.map((t) => "'${t.replaceAll("'", r"'\''")}'").join(' ');
+String _shQuote(String s) => "'${s.replaceAll("'", r"'\''")}'";
+
+String runCmdString(List<String> argv, {Map<String, String> env = const {}}) {
+  final parts = [
+    for (final e in env.entries) '${e.key}=${_shQuote(e.value)}',
+    ...argv.map(_shQuote),
+  ];
+  return parts.join(' ');
+}

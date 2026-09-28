@@ -63,6 +63,20 @@ void main() {
     test('handles spaces in tokens', () {
       expect(runCmdString(['./my app', '--flag']), "'./my app' '--flag'");
     });
+
+    test('prepends env map as shell assignments', () {
+      expect(
+        runCmdString(['./app'], env: {'XDG_RUNTIME_DIR': '/run/user/0'}),
+        "XDG_RUNTIME_DIR='/run/user/0' './app'",
+      );
+    });
+
+    test('quotes env values', () {
+      expect(
+        runCmdString(['./app'], env: {'FOO': "it's tricky"}),
+        r"FOO='it'\''s tricky' './app'",
+      );
+    });
   });
 
   group('defaultRunTemplate', () {
