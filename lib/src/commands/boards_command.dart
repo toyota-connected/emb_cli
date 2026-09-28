@@ -362,6 +362,8 @@ class BoardsCustomDevicesCommand extends Command<int> {
           binName: args['bin'] as String? ?? _binOf(target),
           triple: target.targetTriple,
           targetName: e.key,
+          runCommand: target.runCommand,
+          runEnv: target.runEnv,
         );
       } on CustomDeviceException catch (err) {
         _logger.err('${e.key}: ${err.message}');

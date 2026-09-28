@@ -1,5 +1,6 @@
 import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/cross/deployer.dart';
+import 'package:emb_cli/src/cross/run_command.dart';
 
 /// Thrown when a target cannot produce a usable device entry.
 class CustomDeviceException implements Exception {
@@ -32,6 +33,8 @@ Map<String, dynamic> buildCustomDevice({
   required String binName,
   String? triple,
   String? targetName,
+  List<String>? runCommand,
+  Map<String, String> runEnv = const {},
 }) {
   if (spec.id.trim().isEmpty) {
     throw const CustomDeviceException(
@@ -77,7 +80,13 @@ Map<String, dynamic> buildCustomDevice({
       // `${engineOptions}` is Flutter's placeholder, interpolated at launch
       // with --enable-dart-profiling, the vm-service flags hot reload needs,
       // and so on. It stays literal in the written JSON.
-      'cd ${_q(dir)} && ./$binName -b . \${engineOptions}',
+      'cd ${_q(dir)} && ${runCmdString(
+        applyRunVars(runCommand ?? defaultRunTemplate, {
+          'embedder': binName,
+          'deploy_dir': '.',
+        }),
+        env: runEnv,
+      )} \${engineOptions}',
     ),
     'forwardPort': _forwardPort(device),
     'forwardPortSuccessRegex': 'Port forwarding success',

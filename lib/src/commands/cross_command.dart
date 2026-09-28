@@ -2460,7 +2460,7 @@ class CrossCommand extends Command<int> {
         argv.sublist(1),
         mode: ProcessStartMode.inheritStdio,
       );
-      return proc.exitCode;
+      return await proc.exitCode;
     } on ProcessException catch (e) {
       _logger.err('run failed on $label: ${e.message}');
       return ExitCode.software.code;
@@ -2500,7 +2500,7 @@ class CrossCommand extends Command<int> {
             : null,
         mode: ProcessStartMode.inheritStdio,
       );
-      return proc.exitCode;
+      return await proc.exitCode;
     } on ProcessException catch (e) {
       _logger.err('run failed: ${e.message}');
       return ExitCode.software.code;
