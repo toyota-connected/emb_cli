@@ -764,8 +764,14 @@ class CrossProjectResolver {
     // Dev-time fallback: package_config or script-relative walk.
     final discovered = _discoverBoardsDir();
     if (discovered != null) {
-      boardsProvenance = 'package/script relative (${discovered.path})';
-      return {'dev': discovered};
+      final devSources = _detectSourceSubdirs(discovered);
+      if (devSources.isNotEmpty) {
+        boardsProvenance = 'package/script relative (${discovered.path})';
+        for (final e in devSources.entries) {
+          _boardsTried.add('${e.key}: ${e.value.path}');
+        }
+        return devSources;
+      }
     }
     _boardsTried.add(
       Platform.packageConfig == null
@@ -782,6 +788,30 @@ class CrossProjectResolver {
 
   /// The paths [_boardSources] considered, in order, for the not-found message.
   final List<String> _boardsTried = [];
+
+  /// Detect source subdirectories in [boardsDir]. If subdirectories contain
+  /// `*.emb.yaml` files, return each as a source. If only flat files exist at
+  /// the top level, return the directory as the `dev` source.
+  Map<String, Directory> _detectSourceSubdirs(Directory boardsDir) {
+    final sources = <String, Directory>{};
+    for (final entry in boardsDir.listSync()) {
+      if (entry is Directory) {
+        final hasManifests = entry
+            .listSync()
+            .whereType<File>()
+            .any((f) => f.path.endsWith('.emb.yaml'));
+        if (hasManifests) sources[p.basename(entry.path)] = entry;
+      }
+    }
+    if (sources.isNotEmpty) return sources;
+    // Legacy flat layout: *.emb.yaml at the top level.
+    final hasFlat = boardsDir
+        .listSync()
+        .whereType<File>()
+        .any((f) => f.path.endsWith('.emb.yaml'));
+    if (hasFlat) return {'dev': boardsDir};
+    return {};
+  }
 
   Directory? _discoverBoardsDir() {
     final pc = Platform.packageConfig;
