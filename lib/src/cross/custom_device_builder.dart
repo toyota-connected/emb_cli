@@ -80,13 +80,7 @@ Map<String, dynamic> buildCustomDevice({
       // `${engineOptions}` is Flutter's placeholder, interpolated at launch
       // with --enable-dart-profiling, the vm-service flags hot reload needs,
       // and so on. It stays literal in the written JSON.
-      'cd ${_q(dir)} && ${runCmdString(
-        applyRunVars(runCommand ?? defaultRunTemplate, {
-          'embedder': binName,
-          'deploy_dir': '.',
-        }),
-        env: runEnv,
-      )} \${engineOptions}',
+      'cd ${_q(dir)} && ${runCmdString(applyRunVars(runCommand ?? defaultRunTemplate, {'embedder': binName, 'deploy_dir': '.'}), env: runEnv)} \${engineOptions}',
     ),
     'forwardPort': _forwardPort(device),
     'forwardPortSuccessRegex': 'Port forwarding success',

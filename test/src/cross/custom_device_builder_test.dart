@@ -135,11 +135,18 @@ void main() {
     });
 
     test('runDebug respects run.command and run.env', () {
-      final cmd = (build(
-        runCommand: [r'./${embedder}', '--config', '/etc/app.conf'],
-        runEnv: {'XDG_RUNTIME_DIR': '/run/user/0'},
-      )['runDebug'] as List)
-          .last as String;
+      final cmd =
+          (build(
+                        runCommand: [
+                          r'./${embedder}',
+                          '--config',
+                          '/etc/app.conf',
+                        ],
+                        runEnv: {'XDG_RUNTIME_DIR': '/run/user/0'},
+                      )['runDebug']
+                      as List)
+                  .last
+              as String;
       expect(cmd, contains("XDG_RUNTIME_DIR='/run/user/0'"));
       expect(cmd, contains("'./homescreen' '--config' '/etc/app.conf'"));
       expect(cmd, contains(r'${engineOptions}'));
