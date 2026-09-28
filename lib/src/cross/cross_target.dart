@@ -103,6 +103,7 @@ class AugmentLib {
     this.patches = const [],
     this.subdir,
     this.sha256,
+    this.declaringFile,
   });
 
   factory AugmentLib.fromMap(Map<dynamic, dynamic> map) {
@@ -192,6 +193,7 @@ class AugmentLib {
       patches: patches,
       subdir: (map['subdir'] ?? map['source_subdir'])?.toString(),
       sha256: sha,
+      declaringFile: map['_source'] as String?,
     );
   }
 
@@ -233,8 +235,17 @@ class AugmentLib {
   /// tarball.
   bool get isLocal => path != null && path!.isNotEmpty;
 
+  /// The manifest file this augment was declared in, when known. Set by
+  /// `_stampAugmentSource` so that after union merges augments still resolve
+  /// against their own manifest, not a blanket caller-supplied declaring file.
+  final String? declaringFile;
+
   /// A copy with relative [patches] rewritten to resolve against the
-  /// directory holding [declaringFile] — the manifest that declared them.
+  /// directory holding the declaring manifest.
+  ///
+  /// Per-augment [declaringFile] (from `_source` in the raw map) takes
+  /// precedence; [fallbackDeclaringFile] is used for augments without it
+  /// (e.g. from `extends:` board library).
   ///
   /// Resolution happens once, at load, because the paths are hashed into the
   /// cache keys (augmentIdentity in cross_keys.dart) as well as read at fetch
@@ -246,12 +257,13 @@ class AugmentLib {
   /// time, so a relative value would key on the working directory rather than
   /// on the tree that gets built.
   AugmentLib resolvePatchesAgainst(
-    String? declaringFile, {
+    String? fallbackDeclaringFile, {
     Map<String, String> vars = const {},
   }) {
-    if (declaringFile == null) return this;
+    final effective = declaringFile ?? fallbackDeclaringFile;
+    if (effective == null) return this;
     if (patches.isEmpty && !isLocal) return this;
-    final base = p.dirname(p.absolute(declaringFile));
+    final base = p.dirname(p.absolute(effective));
     return AugmentLib(
       pkg: pkg,
       minVersion: minVersion,

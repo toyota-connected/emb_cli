@@ -547,8 +547,8 @@ class CrossCommand extends Command<int> {
     // embedder source was configured is carried by buildKey instead.
     final manifestDir =
         FileSystemEntity.typeSync(inputPath) == FileSystemEntityType.file
-        ? File(inputPath).parent
-        : Directory(inputPath);
+        ? File(inputPath).absolute.parent
+        : Directory(inputPath).absolute;
     final CrossProject project;
     try {
       final resolved = _project.resolve(inputPath);
@@ -641,10 +641,13 @@ class CrossCommand extends Command<int> {
     // apply to a host build exactly as they do to a cross one.
     CrossTarget? resolveTarget() {
       final appDir = appDirArg;
+      // Stamp embedder augments with their declaring file so per-augment
+      // provenance survives the app-layer union merge.
+      final cross = _stampAugmentSource(selection.cross, selection.sourcePath);
       final selected = appDir == null
-          ? selection.cross
+          ? cross
           : _project.applyAppLayer(
-              cross: selection.cross,
+              cross: cross,
               appDir: appDir,
               targetName: effectiveTarget,
               native: isNative,
@@ -656,6 +659,10 @@ class CrossCommand extends Command<int> {
               targetName: effectiveTarget,
               native: isNative,
             );
+      // Augments added by the app layer have no _source yet — stamp them now.
+      if (appLayerSource != null) {
+        _stampAugmentSource(selected, appLayerSource, onlyUnstamped: true);
+      }
       final CrossTarget t;
       try {
         final patchVars = {
@@ -936,7 +943,7 @@ class CrossCommand extends Command<int> {
           manifestDir: manifestDir,
           storeRoot: ensureCacheDir(),
           run: _runProcess,
-          appDir: _appDir(args['app'] as String?),
+          appDir: _appDir(appDirArg),
           onModule: (m) => _logger.info('  module $m: vendored cargo deps'),
         );
         if (err != null) {
@@ -3209,11 +3216,32 @@ class CrossCommand extends Command<int> {
   }) => {
     'embedder_root': manifestDir.path,
     if (appDir != null) 'app_root': appDir,
-    'runnable': p.join(
-      buildRoot.path,
-      multi ? 'runnable-$backend' : 'runnable',
-    ),
+    if (appDir != null)
+      'runnable': p.join(
+        buildRoot.path,
+        multi ? 'runnable-$backend' : 'runnable',
+      ),
   };
+
+  /// Tag each augment map in [cross] with `_source: [sourcePath]` so
+  /// [AugmentLib.fromMap] can recover per-augment provenance after union
+  /// merges. When [onlyUnstamped] is true, only entries missing `_source` are
+  /// stamped (used to tag app-layer additions after the merge).
+  static Map<String, dynamic> _stampAugmentSource(
+    Map<String, dynamic> cross,
+    String? sourcePath, {
+    bool onlyUnstamped = false,
+  }) {
+    final augments = cross['augment'];
+    if (augments is! List || sourcePath == null) return cross;
+    for (var i = 0; i < augments.length; i++) {
+      final a = augments[i];
+      if (a is Map && !(onlyUnstamped && a.containsKey('_source'))) {
+        augments[i] = {...a, '_source': sourcePath};
+      }
+    }
+    return cross;
+  }
 
   /// Derive the app project directory from the `--app` argument, which may be
   /// a directory path or a manifest file path. Always returns an absolute path.
