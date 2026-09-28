@@ -126,10 +126,17 @@ enum _ArchiveType {
 }
 
 class _OverlayValidationResult {
-  const _OverlayValidationResult({required this.code, this.archiveType});
+  const _OverlayValidationResult({
+    required this.code,
+    this.archiveType,
+    this.message,
+  });
 
   final _ValidationCode code;
   final _ArchiveType? archiveType;
+
+  /// Optional human-readable message printed only for fatal errors.
+  final String? message;
 }
 
 /// Builds [CrossTarget.augment] libraries (libdisplay-info, Vulkan-Headers, …)
@@ -449,13 +456,28 @@ class OverlayBuilder {
     final cmd = probe[0];
     final args = [...(probe.sublist(1)), tarball.path];
 
+    // The two arms are not duplicates: a nonzero exit
+    // means the process ran and refused,
+    // a ProcessException means it was never spawned;
+    // both mean "can't probe", so they share a return.
     try {
       final test = await _run('which', [cmd]);
       if (test.exitCode != 0) {
-        return const _OverlayValidationResult(code: _ValidationCode.missingCmd);
+        return _OverlayValidationResult(
+          code: _ValidationCode.missingCmd,
+          archiveType: archiveType,
+          message: 'Command "$cmd" not found - please install it.',
+        );
       }
     } on ProcessException {
-      return const _OverlayValidationResult(code: _ValidationCode.missingCmd);
+      return _OverlayValidationResult(
+        code: _ValidationCode.missingCmd,
+        archiveType: archiveType,
+        message:
+            'Make sure the commands "$cmd" and "which" are '
+            'installed correctly, present on your path, '
+            'and that you have the necessary permissions to call them',
+      );
     }
 
     try {
@@ -529,7 +551,8 @@ class OverlayBuilder {
           if (result.code.fatal) {
             throw OverlayBuildException(
               '${lib.pkg}: fatal download error (${lib.url}),\n'
-              '${_overlayDownloadErrorMessage[result.code]}',
+              '${_overlayDownloadErrorMessage[result.code]}'
+              '${result.message != null ? '\n${result.message}' : ''}',
             );
           }
         }
