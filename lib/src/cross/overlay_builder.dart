@@ -55,7 +55,7 @@ class OverlayPaths {
   }
 }
 
-enum _OverlayDownloadResult {
+enum _ValidationCode {
   success(fatal: false),
   missingFile(fatal: false),
   fsError(fatal: false),
@@ -65,7 +65,7 @@ enum _OverlayDownloadResult {
   invalidSha(fatal: false),
   missingCmd(fatal: true);
 
-  const _OverlayDownloadResult({required this.fatal});
+  const _ValidationCode({required this.fatal});
 
   final bool fatal;
 }
@@ -77,15 +77,15 @@ class _BinResult {
   final String binPath;
 }
 
-const Map<_OverlayDownloadResult, String> _overlayDownloadErrorMessage = {
-  _OverlayDownloadResult.success: 'download successful!',
-  _OverlayDownloadResult.missingFile: 'destination file missing',
-  _OverlayDownloadResult.fsError: 'FileSystemException',
-  _OverlayDownloadResult.invalidTarball: 'corrupt tarball',
-  _OverlayDownloadResult.invalidArchive: 'not a valid archive',
-  _OverlayDownloadResult.failedOpen: 'failed to decompress archive',
-  _OverlayDownloadResult.invalidSha: 'sha256 signature is not valid',
-  _OverlayDownloadResult.missingCmd: 'required command is missing',
+const Map<_ValidationCode, String> _overlayDownloadErrorMessage = {
+  _ValidationCode.success: 'download successful!',
+  _ValidationCode.missingFile: 'destination file missing',
+  _ValidationCode.fsError: 'FileSystemException',
+  _ValidationCode.invalidTarball: 'corrupt tarball',
+  _ValidationCode.invalidArchive: 'not a valid archive',
+  _ValidationCode.failedOpen: 'failed to decompress archive',
+  _ValidationCode.invalidSha: 'sha256 signature is not valid',
+  _ValidationCode.missingCmd: 'required command is missing',
 };
 
 // Maintainable enum of supported archive formats;
@@ -94,14 +94,20 @@ const Map<_OverlayDownloadResult, String> _overlayDownloadErrorMessage = {
 // this enum needs updating without further patching to any logic below.
 enum _ArchiveType {
   // dart format off
-  gzip    ([0x1f, 0x8b],                          0,   'gzip -t', ['.gz']),
+  gzip    ([0x1f, 0x8b],                          0,   'gzip -t', ['.gz'],
+            'tar -xf %1 -C %2 --strip-components=1'),
   zip     ([0x50, 0x4b],                          0,   'unzip -t -q', [
-                                                '.zip','.jar', '.war', '.apk']),
-  xz      ([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00],  0,   'xz -t', ['.xz']),
-  bzip2   ([0x42, 0x5a, 0x68],                    0,   'bzip2 -t', ['.bz2']),
-  zstd    ([0x28, 0xb5, 0x2f, 0xfd],              0,   'zstd -t', ['.zst']),
+                                                '.zip','.jar', '.war', '.apk'],
+            'unzip -q %1 -d %2'),
+  xz      ([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00],  0,   'xz -t', ['.xz'],
+            'tar -xf %1 -C %2 --strip-components=1'),
+  bzip2   ([0x42, 0x5a, 0x68],                    0,   'bzip2 -t', ['.bz2'],
+            'tar -xf %1 -C %2 --strip-components=1'),
+  zstd    ([0x28, 0xb5, 0x2f, 0xfd],              0,   'zstd -t', ['.zst'],
+            'tar -xf %1 -C %2 --strip-components=1'),
   // 'ustar' in ASCII bytes
-  tar     ([0x75, 0x73, 0x74, 0x61, 0x72],        257, 'tar -tf', ['.tar']);
+  tar     ([0x75, 0x73, 0x74, 0x61, 0x72],        257, 'tar -tf', ['.tar'],
+            'tar -xf %1 -C %2 --strip-components=1');
   // dart format on
 
   const _ArchiveType(
@@ -109,12 +115,21 @@ enum _ArchiveType {
     this.magicOffset,
     this.probeCmd,
     this.extensions,
+    this.extractCmd,
   );
 
   final List<int> magicBytes;
   final int magicOffset;
   final String probeCmd;
   final List<String> extensions;
+  final String extractCmd;
+}
+
+class _OverlayValidationResult {
+  const _OverlayValidationResult({required this.code, this.archiveType});
+
+  final _ValidationCode code;
+  final _ArchiveType? archiveType;
 }
 
 /// Builds [CrossTarget.augment] libraries (libdisplay-info, Vulkan-Headers, …)
@@ -344,13 +359,13 @@ class OverlayBuilder {
   /// and the failure only surfaces later as a misleading patch error against
   /// an empty tree. Anything failing here is deleted so the caller
   /// re-downloads.
-  Future<_OverlayDownloadResult> _validateArchive(
+  Future<_OverlayValidationResult> _validateArchive(
     File tarball,
     String? sha,
   ) async {
     // Check 0: is the file present?
     if (!tarball.existsSync()) {
-      return _OverlayDownloadResult.missingFile;
+      return const _OverlayValidationResult(code: _ValidationCode.missingFile);
     }
 
     // Check 1: is SHA256 valid?
@@ -358,7 +373,7 @@ class OverlayBuilder {
     if (expected != null) {
       final actual = await _sha256(tarball);
       if (actual != expected) {
-        return _OverlayDownloadResult.invalidSha;
+        return const _OverlayValidationResult(code: _ValidationCode.invalidSha);
       }
     }
 
@@ -376,13 +391,15 @@ class OverlayBuilder {
       try {
         final n = await raf.readInto(magic, 0, magicWindow);
         if (n < 2) {
-          return _OverlayDownloadResult.invalidTarball;
+          return const _OverlayValidationResult(
+            code: _ValidationCode.invalidTarball,
+          );
         }
       } finally {
         await raf.close();
       }
     } on FileSystemException {
-      return _OverlayDownloadResult.fsError;
+      return const _OverlayValidationResult(code: _ValidationCode.fsError);
     }
 
     _ArchiveType? archiveType;
@@ -423,7 +440,9 @@ class OverlayBuilder {
     }
 
     if (archiveType == null) {
-      return _OverlayDownloadResult.invalidArchive;
+      return const _OverlayValidationResult(
+        code: _ValidationCode.invalidArchive,
+      );
     }
 
     // Check 3: does the file open?
@@ -434,22 +453,25 @@ class OverlayBuilder {
     try {
       final test = await _run('which', [cmd]);
       if (test.exitCode != 0) {
-        return _OverlayDownloadResult.missingCmd;
+        return const _OverlayValidationResult(code: _ValidationCode.missingCmd);
       }
     } on ProcessException {
-      return _OverlayDownloadResult.missingCmd;
+      return const _OverlayValidationResult(code: _ValidationCode.missingCmd);
     }
 
     try {
       final test = await _run(cmd, args);
       if (test.exitCode != 0) {
-        return _OverlayDownloadResult.failedOpen;
+        return const _OverlayValidationResult(code: _ValidationCode.failedOpen);
       }
     } on ProcessException {
-      return _OverlayDownloadResult.failedOpen;
+      return const _OverlayValidationResult(code: _ValidationCode.failedOpen);
     }
 
-    return _OverlayDownloadResult.success;
+    return _OverlayValidationResult(
+      code: _ValidationCode.success,
+      archiveType: archiveType,
+    );
   }
 
   Future<Directory> _fetchSource(AugmentLib lib, {StepHandle? onStep}) async {
@@ -481,7 +503,7 @@ class OverlayBuilder {
     // "fetched" label stays on this handle until the caller completes/fails it
     // — StepHandle.complete() may only be called once per spinner.
     const maxRetries = 3;
-    late _OverlayDownloadResult? result;
+    late _OverlayValidationResult? result;
 
     for (var downloadAttempts = 0; ; downloadAttempts++) {
       // Check previous attempt
@@ -489,7 +511,7 @@ class OverlayBuilder {
         // If tarball is valid, skip download
         result = await _validateArchive(tarball, lib.sha256);
 
-        if (result == _OverlayDownloadResult.success) {
+        if (result.code == _ValidationCode.success) {
           // A usable archive was already in the cache before we tried to fetch.
           if (downloadAttempts == 0) {
             onStep?.update(
@@ -505,10 +527,10 @@ class OverlayBuilder {
         else {
           await tarball.delete();
 
-          if (result.fatal) {
+          if (result.code.fatal) {
             throw OverlayBuildException(
               '${lib.pkg}: fatal download error (${lib.url}),\n'
-              '${_overlayDownloadErrorMessage[result]}',
+              '${_overlayDownloadErrorMessage[result.code]}',
             );
           }
         }
@@ -518,7 +540,7 @@ class OverlayBuilder {
       if (downloadAttempts == maxRetries) {
         throw OverlayBuildException(
           '${lib.pkg}: download failed $maxRetries retries (${lib.url})\n'
-          'Last error: ${_overlayDownloadErrorMessage[result]}',
+          'Last error: ${_overlayDownloadErrorMessage[result?.code]}',
         );
       }
 
@@ -578,22 +600,15 @@ class OverlayBuilder {
       if (stage.existsSync()) stage.deleteSync(recursive: true);
       stage.createSync(recursive: true);
       final RunResult extracted;
-      if (tarball.path.toLowerCase().endsWith('.zip')) {
-        // GNU `tar` can't read a zip and `unzip` has no `--strip-components`,
-        // so unzip into a staging dir and promote a lone top-level directory to
-        // reproduce the tar path's `--strip-components=1`. Release zips that
-        // bundle vendored subtrees (e.g. sentry-native's crashpad/breakpad) come
-        // this way.
-        extracted = await _run('unzip', ['-q', tarball.path, '-d', stage.path]);
-      } else {
-        extracted = await _run('tar', [
-          '-xf',
-          tarball.path,
-          '-C',
-          stage.path,
-          '--strip-components=1',
-        ]);
-      }
+      // Use the appropriate extraction command based on the file type.
+      final archiveType = result.archiveType!;
+      final extract = archiveType.extractCmd
+          .replaceAll('%1', tarball.path)
+          .replaceAll('%2', stage.path)
+          .split(' ');
+      final cmd = extract[0];
+      final args = extract.sublist(1);
+      extracted = await _run(cmd, args);
       final detail = [
         extracted.stdout,
         extracted.stderr,
