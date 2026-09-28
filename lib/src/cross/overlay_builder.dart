@@ -406,7 +406,7 @@ class OverlayBuilder {
     for (final type in _ArchiveType.values) {
       var matchesExtension = false;
       for (final ext in type.extensions) {
-        if (tarball.path.endsWith(ext)) {
+        if (tarball.path.toLowerCase().endsWith(ext)) {
           matchesExtension = true;
           break;
         }
