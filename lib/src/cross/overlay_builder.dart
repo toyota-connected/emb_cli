@@ -56,14 +56,18 @@ class OverlayPaths {
 }
 
 enum _OverlayDownloadResult {
-  success,
-  missingFile,
-  fsError,
-  invalidTarball,
-  invalidArchive,
-  failedOpen,
-  invalidSha,
-  missingCmd,
+  success(fatal: false),
+  missingFile(fatal: false),
+  fsError(fatal: false),
+  invalidTarball(fatal: false),
+  invalidArchive(fatal: false),
+  failedOpen(fatal: false),
+  invalidSha(fatal: false),
+  missingCmd(fatal: true);
+
+  const _OverlayDownloadResult({required this.fatal});
+
+  final bool fatal;
 }
 
 class _BinResult {
@@ -500,6 +504,13 @@ class OverlayBuilder {
         // If there was a previous failed download attempt, delete it
         else {
           await tarball.delete();
+
+          if (result.fatal) {
+            throw OverlayBuildException(
+              '${lib.pkg}: fatal download error (${lib.url}),\n'
+              '${_overlayDownloadErrorMessage[result]}',
+            );
+          }
         }
       }
 
