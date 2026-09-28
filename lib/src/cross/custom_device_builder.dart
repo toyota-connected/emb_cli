@@ -60,6 +60,15 @@ Map<String, dynamic> buildCustomDevice({
   final dir = deployDir.trim();
   final assets = '$dir/data/flutter_assets';
   final platform = spec.platform ?? _platformFor(triple);
+  final vars = {'embedder': binName, 'deploy_dir': '.'};
+  final runCmd = runCmdString(
+    applyRunVars(runCommand ?? defaultRunTemplate, vars),
+    env: runEnv,
+  );
+  // `${engineOptions}` is Flutter's placeholder, interpolated at
+  // launch with --enable-dart-profiling, the vm-service flags hot
+  // reload needs, and so on. It stays literal in the written JSON.
+  final runDebugCmd = 'cd ${_q(dir)} && $runCmd \${engineOptions}';
 
   return <String, dynamic>{
     'id': spec.id,
@@ -75,13 +84,7 @@ Map<String, dynamic> buildCustomDevice({
     'ping': _ping(device),
     'install': _install(device, assets),
     'uninstall': _remote(device, 'rm -rf ${_q(assets)}'),
-    'runDebug': _remote(
-      device,
-      // `${engineOptions}` is Flutter's placeholder, interpolated at launch
-      // with --enable-dart-profiling, the vm-service flags hot reload needs,
-      // and so on. It stays literal in the written JSON.
-      'cd ${_q(dir)} && ${runCmdString(applyRunVars(runCommand ?? defaultRunTemplate, {'embedder': binName, 'deploy_dir': '.'}), env: runEnv)} \${engineOptions}',
-    ),
+    'runDebug': _remote(device, runDebugCmd),
     'forwardPort': _forwardPort(device),
     'forwardPortSuccessRegex': 'Port forwarding success',
     'screenshot': null,
