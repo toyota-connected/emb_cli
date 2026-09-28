@@ -958,12 +958,11 @@ sources:
       };
       // rpi5-bookworm is only in source 'a' — unqualified resolves fine.
       final project = CrossProjectResolver(
-        const ManifestLoader(), null, env,
+        const ManifestLoader(),
+        null,
+        env,
       ).resolve(appExtending('rpi5-bookworm').path)!;
-      expect(
-        project.targets['x']!.cross['toolchain_version'],
-        '12.3.rel1',
-      );
+      expect(project.targets['x']!.cross['toolchain_version'], '12.3.rel1');
     });
 
     test('ambiguous unqualified name across sources throws', () {
@@ -1007,7 +1006,9 @@ sources:
       };
       expect(
         () => CrossProjectResolver(
-          const ManifestLoader(), null, env,
+          const ManifestLoader(),
+          null,
+          env,
         ).resolve(appExtending('rpi5-bookworm').path),
         throwsA(
           isA<CrossProjectException>().having(

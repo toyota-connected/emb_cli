@@ -14,7 +14,9 @@ final validSourceName = RegExp(r'^[a-zA-Z0-9][a-zA-Z0-9_-]*$');
 
 /// Pattern for valid GitHub repo references: `owner/repo`. Each segment must
 /// start with an alphanumeric character to block path traversal (`../`).
-final validRepoRef = RegExp(r'^[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9][a-zA-Z0-9._-]*$');
+final validRepoRef = RegExp(
+  r'^[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9][a-zA-Z0-9._-]*$',
+);
 
 /// A configured board-library source. Boards from each source land in their
 /// own subdirectory of the data dir, so names never collide across sources.
@@ -57,10 +59,7 @@ sealed class BoardSource {
           transport: transport,
         );
       case 'local':
-        return LocalBoardSource(
-          name: name,
-          path: map['path'] as String? ?? '',
-        );
+        return LocalBoardSource(name: name, path: map['path'] as String? ?? '');
       default:
         throw ArgumentError('unknown board source type: ${map['type']}');
     }
@@ -105,11 +104,7 @@ class LocalBoardSource extends BoardSource {
   final String path;
 
   @override
-  Map<String, dynamic> toMap() => {
-    'name': name,
-    'type': 'local',
-    'path': path,
-  };
+  Map<String, dynamic> toMap() => {'name': name, 'type': 'local', 'path': path};
 }
 
 /// The default source — matches the pre-multi-source behavior.
@@ -139,9 +134,7 @@ class BoardSourceConfig {
         try {
           parsed.add(BoardSource.fromMap(Map<String, dynamic>.from(e)));
         } on Object catch (err) {
-          onWarning?.call(
-            'Skipping invalid source in ${file.path}: $err',
-          );
+          onWarning?.call('Skipping invalid source in ${file.path}: $err');
         }
       }
       if (parsed.isEmpty) return BoardSourceConfig([defaultSource]);
