@@ -36,9 +36,8 @@ void main() {
 
   /// A data home holding one board under the default source subdirectory.
   void installBoards({String? stamp}) {
-    final d = Directory(
-      p.join(tmp.path, 'data', 'emb', 'boards', 'emb-public'),
-    )..createSync(recursive: true);
+    final d = Directory(p.join(tmp.path, 'data', 'emb', 'boards', 'emb-public'))
+      ..createSync(recursive: true);
     File(p.join(d.path, 'raspberry-pi.emb.yaml')).writeAsStringSync('''
 id: raspberry-pi
 type: board
@@ -170,8 +169,7 @@ cross:
     });
 
     Future<int> runAdd(List<String> args) async {
-      Directory(p.join(tmp.path, 'config', 'emb'))
-          .createSync(recursive: true);
+      Directory(p.join(tmp.path, 'config', 'emb')).createSync(recursive: true);
       final runner = CommandRunner<int>('emb', 'test')
         ..addCommand(
           BoardsCommand(
@@ -186,17 +184,13 @@ cross:
     }
 
     test('rejects names with path-traversal characters', () async {
-      final code = await runAdd([
-        'github', 'org/repo', '--name', '../escape',
-      ]);
+      final code = await runAdd(['github', 'org/repo', '--name', '../escape']);
       expect(code, ExitCode.usage.code);
       expect(err.join(), contains('Invalid source name'));
     });
 
     test('rejects names starting with a dash', () async {
-      final code = await runAdd([
-        'github', 'org/repo', '--name', '-bad',
-      ]);
+      final code = await runAdd(['github', 'org/repo', '--name', '-bad']);
       expect(code, ExitCode.usage.code);
       expect(err.join(), contains('Invalid source name'));
     });
@@ -204,7 +198,10 @@ cross:
     test('accepts valid names', () async {
       when(() => logger.info(any())).thenAnswer((_) {});
       final code = await runAdd([
-        'github', 'org/repo', '--name', 'my-boards_2',
+        'github',
+        'org/repo',
+        '--name',
+        'my-boards_2',
       ]);
       expect(code, ExitCode.success.code);
     });
@@ -212,29 +209,33 @@ cross:
     test('adds a local source', () async {
       when(() => logger.info(any())).thenAnswer((_) {});
       final code = await runAdd([
-        'local', '/opt/my-boards', '--name', 'mylocal',
+        'local',
+        '/opt/my-boards',
+        '--name',
+        'mylocal',
       ]);
       expect(code, ExitCode.success.code);
-      final file = File(
-        p.join(tmp.path, 'config', 'emb', 'boards.yaml'),
-      );
+      final file = File(p.join(tmp.path, 'config', 'emb', 'boards.yaml'));
       final contents = file.readAsStringSync();
       expect(contents, contains('mylocal'));
       expect(contents, contains('/opt/my-boards'));
-      expect(contents, contains('type: \'local\''));
+      expect(contents, contains("type: 'local'"));
     });
 
     test('rejects repos with path-traversal', () async {
-      final code = await runAdd([
-        'github', '../escape', '--name', 'test',
-      ]);
+      final code = await runAdd(['github', '../escape', '--name', 'test']);
       expect(code, ExitCode.usage.code);
       expect(err.join(), contains('Invalid repo'));
     });
 
     test('rejects paths with traversal', () async {
       final code = await runAdd([
-        'github', 'org/repo', '--name', 'test', '--path', '../.git',
+        'github',
+        'org/repo',
+        '--name',
+        'test',
+        '--path',
+        '../.git',
       ]);
       expect(code, ExitCode.usage.code);
       expect(err.join(), contains('Invalid path'));
@@ -290,7 +291,7 @@ cross:
             return RunResult(
               0,
               'tag-object-sha\trefs/tags/main\n'
-              '$sha\trefs/tags/main^{}\n',
+                  '$sha\trefs/tags/main^{}\n',
               '',
             );
           }
@@ -300,8 +301,9 @@ cross:
           final dest = args.last;
           final boardsDir = Directory(p.join(dest, 'boards'))
             ..createSync(recursive: true);
-          File(p.join(boardsDir.path, 'test-board.emb.yaml'))
-              .writeAsStringSync('id: test-board\n');
+          File(
+            p.join(boardsDir.path, 'test-board.emb.yaml'),
+          ).writeAsStringSync('id: test-board\n');
         }
         return const RunResult(0, '', '');
       };
@@ -335,12 +337,12 @@ cross:
           ),
         );
       return await cmdRunner.run([
-        'boards',
-        'sync',
-        '--source',
-        'priv',
-        ...extra,
-      ]) ??
+            'boards',
+            'sync',
+            '--source',
+            'priv',
+            ...extra,
+          ]) ??
           0;
     }
 
@@ -349,10 +351,7 @@ cross:
       expect(code, ExitCode.success.code);
 
       expect(calls[0], contains('ls-remote'));
-      expect(
-        calls[0],
-        contains('git@github.com:org/priv-boards.git'),
-      );
+      expect(calls[0], contains('git@github.com:org/priv-boards.git'));
 
       expect(calls[1], contains('clone'));
       expect(calls[1], contains('--branch'));
@@ -363,16 +362,18 @@ cross:
 
       final installed = File(
         p.join(
-          tmp.path, 'data', 'emb', 'boards', 'priv',
+          tmp.path,
+          'data',
+          'emb',
+          'boards',
+          'priv',
           'test-board.emb.yaml',
         ),
       );
       expect(installed.existsSync(), isTrue);
 
       verify(
-        () => progress.complete(
-          any(that: contains('1 board file')),
-        ),
+        () => progress.complete(any(that: contains('1 board file'))),
       ).called(1);
     });
 
@@ -392,9 +393,7 @@ cross:
 
     test('reports failure when clone fails', () async {
       final code = await runSync(
-        runner: fakeRunner(
-          failOn: (exe, args) => args.contains('clone'),
-        ),
+        runner: fakeRunner(failOn: (exe, args) => args.contains('clone')),
       );
       expect(code, ExitCode.unavailable.code);
       verify(
@@ -403,10 +402,7 @@ cross:
     });
 
     test('passes --ref override to clone --branch', () async {
-      await runSync(
-        runner: fakeRunner(),
-        extra: ['--ref', 'v1.0.0'],
-      );
+      await runSync(runner: fakeRunner(), extra: ['--ref', 'v1.0.0']);
       expect(calls[1], contains('v1.0.0'));
     });
 
@@ -437,8 +433,7 @@ cross:
     });
 
     Future<int> runRemove(List<String> args) async {
-      Directory(p.join(tmp.path, 'config', 'emb'))
-          .createSync(recursive: true);
+      Directory(p.join(tmp.path, 'config', 'emb')).createSync(recursive: true);
       final runner = CommandRunner<int>('emb', 'test')
         ..addCommand(
           BoardsCommand(

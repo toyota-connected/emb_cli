@@ -524,8 +524,7 @@ class CrossProjectResolver {
     // Unqualified: exact match on the target segment after the source prefix.
     final matches = [
       for (final key in registry.keys)
-        if (key.substring(key.indexOf('/') + 1) == name)
-          key,
+        if (key.substring(key.indexOf('/') + 1) == name) key,
     ];
 
     if (matches.length == 1) {
@@ -535,11 +534,11 @@ class CrossProjectResolver {
           'extends: cycle through "$name" (in $where).',
         );
       }
-      return _applyExtends(
-        registry[qualified]!,
-        sourcePath,
-        {...seen, name, qualified},
-      );
+      return _applyExtends(registry[qualified]!, sourcePath, {
+        ...seen,
+        name,
+        qualified,
+      });
     }
 
     if (matches.length > 1) {

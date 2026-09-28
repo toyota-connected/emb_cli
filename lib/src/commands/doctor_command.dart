@@ -299,11 +299,12 @@ class DoctorCommand extends Command<int> {
           'names': boardNames,
           if (stamps.isNotEmpty)
             'versions': [
-              for (final s in stamps) {
-                'version': s.version,
-                'source': s.source,
-                'skewed': s.version != packageVersion,
-              },
+              for (final s in stamps)
+                {
+                  'version': s.version,
+                  'source': s.source,
+                  'skewed': s.version != packageVersion,
+                },
             ],
         },
         'backend': {

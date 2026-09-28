@@ -108,9 +108,7 @@ class BoardsListCommand extends Command<int> {
         LocalBoardSource(:final path) => Directory(path),
         _ => Directory(p.join(dir.path, s.name)),
       };
-      final stamp = sourceDir.existsSync()
-          ? readBoardsStamp(sourceDir)
-          : null;
+      final stamp = sourceDir.existsSync() ? readBoardsStamp(sourceDir) : null;
       if (stamp != null) {
         _logger.info(
           'Version: $stamp (${s.name})'
@@ -136,8 +134,7 @@ class BoardsListCommand extends Command<int> {
     }
 
     _logger.info('');
-    for (final MapEntry(key: source, value: targets)
-        in grouped.entries) {
+    for (final MapEntry(key: source, value: targets) in grouped.entries) {
       _logger.info('$source:');
       for (final t in targets) {
         _logger.info('  $t');
@@ -163,7 +160,9 @@ class BoardsListCommand extends Command<int> {
       };
       final type = s is GithubBoardSource ? 'github' : 'local';
       _logger.info('${s.name} ($type, $synced)');
-      final map = s.toMap()..remove('name')..remove('type');
+      final map = s.toMap()
+        ..remove('name')
+        ..remove('type');
       for (final e in map.entries) {
         _logger.info('  ${e.key}: ${e.value}');
       }
@@ -228,8 +227,10 @@ class BoardsSyncCommand extends Command<int> {
       );
 
       if (sourceFilter != null && !config.contains(sourceFilter)) {
-        _logger.err('Unknown source "$sourceFilter". '
-            'Known: ${config.sources.map((s) => s.name).join(", ")}.');
+        _logger.err(
+          'Unknown source "$sourceFilter". '
+          'Known: ${config.sources.map((s) => s.name).join(", ")}.',
+        );
         return ExitCode.usage.code;
       }
 
@@ -282,8 +283,8 @@ class BoardsSyncCommand extends Command<int> {
     Directory boardsRoot,
     String? refOverride,
   ) async {
-    final ref = refOverride ??
-        (source.ref == 'auto' ? 'v$packageVersion' : source.ref);
+    final ref =
+        refOverride ?? (source.ref == 'auto' ? 'v$packageVersion' : source.ref);
     final sourceDest = Directory(p.join(boardsRoot.path, source.name));
     final shaFile = File(p.join(sourceDest.path, _shaStamp));
 
@@ -297,9 +298,7 @@ class BoardsSyncCommand extends Command<int> {
           ? await _remoteSshSha(source, ref)
           : await _remoteApiSha(source, ref);
     } on Object catch (e) {
-      progress.fail(
-        'Could not check ${source.name} at $ref',
-      );
+      progress.fail('Could not check ${source.name} at $ref');
       _logger.err('$e');
       return ExitCode.unavailable.code;
     }
@@ -312,9 +311,7 @@ class BoardsSyncCommand extends Command<int> {
       return ExitCode.success.code;
     }
 
-    progress.update(
-      'Fetching ${source.name} (${source.repo}) at $ref',
-    );
+    progress.update('Fetching ${source.name} (${source.repo}) at $ref');
 
     final int count;
     try {
@@ -327,9 +324,7 @@ class BoardsSyncCommand extends Command<int> {
       return ExitCode.unavailable.code;
     }
     if (count == 0) {
-      progress.fail(
-        'No board files found for ${source.name} at $ref',
-      );
+      progress.fail('No board files found for ${source.name} at $ref');
       return ExitCode.unavailable.code;
     }
 
@@ -338,19 +333,14 @@ class BoardsSyncCommand extends Command<int> {
     ).writeAsStringSync('$packageVersion\n');
     shaFile.writeAsStringSync('$remoteSha\n');
 
-    progress.complete(
-      '${source.name}: installed $count board file(s)',
-    );
+    progress.complete('${source.name}: installed $count board file(s)');
     _logger.info(sourceDest.path);
     return ExitCode.success.code;
   }
 
   // -- Transport: remote SHA -------------------------------------------
 
-  Future<String> _remoteApiSha(
-    GithubBoardSource source,
-    String ref,
-  ) async {
+  Future<String> _remoteApiSha(GithubBoardSource source, String ref) async {
     final api = _apiBase.replace(
       path: '/repos/${source.repo}/commits/${Uri.encodeComponent(ref)}',
     );
@@ -358,20 +348,17 @@ class BoardsSyncCommand extends Command<int> {
     if (decoded is Map && decoded['sha'] is String) {
       return decoded['sha'] as String;
     }
-    throw StateError(
-      'unexpected response fetching commit SHA for $ref',
-    );
+    throw StateError('unexpected response fetching commit SHA for $ref');
   }
 
-  Future<String> _remoteSshSha(
-    GithubBoardSource source,
-    String ref,
-  ) async {
+  Future<String> _remoteSshSha(GithubBoardSource source, String ref) async {
     final sshUrl = 'git@github.com:${source.repo}.git';
-    final result = await _runProcess(
-      'git',
-      ['ls-remote', sshUrl, ref, '$ref^{}'],
-    );
+    final result = await _runProcess('git', [
+      'ls-remote',
+      sshUrl,
+      ref,
+      '$ref^{}',
+    ]);
     if (result.exitCode != 0) {
       throw StateError(
         result.stderr.isNotEmpty ? result.stderr : result.stdout,
@@ -409,14 +396,16 @@ class BoardsSyncCommand extends Command<int> {
     for (final e in entries) {
       progress.update('Fetching ${e.name}');
       final bytes = await _get(
-        e.url, source, accept: 'application/vnd.github.raw+json',
+        e.url,
+        source,
+        accept: 'application/vnd.github.raw+json',
       );
       File(p.join(dest.path, e.name)).writeAsBytesSync(bytes);
       written.add(e.name);
     }
     for (final f in dest.listSync().whereType<File>().where(
-      (f) => f.path.endsWith('.emb.yaml') &&
-          !written.contains(p.basename(f.path)),
+      (f) =>
+          f.path.endsWith('.emb.yaml') && !written.contains(p.basename(f.path)),
     )) {
       f.deleteSync();
     }
@@ -447,26 +436,23 @@ class BoardsSyncCommand extends Command<int> {
         tmp.path,
       ]);
       if (clone.exitCode != 0) {
-        throw StateError(
-          clone.stderr.isNotEmpty ? clone.stderr : clone.stdout,
-        );
+        throw StateError(clone.stderr.isNotEmpty ? clone.stderr : clone.stdout);
       }
       if (isSha) {
-        final fetch = await _runProcess(
-          'git',
-          ['fetch', 'origin', ref],
-          workingDirectory: tmp.path,
-        );
+        final fetch = await _runProcess('git', [
+          'fetch',
+          'origin',
+          ref,
+        ], workingDirectory: tmp.path);
         if (fetch.exitCode != 0) {
           throw StateError(
             fetch.stderr.isNotEmpty ? fetch.stderr : fetch.stdout,
           );
         }
-        final checkout = await _runProcess(
-          'git',
-          ['checkout', ref],
-          workingDirectory: tmp.path,
-        );
+        final checkout = await _runProcess('git', [
+          'checkout',
+          ref,
+        ], workingDirectory: tmp.path);
         if (checkout.exitCode != 0) {
           throw StateError(
             checkout.stderr.isNotEmpty ? checkout.stderr : checkout.stdout,
@@ -501,7 +487,8 @@ class BoardsSyncCommand extends Command<int> {
         written.add(name);
       }
       for (final existing in dest.listSync().whereType<File>().where(
-        (f) => f.path.endsWith('.emb.yaml') &&
+        (f) =>
+            f.path.endsWith('.emb.yaml') &&
             !written.contains(p.basename(f.path)),
       )) {
         existing.deleteSync();
@@ -552,8 +539,7 @@ class BoardsSyncCommand extends Command<int> {
         HttpHeaders.acceptHeader,
         accept ?? 'application/vnd.github+json',
       );
-    if (source.tokenEnv != null &&
-        url.host == _apiBase.host) {
+    if (source.tokenEnv != null && url.host == _apiBase.host) {
       final token = _environment[source.tokenEnv!];
       if (token != null && token.isNotEmpty) {
         req.headers.set(HttpHeaders.authorizationHeader, 'Bearer $token');
@@ -567,7 +553,6 @@ class BoardsSyncCommand extends Command<int> {
     return [for (final chunk in await res.toList()) ...chunk];
   }
 }
-
 
 /// `emb boards add` — add a board source to the config.
 class BoardsAddCommand extends Command<int> {
@@ -584,19 +569,18 @@ class BoardsAddCommand extends Command<int> {
       )
       ..addOption(
         'path',
-        help: 'Subdirectory within the repo (github) '
+        help:
+            'Subdirectory within the repo (github) '
             'or local path.',
       )
       ..addOption(
         'ref',
-        help: 'Git ref (github). '
+        help:
+            'Git ref (github). '
             '"auto" tracks emb version.',
         defaultsTo: 'main',
       )
-      ..addOption(
-        'token-env',
-        help: 'Env var holding a GitHub PAT.',
-      )
+      ..addOption('token-env', help: 'Env var holding a GitHub PAT.')
       ..addOption(
         'transport',
         help: 'Transport protocol: https (GitHub API) or ssh (git clone).',
@@ -642,8 +626,10 @@ class BoardsAddCommand extends Command<int> {
     }
 
     if (config.contains(sourceName)) {
-      _logger.err('Source "$sourceName" already exists. '
-          'Remove it first with `emb boards remove $sourceName`.');
+      _logger.err(
+        'Source "$sourceName" already exists. '
+        'Remove it first with `emb boards remove $sourceName`.',
+      );
       return ExitCode.config.code;
     }
 
@@ -651,16 +637,12 @@ class BoardsAddCommand extends Command<int> {
     switch (type) {
       case 'github':
         if (!validRepoRef.hasMatch(target)) {
-          _logger.err(
-            'Invalid repo "$target". Use "owner/repo" format.',
-          );
+          _logger.err('Invalid repo "$target". Use "owner/repo" format.');
           return ExitCode.usage.code;
         }
         final sourcePath = args['path'] as String? ?? 'boards';
         if (sourcePath.split('/').contains('..')) {
-          _logger.err(
-            'Invalid path "$sourcePath". Must not contain "..".',
-          );
+          _logger.err('Invalid path "$sourcePath". Must not contain "..".');
           return ExitCode.usage.code;
         }
         source = GithubBoardSource(

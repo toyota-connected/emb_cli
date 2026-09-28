@@ -138,8 +138,7 @@ void main() {
     expect(code, ExitCode.success.code);
     final sourceDir = Directory(p.join(dest().path, 'emb-public'));
     expect(
-      File(p.join(sourceDir.path, 'raspberry-pi.emb.yaml'))
-          .readAsStringSync(),
+      File(p.join(sourceDir.path, 'raspberry-pi.emb.yaml')).readAsStringSync(),
       contains('id: raspberry-pi'),
     );
     expect(
@@ -152,8 +151,10 @@ void main() {
   test('ignores entries that are not board files', () async {
     await runSync([]);
     final sourceDir = Directory(p.join(dest().path, 'emb-public'));
-    final written =
-        sourceDir.listSync().map((e) => p.basename(e.path)).toList();
+    final written = sourceDir
+        .listSync()
+        .map((e) => p.basename(e.path))
+        .toList();
     expect(written, contains('raspberry-pi.emb.yaml'));
     expect(written, isNot(contains('README.md')));
     expect(written, isNot(contains('nested')));

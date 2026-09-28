@@ -21,17 +21,14 @@ void main() {
 
     test('round-trips through save and load', () {
       final file = File('${tmp.path}/boards.yaml');
-      final original = BoardSourceConfig([
+      BoardSourceConfig([
         const GithubBoardSource(
           name: 'public',
           repo: 'org/repo',
-          path: 'boards',
-          ref: 'main',
           tokenEnv: 'MY_TOKEN',
         ),
         const LocalBoardSource(name: 'local', path: '/opt/boards'),
-      ]);
-      original.save(file);
+      ]).save(file);
 
       final loaded = BoardSourceConfig.load(file);
       expect(loaded.sources, hasLength(2));
@@ -50,14 +47,13 @@ void main() {
 
     test('round-trips ssh transport through save and load', () {
       final file = File('${tmp.path}/boards.yaml');
-      final original = BoardSourceConfig([
+      BoardSourceConfig([
         const GithubBoardSource(
           name: 'private',
           repo: 'org/private-repo',
           transport: 'ssh',
         ),
-      ]);
-      original.save(file);
+      ]).save(file);
 
       final loaded = BoardSourceConfig.load(file);
       final gh = loaded.sources[0] as GithubBoardSource;
@@ -147,11 +143,8 @@ void main() {
 
     test('throws on empty repo', () {
       expect(
-        () => BoardSource.fromMap({
-          'type': 'github',
-          'name': 'test',
-          'repo': '',
-        }),
+        () =>
+            BoardSource.fromMap({'type': 'github', 'name': 'test', 'repo': ''}),
         throwsA(isA<ArgumentError>()),
       );
     });
@@ -191,10 +184,7 @@ sources:
     repo: org/repo
 ''');
       final warnings = <String>[];
-      final config = BoardSourceConfig.load(
-        file,
-        onWarning: warnings.add,
-      );
+      final config = BoardSourceConfig.load(file, onWarning: warnings.add);
       expect(config.sources.first.name, 'emb-public');
       expect(warnings, hasLength(1));
       expect(warnings.first, contains('bad-name.yaml'));
@@ -212,10 +202,7 @@ sources:
     path: /opt/boards
 ''');
       final warnings = <String>[];
-      final config = BoardSourceConfig.load(
-        file,
-        onWarning: warnings.add,
-      );
+      final config = BoardSourceConfig.load(file, onWarning: warnings.add);
       expect(config.sources, hasLength(1));
       expect(config.sources.first.name, 'good');
       expect(warnings, hasLength(1));
