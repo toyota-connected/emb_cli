@@ -829,19 +829,17 @@ class CrossProjectResolver {
     final sources = <String, Directory>{};
     for (final entry in boardsDir.listSync()) {
       if (entry is Directory) {
-        final hasManifests = entry
-            .listSync()
-            .whereType<File>()
-            .any((f) => f.path.endsWith('.emb.yaml'));
+        final hasManifests = entry.listSync().whereType<File>().any(
+          (f) => f.path.endsWith('.emb.yaml'),
+        );
         if (hasManifests) sources[p.basename(entry.path)] = entry;
       }
     }
     if (sources.isNotEmpty) return sources;
     // Legacy flat layout: *.emb.yaml at the top level.
-    final hasFlat = boardsDir
-        .listSync()
-        .whereType<File>()
-        .any((f) => f.path.endsWith('.emb.yaml'));
+    final hasFlat = boardsDir.listSync().whereType<File>().any(
+      (f) => f.path.endsWith('.emb.yaml'),
+    );
     if (hasFlat) return {'dev': boardsDir};
     return {};
   }
