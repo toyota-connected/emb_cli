@@ -352,13 +352,12 @@ class OverlayBuilder {
   }
 
   /// Whether [tarball] is a usable archive: recognized magic bytes, passing
-  /// an integrity test, and — when the manifest pinsa [sha]
-  /// — a matching sha256. A cached download can be truncated (an
-  /// interrupted fetch, a disk-full write) or hold an HTML error page saved
-  /// under a tarball name; trusting `existsSync()` alone lets those through,
-  /// and the failure only surfaces later as a misleading patch error against
-  /// an empty tree. Anything failing here is deleted so the caller
-  /// re-downloads.
+  /// an integrity test, and — a [sha] match when pinned in the manifest.
+  /// A cached download can be truncated (an interrupted fetch,
+  /// a disk-full write) or hold an HTML error page saved  under a tarball name;
+  /// trusting `existsSync()` alone lets those through, and the failure
+  /// only surfaces later as a misleading patch error against an empty tree.
+  /// Anything failing here is deleted so the caller re-downloads.
   Future<_OverlayValidationResult> _validateArchive(
     File tarball,
     String? sha,
