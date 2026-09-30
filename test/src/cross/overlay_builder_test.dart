@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
+import 'package:emb_cli/src/cross/cross_keys.dart' show contentHash;
 import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/cross/overlay_builder.dart';
@@ -89,6 +90,9 @@ class _StopAfterFetch {
   }) async {
     calls.add([exe, ...args]);
     if (exe == 'pkg-config') return const RunResult(1, '', '');
+    // `tar -tf` is the archive probe, not the extraction: it lists the members
+    // and writes nothing. Only `-xf` below stands in for unpacking.
+    if (exe == 'tar' && args.contains('-tf')) return const RunResult(0, '', '');
     if (exe == 'tar') {
       // Honor the stubbed extraction outcome: when [extractExit] is set to a
       // non-zero code we behave like `tar` failing mid-stream — no files are
@@ -163,7 +167,12 @@ void main() {
     ).writeAsBytesSync(gzip.encode(utf8.encode('stub\n')));
 
     final dir = Directory(p.join(src.path, name))..createSync(recursive: true);
-    File(p.join(dir.path, '.emb-patch-stamp')).writeAsStringSync('');
+    // The stamp binds the tree to the source it came from, so it has to carry
+    // the same key the builder computes: url, sha pin (none here) and patch
+    // series (empty here).
+    File(
+      p.join(dir.path, '.emb-patch-stamp'),
+    ).writeAsStringSync(contentHash(['https://x/$name.tar.gz', '', '']));
   }
 
   test('skips a lib the sysroot already satisfies (G-04)', () async {
@@ -422,7 +431,8 @@ void main() {
       // The patched tree is re-unpacked (the pre-staged stamp no longer
       // matches a series with a patch), and extraction must actually produce
       // a file or the empty-tree guard throws before the patch is reached.
-      if (exe == 'tar') {
+      // `tar -tf` is the archive probe; only `-xf` unpacks.
+      if (exe == 'tar' && !args.contains('-tf')) {
         File(
           p.join(args[args.indexOf('-C') + 1], 'present.txt'),
         ).writeAsStringSync('before\n');
@@ -855,9 +865,10 @@ void main() {
             label,
           }) async {
             if (exe == 'pkg-config') return const RunResult(1, '', '');
-            // `gzip` is absent from this host: dart:io reports that as a throw,
-            // never as an exit code.
-            if (exe == 'gzip') {
+            // `tar` is absent from this host: dart:io reports that as a
+            // throw, never as an exit code. `-tf` is the probe, so extraction
+            // is never reached.
+            if (exe == 'tar') {
               throw ProcessException(exe, args, 'No such file or directory', 2);
             }
             return const RunResult(0, '', '');
@@ -871,7 +882,7 @@ void main() {
           'message',
           allOf(
             contains('required command is missing'),
-            contains('Could not run "gzip"'),
+            contains('Could not run "tar"'),
           ),
         ),
       ),
@@ -1011,8 +1022,8 @@ void main() {
             (e) => e.message,
             'message',
             allOf(
-              contains('download failed 3 retries'),
               contains('unsupported archive format'),
+              contains('after 3 attempts'),
             ),
           ),
         ),
@@ -1063,15 +1074,388 @@ void main() {
       expect(runner.calls.any((c) => c.first == 'tar'), isTrue);
 
       final tree = Directory(p.join(src.path, 'libdisplay-info-0.2.0'));
-      if (!tree.existsSync()) {
-        // The tree never got extracted — that's the actual bug.
-        expect(runner.calls.any((c) => c.first == 'tar'), isFalse);
-        return;
-      }
+      expect(tree.existsSync(), isTrue);
       expect(File(p.join(tree.path, 'stale.txt')).existsSync(), isFalse);
       // The stamp is written even with an empty patch list, so the next run
       // reuses this tree.
       expect(File(p.join(tree.path, '.emb-patch-stamp')).existsSync(), isTrue);
     },
   );
+
+  _securityAndDetection();
+}
+
+void _securityAndDetection() {
+  late Directory tmp;
+  setUp(() => tmp = Directory.systemTemp.createTempSync('emb_overlay_sec_'));
+  tearDown(() => tmp.deleteSync(recursive: true));
+
+  Directory srcDir() =>
+      Directory(p.join(tmp.path, '.config', 'flutter_workspace', 'overlay-src'))
+        ..createSync(recursive: true);
+
+  test('a zip whose only top-level entry is a symlink is refused', () async {
+    // The promotion moves a lone top-level directory up one level. listSync()
+    // reports a symlink-to-directory as a Directory, so without a no-follow
+    // check a hostile archive could leave the source dir a link out of the
+    // cache — and the stamp write, the `_build` wipe and the configure step
+    // would all follow it.
+    final src = srcDir();
+    final victim = Directory(p.join(tmp.path, 'victim'))
+      ..createSync(recursive: true);
+    File(p.join(victim.path, 'keep.txt')).writeAsStringSync('precious\n');
+    File(
+      p.join(src.path, 'libdisplay-info-libdisplay-info-0.2.0.zip'),
+    ).writeAsBytesSync([0x50, 0x4b, 0x03, 0x04, ...List.filled(300, 0)]);
+    final lib = AugmentLib.fromMap({
+      'pkg': 'libdisplay-info',
+      'min': '0.2.0',
+      'url': 'https://x/libdisplay-info-0.2.0.zip',
+      'build': 'meson',
+    });
+
+    final ob = OverlayBuilder(
+      Workspace(tmp),
+      _profile,
+      runProcess:
+          (
+            exe,
+            args, {
+            workingDirectory,
+            environment,
+            includeParentEnvironment = true,
+            runInShell = false,
+            output = ProcessOutputMode.capture,
+            label,
+          }) async {
+            if (exe == 'pkg-config') return const RunResult(1, '', '');
+            if (exe == 'unzip' && !args.contains('-t')) {
+              // What `unzip` does with a zip built by `zip --symlinks`.
+              final dest = args[args.indexOf('-d') + 1];
+              Link(p.join(dest, 'onlydir')).createSync(victim.path);
+              return const RunResult(0, '', '');
+            }
+            if (exe == 'meson') return const RunResult(9, '', 'stop here');
+            return const RunResult(0, '', '');
+          },
+    );
+    await expectLater(ob.build([lib]), throwsA(isA<OverlayBuildException>()));
+    ob.close();
+
+    // The staged link was promoted as a plain entry at most: the source dir is
+    // never itself a link out of the cache, and the victim keeps its files.
+    final tree = p.join(src.path, 'libdisplay-info-0.2.0');
+    expect(
+      FileSystemEntity.typeSync(tree, followLinks: false),
+      isNot(FileSystemEntityType.link),
+    );
+    expect(File(p.join(victim.path, 'keep.txt')).existsSync(), isTrue);
+    expect(File(p.join(victim.path, '.emb-patch-stamp')).existsSync(), isFalse);
+  });
+
+  test('a recognized but unhandled format fails at once, naming it', () async {
+    // 7-zip bytes under a .tar.gz name: re-fetching cannot help, so it must not
+    // cost three downloads, and the message must say what arrived.
+    final origin = await _FakeOrigin.start([
+      0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c, //
+      ...List.filled(300, 0),
+    ]);
+    addTearDown(origin.close);
+    final lib = AugmentLib.fromMap({
+      'pkg': 'libdisplay-info',
+      'min': '0.2.0',
+      'url': '${origin.origin}/libdisplay-info-0.2.0.tar.gz',
+      'build': 'meson',
+    });
+    final runner = _StopAfterFetch();
+
+    final ob = OverlayBuilder(
+      Workspace(tmp),
+      _profile,
+      runProcess: runner.call,
+    );
+    await expectLater(
+      ob.build([lib]),
+      throwsA(
+        isA<OverlayBuildException>().having(
+          (e) => e.message,
+          'message',
+          allOf(contains('7-zip'), contains('cannot use this download')),
+        ),
+      ),
+    );
+    ob.close();
+
+    expect(origin.requests, 1); // fatal: fetched once, never retried
+  });
+
+  test('a probe that exits non-zero is retried, not fatal', () async {
+    // The other half of the missingCmd distinction: the tool ran and refused
+    // the bytes, which is a bad body and worth re-fetching.
+    final origin = await _FakeOrigin.start(
+      gzip.encode(utf8.encode('plausible\n')),
+    );
+    addTearDown(origin.close);
+    final lib = AugmentLib.fromMap({
+      'pkg': 'libdisplay-info',
+      'min': '0.2.0',
+      'url': '${origin.origin}/libdisplay-info-0.2.0.tar.gz',
+      'build': 'meson',
+    });
+
+    final ob = OverlayBuilder(
+      Workspace(tmp),
+      _profile,
+      runProcess:
+          (
+            exe,
+            args, {
+            workingDirectory,
+            environment,
+            includeParentEnvironment = true,
+            runInShell = false,
+            output = ProcessOutputMode.capture,
+            label,
+          }) async {
+            if (exe == 'pkg-config') return const RunResult(1, '', '');
+            // The probe refuses every copy.
+            if (exe == 'tar' && args.contains('-tf')) {
+              return const RunResult(2, '', 'tar: unexpected EOF');
+            }
+            return const RunResult(0, '', '');
+          },
+    );
+    await expectLater(
+      ob.build([lib]),
+      throwsA(
+        isA<OverlayBuildException>().having(
+          (e) => e.message,
+          'message',
+          allOf(
+            contains('failed to decompress archive'),
+            contains('after 3 attempts'),
+          ),
+        ),
+      ),
+    );
+    ob.close();
+
+    expect(origin.requests, 3);
+  });
+
+  test('repointing url re-unpacks instead of reusing the old tree', () async {
+    // The stamp binds the tree to the source it came from. Before it covered
+    // `url`, a manifest that moved to a new tag while `min:` stayed put
+    // re-downloaded the tarball and then rebuilt the *old* tree.
+    final src = srcDir();
+    final tree = Directory(p.join(src.path, 'libdisplay-info-0.2.0'))
+      ..createSync(recursive: true);
+    File(p.join(tree.path, 'old.txt')).writeAsStringSync('from the old url\n');
+    File(
+      p.join(tree.path, '.emb-patch-stamp'),
+    ).writeAsStringSync(contentHash(['https://x/old-0.2.0.tar.gz', '', '']));
+    await _makeTarGz(
+      p.join(src.path, 'libdisplay-info-new-0.2.0.tar.gz'),
+      entries: {'new.txt': 'from the new url\n'},
+    );
+    final lib = AugmentLib.fromMap({
+      'pkg': 'libdisplay-info',
+      'min': '0.2.0',
+      'url': 'https://x/new-0.2.0.tar.gz',
+      'build': 'meson',
+    });
+    final runner = _StopAfterFetch();
+
+    final ob = OverlayBuilder(
+      Workspace(tmp),
+      _profile,
+      runProcess: runner.call,
+    );
+    await expectLater(ob.build([lib]), throwsA(isA<OverlayBuildException>()));
+    ob.close();
+
+    // Re-extracted: the tree from the previous url is gone.
+    expect(File(p.join(tree.path, 'old.txt')).existsSync(), isFalse);
+    expect(
+      runner.calls.any((c) => c.first == 'tar' && c.contains('-xf')),
+      isTrue,
+    );
+  });
+
+  test('each archive row is detected from its own magic bytes', () async {
+    // Only gzip and zip were exercised before, so a wrong byte in the xz,
+    // bzip2, zstd or tar row would have shipped silently. Each body carries
+    // nothing but its signature: detection is all that is under test.
+    final cases = <String, List<int>>{
+      'xz': [0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00],
+      'bz2': [0x42, 0x5a, 0x68],
+      'zst': [0x28, 0xb5, 0x2f, 0xfd],
+    };
+    for (final entry in cases.entries) {
+      final src = srcDir();
+      final name = 'libdisplay-info-0.2.0.tar.${entry.key}';
+      File(
+        p.join(src.path, 'libdisplay-info-$name'),
+      ).writeAsBytesSync([...entry.value, ...List.filled(300, 0)]);
+      final lib = AugmentLib.fromMap({
+        'pkg': 'libdisplay-info',
+        'min': '0.2.0',
+        'url': 'https://x/$name',
+        'build': 'meson',
+      });
+      final runner = _StopAfterFetch();
+      final ob = OverlayBuilder(
+        Workspace(tmp),
+        _profile,
+        runProcess: runner.call,
+      );
+      await expectLater(ob.build([lib]), throwsA(isA<OverlayBuildException>()));
+      ob.close();
+
+      // Probed and extracted through tar, which reads all three codecs.
+      expect(
+        runner.calls.any((c) => c.first == 'tar' && c.contains('-tf')),
+        isTrue,
+        reason: '${entry.key} was not probed',
+      );
+      Directory(
+        p.join(src.path, 'libdisplay-info-0.2.0'),
+      ).deleteSync(recursive: true);
+      File(p.join(src.path, 'libdisplay-info-$name')).deleteSync();
+    }
+  });
+
+  test('an old tar with no ustar signature is probed, not deleted', () async {
+    // v7/GNU tars carry no `ustar` at 257. The extension names the format, so
+    // the probe gets the final say rather than the good file being deleted.
+    final src = srcDir();
+    final tarball = File(p.join(src.path, 'libdisplay-info-old-0.2.0.tar'))
+      ..writeAsBytesSync([...utf8.encode('somefile'), ...List.filled(300, 0)]);
+    final lib = AugmentLib.fromMap({
+      'pkg': 'libdisplay-info',
+      'min': '0.2.0',
+      'url': 'https://x/old-0.2.0.tar',
+      'build': 'meson',
+    });
+    final runner = _StopAfterFetch();
+
+    final ob = OverlayBuilder(
+      Workspace(tmp),
+      _profile,
+      runProcess: runner.call,
+    );
+    await expectLater(ob.build([lib]), throwsA(isA<OverlayBuildException>()));
+    ob.close();
+
+    expect(
+      runner.calls.any((c) => c.first == 'tar' && c.contains('-tf')),
+      isTrue,
+    );
+    expect(tarball.existsSync(), isTrue); // not discarded as corrupt
+  });
+
+  test(
+    'a body shorter than any signature is corrupt, not unsupported',
+    () async {
+      final origin = await _FakeOrigin.start([0x1f]);
+      addTearDown(origin.close);
+      final lib = AugmentLib.fromMap({
+        'pkg': 'libdisplay-info',
+        'min': '0.2.0',
+        'url': '${origin.origin}/libdisplay-info-0.2.0.tar.gz',
+        'build': 'meson',
+      });
+      final runner = _StopAfterFetch();
+
+      final ob = OverlayBuilder(
+        Workspace(tmp),
+        _profile,
+        runProcess: runner.call,
+      );
+      await expectLater(
+        ob.build([lib]),
+        throwsA(
+          isA<OverlayBuildException>().having(
+            (e) => e.message,
+            'message',
+            contains('corrupt archive data'),
+          ),
+        ),
+      );
+      ob.close();
+    },
+  );
+
+  test('a matching sha256 pin is accepted', () async {
+    // Only a mismatch was covered, so the happy path of the pin — including
+    // the case-folding — was unverified.
+    final src = srcDir();
+    final path = p.join(
+      src.path,
+      'libdisplay-info-libdisplay-info-0.2.0.tar.gz',
+    );
+    await _makeTarGz(path, entries: {'present.txt': 'payload\n'});
+    final digest = sha256.convert(File(path).readAsBytesSync()).toString();
+    final lib = AugmentLib.fromMap({
+      'pkg': 'libdisplay-info',
+      'min': '0.2.0',
+      'url': 'https://x/libdisplay-info-0.2.0.tar.gz',
+      'build': 'meson',
+      'sha256': digest.toUpperCase(),
+    });
+    final runner = _StopAfterFetch();
+
+    final ob = OverlayBuilder(
+      Workspace(tmp),
+      _profile,
+      runProcess: runner.call,
+    );
+    // Reaches the build step, i.e. the pin was accepted and the tree unpacked.
+    await expectLater(
+      ob.build([lib]),
+      throwsA(
+        isA<OverlayBuildException>().having(
+          (e) => e.message,
+          'message',
+          contains('meson setup'),
+        ),
+      ),
+    );
+    ob.close();
+  });
+
+  test('the project source cache is used when one is given', () async {
+    // Every other test exercises the legacy <workspace>/overlay-src branch, so
+    // the .cache/overlay-src layout that `emb cross` actually passes was never
+    // executed.
+    final project = Directory(p.join(tmp.path, 'proj'))..createSync();
+    final lib = AugmentLib.fromMap({
+      'pkg': 'libdisplay-info',
+      'min': '0.2.0',
+      'url': 'https://x/libdisplay-info-0.2.0.tar.gz',
+      'build': 'meson',
+    });
+    final cached = Directory(p.join(project.path, '.cache', 'overlay-src'))
+      ..createSync(recursive: true);
+    await _makeTarGz(
+      p.join(cached.path, 'libdisplay-info-libdisplay-info-0.2.0.tar.gz'),
+      entries: {'present.txt': 'payload\n'},
+    );
+    final runner = _StopAfterFetch();
+
+    final ob = OverlayBuilder(
+      Workspace(tmp),
+      _profile,
+      runProcess: runner.call,
+      sourceCacheDir: project,
+    );
+    await expectLater(ob.build([lib]), throwsA(isA<OverlayBuildException>()));
+    ob.close();
+
+    // Unpacked beside the tarball in the project cache, not in the workspace.
+    expect(
+      Directory(p.join(cached.path, 'libdisplay-info-0.2.0')).existsSync(),
+      isTrue,
+    );
+  });
 }

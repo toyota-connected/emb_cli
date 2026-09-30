@@ -106,8 +106,46 @@ class AugmentLib {
 
   factory AugmentLib.fromMap(Map<dynamic, dynamic> map) {
     final pkg = (map['pkg'] ?? '').toString();
+    final minVersion = (map['min'] ?? map['min_version'] ?? '0').toString();
     final url = (map['url'] ?? '').toString();
     final path = (map['path'] as Object?)?.toString() ?? '';
+
+    // `pkg` and `min` name files and directories in the source cache
+    // (`<pkg>-<url basename>` tarballs, `<pkg>-<min>` trees), and the builder
+    // deletes those paths recursively when it decides a tree must be
+    // re-unpacked. A value carrying `/`, `..` or a leading `/` would therefore
+    // let a manifest steer both the writes and the deletes anywhere the
+    // developer can write, because `p.join` drops its base when the next part
+    // is absolute. Refused rather than sanitized: every real pkg-config name
+    // and version already fits.
+    const segment = r'^[A-Za-z0-9._+-]+$';
+    if (pkg.isEmpty) {
+      throw ArgumentError('an augment entry needs pkg: (the pkg-config name)');
+    }
+    if (!RegExp(segment).hasMatch(pkg) || pkg == '.' || pkg == '..') {
+      throw ArgumentError(
+        'augment "$pkg": pkg must be a plain name matching '
+        '[A-Za-z0-9._+-] — it names a directory in the source cache',
+      );
+    }
+    if (!RegExp(segment).hasMatch(minVersion) ||
+        minVersion == '.' ||
+        minVersion == '..') {
+      throw ArgumentError(
+        'augment "$pkg": min "$minVersion" must match [A-Za-z0-9._+-] — it '
+        'names a directory in the source cache',
+      );
+    }
+
+    final sha = _trimmedOrNull(map['sha256']);
+    // A pin that cannot possibly match (base64, a `sha256:` prefix, a truncated
+    // paste) would otherwise fail three full downloads and blame upstream.
+    if (sha != null && !RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(sha)) {
+      throw ArgumentError(
+        'augment "$pkg": sha256 must be 64 hex characters, got "$sha" '
+        '(${sha.length} chars)',
+      );
+    }
     final patches = [
       for (final e in (map['patches'] as List<dynamic>? ?? const [])) '$e',
     ];
@@ -138,7 +176,7 @@ class AugmentLib {
 
     return AugmentLib(
       pkg: pkg,
-      minVersion: (map['min'] ?? map['min_version'] ?? '0').toString(),
+      minVersion: minVersion,
       url: url,
       path: path.isEmpty ? null : path,
       build: CrossGenerator.fromToken((map['build'] ?? 'meson').toString()),
@@ -152,7 +190,7 @@ class AugmentLib {
       requiresDefine: (map['requires_define'] ?? map['when'])?.toString(),
       patches: patches,
       subdir: (map['subdir'] ?? map['source_subdir'])?.toString(),
-      sha256: _trimmedOrNull(map['sha256']),
+      sha256: sha,
     );
   }
 

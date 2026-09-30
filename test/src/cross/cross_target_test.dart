@@ -472,6 +472,83 @@ void main() {
       expect(() => augmentOf({}), throwsA(isA<ArgumentError>()));
     });
 
+    test('a pkg that would escape the source cache is refused', () {
+      // `pkg` and `min` name the cache's tarball and tree, and the builder
+      // deletes that tree recursively when it must re-unpack. p.join drops its
+      // base when the next part is absolute, so an unchecked value aims both
+      // the writes and the deletes at the developer's own files.
+      for (final pkg in [
+        '/home/dev/importantproj',
+        '../../escape',
+        'a/b',
+        '..',
+      ]) {
+        expect(
+          () => AugmentLib.fromMap({
+            'pkg': pkg,
+            'url': 'https://x/libfoo-1.2.tar.gz',
+          }),
+          throwsA(isA<ArgumentError>()),
+          reason: 'pkg "$pkg" must be refused',
+        );
+      }
+    });
+
+    test('a min that would escape the source cache is refused', () {
+      expect(
+        () => AugmentLib.fromMap({
+          'pkg': 'libfoo',
+          'min': '../../../etc',
+          'url': 'https://x/libfoo-1.2.tar.gz',
+        }),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+
+    test('ordinary pkg-config names and versions still parse', () {
+      final a = AugmentLib.fromMap({
+        'pkg': 'libdisplay-info',
+        'min': '0.2.0',
+        'url': 'https://x/libdisplay-info-0.2.0.tar.gz',
+      });
+      expect(a.pkg, 'libdisplay-info');
+      expect(a.minVersion, '0.2.0');
+      // The shapes real manifests use: dots, plus, underscores.
+      expect(
+        AugmentLib.fromMap({
+          'pkg': 'gtk+-3.0',
+          'min': '3.24.41',
+          'url': 'https://x/gtk.tar.xz',
+        }).pkg,
+        'gtk+-3.0',
+      );
+    });
+
+    test('a sha256 that cannot match is refused at parse time', () {
+      // Otherwise it fails three full downloads and blames upstream.
+      for (final sha in [
+        'deadbeef',
+        'sha256:${'a' * 64}',
+        '${'a' * 63}z',
+        'YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXphYmNkZWZnaGlqa2xtbm9wcXJzdHU=',
+      ]) {
+        expect(
+          () =>
+              augmentOf({'url': 'https://x/libfoo-1.2.tar.gz', 'sha256': sha}),
+          throwsA(isA<ArgumentError>()),
+          reason: 'sha256 "$sha" must be refused',
+        );
+      }
+      // A real digest passes, in either case.
+      expect(
+        augmentOf({
+          'url': 'https://x/libfoo-1.2.tar.gz',
+          'sha256': 'A' * 64,
+        }).sha256,
+        'A' * 64,
+      );
+    });
+
     test('patches with a local path are refused', () {
       // emb would be rewriting files it did not create.
       expect(

@@ -849,7 +849,7 @@ cross:
     dev_packages: [libdrm-dev, libegl-dev, libgbm-dev, libinput-dev]
     snapshot: 2024-06-01          # pin apt resolution to a mirror snapshot (optional)
   augment:                        # libs built from source when the sysroot is too old
-    - { pkg: libdisplay-info, min: "0.2.0", url: https://.../libdisplay-info-0.2.0.tar.gz, build: meson, static: true }
+    - { pkg: libdisplay-info, min: "0.2.0", url: https://.../libdisplay-info-0.2.0.tar.gz, build: meson, static: true, sha256: 2f1c… }
   host_dev_packages: [libpugixml-dev]   # build-machine deps of a `host: true` augment
   aot_obfuscate: false            # app AOT: keep identifiers (default: release only)
   aot_strip: false                # app AOT: keep the symbol table (default: strip)
@@ -866,6 +866,25 @@ cross:
     files:                        # extra payload; a source may be a directory
       ../runnable/data: { to: /usr/share/ivi-homescreen/data, mode: '0644' }
 ```
+
+##### `augment` — sources built from source
+
+A tarball is fetched to `<project>/.cache/overlay-src`, checked, unpacked and
+built against the target toolchain. `url` accepts `.tar.gz`/`.tgz`, `.tar.xz`,
+`.tar.bz2`, `.tar.zst`, plain `.tar` and `.zip` (including `.jar`/`.war`/`.apk`),
+detected from the file's own bytes rather than its name — a zipball served as
+`/tarball/<ref>` unpacks correctly. A format emb cannot unpack (7-zip, lz4,
+rpm, …) is reported by name instead of retried.
+
+`sha256` is optional but recommended, and emb warns when it is absent: without
+it whoever answers the URL decides what gets compiled on the build machine. The
+archive checks detect a truncated or substituted-for-garbage download, not a
+substituted-for-working-code one. A plain `http` url draws the same warning.
+
+`pkg` and `min` name the cache's files, so both are restricted to
+`[A-Za-z0-9._+-]`. The unpacked tree is keyed on `url`, `sha256` and the patch
+series: changing any of them re-unpacks rather than rebuilding the old tree.
+Concurrent `emb` runs sharing one cache serialize per package.
 
 ##### `package.files` — extra payload
 
