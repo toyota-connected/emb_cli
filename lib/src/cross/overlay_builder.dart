@@ -55,14 +55,25 @@ class OverlayPaths {
   }
 }
 
+/// Outcome of validating a downloaded tarball. `fatal` marks the results a
+/// re-download cannot fix: the bytes are not the problem, the environment is.
+/// Everything else is a bad or half-written body, so the caller deletes the
+/// file and fetches again.
 enum _ValidationCode {
   success(fatal: false),
   missingFile(fatal: false),
   fsError(fatal: false),
   corruptArchive(fatal: false),
-  unsupportedArchive(fatal: true),
+  // Neither the magic bytes nor the filename name a supported format. An HTML
+  // error page, a rate-limit body or an auth redirect saved under a tarball
+  // name looks exactly like this, and those *are* worth re-fetching — so this
+  // stays retryable even though a genuinely unsupported format will exhaust
+  // the retries before it fails.
+  unsupportedArchive(fatal: false),
   failedOpen(fatal: false),
   invalidSha(fatal: false),
+  // The bytes passed both the sha pin and the magic check; the host just has
+  // no tool to test or unpack them. Re-fetching identical bytes cannot help.
   missingCmd(fatal: true);
 
   const _ValidationCode({required this.fatal});
@@ -88,29 +99,35 @@ const Map<_ValidationCode, String> _overlayDownloadErrorMessage = {
   _ValidationCode.missingCmd: 'required command is missing',
 };
 
-// Maintainable enum of supported archive formats;
-// For each type, its magic bytes, offset and probe cmd are listed.
-// This makes adding the support of new archive formats trivial, as only
-// this enum needs updating without further patching to any logic below.
+/// `tar` reads gzip/xz/bzip2/zstd itself (`-xf` sniffs the compression), so
+/// every tar-based format shares one extraction argv. `%1` is the tarball,
+/// `%2` the destination directory; both are substituted per element, never by
+/// splitting a command string — a path containing a space would otherwise turn
+/// into two arguments.
+const _tarExtract = ['tar', '-xf', '%1', '-C', '%2', '--strip-components=1'];
+
+// Maintainable enum of supported archive formats. Each row carries its magic
+// bytes and their offset, the extensions that name it, the argv that
+// integrity-tests it (the tarball path is appended), and the argv that extracts
+// it. Adding a format is a row here — the one piece of logic that still names a
+// type is the lone-top-level-dir promotion in _fetchSource, which only zip
+// needs (`unzip` has no --strip-components).
 enum _ArchiveType {
   // dart format off
-  gzip    ([0x1f, 0x8b],                          0,   'gzip -t', ['.gz',
-                                                '.tgz'],
-            'tar -xf %1 -C %2 --strip-components=1'),
-  zip     ([0x50, 0x4b],                          0,   'unzip -t -q', [
-                                                '.zip','.jar', '.war', '.apk'],
-            'unzip -q %1 -d %2'),
-  xz      ([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00],  0,   'xz -t', ['.xz',
-                                                '.txz'],
-            'tar -xf %1 -C %2 --strip-components=1'),
-  bzip2   ([0x42, 0x5a, 0x68],                    0,   'bzip2 -t', ['.bz2',
-                                                '.tbz2'],
-            'tar -xf %1 -C %2 --strip-components=1'),
-  zstd    ([0x28, 0xb5, 0x2f, 0xfd],              0,   'zstd -t', ['.zst'],
-            'tar -xf %1 -C %2 --strip-components=1'),
+  gzip    ([0x1f, 0x8b],                          0,   ['gzip', '-t'],
+                                                ['.gz', '.tgz'], _tarExtract),
+  zip     ([0x50, 0x4b],                          0,   ['unzip', '-t', '-q'],
+                                                ['.zip','.jar', '.war', '.apk'],
+            ['unzip', '-q', '%1', '-d', '%2']),
+  xz      ([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00],  0,   ['xz', '-t'],
+                                                ['.xz', '.txz'], _tarExtract),
+  bzip2   ([0x42, 0x5a, 0x68],                    0,   ['bzip2', '-t'],
+                                                ['.bz2', '.tbz2'], _tarExtract),
+  zstd    ([0x28, 0xb5, 0x2f, 0xfd],              0,   ['zstd', '-t'],
+                                                ['.zst'], _tarExtract),
   // 'ustar' in ASCII bytes
-  tar     ([0x75, 0x73, 0x74, 0x61, 0x72],        257, 'tar -tf', ['.tar'],
-            'tar -xf %1 -C %2 --strip-components=1');
+  tar     ([0x75, 0x73, 0x74, 0x61, 0x72],        257, ['tar', '-tf'],
+                                                ['.tar'], _tarExtract);
   // dart format on
 
   const _ArchiveType(
@@ -123,9 +140,19 @@ enum _ArchiveType {
 
   final List<int> magicBytes;
   final int magicOffset;
-  final String probeCmd;
+  final List<String> probeCmd;
   final List<String> extensions;
-  final String extractCmd;
+  final List<String> extractCmd;
+
+  /// The extraction argv with `%1`/`%2` bound to [tarball] and [destDir].
+  List<String> extractArgv(String tarball, String destDir) => [
+    for (final a in extractCmd)
+      switch (a) {
+        '%1' => tarball,
+        '%2' => destDir,
+        _ => a,
+      },
+  ];
 }
 
 class _OverlayValidationResult {
@@ -361,13 +388,15 @@ class OverlayBuilder {
       ..createSync(recursive: true);
   }
 
-  /// Whether [tarball] is a usable archive: recognized magic bytes, passing
-  /// an integrity test, and — a [sha] match when pinned in the manifest.
-  /// A cached download can be truncated (an interrupted fetch,
-  /// a disk-full write) or hold an HTML error page saved  under a tarball name;
-  /// trusting `existsSync()` alone lets those through, and the failure
-  /// only surfaces later as a misleading patch error against an empty tree.
-  /// Anything failing here is deleted so the caller re-downloads.
+  /// Classifies [tarball]: a [sha] match when the manifest pins one, then
+  /// recognized magic bytes, then a passing integrity probe.
+  /// A cached download can be truncated (an interrupted fetch, a disk-full
+  /// write) or hold an HTML error page saved under a tarball name; trusting
+  /// `existsSync()` alone lets those through, and the failure only surfaces
+  /// later as a misleading patch error against an empty tree.
+  /// A non-fatal result means the bytes are suspect, so the caller deletes and
+  /// re-downloads; a fatal one ([_ValidationCode.fatal]) means the host is at
+  /// fault, so the file is kept and the build stops.
   Future<_OverlayValidationResult> _validateArchive(
     File tarball,
     String? sha,
@@ -395,11 +424,15 @@ class OverlayBuilder {
         .reduce(max);
 
     final magic = Uint8List(magicWindow);
+    // Bytes actually read: the buffer is always [magicWindow] long and
+    // zero-filled past the end of a short file, so comparing against its length
+    // would let a 3-byte file "match" any signature made of leading zeros.
+    final int magicLength;
     try {
       final raf = await tarball.open();
       try {
-        final n = await raf.readInto(magic, 0, magicWindow);
-        if (n < 2) {
+        magicLength = await raf.readInto(magic, 0, magicWindow);
+        if (magicLength < 2) {
           return const _OverlayValidationResult(
             code: _ValidationCode.corruptArchive,
           );
@@ -424,7 +457,7 @@ class OverlayBuilder {
       }
 
       // Shorter than the type's magic even at its offset: can't match.
-      if (magic.length < type.magicOffset + type.magicBytes.length) {
+      if (magicLength < type.magicOffset + type.magicBytes.length) {
         continue;
       }
       var matchesMagic = true;
@@ -450,10 +483,12 @@ class OverlayBuilder {
       }
     }
 
-    /// If no archive type matched, return an appropriate validation result.
-    /// Returns `unsupportedArchive` if no known archive extension was found,
-    /// returns `corruptArchive` if at least one known archive extension
-    /// was found but the magic bytes did not match.
+    // If no archive type matched, return an appropriate validation result.
+    // Returns `unsupportedArchive` if no known archive extension was found,
+    // returns `corruptArchive` if at least one known archive extension
+    // was found but the magic bytes did not match. Both are retryable: an
+    // error page served under either kind of name is a bad body, not a bad
+    // manifest.
     if (archiveType == null) {
       if (!atLeastOneExtension) {
         return const _OverlayValidationResult(
@@ -467,41 +502,29 @@ class OverlayBuilder {
     }
 
     // Check 3: does the file open?
-    final probe = archiveType.probeCmd.split(' ');
-    final cmd = probe[0];
-    final args = [...(probe.sublist(1)), tarball.path];
-
-    // The two arms are not duplicates: a nonzero exit
-    // means the process ran and refused,
-    // a ProcessException means it was never spawned;
-    // both mean "can't probe", so they share a return.
-    try {
-      final test = await _run('which', [cmd]);
-      if (test.exitCode != 0) {
-        return _OverlayValidationResult(
-          code: _ValidationCode.missingCmd,
-          archiveType: archiveType,
-          message: 'Command "$cmd" not found - please install it.',
-        );
-      }
-    } on ProcessException {
-      return _OverlayValidationResult(
-        code: _ValidationCode.missingCmd,
-        archiveType: archiveType,
-        message:
-            'Make sure the commands "$cmd" and "which" are '
-            'installed correctly, present on your path, '
-            'and that you have the necessary permissions to call them',
-      );
-    }
-
+    // The two arms are not duplicates, and the distinction is what decides
+    // whether the tarball is thrown away: a nonzero exit means the probe ran
+    // and refused the bytes (retryable), while a ProcessException means it was
+    // never spawned — missing, not executable, or exec-format mismatch — which
+    // says nothing about the bytes and is fatal. No `which` pre-check: spawning
+    // the probe answers the same question without making `which` itself a
+    // dependency of every fetch.
+    final cmd = archiveType.probeCmd.first;
+    final args = [...archiveType.probeCmd.skip(1), tarball.path];
     try {
       final test = await _run(cmd, args);
       if (test.exitCode != 0) {
         return const _OverlayValidationResult(code: _ValidationCode.failedOpen);
       }
     } on ProcessException {
-      return const _OverlayValidationResult(code: _ValidationCode.failedOpen);
+      return _OverlayValidationResult(
+        code: _ValidationCode.missingCmd,
+        archiveType: archiveType,
+        message:
+            'Could not run "$cmd" to verify ${p.basename(tarball.path)}. '
+            'Install it (and check it is on PATH and executable), then build '
+            'again — the download itself is fine and has been kept.',
+      );
     }
 
     return _OverlayValidationResult(
@@ -561,8 +584,10 @@ class OverlayBuilder {
         }
         // If there was a previous failed download attempt, delete it
         else {
-          await tarball.delete();
-
+          // A fatal result is the host's fault, not the body's: re-fetching the
+          // same bytes cannot help, and they are worth keeping — the user
+          // installs the missing tool and builds again without paying for the
+          // download twice. So throw *before* the delete below.
           if (result.code.fatal) {
             throw OverlayBuildException(
               '${lib.pkg}: fatal download error (${lib.url}),\n'
@@ -570,6 +595,7 @@ class OverlayBuilder {
               '${result.message != null ? '\n${result.message}' : ''}',
             );
           }
+          await tarball.delete();
         }
       }
 
@@ -636,16 +662,10 @@ class OverlayBuilder {
       final stage = Directory('${dir.path}.unzip');
       if (stage.existsSync()) stage.deleteSync(recursive: true);
       stage.createSync(recursive: true);
-      final RunResult extracted;
       // Use the appropriate extraction command based on the file type.
       final archiveType = result.archiveType!;
-      final extract = archiveType.extractCmd
-          .replaceAll('%1', tarball.path)
-          .replaceAll('%2', stage.path)
-          .split(' ');
-      final cmd = extract[0];
-      final args = extract.sublist(1);
-      extracted = await _run(cmd, args);
+      final extract = archiveType.extractArgv(tarball.path, stage.path);
+      final extracted = await _run(extract.first, extract.sublist(1));
       final detail = [
         extracted.stdout,
         extracted.stderr,
@@ -667,7 +687,12 @@ class OverlayBuilder {
           '${detail.isEmpty ? '' : '\n$detail'}',
         );
       }
-      if (tarball.path.toLowerCase().endsWith('.zip')) {
+      // Keyed on the detected type, not the filename: a zip served as
+      // `/tarball/v1.2.3`, a `.jar`, or one misnamed `.tar.gz` all extract
+      // through `unzip` and so all need this promotion. Testing the name here
+      // would unpack them one directory too deep and fail configure with a
+      // puzzling "no meson.build".
+      if (archiveType == _ArchiveType.zip) {
         final top = stage.listSync();
         if (top.length == 1 && top.single is Directory) {
           (top.single as Directory).renameSync(dir.path);

@@ -818,6 +818,211 @@ void main() {
     ob.close();
   });
 
+  test('a probe tool that cannot be spawned keeps the tarball', () async {
+    // The bytes already passed the magic check, so the download is not the
+    // problem: deleting and re-fetching it 3x would waste the bandwidth and
+    // still fail. The error must name the tool, and the cache must survive so
+    // installing it and building again costs nothing.
+    final origin = await _FakeOrigin.start(
+      gzip.encode(utf8.encode('cached\n')),
+    );
+    addTearDown(origin.close);
+    final src = Directory(
+      p.join(tmp.path, '.config', 'flutter_workspace', 'overlay-src'),
+    )..createSync(recursive: true);
+    final tarball = File(
+      p.join(src.path, 'libdisplay-info-libdisplay-info-0.2.0.tar.gz'),
+    )..writeAsBytesSync(gzip.encode(utf8.encode('cached\n')));
+    final lib = AugmentLib.fromMap({
+      'pkg': 'libdisplay-info',
+      'min': '0.2.0',
+      'url': '${origin.origin}/libdisplay-info-0.2.0.tar.gz',
+      'build': 'meson',
+    });
+
+    final ob = OverlayBuilder(
+      Workspace(tmp),
+      _profile,
+      runProcess:
+          (
+            exe,
+            args, {
+            workingDirectory,
+            environment,
+            includeParentEnvironment = true,
+            runInShell = false,
+            output = ProcessOutputMode.capture,
+            label,
+          }) async {
+            if (exe == 'pkg-config') return const RunResult(1, '', '');
+            // `gzip` is absent from this host: dart:io reports that as a throw,
+            // never as an exit code.
+            if (exe == 'gzip') {
+              throw ProcessException(exe, args, 'No such file or directory', 2);
+            }
+            return const RunResult(0, '', '');
+          },
+    );
+    await expectLater(
+      ob.build([lib]),
+      throwsA(
+        isA<OverlayBuildException>().having(
+          (e) => e.message,
+          'message',
+          allOf(
+            contains('required command is missing'),
+            contains('Could not run "gzip"'),
+          ),
+        ),
+      ),
+    );
+    ob.close();
+
+    expect(tarball.existsSync(), isTrue); // fatal != bad bytes: keep them
+    expect(origin.requests, 0); // and never re-fetch them
+  });
+
+  test('a space in the cache path does not split the extract argv', () async {
+    // extractCmd is substituted per argv element, never by splitting a command
+    // string: a workspace under "My Projects" used to hand `tar` a truncated
+    // path plus a bogus extra argument.
+    final root = Directory(p.join(tmp.path, 'My Projects'))
+      ..createSync(recursive: true);
+    final src = Directory(
+      p.join(root.path, '.config', 'flutter_workspace', 'overlay-src'),
+    )..createSync(recursive: true);
+    final tarballPath = p.join(
+      src.path,
+      'libdisplay-info-libdisplay-info-0.2.0.tar.gz',
+    );
+    await _makeTarGz(tarballPath, entries: {'present.txt': 'payload\n'});
+    final lib = AugmentLib.fromMap({
+      'pkg': 'libdisplay-info',
+      'min': '0.2.0',
+      'url': 'https://x/libdisplay-info-0.2.0.tar.gz',
+      'build': 'meson',
+    });
+    final runner = _StopAfterFetch();
+
+    final ob = OverlayBuilder(
+      Workspace(root),
+      _profile,
+      runProcess: runner.call,
+    );
+    await expectLater(ob.build([lib]), throwsA(isA<OverlayBuildException>()));
+    ob.close();
+
+    final extract = runner.calls.firstWhere((c) => c.first == 'tar');
+    // The whole path arrives as one element, spaces and all.
+    expect(extract, contains(tarballPath));
+    expect(extract.any((a) => a == 'My' || a.endsWith('/My')), isFalse);
+  });
+
+  test('a zip is promoted by detected type, not by filename', () async {
+    // A zipball served under a .tar.gz name (or as /tarball/<ref>, or as a
+    // .jar) extracts through `unzip`, which has no --strip-components, so the
+    // lone top-level directory must still be promoted. Keying that on the
+    // filename left the tree one level too deep.
+    final src = Directory(
+      p.join(tmp.path, '.config', 'flutter_workspace', 'overlay-src'),
+    )..createSync(recursive: true);
+    File(p.join(src.path, 'libdisplay-info-libdisplay-info-0.2.0.tar.gz'))
+    // PK\x03\x04: the name says gzip, the content says zip. Content wins.
+    .writeAsBytesSync([0x50, 0x4b, 0x03, 0x04, ...List.filled(300, 0)]);
+    final lib = AugmentLib.fromMap({
+      'pkg': 'libdisplay-info',
+      'min': '0.2.0',
+      'url': 'https://x/libdisplay-info-0.2.0.tar.gz',
+      'build': 'meson',
+    });
+
+    final calls = <List<String>>[];
+    final ob = OverlayBuilder(
+      Workspace(tmp),
+      _profile,
+      runProcess:
+          (
+            exe,
+            args, {
+            workingDirectory,
+            environment,
+            includeParentEnvironment = true,
+            runInShell = false,
+            output = ProcessOutputMode.capture,
+            label,
+          }) async {
+            calls.add([exe, ...args]);
+            if (exe == 'pkg-config') return const RunResult(1, '', '');
+            if (exe == 'unzip' && !args.contains('-t')) {
+              // Stand in for a real unzip: one top-level dir, the way
+              // release zips ship.
+              final dest = args[args.indexOf('-d') + 1];
+              final top = Directory(p.join(dest, 'libdisplay-info-0.2.0'))
+                ..createSync(recursive: true);
+              File(
+                p.join(top.path, 'present.txt'),
+              ).writeAsStringSync('payload\n');
+              return const RunResult(0, '', '');
+            }
+            if (exe == 'meson') return const RunResult(9, '', 'stop here');
+            return const RunResult(0, '', '');
+          },
+    );
+    await expectLater(ob.build([lib]), throwsA(isA<OverlayBuildException>()));
+    ob.close();
+
+    // Detection routed to unzip despite the .tar.gz name, and never to tar.
+    expect(calls.any((c) => c.first == 'unzip'), isTrue);
+    expect(calls.any((c) => c.first == 'tar'), isFalse);
+    // The promotion flattened the wrapper dir: the payload sits at the root.
+    final tree = Directory(p.join(src.path, 'libdisplay-info-0.2.0'));
+    expect(File(p.join(tree.path, 'present.txt')).existsSync(), isTrue);
+  });
+
+  test(
+    'an unrecognizable body with no extension is retried, not fatal',
+    () async {
+      // GitHub's /tarball/<ref> and SourceForge's /download carry no extension,
+      // so an HTML rate-limit or auth page served there matches nothing.
+      // That is a bad body, indistinguishable from a truncated fetch, and
+      // must re-fetch
+      // rather than fail on the first attempt.
+      final origin = await _FakeOrigin.start(
+        utf8.encode('<html><body>rate limited</body></html>'),
+      );
+      addTearDown(origin.close);
+      final lib = AugmentLib.fromMap({
+        'pkg': 'libdisplay-info',
+        'min': '0.2.0',
+        'url': '${origin.origin}/tarball/v0.2.0',
+        'build': 'meson',
+      });
+      final runner = _StopAfterFetch();
+
+      final ob = OverlayBuilder(
+        Workspace(tmp),
+        _profile,
+        runProcess: runner.call,
+      );
+      await expectLater(
+        ob.build([lib]),
+        throwsA(
+          isA<OverlayBuildException>().having(
+            (e) => e.message,
+            'message',
+            allOf(
+              contains('download failed 3 retries'),
+              contains('unsupported archive format'),
+            ),
+          ),
+        ),
+      );
+      ob.close();
+
+      expect(origin.requests, 3); // retried, not rejected outright
+    },
+  );
+
   test(
     'no-patch extract still stamps, and a stamp-less dir is re-unpacked',
     () async {
