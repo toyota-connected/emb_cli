@@ -320,7 +320,7 @@ void main() {
           'triple': 'aarch64-none-linux-gnu',
           'run': {'command': './app -b .'},
         }),
-        throwsArgumentError,
+        throwsFormatException,
       );
     });
 
@@ -331,7 +331,7 @@ void main() {
           'triple': 'aarch64-none-linux-gnu',
           'run': {'command': <String>[]},
         }),
-        throwsArgumentError,
+        throwsFormatException,
       );
     });
 
@@ -342,8 +342,43 @@ void main() {
           'triple': 'aarch64-none-linux-gnu',
           'run': './app -b .',
         }),
-        throwsArgumentError,
+        throwsFormatException,
       );
+    });
+
+    test('rejects invalid env key', () {
+      expect(
+        () => CrossTarget.fromMap(const {
+          'provider': 'arm-gnu',
+          'triple': 'aarch64-none-linux-gnu',
+          'run': {
+            'env': {'X; rm -rf /': 'v'},
+          },
+        }),
+        throwsFormatException,
+      );
+    });
+
+    test('accepts valid env keys', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'triple': 'aarch64-none-linux-gnu',
+        'run': {
+          'env': {'_FOO': 'a', 'BAR_2': 'b'},
+        },
+      });
+      expect(t.runEnv, {'_FOO': 'a', 'BAR_2': 'b'});
+    });
+
+    test('null env value becomes empty string', () {
+      final t = CrossTarget.fromMap({
+        'provider': 'arm-gnu',
+        'triple': 'aarch64-none-linux-gnu',
+        'run': {
+          'env': {'FOO': null},
+        },
+      });
+      expect(t.runEnv, {'FOO': ''});
     });
 
     test('survives withDefineOverrides', () {

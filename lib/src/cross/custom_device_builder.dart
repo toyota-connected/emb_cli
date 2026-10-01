@@ -35,6 +35,7 @@ Map<String, dynamic> buildCustomDevice({
   String? targetName,
   List<String>? runCommand,
   Map<String, String> runEnv = const {},
+  Set<String>? unknowns,
 }) {
   if (spec.id.trim().isEmpty) {
     throw const CustomDeviceException(
@@ -62,7 +63,7 @@ Map<String, dynamic> buildCustomDevice({
   final platform = spec.platform ?? _platformFor(triple);
   final vars = {'embedder': binName, 'deploy_dir': '.'};
   final runCmd = runCmdString(
-    applyRunVars(runCommand ?? defaultRunTemplate, vars),
+    applyRunVars(runCommand ?? defaultRunTemplate, vars, unknowns: unknowns),
     env: runEnv,
   );
   // `${engineOptions}` is Flutter's placeholder, interpolated at

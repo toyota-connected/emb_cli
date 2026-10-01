@@ -660,9 +660,13 @@ class CrossCommand extends Command<int> {
         t = CrossTarget.fromMap(selected)
             .withResolvedPatches(appLayerSource ?? selection.sourcePath)
             .withDefineOverrides(cliDefines);
-        // fromMap throws ArgumentError on an unknown provider token.
+        // fromMap throws ArgumentError on an unknown provider token,
+        // FormatException on a malformed run: block.
         // ignore: avoid_catching_errors
       } on ArgumentError catch (e) {
+        _logger.err('Invalid cross: block — ${e.message}');
+        return null;
+      } on FormatException catch (e) {
         _logger.err('Invalid cross: block — ${e.message}');
         return null;
       }
@@ -2257,12 +2261,21 @@ class CrossCommand extends Command<int> {
         for (final soname in staged.staged) {
           _logger.detail('  ${r.backend ?? ""}: staged lib/$soname');
         }
+        final hintUnknowns = <String>{};
         final runHint = runCmdString(
           applyRunVars(target.runCommand ?? defaultRunTemplate, {
             'embedder': p.basename(bin.path),
-          }),
+            'deploy_dir': '.',
+          }, unknowns: hintUnknowns),
           env: target.runEnv,
         );
+        if (hintUnknowns.isNotEmpty) {
+          _logger.warn(
+            'run.command: unknown variable(s) '
+            '${hintUnknowns.map((v) => '\${$v}').join(', ')} '
+            '(left verbatim)',
+          );
+        }
         _logger.info(
           '  ${r.backend ?? ""}: runnable → ${outDir.path}  '
           '(run: $runHint)',

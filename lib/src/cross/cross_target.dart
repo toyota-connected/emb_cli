@@ -1301,6 +1301,8 @@ class CrossTarget {
     return null;
   }
 
+  static final _envKeyRe = RegExp(r'^[A-Za-z_][A-Za-z0-9_]*$');
+
   static List<String> _stringList(dynamic v) {
     if (v is List) return v.map((e) => e.toString()).toList();
     if (v is String && v.isNotEmpty) return v.split(RegExp(r'\s+'));
@@ -1310,10 +1312,10 @@ class CrossTarget {
   static List<String>? _runCommandList(Object? v) {
     if (v == null) return null;
     if (v is! List) {
-      throw ArgumentError('run.command must be a list of strings');
+      throw const FormatException('run.command must be a list of strings');
     }
     if (v.isEmpty) {
-      throw ArgumentError('run.command must not be empty');
+      throw const FormatException('run.command must not be empty');
     }
     return v.map((e) => e.toString()).toList();
   }
@@ -1321,14 +1323,23 @@ class CrossTarget {
   static ({Object? command, Map<String, String> env})? _runBlock(Object? v) {
     if (v == null) return null;
     if (v is! Map) {
-      throw ArgumentError('run must be a map with command and/or env');
+      throw const FormatException('run must be a map with command and/or env');
     }
     final env = <String, String>{};
     final rawEnv = v['env'];
     if (rawEnv is Map) {
-      rawEnv.forEach((k, val) => env[k.toString()] = val.toString());
+      rawEnv.forEach((k, val) {
+        final key = k.toString();
+        if (!_envKeyRe.hasMatch(key)) {
+          throw FormatException(
+            'run.env: invalid key "$key" '
+            '(must match [A-Za-z_][A-Za-z0-9_]*)',
+          );
+        }
+        env[key] = val?.toString() ?? '';
+      });
     } else if (rawEnv != null) {
-      throw ArgumentError('run.env must be a map of strings');
+      throw const FormatException('run.env must be a map of strings');
     }
     return (command: v['command'], env: env);
   }

@@ -322,7 +322,17 @@ class BoardsCustomDevicesCommand extends Command<int> {
     // is not an error: most targets are build-only.
     final registrable = <String, CrossTarget>{};
     for (final e in refs.entries) {
-      final t = CrossTarget.fromMap(e.value.cross);
+      final CrossTarget t;
+      try {
+        t = CrossTarget.fromMap(e.value.cross);
+        // ignore: avoid_catching_errors
+      } on ArgumentError catch (err) {
+        _logger.err('${e.key}: invalid cross: block — ${err.message}');
+        continue;
+      } on FormatException catch (err) {
+        _logger.err('${e.key}: invalid cross: block — ${err.message}');
+        continue;
+      }
       if (t.customDevice != null) registrable[e.key] = t;
     }
     if (registrable.isEmpty) {
@@ -354,6 +364,7 @@ class BoardsCustomDevicesCommand extends Command<int> {
       final spec = target.customDevice!;
       final device = _deployTargetFor(target);
       final Map<String, dynamic> entry;
+      final unknowns = <String>{};
       try {
         entry = buildCustomDevice(
           spec: spec,
@@ -364,10 +375,18 @@ class BoardsCustomDevicesCommand extends Command<int> {
           targetName: e.key,
           runCommand: target.runCommand,
           runEnv: target.runEnv,
+          unknowns: unknowns,
         );
       } on CustomDeviceException catch (err) {
         _logger.err('${e.key}: ${err.message}');
         return ExitCode.config.code;
+      }
+      if (unknowns.isNotEmpty) {
+        _logger.warn(
+          '${e.key}: run.command: unknown variable(s) '
+          '${unknowns.map((v) => '\${$v}').join(', ')} '
+          '(left verbatim)',
+        );
       }
 
       if (dryRun) {

@@ -6,7 +6,7 @@ List<String> applyRunVars(
   Set<String>? unknowns,
 }) => [
   for (final t in tokens)
-    t.replaceAllMapped(RegExp(r'\$\{([a-zA-Z0-9_]+)\}'), (m) {
+    t.replaceAllMapped(RegExp(r'\$\{([^}]*)\}'), (m) {
       final name = m[1]!;
       if (!vars.containsKey(name)) {
         unknowns?.add(name);

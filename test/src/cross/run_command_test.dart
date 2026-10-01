@@ -35,6 +35,13 @@ void main() {
       expect(applyRunVars([r'${nope}'], {}), [r'${nope}']);
     });
 
+    test('detects non-identifier variable names as unknown', () {
+      final unknowns = <String>{};
+      final result = applyRunVars([r'${my-var}'], {}, unknowns: unknowns);
+      expect(unknowns, {'my-var'});
+      expect(result, [r'${my-var}']);
+    });
+
     test('leaves tokens without variables unchanged', () {
       expect(applyRunVars(['--config', '/etc/app.conf'], {}), [
         '--config',
