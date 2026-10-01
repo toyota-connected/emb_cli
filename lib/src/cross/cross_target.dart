@@ -1124,6 +1124,14 @@ class CrossTarget {
       if (!defineSatisfied(a.requiresDefine, defines)) a,
   ];
 
+  /// True when any key-affecting path (augment local path, module path)
+  /// still contains an unexpanded `${…}` token. Keys computed from such a
+  /// target are meaningless — they hash the literal token instead of the
+  /// resolved path.
+  bool get hasUnresolvedKeyPaths =>
+      augment.any((a) => a.isLocal && hasUnresolvedVars(a.path!)) ||
+      modules.any((m) => hasUnresolvedVars(m.path));
+
   /// App-owned native libraries built from the app's own source tree and
   /// staged into the app bundle's `lib/` (next to `libapp.so`), resolved at
   /// runtime via `DynamicLibrary.open`. App-owned, so a higher manifest layer

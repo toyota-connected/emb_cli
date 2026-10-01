@@ -512,6 +512,14 @@ class DoctorCommand extends Command<int> {
       );
     }
 
+    if (target.hasUnresolvedKeyPaths) {
+      _logger.warn(
+        'Target uses unbound manifest variables (e.g. '
+        r'${app_root}) — probe results may not match '
+        '`emb cross --app`.',
+      );
+    }
+
     final checks = <ProbeCheck>[];
 
     // 1. Toolchain + sysroot present in the store (offline resolve fails closed
