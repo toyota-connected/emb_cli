@@ -248,6 +248,29 @@ cross:
       expect(code, ExitCode.config.code);
       expect(err.join(), contains('already exists'));
     });
+
+    test('refuses to write when config has invalid entries', () async {
+      final configDir = Directory(p.join(tmp.path, 'config', 'emb'))
+        ..createSync(recursive: true);
+      File(p.join(configDir.path, 'boards.yaml')).writeAsStringSync('''
+sources:
+  - name: "../bad"
+    type: github
+    repo: org/repo
+  - name: good
+    type: local
+    path: /opt/boards
+''');
+      when(() => logger.warn(any())).thenAnswer((_) {});
+      final code = await runAdd([
+        'github',
+        'org/new',
+        '--name',
+        'fresh',
+      ]);
+      expect(code, ExitCode.config.code);
+      expect(err.join(), contains('invalid entries'));
+    });
   });
 
   group('emb boards sync (ssh)', () {

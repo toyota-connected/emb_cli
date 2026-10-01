@@ -205,6 +205,7 @@ sources:
       final config = BoardSourceConfig.load(file, onWarning: warnings.add);
       expect(config.sources, hasLength(1));
       expect(config.sources.first.name, 'good');
+      expect(config.droppedEntries, isTrue);
       expect(warnings, hasLength(1));
       expect(warnings.first, contains('Skipping'));
     });

@@ -116,7 +116,7 @@ const defaultSource = GithubBoardSource(
 
 /// Loaded board-sources config. Reads `boards.yaml` from the emb config dir.
 class BoardSourceConfig {
-  BoardSourceConfig(this.sources);
+  BoardSourceConfig(this.sources, {this.droppedEntries = false});
 
   /// Load from [file], falling back to the single default source.
   factory BoardSourceConfig.load(File file, {WarnFn? onWarning}) {
@@ -129,16 +129,23 @@ class BoardSourceConfig {
         return BoardSourceConfig([defaultSource]);
       }
       final parsed = <BoardSource>[];
+      var dropped = false;
       for (final e in list) {
-        if (e is! Map) continue;
+        if (e is! Map) {
+          dropped = true;
+          continue;
+        }
         try {
           parsed.add(BoardSource.fromMap(Map<String, dynamic>.from(e)));
         } on Object catch (err) {
+          dropped = true;
           onWarning?.call('Skipping invalid source in ${file.path}: $err');
         }
       }
-      if (parsed.isEmpty) return BoardSourceConfig([defaultSource]);
-      return BoardSourceConfig(parsed);
+      if (parsed.isEmpty) {
+        return BoardSourceConfig([defaultSource], droppedEntries: dropped);
+      }
+      return BoardSourceConfig(parsed, droppedEntries: dropped);
     } on Object catch (e) {
       onWarning?.call('Failed to parse ${file.path}: $e — using defaults.');
       return BoardSourceConfig([defaultSource]);
@@ -147,7 +154,10 @@ class BoardSourceConfig {
 
   final List<BoardSource> sources;
 
-  /// Write the config to [file] as YAML.
+  /// True when `load` skipped one or more unparseable entries.
+  final bool droppedEntries;
+
+  /// Write the config to [file] as YAML. Uses temp+rename for atomicity.
   void save(File file) {
     file.parent.createSync(recursive: true);
     final buf = StringBuffer()..writeln('sources:');
@@ -160,7 +170,9 @@ class BoardSourceConfig {
         buf.writeln('$prefix${e.key}: ${_scalar(e.value.toString())}');
       }
     }
-    file.writeAsStringSync(buf.toString());
+    File('${file.path}.tmp')
+      ..writeAsStringSync(buf.toString())
+      ..renameSync(file.path);
   }
 
   /// Find a source by name, or null.
@@ -174,7 +186,12 @@ class BoardSourceConfig {
   /// Whether a source with [name] exists.
   bool contains(String name) => this[name] != null;
 
-  static String _scalar(String v) => "'${v.replaceAll("'", "''")}'";
+  static String _scalar(String v) {
+    if (v.contains('\n') || v.contains('\r')) {
+      throw ArgumentError('board source values must not contain newlines');
+    }
+    return "'${v.replaceAll("'", "''")}'";
+  }
 }
 
 /// Resolve the board-sources config file path.
