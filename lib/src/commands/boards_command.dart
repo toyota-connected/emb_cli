@@ -394,14 +394,19 @@ class BoardsSyncCommand extends Command<int> {
     dest.createSync(recursive: true);
     final written = <String>{};
     for (final e in entries) {
-      progress.update('Fetching ${e.name}');
+      final safeName = p.basename(e.name);
+      if (safeName != e.name) {
+        _logger.warn('Skipping board with unsafe filename: ${e.name}');
+        continue;
+      }
+      progress.update('Fetching $safeName');
       final bytes = await _get(
         e.url,
         source,
         accept: 'application/vnd.github.raw+json',
       );
-      File(p.join(dest.path, e.name)).writeAsBytesSync(bytes);
-      written.add(e.name);
+      File(p.join(dest.path, safeName)).writeAsBytesSync(bytes);
+      written.add(safeName);
     }
     for (final f in dest.listSync().whereType<File>().where(
       (f) =>
@@ -727,13 +732,19 @@ class BoardsRemoveCommand extends Command<int> {
       );
     }
 
-    // Clean up the synced directory if it exists.
-    final dir = Directory(
-      p.join(resolveBoardsDir(environment: _environment).path, sourceName),
+    // Clean up the synced directory under the installed data dir only — never
+    // delete under a user-overridden EMB_BOARDS_DIR (could be a git checkout).
+    final dataDir = Directory(
+      p.join(
+        dataHomeDir(environment: _environment).path,
+        'emb',
+        'boards',
+        sourceName,
+      ),
     );
-    if (dir.existsSync()) {
-      _logger.info('Removing synced boards at ${dir.path}');
-      dir.deleteSync(recursive: true);
+    if (dataDir.existsSync()) {
+      _logger.info('Removing synced boards at ${dataDir.path}');
+      dataDir.deleteSync(recursive: true);
     }
     return ExitCode.success.code;
   }

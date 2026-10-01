@@ -205,6 +205,25 @@ void main() {
     );
   });
 
+  test('rejects filenames with path traversal', () async {
+    github.boards['../../../pwned.emb.yaml'] = 'id: pwned\ntype: board\n';
+    final code = await runSync([]);
+    expect(code, ExitCode.success.code);
+    final sourceDir = Directory(p.join(dest().path, 'emb-public'));
+    expect(
+      File(p.join(sourceDir.path, 'raspberry-pi.emb.yaml')).existsSync(),
+      isTrue,
+      reason: 'safe files should still be written',
+    );
+    expect(
+      File(
+        p.join(dest().path, '..', '..', '..', 'pwned.emb.yaml'),
+      ).existsSync(),
+      isFalse,
+      reason: 'traversal filename must not escape the dest directory',
+    );
+  });
+
   test('a failed listing reports it and writes nothing', () async {
     github.failListing = true;
     final code = await runSync([]);

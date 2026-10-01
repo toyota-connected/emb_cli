@@ -755,6 +755,14 @@ class CrossProjectResolver {
 
     if (_boardsDirOverride != null) {
       _boardsTried.add(_boardsDirOverride.path);
+      final sources = _detectSourceSubdirs(_boardsDirOverride);
+      if (sources.isNotEmpty) {
+        boardsProvenance = 'constructor override';
+        for (final e in sources.entries) {
+          _boardsTried.add('${e.key}: ${e.value.path}');
+        }
+        return sources;
+      }
       boardsProvenance = 'constructor override';
       return {'override': _boardsDirOverride};
     }
@@ -762,8 +770,17 @@ class CrossProjectResolver {
     final env = _environment['EMB_BOARDS_DIR'];
     if (env != null && env.isNotEmpty) {
       _boardsTried.add('\$EMB_BOARDS_DIR=$env');
+      final envDir = Directory(env);
+      final sources = _detectSourceSubdirs(envDir);
+      if (sources.isNotEmpty) {
+        boardsProvenance = r'$EMB_BOARDS_DIR';
+        for (final e in sources.entries) {
+          _boardsTried.add('${e.key}: ${e.value.path}');
+        }
+        return sources;
+      }
       boardsProvenance = r'$EMB_BOARDS_DIR';
-      return {'env': Directory(env)};
+      return {'env': envDir};
     }
     _boardsTried.add(r'$EMB_BOARDS_DIR (unset)');
 
