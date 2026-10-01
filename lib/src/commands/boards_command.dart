@@ -387,13 +387,18 @@ class BoardsSyncCommand extends Command<int> {
     // For annotated tags ls-remote returns both the tag object and the
     // dereferenced commit (the ^{} line). Prefer the commit SHA so the
     // staleness check is consistent with the HTTPS /commits/ endpoint.
-    String? sha;
+    String? first;
+    String? deref;
     for (final line in result.stdout.split('\n')) {
       final parts = line.split(RegExp(r'\s+'));
       if (parts.length < 2 || parts[0].isEmpty) continue;
-      sha = parts[0];
-      if (line.contains('^{}')) break;
+      if (line.contains('^{}')) {
+        deref = parts[0];
+        break;
+      }
+      first ??= parts[0];
     }
+    final sha = deref ?? first;
     if (sha == null || sha.isEmpty) {
       throw StateError('ref "$ref" not found in ${source.repo}');
     }
@@ -448,7 +453,7 @@ class BoardsSyncCommand extends Command<int> {
     try {
       // --branch accepts tags and branch names but not raw SHAs. For a SHA
       // we clone without --branch and fetch the exact commit instead.
-      final isSha = RegExp(r'^[0-9a-f]{7,40}$').hasMatch(ref);
+      final isSha = RegExp(r'^[0-9a-f]{40}$').hasMatch(ref);
       final clone = await _runProcess('git', [
         'clone',
         '--depth',
@@ -464,11 +469,12 @@ class BoardsSyncCommand extends Command<int> {
         throw StateError(clone.stderr.isNotEmpty ? clone.stderr : clone.stdout);
       }
       if (isSha) {
-        final fetch = await _runProcess('git', [
-          'fetch',
-          'origin',
-          ref,
-        ], workingDirectory: tmp.path, environment: _gitNoPrompt);
+        final fetch = await _runProcess(
+          'git',
+          ['fetch', 'origin', ref],
+          workingDirectory: tmp.path,
+          environment: _gitNoPrompt,
+        );
         if (fetch.exitCode != 0) {
           throw StateError(
             fetch.stderr.isNotEmpty ? fetch.stderr : fetch.stdout,
@@ -564,7 +570,10 @@ class BoardsSyncCommand extends Command<int> {
         HttpHeaders.acceptHeader,
         accept ?? 'application/vnd.github+json',
       );
-    if (source.tokenEnv != null && url.host == _apiBase.host) {
+    if (source.tokenEnv != null &&
+        url.scheme == _apiBase.scheme &&
+        url.host == _apiBase.host &&
+        url.port == _apiBase.port) {
       final token = _environment[source.tokenEnv!];
       if (token != null && token.isNotEmpty) {
         req.headers.set(HttpHeaders.authorizationHeader, 'Bearer $token');
@@ -666,8 +675,11 @@ class BoardsAddCommand extends Command<int> {
           return ExitCode.usage.code;
         }
         final sourcePath = args['path'] as String? ?? 'boards';
-        if (sourcePath.split('/').contains('..')) {
-          _logger.err('Invalid path "$sourcePath". Must not contain "..".');
+        if (sourcePath.split('/').contains('..') || p.isAbsolute(sourcePath)) {
+          _logger.err(
+            'Invalid path "$sourcePath". '
+            'Must be relative and not contain "..".',
+          );
           return ExitCode.usage.code;
         }
         source = GithubBoardSource(
