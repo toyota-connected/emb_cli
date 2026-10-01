@@ -1124,7 +1124,8 @@ class CrossTarget {
   final List<String>? runCommand;
 
   /// Environment variables prepended to the run command as shell assignments.
-  /// (Manifest key `run.env`.)
+  /// Values are visible in logs, `custom_devices.config`, and on the wire
+  /// (ssh/adb) — do not use for secrets. (Manifest key `run.env`.)
   final Map<String, String> runEnv;
 
   /// Parse the `backends:` block (backend name → `{define: value}` map).

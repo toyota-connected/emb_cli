@@ -857,7 +857,7 @@ cross:
     CMAKE_INSTALL_PREFIX: /usr
   cmake_args: [-Wno-dev]          # raw cmake configure flags (cmake only)
   run:                            # custom --run config
-    env:                          # env vars: shell assignments (remote) or Process.start env (local)
+    env:                          # env vars: shell assignments (remote) or Process.start env (local); not for secrets — visible in logs, custom_devices.config, and on the wire
       XDG_RUNTIME_DIR: /run/user/0
     command: ["./${embedder}", "-b", "."]  # argv template (default shown); ${embedder}, ${deploy_dir} substituted
   backends:                       # one build per entry; -D<key>=<value> each
