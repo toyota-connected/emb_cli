@@ -51,4 +51,18 @@ void main() {
       );
     });
   });
+
+  group('hasUnresolvedVars', () {
+    test('detects an unresolved token', () {
+      expect(hasUnresolvedVars(r'${runnable}/lib'), isTrue);
+    });
+
+    test('returns false after full expansion', () {
+      expect(hasUnresolvedVars('/resolved/lib'), isFalse);
+    });
+
+    test('returns false on a plain path', () {
+      expect(hasUnresolvedVars('/usr/lib/libfoo.so'), isFalse);
+    });
+  });
 }

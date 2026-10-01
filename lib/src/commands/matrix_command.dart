@@ -120,7 +120,9 @@ class MatrixCommand extends Command<int> {
           );
           target = CrossTarget.fromMap(resolved).withResolvedPatches(
             file.path,
-            vars: {'embedder_root': p.dirname(p.absolute(file.path))},
+            vars: {
+              'embedder_root': p.normalize(p.dirname(p.absolute(file.path))),
+            },
           );
           // fromMap throws ArgumentError on an unknown/missing provider token;
           // extends resolution throws CrossProjectException (bad board/ref).

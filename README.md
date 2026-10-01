@@ -927,7 +927,7 @@ relocatable even when they reference files across project boundaries.
 |---|---|---|
 | `${embedder_root}` | Embedder project directory (where `.emb/` or the flat manifest lives) | Always |
 | `${app_root}` | App project directory (`--app <dir>`) | `--app` is given |
-| `${runnable}` | Assembled runnable output directory (`<buildRoot>/runnable`, or `<buildRoot>/runnable-<backend>` for multi-backend builds) | Always (packaging only) |
+| `${runnable}` | Assembled runnable output directory (`<buildRoot>/runnable`, or `<buildRoot>/runnable-<backend>` for multi-backend builds) | `--app` is given (packaging only) |
 
 **Supported fields:**
 
@@ -941,6 +941,12 @@ relocatable even when they reference files across project boundaries.
 
 Unknown tokens are left verbatim — a typo like `${runnabel}` <!-- cspell:ignore runnabel --> surfaces as a
 missing-file error rather than silently resolving to a wrong path.
+
+> **Note:** `${app_root}` gives any manifest — including one inherited through
+> `extends:` — a way to address the app tree. Paths are not confined; a value
+> like `${app_root}/../../../etc/shadow` resolves normally. Review shared or
+> board-library manifests that use `${app_root}` the same way you would review
+> any file-path input from an external source.
 
 **Common use cases:**
 

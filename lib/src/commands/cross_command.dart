@@ -666,7 +666,7 @@ class CrossCommand extends Command<int> {
       final CrossTarget t;
       try {
         final patchVars = {
-          'embedder_root': manifestDir.path,
+          'embedder_root': p.normalize(manifestDir.path),
           if (appDir != null) 'app_root': _appDir(appDir)!,
         };
         t = CrossTarget.fromMap(selected)
@@ -3214,7 +3214,7 @@ class CrossCommand extends Command<int> {
     required bool multi,
     required String? backend,
   }) => {
-    'embedder_root': manifestDir.path,
+    'embedder_root': p.normalize(manifestDir.path),
     if (appDir != null) 'app_root': appDir,
     if (appDir != null)
       'runnable': p.join(
@@ -3362,7 +3362,7 @@ class CrossCommand extends Command<int> {
     String? appDir,
   }) async {
     final moduleVars = {
-      'embedder_root': manifestDir.path,
+      'embedder_root': p.normalize(manifestDir.path),
       if (appDir != null) 'app_root': appDir,
     };
     for (final m in target.modules) {

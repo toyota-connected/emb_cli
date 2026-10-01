@@ -661,5 +661,61 @@ void main() {
       final b = augmentOf({'path': '/src/b'});
       expect(augmentIdentity(a), isNot(augmentIdentity(b)));
     });
+
+    test('resolvePatchesAgainst preserves declaringFile', () {
+      final a = AugmentLib.fromMap({
+        'pkg': 'libfoo',
+        'path': '../libfoo',
+        '_source': '/proj/.emb/pi5.emb.yaml',
+      });
+      final resolved = a.resolvePatchesAgainst('/fallback/base.emb.yaml');
+      expect(resolved.declaringFile, '/proj/.emb/pi5.emb.yaml');
+    });
+
+    test('resolvePatchesAgainst records fallback when no declaringFile', () {
+      final a = AugmentLib.fromMap({'pkg': 'libfoo', 'path': '../libfoo'});
+      final resolved = a.resolvePatchesAgainst('/fallback/base.emb.yaml');
+      expect(resolved.declaringFile, '/fallback/base.emb.yaml');
+    });
+
+    test('withResolvedPatches expands module paths', () {
+      final target = CrossTarget.fromMap({
+        'provider': 'arm-gnu',
+        'triple': 'aarch64-none-linux-gnu',
+        'modules': [
+          {
+            'name': 'hello',
+            'path': r'${app_root}/native/hello',
+            'build': 'cmake',
+            'artifacts': ['libhello.so'],
+          },
+        ],
+      });
+      final resolved = target.withResolvedPatches(
+        '/w/boards/pi5.emb.yaml',
+        vars: {'app_root': '/myapp'},
+      );
+      expect(resolved.modules.first.path, '/myapp/native/hello');
+    });
+
+    test('withResolvedPatches with null declaringFile still expands vars', () {
+      final target = CrossTarget.fromMap({
+        'provider': 'arm-gnu',
+        'triple': 'aarch64-none-linux-gnu',
+        'modules': [
+          {
+            'name': 'hello',
+            'path': r'${embedder_root}/native/hello',
+            'build': 'cmake',
+            'artifacts': ['libhello.so'],
+          },
+        ],
+      });
+      final resolved = target.withResolvedPatches(
+        null,
+        vars: {'embedder_root': '/emb'},
+      );
+      expect(resolved.modules.first.path, '/emb/native/hello');
+    });
   });
 }

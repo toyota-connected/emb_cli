@@ -380,7 +380,7 @@ class DoctorCommand extends Command<int> {
     try {
       target = CrossTarget.fromMap(selected).withResolvedPatches(
         selectedFrom,
-        vars: {'embedder_root': embedderRoot},
+        vars: {'embedder_root': p.normalize(embedderRoot)},
       );
       // fromMap throws ArgumentError on an unknown provider token.
       // ignore: avoid_catching_errors
@@ -500,7 +500,7 @@ class DoctorCommand extends Command<int> {
     try {
       target = CrossTarget.fromMap(selection.cross).withResolvedPatches(
         selection.sourcePath,
-        vars: {'embedder_root': embedderRoot},
+        vars: {'embedder_root': p.normalize(embedderRoot)},
       );
       // fromMap throws ArgumentError on an unknown provider token.
       // ignore: avoid_catching_errors

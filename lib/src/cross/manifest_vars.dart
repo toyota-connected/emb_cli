@@ -1,3 +1,5 @@
+final _varPattern = RegExp(r'\$\{(\w+)\}');
+
 /// Expand `${key}` tokens in [s] using [vars].
 ///
 /// Only keys present in [vars] are substituted; unknown tokens are left
@@ -8,7 +10,10 @@
 /// get the absolute path unchanged — `p.join` drops the prefix when the
 /// trailing argument is absolute.
 String expandManifestVars(String s, Map<String, String> vars) =>
-    s.replaceAllMapped(RegExp(r'\$\{(\w+)\}'), (m) {
+    s.replaceAllMapped(_varPattern, (m) {
       final key = m.group(1)!;
       return vars.containsKey(key) ? vars[key]! : m.group(0)!;
     });
+
+/// True when [s] contains at least one unresolved `${…}` token.
+bool hasUnresolvedVars(String s) => _varPattern.hasMatch(s);

@@ -193,7 +193,7 @@ class AugmentLib {
       patches: patches,
       subdir: (map['subdir'] ?? map['source_subdir'])?.toString(),
       sha256: sha,
-      declaringFile: map['_source'] as String?,
+      declaringFile: map['_source']?.toString(),
     );
   }
 
@@ -281,6 +281,7 @@ class AugmentLib {
       ], base),
       subdir: subdir,
       sha256: sha256,
+      declaringFile: declaringFile ?? fallbackDeclaringFile,
     );
   }
 
@@ -446,6 +447,21 @@ class ModuleSpec {
   /// Optional build profile hook (reserved for future per-module profile
   /// selection); currently informational.
   final String? profile;
+
+  /// A copy with [path] expanded and absolutized against [base].
+  ModuleSpec withExpandedPath(String base, Map<String, String> vars) {
+    final expanded = p.normalize(p.join(base, expandManifestVars(path, vars)));
+    if (expanded == path) return this;
+    return ModuleSpec(
+      name: name,
+      path: expanded,
+      artifacts: artifacts,
+      build: build,
+      defines: defines,
+      features: features,
+      profile: profile,
+    );
+  }
 }
 
 /// The `package:` block of a cross manifest — how `emb cross --deb`/`--flatpak`
@@ -1257,16 +1273,19 @@ class CrossTarget {
     );
   }
 
-  /// A copy whose augment patch paths resolve against the manifest at
-  /// [declaringFile]. See [AugmentLib.resolvePatchesAgainst].
+  /// A copy whose augment patch/local paths and module paths resolve against
+  /// the manifest at [declaringFile]. See [AugmentLib.resolvePatchesAgainst].
   CrossTarget withResolvedPatches(
     String? declaringFile, {
     Map<String, String> vars = const {},
   }) {
-    if (declaringFile == null) return this;
-    if (vars.isEmpty && augment.every((a) => a.patches.isEmpty && !a.isLocal)) {
-      return this;
-    }
+    if (declaringFile == null && vars.isEmpty) return this;
+    final base = declaringFile != null
+        ? p.dirname(p.absolute(declaringFile))
+        : null;
+    final needsAugment = augment.any((a) => a.patches.isNotEmpty || a.isLocal);
+    final needsModule = modules.isNotEmpty && vars.isNotEmpty;
+    if (!needsAugment && !needsModule && vars.isEmpty) return this;
     return CrossTarget(
       provider: provider,
       targetTriple: targetTriple,
@@ -1286,7 +1305,9 @@ class CrossTarget {
         for (final a in augment)
           a.resolvePatchesAgainst(declaringFile, vars: vars),
       ],
-      modules: modules,
+      modules: base != null || vars.isNotEmpty
+          ? [for (final m in modules) m.withExpandedPath(base ?? '', vars)]
+          : modules,
       embedderExports: embedderExports,
       generator: generator,
       launcher: launcher,
