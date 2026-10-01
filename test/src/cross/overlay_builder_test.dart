@@ -1767,4 +1767,85 @@ void _securityAndDetection() {
       );
     },
   );
+
+  test('a relative sourceCacheDir does not break patch application', () async {
+    // Regression: when sourceCacheDir carried a relative path, _noRepo built
+    // a relative --git-dir that git resolved against its own (absolute) cwd,
+    // doubling the path and failing with "Invalid path … No such file or
+    // directory" before even reading the patch.
+    if (Process.runSync('git', ['--version']).exitCode != 0) {
+      markTestSkipped('git not available');
+      return;
+    }
+
+    // A project dir inside tmp, referenced via a relative path from cwd.
+    final project = Directory(p.join(tmp.path, 'proj'))..createSync();
+    final relProject = Directory(p.relative(project.path));
+    final cached = Directory(p.join(project.path, '.cache', 'overlay-src'))
+      ..createSync(recursive: true);
+
+    await _makeTarGz(
+      p.join(cached.path, 'libdisplay-info-libdisplay-info-0.2.0.tar.gz'),
+      entries: {'present.txt': 'before\n'},
+    );
+
+    final patch = File(p.join(tmp.path, '0001-fix.patch'))
+      ..writeAsStringSync(
+        'diff --git a/present.txt b/present.txt\n'
+        '--- a/present.txt\n'
+        '+++ b/present.txt\n'
+        '@@ -1 +1 @@\n'
+        '-before\n'
+        '+after\n',
+      );
+
+    final lib = AugmentLib.fromMap({
+      'pkg': 'libdisplay-info',
+      'min': '0.2.0',
+      'url': 'https://x/libdisplay-info-0.2.0.tar.gz',
+      'build': 'meson',
+      'patches': [patch.path],
+    });
+
+    Future<RunResult> run(
+      String exe,
+      List<String> args, {
+      String? workingDirectory,
+      Map<String, String>? environment,
+      bool includeParentEnvironment = true,
+      bool runInShell = false,
+      ProcessOutputMode output = ProcessOutputMode.capture,
+      String? label,
+    }) async {
+      if (exe == 'pkg-config') return const RunResult(1, '', '');
+      if (exe == 'tar' && args.contains('-tf')) {
+        return const RunResult(0, '', '');
+      }
+      if (exe == 'tar' && args.contains('-xf')) {
+        final dest = args[args.indexOf('-C') + 1];
+        File(p.join(dest, 'present.txt')).writeAsStringSync('before\n');
+        return const RunResult(0, '', '');
+      }
+      if (exe == 'meson') return const RunResult(9, '', 'stop here');
+      return const RunResult(0, '', '');
+    }
+
+    final ob = OverlayBuilder(
+      Workspace(tmp),
+      _profile,
+      runProcess: run,
+      sourceCacheDir: relProject,
+    );
+    // Meson stub always fails — the point is getting past patches without
+    // "Invalid path" from git.
+    await expectLater(ob.build([lib]), throwsA(isA<OverlayBuildException>()));
+    ob.close();
+
+    final tree = Directory(p.join(cached.path, 'libdisplay-info-0.2.0'));
+    expect(
+      File(p.join(tree.path, 'present.txt')).readAsStringSync(),
+      'after\n',
+      reason: 'patch must apply even when sourceCacheDir is relative',
+    );
+  });
 }

@@ -865,7 +865,7 @@ class OverlayBuilder {
           await applyPatchSeries(
             runner: (args, {required workingDirectory}) =>
                 Process.run('git', args, workingDirectory: workingDirectory),
-            workDir: dir.path,
+            workDir: dir.absolute.path,
             patches: patches,
             onto: '${lib.pkg} ${lib.minVersion}',
             restore: () async {
