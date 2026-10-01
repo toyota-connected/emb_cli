@@ -140,6 +140,21 @@ void main() {
     expect(backend['name'], 'fake');
     expect(backend['available'], true);
     expect((backend['updates'] as Map)['count'], 2);
+    // boards shape: always has source, installed, count, names; versions is a
+    // list of {version, source, skewed} when stamps exist.
+    final boards = data['boards'] as Map<String, dynamic>;
+    expect(boards, containsPair('source', isA<String>()));
+    expect(boards, containsPair('installed', isA<String>()));
+    expect(boards, containsPair('count', isA<int>()));
+    expect(boards, containsPair('names', isA<List<dynamic>>()));
+    if (boards.containsKey('versions')) {
+      for (final v in boards['versions'] as List) {
+        final entry = v as Map<String, dynamic>;
+        expect(entry, containsPair('version', isA<String>()));
+        expect(entry, containsPair('source', isA<String>()));
+        expect(entry, containsPair('skewed', isA<bool>()));
+      }
+    }
   });
 
   test('--json reports ok:false when the backend is unavailable', () async {

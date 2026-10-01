@@ -262,12 +262,7 @@ sources:
     path: /opt/boards
 ''');
       when(() => logger.warn(any())).thenAnswer((_) {});
-      final code = await runAdd([
-        'github',
-        'org/new',
-        '--name',
-        'fresh',
-      ]);
+      final code = await runAdd(['github', 'org/new', '--name', 'fresh']);
       expect(code, ExitCode.config.code);
       expect(err.join(), contains('invalid entries'));
     });
@@ -427,6 +422,58 @@ sources:
     test('passes --ref override to clone --branch', () async {
       await runSync(runner: fakeRunner(), extra: ['--ref', 'v1.0.0']);
       expect(calls[1], contains('v1.0.0'));
+    });
+
+    test('uses first ref when multiple non-deref lines match', () async {
+      // Simulate a branch and lightweight tag with the same name — ls-remote
+      // returns two lines, neither with ^{}. We must pick the first stably.
+      // ignore: prefer_function_declarations_over_variables
+      final runner =
+          (
+            String exe,
+            List<String> args, {
+            String? workingDirectory,
+            Map<String, String>? environment,
+            bool includeParentEnvironment = true,
+            bool runInShell = false,
+            ProcessOutputMode output = ProcessOutputMode.capture,
+            String? label,
+          }) async {
+            calls.add([exe, ...args]);
+            if (exe == 'git' && args.contains('ls-remote')) {
+              return const RunResult(
+                0,
+                'aaa111\trefs/heads/main\nbbb222\trefs/tags/main\n',
+                '',
+              );
+            }
+            if (exe == 'git' && args.contains('clone')) {
+              final dest = args.last;
+              final boardsDir = Directory(p.join(dest, 'boards'))
+                ..createSync(recursive: true);
+              File(
+                p.join(boardsDir.path, 'test-board.emb.yaml'),
+              ).writeAsStringSync('id: test-board\n');
+            }
+            return const RunResult(0, '', '');
+          };
+      final code = await runSync(runner: runner);
+      expect(code, ExitCode.success.code);
+      // Verify it picked the first SHA (aaa111) by checking the stamp file.
+      final shaFile = File(
+        p.join(tmp.path, 'data', 'emb', 'boards', 'priv', '.emb-boards-sha'),
+      );
+      expect(shaFile.readAsStringSync().trim(), 'aaa111');
+    });
+
+    test('treats short hex ref as branch name, not SHA', () async {
+      // A ref like "deadbeef" should be passed to --branch, not treated as
+      // a raw SHA (which would skip --branch and use fetch+checkout instead).
+      final runner = fakeRunner();
+      await runSync(runner: runner, extra: ['--ref', 'deadbeef']);
+      // clone call should contain --branch deadbeef
+      expect(calls[1], contains('--branch'));
+      expect(calls[1], contains('deadbeef'));
     });
 
     test('prefers dereferenced commit SHA over tag-object SHA', () async {

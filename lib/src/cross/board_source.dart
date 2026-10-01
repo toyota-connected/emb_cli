@@ -40,7 +40,7 @@ sealed class BoardSource {
           throw ArgumentError('invalid board source repo: "$repo"');
         }
         final path = map['path'] as String? ?? 'boards';
-        if (path.split('/').contains('..')) {
+        if (path.split('/').contains('..') || p.isAbsolute(path)) {
           throw ArgumentError('invalid board source path: "$path"');
         }
         final transport = map['transport'] as String? ?? 'https';

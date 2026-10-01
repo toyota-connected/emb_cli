@@ -161,6 +161,18 @@ void main() {
       );
     });
 
+    test('throws on absolute path', () {
+      expect(
+        () => BoardSource.fromMap({
+          'type': 'github',
+          'name': 'test',
+          'repo': 'org/repo',
+          'path': '/etc/passwd',
+        }),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+
     test('throws on invalid transport', () {
       expect(
         () => BoardSource.fromMap({
