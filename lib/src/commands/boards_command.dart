@@ -181,7 +181,7 @@ class BoardsSyncCommand extends Command<int> {
     Uri? apiBase,
     ProcessRunner? processRunner,
   }) : _logger = logger,
-       _http = httpClient ?? HttpClient(),
+       _http = httpClient ?? (HttpClient()..connectionTimeout = _httpTimeout),
        _environment = environment ?? Platform.environment,
        _apiBase = apiBase ?? Uri.https('api.github.com', '/'),
        _runProcess = processRunner ?? defaultProcessRunner {
@@ -277,6 +277,11 @@ class BoardsSyncCommand extends Command<int> {
   }
 
   static const _shaStamp = '.emb-boards-sha';
+  static const _httpTimeout = Duration(seconds: 30);
+  static const _gitNoPrompt = {
+    'GIT_TERMINAL_PROMPT': '0',
+    'GIT_SSH_COMMAND': 'ssh -o BatchMode=yes',
+  };
 
   Future<int> _syncGithub(
     GithubBoardSource source,
@@ -300,6 +305,12 @@ class BoardsSyncCommand extends Command<int> {
     } on Object catch (e) {
       progress.fail('Could not check ${source.name} at $ref');
       _logger.err('$e');
+      if (source.ref == 'auto') {
+        _logger.info(
+          'If this emb is newer than the published tag, pass an '
+          'existing ref: emb boards sync --ref main',
+        );
+      }
       return ExitCode.unavailable.code;
     }
 
@@ -307,6 +318,15 @@ class BoardsSyncCommand extends Command<int> {
         ? shaFile.readAsStringSync().trim()
         : '';
     if (localSha == remoteSha) {
+      // Refresh the version stamp even when the SHA hasn't changed — an emb
+      // upgrade with no remote change must update the stamp so doctor doesn't
+      // perpetually report version skew.
+      final stampFile = File(p.join(sourceDest.path, boardsVersionStamp));
+      if (sourceDest.existsSync() &&
+          (!stampFile.existsSync() ||
+              stampFile.readAsStringSync().trim() != packageVersion)) {
+        stampFile.writeAsStringSync('$packageVersion\n');
+      }
       progress.complete('${source.name}: up to date ($ref)');
       return ExitCode.success.code;
     }
@@ -358,7 +378,7 @@ class BoardsSyncCommand extends Command<int> {
       sshUrl,
       ref,
       '$ref^{}',
-    ]);
+    ], environment: _gitNoPrompt);
     if (result.exitCode != 0) {
       throw StateError(
         result.stderr.isNotEmpty ? result.stderr : result.stdout,
@@ -439,7 +459,7 @@ class BoardsSyncCommand extends Command<int> {
         '--sparse',
         sshUrl,
         tmp.path,
-      ]);
+      ], environment: _gitNoPrompt);
       if (clone.exitCode != 0) {
         throw StateError(clone.stderr.isNotEmpty ? clone.stderr : clone.stdout);
       }
@@ -448,7 +468,7 @@ class BoardsSyncCommand extends Command<int> {
           'fetch',
           'origin',
           ref,
-        ], workingDirectory: tmp.path);
+        ], workingDirectory: tmp.path, environment: _gitNoPrompt);
         if (fetch.exitCode != 0) {
           throw StateError(
             fetch.stderr.isNotEmpty ? fetch.stderr : fetch.stdout,
@@ -665,8 +685,15 @@ class BoardsAddCommand extends Command<int> {
         return ExitCode.usage.code;
     }
 
+    if (config.droppedEntries) {
+      _logger.err(
+        'Cannot write: ${file.path} contains invalid entries that would be '
+        'lost. Fix or remove them first.',
+      );
+      return ExitCode.config.code;
+    }
     BoardSourceConfig([...config.sources, source]).save(file);
-    _logger.info('Added source "$sourceName" → $file');
+    _logger.info('Added source "$sourceName" → ${file.path}');
     if (source is GithubBoardSource) {
       _logger.info('Run `emb boards sync --source $sourceName` to fetch.');
     }
@@ -723,6 +750,13 @@ class BoardsRemoveCommand extends Command<int> {
       return ExitCode.usage.code;
     }
 
+    if (config.droppedEntries) {
+      _logger.err(
+        'Cannot write: ${file.path} contains invalid entries that would be '
+        'lost. Fix or remove them first.',
+      );
+      return ExitCode.config.code;
+    }
     final updated = config.sources.where((s) => s.name != sourceName).toList();
     BoardSourceConfig(updated).save(file);
     _logger.info('Removed source "$sourceName".');

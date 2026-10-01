@@ -250,6 +250,7 @@ class DoctorCommand extends Command<int> {
   List<({String version, String? source})> _boardStamps(Directory installed) {
     final config = BoardSourceConfig.load(
       resolveBoardSourcesFile(environment: _environment),
+      onWarning: _logger.warn,
     );
     final results = <({String version, String source})>[];
     for (final s in config.sources) {
