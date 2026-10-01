@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:emb_cli/src/cross/cross_keys.dart' show contentHash;
@@ -1458,4 +1459,312 @@ void _securityAndDetection() {
       isTrue,
     );
   });
+
+  test(
+    'a directory squatting the tarball path fails at the rename, not a probe',
+    () async {
+      // The cache entry for a tarball is a file: when a directory sits at that
+      // path (half-finished cache surgery, a hand-made dir), `existsSync()`
+      // reports *no file*, so the archive validation never runs — there is no
+      // fsError to classify and nothing to delete. The download proceeds,
+      // stages a `.part` body, and `rename` onto the directory is refused
+      // (EISDIR); `_download` treats that as transient, retries the fetch four
+      // times — four origin hits, all wasted — and then the build fails with a
+      // download error naming the source. The squatter survives untouched:
+      // emb never deletes what it did not create, and the rename never
+      // replaced it.
+      final origin = await _FakeOrigin.start(
+        gzip.encode(utf8.encode('payload\n')),
+      );
+      addTearDown(origin.close);
+      final src = srcDir();
+      final squatter = Directory(
+        p.join(src.path, 'libdisplay-info-libdisplay-info-0.2.0.tar.gz'),
+      )..createSync();
+      final lib = AugmentLib.fromMap({
+        'pkg': 'libdisplay-info',
+        'min': '0.2.0',
+        'url': '${origin.origin}/libdisplay-info-0.2.0.tar.gz',
+        'build': 'meson',
+      });
+      final runner = _StopAfterFetch();
+
+      final ob = OverlayBuilder(
+        Workspace(tmp),
+        _profile,
+        runProcess: runner.call,
+      );
+      await expectLater(
+        ob.build([lib]),
+        throwsA(
+          isA<OverlayBuildException>().having(
+            (e) => e.message,
+            'message',
+            allOf(
+              contains('download failed'),
+              contains('libdisplay-info-0.2.0.tar.gz'),
+            ),
+          ),
+        ),
+      );
+      ob.close();
+
+      // Every internal download attempt reached the origin before its rename
+      // back onto the directory failed — the bytes were never the problem.
+      expect(origin.requests, 4);
+      // The directory was never a file, so no delete or rename touched it.
+      expect(squatter.existsSync(), isTrue);
+      // The `.part` staging file is cleaned up on every failed attempt.
+      expect(
+        File('${squatter.path}.part').existsSync(),
+        isFalse,
+        reason: 'a failed download must not leave a .part behind',
+      );
+    },
+  );
+
+  test('tar magic under a .zip filename routes to tar, not unzip', () async {
+    // The opposite direction of the promoted-zip case: here the extension
+    // matches zip but the bytes do not, while tar's 'ustar' at 257 does.
+    // Content wins over the conflicting name, so the file is probed and
+    // extracted through tar (with --strip-components=1) and `unzip` is never
+    // spawned. Detection-only: no real tar structure is needed in the body.
+    final src = srcDir();
+    final body = Uint8List(512)..setRange(257, 262, 'ustar'.codeUnits);
+    File(
+      p.join(src.path, 'libdisplay-info-libdisplay-info-0.2.0.zip'),
+    ).writeAsBytesSync(body);
+    final lib = AugmentLib.fromMap({
+      'pkg': 'libdisplay-info',
+      'min': '0.2.0',
+      'url': 'https://x/libdisplay-info-0.2.0.zip',
+      'build': 'meson',
+    });
+    final runner = _StopAfterFetch();
+
+    final ob = OverlayBuilder(
+      Workspace(tmp),
+      _profile,
+      runProcess: runner.call,
+    );
+    await expectLater(ob.build([lib]), throwsA(isA<OverlayBuildException>()));
+    ob.close();
+
+    // Probed as tar despite the .zip name, and never handed to unzip.
+    expect(
+      runner.calls.any((c) => c.first == 'tar' && c.contains('-tf')),
+      isTrue,
+    );
+    expect(runner.calls.any((c) => c.first == 'unzip'), isFalse);
+  });
+
+  test('a min that escapes the cache is refused before any download', () async {
+    // AugmentLib.fromMap blocks `/` and `..` in `min:` by charset, but the
+    // builder keeps its own guard: _assertInsideCache re-checks both the
+    // tarball path and the unpacked-tree path against the cache root before
+    // the download loop, so a value reaching the builder by any other route
+    // still cannot aim the writes — or the recursive deletes — at the
+    // developer's files. Built through the public unnamed constructor to
+    // bypass the charset check and actually reach that guard. The builder
+    // names the tree `<pkg>-<min>`, so a bare `../evil` would only form the
+    // literal segment `x-../evil` and stay inside; the leading `/` keeps
+    // `..` a real parent segment (`x-/../../evil`), which is what aims the
+    // tree outside the cache root.
+    final origin = await _FakeOrigin.start(
+      gzip.encode(utf8.encode('payload\n')),
+    );
+    addTearDown(origin.close);
+    final lib = AugmentLib(
+      pkg: 'x',
+      minVersion: '/../../evil',
+      url: '${origin.origin}/t.tar.gz',
+    );
+
+    final ob = OverlayBuilder(
+      Workspace(tmp),
+      _profile,
+      runProcess:
+          (
+            exe,
+            args, {
+            workingDirectory,
+            environment,
+            includeParentEnvironment = true,
+            runInShell = false,
+            output = ProcessOutputMode.capture,
+            label,
+          }) async {
+            // Report the sysroot unsatisfied so the build reaches _fetchSource
+            // and the guard fires there, not earlier.
+            if (exe == 'pkg-config') return const RunResult(1, '', '');
+            return const RunResult(0, '', '');
+          },
+    );
+    await expectLater(
+      ob.build([lib]),
+      throwsA(
+        isA<OverlayBuildException>().having(
+          (e) => e.message,
+          'message',
+          contains('resolves outside the source cache'),
+        ),
+      ),
+    );
+    ob.close();
+
+    // The guard throws before the download loop: the origin, which exists
+    // only to prove no network happened, was never contacted.
+    expect(origin.requests, 0);
+  });
+
+  test('current tree with a pruned tarball skips the network', () async {
+    // The reuse gate asks the tree before the tarball, so a stamped tree is
+    // conclusive on its own: a user who prunes tarballs to reclaim disk keeps
+    // building with zero fetch. No other test deletes the tarball while a
+    // stamped tree stands, so this pins the "tree first" ordering — had the
+    // tarball been consulted first, its absence would have cost a download.
+    final origin = await _FakeOrigin.start(
+      gzip.encode(utf8.encode('payload\n')),
+    );
+    addTearDown(origin.close);
+    final src = srcDir();
+    final url = '${origin.origin}/libdisplay-info-0.2.0.tar.gz';
+    // The unpacked tree, named `<pkg>-<min>`, carrying a stamp keyed to the
+    // exact url below (url + empty sha pin + empty patch series). The tarball
+    // itself is deliberately absent.
+    final tree = Directory(p.join(src.path, 'libdisplay-info-0.2.0'))
+      ..createSync(recursive: true);
+    File(
+      p.join(tree.path, '.emb-patch-stamp'),
+    ).writeAsStringSync(contentHash([url, '', '']));
+    final lib = AugmentLib.fromMap({
+      'pkg': 'libdisplay-info',
+      'min': '0.2.0',
+      'url': url,
+      'build': 'meson',
+    });
+    final runner = _StopAfterFetch();
+
+    final ob = OverlayBuilder(
+      Workspace(tmp),
+      _profile,
+      runProcess: runner.call,
+    );
+    // The cached tree is returned and the build proceeds to configure, where
+    // the stub stops it.
+    await expectLater(ob.build([lib]), throwsA(isA<OverlayBuildException>()));
+    ob.close();
+
+    expect(origin.requests, 0); // tree reuse short-circuited the download
+    expect(
+      runner.calls.any((c) => c.first == 'meson'),
+      isTrue,
+      reason: 'the stamped tree must reach the build step',
+    );
+  });
+
+  test(
+    'a passing augment patch is stamped and reuse skips re-patching',
+    () async {
+      // The happy path complement of the failing-patch test: a series that
+      // applies cleanly must (1) actually rewrite the tree, (2) leave the stamp
+      // behind, and (3) make the next build short-circuit at the reuse gate —
+      // no re-extraction, no re-patch. Before the stamp covered the patch
+      // digest, the third property did not hold at all; this pins all three.
+      if (Process.runSync('git', ['--version']).exitCode != 0) {
+        markTestSkipped('git not available');
+        return;
+      }
+      final src = srcDir();
+      // A real gzip tarball so archive validation passes without a download.
+      // The runner stub below performs the actual extraction write, so only the
+      // magic bytes matter here.
+      await _makeTarGz(
+        p.join(src.path, 'libdisplay-info-libdisplay-info-0.2.0.tar.gz'),
+        entries: {'present.txt': 'before\n'},
+      );
+      // The same header format as the failing-patch test, but targeting the
+      // file the extraction stub drops down (`before\n`), so git apply — run
+      // with --git-dir pointed at a nonexistent path, i.e. no repository
+      // required — rewrites it to `after\n`.
+      final patch = File(p.join(tmp.path, '0001-fix.patch'))
+        ..writeAsStringSync(
+          'diff --git a/present.txt b/present.txt\n'
+          '--- a/present.txt\n'
+          '+++ b/present.txt\n'
+          '@@ -1 +1 @@\n'
+          '-before\n'
+          '+after\n',
+        );
+      final lib = AugmentLib.fromMap({
+        'pkg': 'libdisplay-info',
+        'min': '0.2.0',
+        'url': 'https://x/libdisplay-info-0.2.0.tar.gz',
+        'build': 'meson',
+        'patches': [patch.path],
+      });
+
+      // One shared call log across both builds, so the -xf count below spans
+      // the first (extract + patch) and second (stamp hit) run.
+      final calls = <List<String>>[];
+      Future<RunResult> run(
+        String exe,
+        List<String> args, {
+        String? workingDirectory,
+        Map<String, String>? environment,
+        bool includeParentEnvironment = true,
+        bool runInShell = false,
+        ProcessOutputMode output = ProcessOutputMode.capture,
+        String? label,
+      }) async {
+        calls.add([exe, ...args]);
+        if (exe == 'pkg-config') return const RunResult(1, '', '');
+        // `tar -tf` is the probe; only `-xf` unpacks, and the stub stands in
+        // for it by writing the file the patch targets into the `-C` dir.
+        if (exe == 'tar' && args.contains('-tf')) {
+          return const RunResult(0, '', '');
+        }
+        if (exe == 'tar' && args.contains('-xf')) {
+          final dest = args[args.indexOf('-C') + 1];
+          File(p.join(dest, 'present.txt')).writeAsStringSync('before\n');
+          return const RunResult(0, '', '');
+        }
+        if (exe == 'meson') return const RunResult(9, '', 'stop here');
+        return const RunResult(0, '', '');
+      }
+
+      final tree = Directory(p.join(src.path, 'libdisplay-info-0.2.0'));
+
+      // First build: unpack, apply, stamp — stopping at meson, which the stub
+      // always fails. The patch result must survive that failure.
+      var ob = OverlayBuilder(Workspace(tmp), _profile, runProcess: run);
+      await expectLater(ob.build([lib]), throwsA(isA<OverlayBuildException>()));
+      ob.close();
+
+      expect(
+        File(p.join(tree.path, 'present.txt')).readAsStringSync(),
+        'after\n',
+        reason: 'a passing patch must rewrite the extracted tree',
+      );
+      expect(
+        File(p.join(tree.path, '.emb-patch-stamp')).existsSync(),
+        isTrue,
+        reason: 'a tree whose series applied must carry the stamp',
+      );
+
+      // Second build, fresh builder: the stamp matches url + pin + patch
+      // digest, so the reuse gate returns the tree as-is and the build fails
+      // again at meson. Exactly one `-xf` across both runs proves the stamp
+      // hit skipped both the re-extraction and the re-patch.
+      ob = OverlayBuilder(Workspace(tmp), _profile, runProcess: run);
+      await expectLater(ob.build([lib]), throwsA(isA<OverlayBuildException>()));
+      ob.close();
+
+      expect(
+        calls.where((c) => c.first == 'tar' && c.contains('-xf')).length,
+        1,
+        reason: 'the second build must reuse the stamped tree, not re-unpack',
+      );
+    },
+  );
 }
