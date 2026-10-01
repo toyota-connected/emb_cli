@@ -1058,9 +1058,10 @@ cycles are rejected.
 
 `emb` is installed as a standalone compiled binary, which carries no package
 data files — so the board library is installed alongside it rather than
-traveling inside it. It is looked up in this order, **first hit wins** (each
-rung is a whole directory; they are never merged, so a stale installed board
-can't silently shadow a checkout edit):
+traveling inside it. It is looked up in this order, **first hit wins** (rungs
+are never merged, so a stale installed board can't silently shadow a checkout
+edit). Rungs 1, 2, and 3 all auto-detect the multi-source subdirectory layout
+(`<source>/*.emb.yaml`); a flat directory of `*.emb.yaml` files also works.
 
 | # | Location | Applies to |
 |---|---|---|
