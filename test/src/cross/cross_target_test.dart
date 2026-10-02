@@ -274,6 +274,128 @@ void main() {
     });
   });
 
+  group('CrossTarget.fromMap run', () {
+    test('parses run.command as a list of strings', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'triple': 'aarch64-none-linux-gnu',
+        'run': {
+          'command': [r'./${embedder}', '--config', '/etc/app.conf', '-b', '.'],
+        },
+      });
+      expect(t.runCommand, [
+        r'./${embedder}',
+        '--config',
+        '/etc/app.conf',
+        '-b',
+        '.',
+      ]);
+    });
+
+    test('parses run.env as a string map', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'triple': 'aarch64-none-linux-gnu',
+        'run': {
+          'env': {'XDG_RUNTIME_DIR': '/run/user/0'},
+        },
+      });
+      expect(t.runEnv, {'XDG_RUNTIME_DIR': '/run/user/0'});
+      expect(t.runCommand, isNull);
+    });
+
+    test('absent run: leaves fields at defaults', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'triple': 'aarch64-none-linux-gnu',
+      });
+      expect(t.runCommand, isNull);
+      expect(t.runEnv, isEmpty);
+    });
+
+    test('rejects a bare string for run.command', () {
+      expect(
+        () => CrossTarget.fromMap(const {
+          'provider': 'arm-gnu',
+          'triple': 'aarch64-none-linux-gnu',
+          'run': {'command': './app -b .'},
+        }),
+        throwsFormatException,
+      );
+    });
+
+    test('rejects an empty list for run.command', () {
+      expect(
+        () => CrossTarget.fromMap(const {
+          'provider': 'arm-gnu',
+          'triple': 'aarch64-none-linux-gnu',
+          'run': {'command': <String>[]},
+        }),
+        throwsFormatException,
+      );
+    });
+
+    test('rejects non-map run: value', () {
+      expect(
+        () => CrossTarget.fromMap(const {
+          'provider': 'arm-gnu',
+          'triple': 'aarch64-none-linux-gnu',
+          'run': './app -b .',
+        }),
+        throwsFormatException,
+      );
+    });
+
+    test('rejects invalid env key', () {
+      expect(
+        () => CrossTarget.fromMap(const {
+          'provider': 'arm-gnu',
+          'triple': 'aarch64-none-linux-gnu',
+          'run': {
+            'env': {'X; rm -rf /': 'v'},
+          },
+        }),
+        throwsFormatException,
+      );
+    });
+
+    test('accepts valid env keys', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'triple': 'aarch64-none-linux-gnu',
+        'run': {
+          'env': {'_FOO': 'a', 'BAR_2': 'b'},
+        },
+      });
+      expect(t.runEnv, {'_FOO': 'a', 'BAR_2': 'b'});
+    });
+
+    test('null env value becomes empty string', () {
+      final t = CrossTarget.fromMap({
+        'provider': 'arm-gnu',
+        'triple': 'aarch64-none-linux-gnu',
+        'run': {
+          'env': {'FOO': null},
+        },
+      });
+      expect(t.runEnv, {'FOO': ''});
+    });
+
+    test('survives withDefineOverrides', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'triple': 'aarch64-none-linux-gnu',
+        'run': {
+          'command': ['./custom', '-b', '.'],
+          'env': {'FOO': 'bar'},
+        },
+      });
+      final overridden = t.withDefineOverrides(const {'X': '1'});
+      expect(overridden.runCommand, ['./custom', '-b', '.']);
+      expect(overridden.runEnv, {'FOO': 'bar'});
+    });
+  });
+
   group('CrossTarget.gatedAugments', () {
     // Two variants of one package, gated against each other. They install into
     // the same overlay prefix, so building both means the last one wins and

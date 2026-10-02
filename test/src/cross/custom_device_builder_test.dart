@@ -13,6 +13,8 @@ void main() {
     String binName = 'homescreen',
     String? triple = 'aarch64-none-linux-gnu',
     String? targetName = 'rpi5-bookworm',
+    List<String>? runCommand,
+    Map<String, String> runEnv = const {},
   }) => buildCustomDevice(
     spec: s,
     device: device,
@@ -20,6 +22,8 @@ void main() {
     binName: binName,
     triple: triple,
     targetName: targetName,
+    runCommand: runCommand,
+    runEnv: runEnv,
   );
 
   group('metadata', () {
@@ -119,15 +123,33 @@ void main() {
     test('runDebug launches the embedder and keeps the engineOptions slot', () {
       expect(
         (build()['runDebug'] as List).last,
-        r"cd 'ivi-homescreen' && ./homescreen -b . ${engineOptions}",
+        r"cd 'ivi-homescreen' && './homescreen' '-b' '.' ${engineOptions}",
       );
     });
 
     test('runDebug uses the configured binary name', () {
       expect(
         (build(binName: 'my-embedder')['runDebug'] as List).last,
-        contains('./my-embedder -b .'),
+        contains("'./my-embedder'"),
       );
+    });
+
+    test('runDebug respects run.command and run.env', () {
+      final cmd =
+          (build(
+                        runCommand: [
+                          r'./${embedder}',
+                          '--config',
+                          '/etc/app.conf',
+                        ],
+                        runEnv: {'XDG_RUNTIME_DIR': '/run/user/0'},
+                      )['runDebug']
+                      as List)
+                  .last
+              as String;
+      expect(cmd, contains("XDG_RUNTIME_DIR='/run/user/0'"));
+      expect(cmd, contains("'./homescreen' '--config' '/etc/app.conf'"));
+      expect(cmd, contains(r'${engineOptions}'));
     });
 
     test('forwardPort holds the connection open for flutter', () {
