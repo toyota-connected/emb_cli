@@ -29,6 +29,7 @@ import 'package:emb_cli/src/cross/image_publisher.dart';
 import 'package:emb_cli/src/cross/ipk_packager.dart';
 import 'package:emb_cli/src/cross/local_cross_provider.dart';
 import 'package:emb_cli/src/cross/lock_sync.dart';
+import 'package:emb_cli/src/cross/manifest_vars.dart';
 import 'package:emb_cli/src/cross/module_stager.dart';
 import 'package:emb_cli/src/cross/offline_enforcement.dart';
 import 'package:emb_cli/src/cross/overlay_builder.dart';
@@ -546,8 +547,8 @@ class CrossCommand extends Command<int> {
     // embedder source was configured is carried by buildKey instead.
     final manifestDir =
         FileSystemEntity.typeSync(inputPath) == FileSystemEntityType.file
-        ? File(inputPath).parent
-        : Directory(inputPath);
+        ? File(inputPath).absolute.parent
+        : Directory(inputPath).absolute;
     final CrossProject project;
     try {
       final resolved = _project.resolve(inputPath);
@@ -640,10 +641,13 @@ class CrossCommand extends Command<int> {
     // apply to a host build exactly as they do to a cross one.
     CrossTarget? resolveTarget() {
       final appDir = appDirArg;
+      // Stamp embedder augments with their declaring file so per-augment
+      // provenance survives the app-layer union merge.
+      final cross = _stampAugmentSource(selection.cross, selection.sourcePath);
       final selected = appDir == null
-          ? selection.cross
+          ? cross
           : _project.applyAppLayer(
-              cross: selection.cross,
+              cross: cross,
               appDir: appDir,
               targetName: effectiveTarget,
               native: isNative,
@@ -655,10 +659,21 @@ class CrossCommand extends Command<int> {
               targetName: effectiveTarget,
               native: isNative,
             );
+      // Augments added by the app layer have no _source yet — stamp them now.
+      if (appLayerSource != null) {
+        _stampAugmentSource(selected, appLayerSource, onlyUnstamped: true);
+      }
       final CrossTarget t;
       try {
+        final patchVars = {
+          'embedder_root': p.normalize(manifestDir.path),
+          if (appDir != null) 'app_root': _appDir(appDir)!,
+        };
         t = CrossTarget.fromMap(selected)
-            .withResolvedPatches(appLayerSource ?? selection.sourcePath)
+            .withResolvedPatches(
+              appLayerSource ?? selection.sourcePath,
+              vars: patchVars,
+            )
             .withDefineOverrides(cliDefines);
         // fromMap throws ArgumentError on an unknown provider token.
         // ignore: avoid_catching_errors
@@ -928,6 +943,7 @@ class CrossCommand extends Command<int> {
           manifestDir: manifestDir,
           storeRoot: ensureCacheDir(),
           run: _runProcess,
+          appDir: _appDir(appDirArg),
           onModule: (m) => _logger.info('  module $m: vendored cargo deps'),
         );
         if (err != null) {
@@ -1510,6 +1526,7 @@ class CrossCommand extends Command<int> {
         manifestDir,
         overlayPaths?.prefix,
         deployHost: deployHost,
+        appPath: appPath,
       );
       if (rc != ExitCode.success.code) return rc;
     }
@@ -1522,6 +1539,7 @@ class CrossCommand extends Command<int> {
         defaultName,
         manifestDir,
         overlayPaths?.prefix,
+        appPath: appPath,
       );
       if (rc != ExitCode.success.code) return rc;
     }
@@ -1534,6 +1552,7 @@ class CrossCommand extends Command<int> {
         defaultName,
         manifestDir,
         overlayPaths?.prefix,
+        appPath: appPath,
       );
       if (rc != ExitCode.success.code) return rc;
     }
@@ -1546,6 +1565,7 @@ class CrossCommand extends Command<int> {
         defaultName,
         manifestDir,
         overlayPaths?.prefix,
+        appPath: appPath,
       );
       if (rc != ExitCode.success.code) return rc;
     }
@@ -2220,6 +2240,7 @@ class CrossCommand extends Command<int> {
         manifestDir,
         buildRoot,
         libDir,
+        appDir: _appDir(appPath),
       );
       if (!ok) return ExitCode.software.code;
     }
@@ -2318,6 +2339,7 @@ class CrossCommand extends Command<int> {
             defaultName: defaultName,
             manifestDir: manifestDir,
             overlayPrefix: overlayPrefix,
+            appPath: appPath,
           );
           if (rc != ExitCode.success.code) return rc;
         }
@@ -2585,6 +2607,7 @@ class CrossCommand extends Command<int> {
     Directory manifestDir,
     String? overlayPrefix, {
     String? deployHost,
+    String? appPath,
   }) async {
     final spec = target.package ?? const PackageSpec();
     final arch = debianArch(profile.targetTriple);
@@ -2594,18 +2617,7 @@ class CrossCommand extends Command<int> {
     final debDirs = [
       Directory(p.join(p.dirname(profile.targetSysroot), 'debs')),
     ];
-    // Extra files resolved against the manifest dir → absolute target paths.
-    final ef = _extraFiles(
-      spec,
-      manifestDir,
-      overlayPrefix: overlayPrefix,
-      defines: target.defines,
-    );
-    // Maintainer scripts (preinst/postinst/prerm/postrm) → DEBIAN/<name>.
-    final maintainerScripts = {
-      for (final e in spec.scripts.entries)
-        e.key: p.join(manifestDir.path, e.value),
-    };
+    final appDir = _appDir(appPath);
     final packager = DebPackager(
       readelf: _readelfFor(profile),
       runProcess: withEnv(_runProcess, profile.buildEnv()),
@@ -2622,6 +2634,26 @@ class CrossCommand extends Command<int> {
       }
       final multi = built.length > 1 && r.backend != null;
       final name = multi ? '$baseName-${r.backend}' : baseName;
+      final vars = _manifestVars(
+        manifestDir: manifestDir,
+        appDir: appDir,
+        buildRoot: buildRoot,
+        multi: multi,
+        backend: r.backend,
+      );
+      // Extra files resolved against the manifest dir → absolute target paths.
+      final ef = _extraFiles(
+        spec,
+        manifestDir,
+        overlayPrefix: overlayPrefix,
+        defines: target.defines,
+        vars: vars,
+      );
+      // Maintainer scripts (preinst/postinst/prerm/postrm) → DEBIAN/<name>.
+      final maintainerScripts = {
+        for (final e in spec.scripts.entries)
+          e.key: p.join(manifestDir.path, expandManifestVars(e.value, vars)),
+      };
 
       // bundle_libs: stage the binary's in-tree .so closure into the package
       // under /usr/lib/<multiarch>/ (a default loader path, so no rpath needed).
@@ -2701,22 +2733,14 @@ class CrossCommand extends Command<int> {
     List<CrossBuildResult> built,
     String defaultName,
     Directory manifestDir,
-    String? overlayPrefix,
-  ) async {
+    String? overlayPrefix, {
+    String? appPath,
+  }) async {
     final spec = target.package ?? const PackageSpec();
     final arch = spec.ipk?.arch ?? opkgArch(profile.targetTriple);
     final baseName = spec.name ?? defaultName;
     final outDir = Directory(p.join(buildRoot.path, 'dist'));
-    final ef = _extraFiles(
-      spec,
-      manifestDir,
-      overlayPrefix: overlayPrefix,
-      defines: target.defines,
-    );
-    final maintainerScripts = {
-      for (final e in spec.scripts.entries)
-        e.key: p.join(manifestDir.path, e.value),
-    };
+    final appDir = _appDir(appPath);
     final packager = IpkPackager(runProcess: _runProcess);
 
     for (final r in built) {
@@ -2730,6 +2754,24 @@ class CrossCommand extends Command<int> {
       }
       final multi = built.length > 1 && r.backend != null;
       final name = multi ? '$baseName-${r.backend}' : baseName;
+      final vars = _manifestVars(
+        manifestDir: manifestDir,
+        appDir: appDir,
+        buildRoot: buildRoot,
+        multi: multi,
+        backend: r.backend,
+      );
+      final ef = _extraFiles(
+        spec,
+        manifestDir,
+        overlayPrefix: overlayPrefix,
+        defines: target.defines,
+        vars: vars,
+      );
+      final maintainerScripts = {
+        for (final e in spec.scripts.entries)
+          e.key: p.join(manifestDir.path, expandManifestVars(e.value, vars)),
+      };
       final meta = IpkMetadata(
         name: name,
         version: spec.version,
@@ -2770,8 +2812,9 @@ class CrossCommand extends Command<int> {
     List<CrossBuildResult> built,
     String defaultName,
     Directory manifestDir,
-    String? overlayPrefix,
-  ) async {
+    String? overlayPrefix, {
+    String? appPath,
+  }) async {
     final spec = target.package ?? const PackageSpec();
     final rpmSpec = spec.rpm;
     if (rpmSpec?.license == null) {
@@ -2784,16 +2827,7 @@ class CrossCommand extends Command<int> {
     final arch = rpmArch(profile.targetTriple);
     final baseName = spec.name ?? defaultName;
     final outDir = Directory(p.join(buildRoot.path, 'dist'));
-    final ef = _extraFiles(
-      spec,
-      manifestDir,
-      overlayPrefix: overlayPrefix,
-      defines: target.defines,
-    );
-    final scriptlets = {
-      for (final e in spec.scripts.entries)
-        e.key: p.join(manifestDir.path, e.value),
-    };
+    final appDir = _appDir(appPath);
     final packager = RpmPackager(runProcess: _runProcess);
 
     for (final r in built) {
@@ -2807,6 +2841,24 @@ class CrossCommand extends Command<int> {
       }
       final multi = built.length > 1 && r.backend != null;
       final name = multi ? '$baseName-${r.backend}' : baseName;
+      final vars = _manifestVars(
+        manifestDir: manifestDir,
+        appDir: appDir,
+        buildRoot: buildRoot,
+        multi: multi,
+        backend: r.backend,
+      );
+      final ef = _extraFiles(
+        spec,
+        manifestDir,
+        overlayPrefix: overlayPrefix,
+        defines: target.defines,
+        vars: vars,
+      );
+      final scriptlets = {
+        for (final e in spec.scripts.entries)
+          e.key: p.join(manifestDir.path, expandManifestVars(e.value, vars)),
+      };
       final meta = RpmMetadata(
         name: name,
         version: spec.version,
@@ -2846,8 +2898,9 @@ class CrossCommand extends Command<int> {
     List<CrossBuildResult> built,
     String defaultName,
     Directory manifestDir,
-    String? overlayPrefix,
-  ) async {
+    String? overlayPrefix, {
+    String? appPath,
+  }) async {
     final spec = target.package ?? const PackageSpec();
     if (spec.scripts.isNotEmpty) {
       _logger.warn(
@@ -2858,12 +2911,7 @@ class CrossCommand extends Command<int> {
     final arch = archOfTriple(profile.targetTriple);
     final baseName = spec.name ?? defaultName;
     final outDir = Directory(p.join(buildRoot.path, 'dist'));
-    final ef = _extraFiles(
-      spec,
-      manifestDir,
-      overlayPrefix: overlayPrefix,
-      defines: target.defines,
-    );
+    final appDir = _appDir(appPath);
     final packager = TarballPackager(runProcess: _runProcess);
 
     for (final r in built) {
@@ -2877,6 +2925,20 @@ class CrossCommand extends Command<int> {
       }
       final multi = built.length > 1 && r.backend != null;
       final name = multi ? '$baseName-${r.backend}' : baseName;
+      final vars = _manifestVars(
+        manifestDir: manifestDir,
+        appDir: appDir,
+        buildRoot: buildRoot,
+        multi: multi,
+        backend: r.backend,
+      );
+      final ef = _extraFiles(
+        spec,
+        manifestDir,
+        overlayPrefix: overlayPrefix,
+        defines: target.defines,
+        vars: vars,
+      );
       final meta = TarballMetadata(
         name: name,
         version: spec.version,
@@ -2915,6 +2977,7 @@ class CrossCommand extends Command<int> {
     required String defaultName,
     required Directory manifestDir,
     String? overlayPrefix,
+    String? appPath,
   }) async {
     final tag = backend != null ? '$backend: ' : '';
     final spec = target.package ?? const PackageSpec();
@@ -2930,15 +2993,25 @@ class CrossCommand extends Command<int> {
     final baseId = fp!.appId!;
     final appId = multi ? '$baseId.$backend' : baseId;
     final fpArch = flatpakArch(profile.targetTriple);
+    // For flatpak, bundleDir IS the runnable directory already assembled by
+    // _runnable, so ${runnable} maps directly to it.
+    final vars = _manifestVars(
+      manifestDir: manifestDir,
+      appDir: _appDir(appPath),
+      buildRoot: buildRoot,
+      multi: multi,
+      backend: backend,
+    );
     final iconRel = fp.icon;
     final icon = iconRel != null
-        ? File(p.join(manifestDir.path, iconRel))
+        ? File(p.join(manifestDir.path, expandManifestVars(iconRel, vars)))
         : null;
     final ef = _extraFiles(
       spec,
       manifestDir,
       overlayPrefix: overlayPrefix,
       defines: target.defines,
+      vars: vars,
     );
     final meta = FlatpakMetadata(
       appId: appId,
@@ -3088,11 +3161,15 @@ class CrossCommand extends Command<int> {
   ///
   /// A source naming a directory contributes every file beneath it; see
   /// [expandPackageFiles].
+  ///
+  /// [vars] tokens (`${embedder_root}`, `${app_root}`, `${runnable}`) are
+  /// expanded in each source key before path resolution.
   ({Map<String, String> files, Map<String, String> modes}) _extraFiles(
     PackageSpec spec,
     Directory manifestDir, {
     String? overlayPrefix,
     Map<String, String> defines = const {},
+    Map<String, String> vars = const {},
   }) {
     final entries = <PackageFileEntry>[];
     for (final e in spec.files.entries) {
@@ -3102,12 +3179,13 @@ class CrossCommand extends Command<int> {
       if (!CrossTarget.defineSatisfied(spec.fileRequires[e.key], defines)) {
         continue;
       }
+      final rawKey = expandManifestVars(e.key, vars);
       // A source under `overlay/` names an augment-staged artifact (e.g.
       // `overlay/usr/bin/crashpad_handler`) and resolves against the overlay
       // prefix; everything else is manifest-relative. The overlay stages into
       // `<prefix>/usr/...`, so strip the leading `overlay/` segment.
       final String src;
-      if (e.key == 'overlay' || e.key.startsWith('overlay/')) {
+      if (rawKey == 'overlay' || rawKey.startsWith('overlay/')) {
         if (overlayPrefix == null) {
           _logger.err(
             '  package.files: "${e.key}" references the augment overlay, but '
@@ -3115,9 +3193,9 @@ class CrossCommand extends Command<int> {
           );
           continue;
         }
-        src = p.join(overlayPrefix, e.key.substring('overlay/'.length));
+        src = p.join(overlayPrefix, rawKey.substring('overlay/'.length));
       } else {
-        src = p.join(manifestDir.path, e.key);
+        src = p.join(manifestDir.path, rawKey);
       }
       entries.add((src: src, dest: e.value, mode: spec.fileModes[e.key]));
     }
@@ -3126,6 +3204,52 @@ class CrossCommand extends Command<int> {
       _logger.warn('  package.files: $w');
     }
     return (files: expanded.files, modes: expanded.modes);
+  }
+
+  /// Build the variable map for manifest path expansion in a given backend.
+  Map<String, String> _manifestVars({
+    required Directory manifestDir,
+    required String? appDir,
+    required Directory buildRoot,
+    required bool multi,
+    required String? backend,
+  }) => {
+    'embedder_root': p.normalize(manifestDir.path),
+    if (appDir != null) 'app_root': appDir,
+    if (appDir != null)
+      'runnable': p.join(
+        buildRoot.path,
+        multi ? 'runnable-$backend' : 'runnable',
+      ),
+  };
+
+  /// Tag each augment map in [cross] with `_source: [sourcePath]` so
+  /// [AugmentLib.fromMap] can recover per-augment provenance after union
+  /// merges. When [onlyUnstamped] is true, only entries missing `_source` are
+  /// stamped (used to tag app-layer additions after the merge).
+  static Map<String, dynamic> _stampAugmentSource(
+    Map<String, dynamic> cross,
+    String? sourcePath, {
+    bool onlyUnstamped = false,
+  }) {
+    final augments = cross['augment'];
+    if (augments is! List || sourcePath == null) return cross;
+    for (var i = 0; i < augments.length; i++) {
+      final a = augments[i];
+      if (a is Map && !(onlyUnstamped && a.containsKey('_source'))) {
+        augments[i] = {...a, '_source': sourcePath};
+      }
+    }
+    return cross;
+  }
+
+  /// Derive the app project directory from the `--app` argument, which may be
+  /// a directory path or a manifest file path. Always returns an absolute path.
+  static String? _appDir(String? appPath) {
+    if (appPath == null) return null;
+    return FileSystemEntity.typeSync(appPath) == FileSystemEntityType.file
+        ? File(appPath).absolute.parent.path
+        : Directory(appPath).absolute.path;
   }
 
   /// The file's permission bits as a 4-digit octal string (e.g. `0755`).
@@ -3234,10 +3358,17 @@ class CrossCommand extends Command<int> {
     CrossTarget target,
     Directory manifestDir,
     Directory buildRoot,
-    Directory libDir,
-  ) async {
+    Directory libDir, {
+    String? appDir,
+  }) async {
+    final moduleVars = {
+      'embedder_root': p.normalize(manifestDir.path),
+      if (appDir != null) 'app_root': appDir,
+    };
     for (final m in target.modules) {
-      final src = Directory(p.join(manifestDir.path, m.path));
+      final src = Directory(
+        p.join(manifestDir.path, expandManifestVars(m.path, moduleVars)),
+      );
       if (!src.existsSync()) {
         _logger.err('  module ${m.name}: source dir not found: ${src.path}');
         return false;

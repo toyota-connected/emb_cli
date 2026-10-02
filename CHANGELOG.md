@@ -1,5 +1,12 @@
 # 0.3.6
 
+**Breaking (cache):** `augmentOverlayKey` and `buildKey` now hash the resolved
+(absolute) augment path instead of the raw manifest-relative value. Projects
+with a `path:` augment and no patches will see a one-time cold sysroot, overlay
+and build directory on upgrade, and existing `emb.lock` entries will report
+drift. The previous key was wrong — it depended on the working directory — so
+the new one is the correct one.
+
 Two cache-key corrections. Both are about a key that does not name everything
 the thing it keys was built with, so two different trees can share one entry.
 

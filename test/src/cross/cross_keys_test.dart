@@ -209,6 +209,40 @@ void main() {
       expect(buildKey(withDefine), isNot(buildKey(withModule)));
     });
 
+    test('a module with an expanded path differs from one with '
+        'a raw token', () {
+      final raw = _t(const {
+        'provider': 'arm-gnu',
+        'toolchain_version': '12.3.rel1',
+        'image_url': 'https://example/raspios.img.xz',
+        'cpu_flags': ['-mcpu=cortex-a76'],
+        'modules': [
+          {
+            'name': 'hello',
+            'path': r'${app_root}/native/hello',
+            'build': 'cmake',
+            'artifacts': ['libhello.so'],
+          },
+        ],
+      });
+      final expanded = _t(const {
+        'provider': 'arm-gnu',
+        'toolchain_version': '12.3.rel1',
+        'image_url': 'https://example/raspios.img.xz',
+        'cpu_flags': ['-mcpu=cortex-a76'],
+        'modules': [
+          {
+            'name': 'hello',
+            'path': '/apps/myapp/native/hello',
+            'build': 'cmake',
+            'artifacts': ['libhello.so'],
+          },
+        ],
+      });
+      // Different apps expand to different paths → different buildKeys.
+      expect(buildKey(raw), isNot(buildKey(expanded)));
+    });
+
     test('launcher does not change the buildKey (not a build output)', () {
       final withLauncher = _t(const {
         'provider': 'arm-gnu',

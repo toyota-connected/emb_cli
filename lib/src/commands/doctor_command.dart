@@ -372,9 +372,16 @@ class DoctorCommand extends Command<int> {
       selectedFrom = ref.sourcePath;
     }
 
+    final embedderRoot =
+        FileSystemEntity.typeSync(inputPath) == FileSystemEntityType.file
+        ? p.dirname(p.absolute(inputPath))
+        : p.absolute(inputPath);
     final CrossTarget target;
     try {
-      target = CrossTarget.fromMap(selected).withResolvedPatches(selectedFrom);
+      target = CrossTarget.fromMap(selected).withResolvedPatches(
+        selectedFrom,
+        vars: {'embedder_root': p.normalize(embedderRoot)},
+      );
       // fromMap throws ArgumentError on an unknown provider token.
       // ignore: avoid_catching_errors
     } on ArgumentError catch (e) {
@@ -485,11 +492,16 @@ class DoctorCommand extends Command<int> {
         json,
       );
     }
+    final embedderRoot =
+        FileSystemEntity.typeSync(inputPath) == FileSystemEntityType.file
+        ? p.dirname(p.absolute(inputPath))
+        : p.absolute(inputPath);
     final CrossTarget target;
     try {
-      target = CrossTarget.fromMap(
-        selection.cross,
-      ).withResolvedPatches(selection.sourcePath);
+      target = CrossTarget.fromMap(selection.cross).withResolvedPatches(
+        selection.sourcePath,
+        vars: {'embedder_root': p.normalize(embedderRoot)},
+      );
       // fromMap throws ArgumentError on an unknown provider token.
       // ignore: avoid_catching_errors
     } on ArgumentError catch (e) {
@@ -497,6 +509,14 @@ class DoctorCommand extends Command<int> {
         'Invalid cross: block — ${e.message}',
         targetArg,
         json,
+      );
+    }
+
+    if (target.hasUnresolvedKeyPaths) {
+      _logger.warn(
+        'Target uses unbound manifest variables (e.g. '
+        r'${app_root}) — probe results may not match '
+        '`emb cross --app`.',
       );
     }
 

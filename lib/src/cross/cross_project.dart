@@ -551,7 +551,19 @@ class CrossProjectResolver {
           'Available: ${project.targets.keys.join(", ")}.',
         );
       }
-      return target.cross;
+      // Stamp augments with their declaring file so provenance survives
+      // the union merge when an app extends this project.
+      final cross = target.cross;
+      final augments = cross['augment'];
+      if (augments is List && target.sourcePath != null) {
+        for (var i = 0; i < augments.length; i++) {
+          final a = augments[i];
+          if (a is Map && !a.containsKey('_source')) {
+            augments[i] = {...a, '_source': target.sourcePath};
+          }
+        }
+      }
+      return cross;
     } finally {
       _resolvingProjects.remove(abs);
     }

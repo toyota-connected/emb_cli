@@ -1,4 +1,5 @@
 import 'package:emb_cli/src/cross/cross_profile.dart';
+import 'package:emb_cli/src/cross/manifest_vars.dart';
 import 'package:emb_cli/src/manifest/source_repo.dart';
 import 'package:emb_cli/src/repo/patch_series.dart';
 import 'package:path/path.dart' as p;
@@ -102,6 +103,7 @@ class AugmentLib {
     this.patches = const [],
     this.subdir,
     this.sha256,
+    this.declaringFile,
   });
 
   factory AugmentLib.fromMap(Map<dynamic, dynamic> map) {
@@ -191,6 +193,7 @@ class AugmentLib {
       patches: patches,
       subdir: (map['subdir'] ?? map['source_subdir'])?.toString(),
       sha256: sha,
+      declaringFile: map['_source']?.toString(),
     );
   }
 
@@ -232,8 +235,17 @@ class AugmentLib {
   /// tarball.
   bool get isLocal => path != null && path!.isNotEmpty;
 
+  /// The manifest file this augment was declared in, when known. Set by
+  /// `_stampAugmentSource` so that after union merges augments still resolve
+  /// against their own manifest, not a blanket caller-supplied declaring file.
+  final String? declaringFile;
+
   /// A copy with relative [patches] rewritten to resolve against the
-  /// directory holding [declaringFile] — the manifest that declared them.
+  /// directory holding the declaring manifest.
+  ///
+  /// Per-augment [declaringFile] (from `_source` in the raw map) takes
+  /// precedence; [fallbackDeclaringFile] is used for augments without it
+  /// (e.g. from `extends:` board library).
   ///
   /// Resolution happens once, at load, because the paths are hashed into the
   /// cache keys (augmentIdentity in cross_keys.dart) as well as read at fetch
@@ -244,23 +256,32 @@ class AugmentLib {
   /// reason: it is hashed into the augment identity as well as read at build
   /// time, so a relative value would key on the working directory rather than
   /// on the tree that gets built.
-  AugmentLib resolvePatchesAgainst(String? declaringFile) {
-    if (declaringFile == null) return this;
+  AugmentLib resolvePatchesAgainst(
+    String? fallbackDeclaringFile, {
+    Map<String, String> vars = const {},
+  }) {
+    final effective = declaringFile ?? fallbackDeclaringFile;
+    if (effective == null) return this;
     if (patches.isEmpty && !isLocal) return this;
-    final base = p.dirname(p.absolute(declaringFile));
+    final base = p.dirname(p.absolute(effective));
     return AugmentLib(
       pkg: pkg,
       minVersion: minVersion,
       url: url,
-      path: isLocal ? p.normalize(p.join(base, path)) : path,
+      path: isLocal
+          ? p.normalize(p.join(base, expandManifestVars(path!, vars)))
+          : path,
       build: build,
       staticLink: staticLink,
       defines: defines,
       host: host,
       requiresDefine: requiresDefine,
-      patches: resolvePatchPaths(patches, base),
+      patches: resolvePatchPaths([
+        for (final pat in patches) expandManifestVars(pat, vars),
+      ], base),
       subdir: subdir,
       sha256: sha256,
+      declaringFile: declaringFile ?? fallbackDeclaringFile,
     );
   }
 
@@ -426,6 +447,21 @@ class ModuleSpec {
   /// Optional build profile hook (reserved for future per-module profile
   /// selection); currently informational.
   final String? profile;
+
+  /// A copy with [path] expanded and absolutized against [base].
+  ModuleSpec withExpandedPath(String base, Map<String, String> vars) {
+    final expanded = p.normalize(p.join(base, expandManifestVars(path, vars)));
+    if (expanded == path) return this;
+    return ModuleSpec(
+      name: name,
+      path: expanded,
+      artifacts: artifacts,
+      build: build,
+      defines: defines,
+      features: features,
+      profile: profile,
+    );
+  }
 }
 
 /// The `package:` block of a cross manifest — how `emb cross --deb`/`--flatpak`
@@ -1088,6 +1124,14 @@ class CrossTarget {
       if (!defineSatisfied(a.requiresDefine, defines)) a,
   ];
 
+  /// True when any key-affecting path (augment local path, module path)
+  /// still contains an unexpanded `${…}` token. Keys computed from such a
+  /// target are meaningless — they hash the literal token instead of the
+  /// resolved path.
+  bool get hasUnresolvedKeyPaths =>
+      augment.any((a) => a.isLocal && hasUnresolvedVars(a.path!)) ||
+      modules.any((m) => hasUnresolvedVars(m.path));
+
   /// App-owned native libraries built from the app's own source tree and
   /// staged into the app bundle's `lib/` (next to `libapp.so`), resolved at
   /// runtime via `DynamicLibrary.open`. App-owned, so a higher manifest layer
@@ -1210,6 +1254,7 @@ class CrossTarget {
       toolchainUrl: toolchainUrl,
       versionPolicy: versionPolicy,
       sysroot: sysroot,
+      customDevice: customDevice,
       yoctoBuild: yoctoBuild,
       machineTuple: machineTuple,
       recipe: recipe,
@@ -1236,11 +1281,19 @@ class CrossTarget {
     );
   }
 
-  /// A copy whose augment patch paths resolve against the manifest at
-  /// [declaringFile]. See [AugmentLib.resolvePatchesAgainst].
-  CrossTarget withResolvedPatches(String? declaringFile) {
-    if (declaringFile == null) return this;
-    if (augment.every((a) => a.patches.isEmpty)) return this;
+  /// A copy whose augment patch/local paths and module paths resolve against
+  /// the manifest at [declaringFile]. See [AugmentLib.resolvePatchesAgainst].
+  CrossTarget withResolvedPatches(
+    String? declaringFile, {
+    Map<String, String> vars = const {},
+  }) {
+    if (declaringFile == null && vars.isEmpty) return this;
+    final base = declaringFile != null
+        ? p.dirname(p.absolute(declaringFile))
+        : null;
+    final needsAugment = augment.any((a) => a.patches.isNotEmpty || a.isLocal);
+    final needsModule = modules.isNotEmpty && vars.isNotEmpty;
+    if (!needsAugment && !needsModule && vars.isEmpty) return this;
     return CrossTarget(
       provider: provider,
       targetTriple: targetTriple,
@@ -1249,6 +1302,7 @@ class CrossTarget {
       toolchainUrl: toolchainUrl,
       versionPolicy: versionPolicy,
       sysroot: sysroot,
+      customDevice: customDevice,
       yoctoBuild: yoctoBuild,
       machineTuple: machineTuple,
       recipe: recipe,
@@ -1256,9 +1310,12 @@ class CrossTarget {
       sdkUrl: sdkUrl,
       sdkEnvSetup: sdkEnvSetup,
       augment: [
-        for (final a in augment) a.resolvePatchesAgainst(declaringFile),
+        for (final a in augment)
+          a.resolvePatchesAgainst(declaringFile, vars: vars),
       ],
-      modules: modules,
+      modules: base != null || vars.isNotEmpty
+          ? [for (final m in modules) m.withExpandedPath(base ?? '', vars)]
+          : modules,
       embedderExports: embedderExports,
       generator: generator,
       launcher: launcher,
