@@ -20,6 +20,9 @@ coverage/
 __pycache__/
 *.pyc
 
+# Board library install stamps (written by `emb boards sync` / bootstrap)
+.emb-boards-version
+.emb-boards-sha
 # Marp render of training/emb-training.md — built by CI, not checked in.
 training/emb-training.html
 training/emb-training.pptx

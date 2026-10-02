@@ -2,12 +2,16 @@ import 'dart:io';
 
 import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/commands/boards_command.dart';
+import 'package:emb_cli/src/cross/board_source.dart';
+import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:mason_logger/mason_logger.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 class _MockLogger extends Mock implements Logger {}
+
+class _MockProgress extends Mock implements Progress {}
 
 void main() {
   late Logger logger;
@@ -30,9 +34,9 @@ void main() {
 
   tearDown(() => tmp.deleteSync(recursive: true));
 
-  /// A data home holding one board, as an install writes it.
+  /// A data home holding one board under the default source subdirectory.
   void installBoards({String? stamp}) {
-    final d = Directory(p.join(tmp.path, 'data', 'emb', 'boards'))
+    final d = Directory(p.join(tmp.path, 'data', 'emb', 'boards', 'emb-public'))
       ..createSync(recursive: true);
     File(p.join(d.path, 'raspberry-pi.emb.yaml')).writeAsStringSync('''
 id: raspberry-pi
@@ -108,6 +112,470 @@ cross:
       final out = info.join('\n');
       expect(out, contains('only-here'));
       expect(out, isNot(contains('rpi5-trixie')));
+    });
+  });
+
+  group('emb boards list --sources', () {
+    Future<int> runListSources(Map<String, String> env) async {
+      final runner = CommandRunner<int>('emb', 'test')
+        ..addCommand(BoardsCommand(logger: logger, environment: env));
+      return await runner.run(['boards', 'list', '--sources']) ?? 0;
+    }
+
+    test('lists configured sources with sync status', () async {
+      final configDir = Directory(p.join(tmp.path, 'config', 'emb'))
+        ..createSync(recursive: true);
+      BoardSourceConfig([
+        const GithubBoardSource(name: 'pub', repo: 'org/pub'),
+        const LocalBoardSource(name: 'loc', path: '/opt/boards'),
+      ]).save(File(p.join(configDir.path, 'boards.yaml')));
+
+      // Create the synced dir for 'pub' so it shows as synced.
+      Directory(
+        p.join(tmp.path, 'data', 'emb', 'boards', 'pub'),
+      ).createSync(recursive: true);
+
+      final env = {
+        'HOME': tmp.path,
+        'XDG_CONFIG_HOME': p.join(tmp.path, 'config'),
+        'XDG_DATA_HOME': p.join(tmp.path, 'data'),
+      };
+      final code = await runListSources(env);
+      expect(code, ExitCode.success.code);
+      final out = info.join('\n');
+      expect(out, contains('pub'));
+      expect(out, contains('synced'));
+      expect(out, contains('loc'));
+    });
+
+    test('reports no sources when config is empty', () async {
+      final env = {
+        'HOME': tmp.path,
+        'XDG_CONFIG_HOME': p.join(tmp.path, 'config'),
+      };
+      final code = await runListSources(env);
+      expect(code, ExitCode.success.code);
+    });
+  });
+
+  group('emb boards add', () {
+    final err = <String>[];
+
+    setUp(() {
+      when(() => logger.err(any())).thenAnswer((i) {
+        err.add('${i.positionalArguments.first}');
+      });
+      err.clear();
+    });
+
+    Future<int> runAdd(List<String> args) async {
+      Directory(p.join(tmp.path, 'config', 'emb')).createSync(recursive: true);
+      final runner = CommandRunner<int>('emb', 'test')
+        ..addCommand(
+          BoardsCommand(
+            logger: logger,
+            environment: {
+              'HOME': tmp.path,
+              'XDG_CONFIG_HOME': p.join(tmp.path, 'config'),
+            },
+          ),
+        );
+      return await runner.run(['boards', 'add', ...args]) ?? 0;
+    }
+
+    test('rejects names with path-traversal characters', () async {
+      final code = await runAdd(['github', 'org/repo', '--name', '../escape']);
+      expect(code, ExitCode.usage.code);
+      expect(err.join(), contains('Invalid source name'));
+    });
+
+    test('rejects names starting with a dash', () async {
+      final code = await runAdd(['github', 'org/repo', '--name', '-bad']);
+      expect(code, ExitCode.usage.code);
+      expect(err.join(), contains('Invalid source name'));
+    });
+
+    test('accepts valid names', () async {
+      when(() => logger.info(any())).thenAnswer((_) {});
+      final code = await runAdd([
+        'github',
+        'org/repo',
+        '--name',
+        'my-boards_2',
+      ]);
+      expect(code, ExitCode.success.code);
+    });
+
+    test('adds a local source', () async {
+      when(() => logger.info(any())).thenAnswer((_) {});
+      final code = await runAdd([
+        'local',
+        '/opt/my-boards',
+        '--name',
+        'mylocal',
+      ]);
+      expect(code, ExitCode.success.code);
+      final file = File(p.join(tmp.path, 'config', 'emb', 'boards.yaml'));
+      final contents = file.readAsStringSync();
+      expect(contents, contains('mylocal'));
+      expect(contents, contains('/opt/my-boards'));
+      expect(contents, contains("type: 'local'"));
+    });
+
+    test('rejects repos with path-traversal', () async {
+      final code = await runAdd(['github', '../escape', '--name', 'test']);
+      expect(code, ExitCode.usage.code);
+      expect(err.join(), contains('Invalid repo'));
+    });
+
+    test('rejects paths with traversal', () async {
+      final code = await runAdd([
+        'github',
+        'org/repo',
+        '--name',
+        'test',
+        '--path',
+        '../.git',
+      ]);
+      expect(code, ExitCode.usage.code);
+      expect(err.join(), contains('Invalid path'));
+    });
+
+    test('rejects duplicate source name', () async {
+      when(() => logger.info(any())).thenAnswer((_) {});
+      await runAdd(['github', 'org/repo', '--name', 'dup']);
+      final code = await runAdd(['github', 'org/other', '--name', 'dup']);
+      expect(code, ExitCode.config.code);
+      expect(err.join(), contains('already exists'));
+    });
+
+    test('refuses to write when config has invalid entries', () async {
+      final configDir = Directory(p.join(tmp.path, 'config', 'emb'))
+        ..createSync(recursive: true);
+      File(p.join(configDir.path, 'boards.yaml')).writeAsStringSync('''
+sources:
+  - name: "../bad"
+    type: github
+    repo: org/repo
+  - name: good
+    type: local
+    path: /opt/boards
+''');
+      when(() => logger.warn(any())).thenAnswer((_) {});
+      final code = await runAdd(['github', 'org/new', '--name', 'fresh']);
+      expect(code, ExitCode.config.code);
+      expect(err.join(), contains('invalid entries'));
+    });
+  });
+
+  group('emb boards sync (ssh)', () {
+    late Progress progress;
+    late List<List<String>> calls;
+    final err = <String>[];
+
+    setUp(() {
+      progress = _MockProgress();
+      when(() => logger.progress(any())).thenReturn(progress);
+      when(() => logger.err(any())).thenAnswer((i) {
+        err.add('${i.positionalArguments.first}');
+      });
+      err.clear();
+      calls = [];
+    });
+
+    const fakeSha = 'abc123def456';
+
+    ProcessRunner fakeRunner({
+      bool Function(String, List<String>)? failOn,
+      String sha = fakeSha,
+    }) {
+      return (
+        String exe,
+        List<String> args, {
+        String? workingDirectory,
+        Map<String, String>? environment,
+        bool includeParentEnvironment = true,
+        bool runInShell = false,
+        ProcessOutputMode output = ProcessOutputMode.capture,
+        String? label,
+      }) async {
+        calls.add([exe, ...args]);
+        final fail = failOn?.call(exe, args) ?? false;
+        if (fail) return const RunResult(1, '', 'simulated failure');
+
+        if (exe == 'git' && args.contains('ls-remote')) {
+          final hasDeref = args.any((a) => a.contains('^{}'));
+          if (hasDeref) {
+            return RunResult(
+              0,
+              'tag-object-sha\trefs/tags/main\n'
+                  '$sha\trefs/tags/main^{}\n',
+              '',
+            );
+          }
+          return RunResult(0, '$sha\trefs/heads/main', '');
+        }
+        if (exe == 'git' && args.contains('clone')) {
+          final dest = args.last;
+          final boardsDir = Directory(p.join(dest, 'boards'))
+            ..createSync(recursive: true);
+          File(
+            p.join(boardsDir.path, 'test-board.emb.yaml'),
+          ).writeAsStringSync('id: test-board\n');
+        }
+        return const RunResult(0, '', '');
+      };
+    }
+
+    Future<int> runSync({
+      required ProcessRunner runner,
+      List<String> extra = const [],
+    }) async {
+      final configDir = Directory(p.join(tmp.path, 'config', 'emb'))
+        ..createSync(recursive: true);
+      BoardSourceConfig([
+        const GithubBoardSource(
+          name: 'priv',
+          repo: 'org/priv-boards',
+          transport: 'ssh',
+        ),
+      ]).save(File(p.join(configDir.path, 'boards.yaml')));
+
+      final env = {
+        'HOME': tmp.path,
+        'XDG_CONFIG_HOME': p.join(tmp.path, 'config'),
+        'XDG_DATA_HOME': p.join(tmp.path, 'data'),
+      };
+      final cmdRunner = CommandRunner<int>('emb', 'test')
+        ..addCommand(
+          BoardsCommand(
+            logger: logger,
+            environment: env,
+            processRunner: runner,
+          ),
+        );
+      return await cmdRunner.run([
+            'boards',
+            'sync',
+            '--source',
+            'priv',
+            ...extra,
+          ]) ??
+          0;
+    }
+
+    test('clones via SSH and copies board files', () async {
+      final code = await runSync(runner: fakeRunner());
+      expect(code, ExitCode.success.code);
+
+      expect(calls[0], contains('ls-remote'));
+      expect(calls[0], contains('git@github.com:org/priv-boards.git'));
+
+      expect(calls[1], contains('clone'));
+      expect(calls[1], contains('--branch'));
+      expect(calls[1], contains('main'));
+
+      expect(calls[2], contains('sparse-checkout'));
+      expect(calls[2], contains('boards'));
+
+      final installed = File(
+        p.join(
+          tmp.path,
+          'data',
+          'emb',
+          'boards',
+          'priv',
+          'test-board.emb.yaml',
+        ),
+      );
+      expect(installed.existsSync(), isTrue);
+
+      verify(
+        () => progress.complete(any(that: contains('1 board file'))),
+      ).called(1);
+    });
+
+    test('skips clone when SHA is unchanged', () async {
+      final runner = fakeRunner();
+      await runSync(runner: runner);
+      calls.clear();
+
+      final code = await runSync(runner: runner);
+      expect(code, ExitCode.success.code);
+      expect(calls, hasLength(1));
+      expect(calls[0], contains('ls-remote'));
+      verify(
+        () => progress.complete(any(that: contains('up to date'))),
+      ).called(1);
+    });
+
+    test('reports failure when clone fails', () async {
+      final code = await runSync(
+        runner: fakeRunner(failOn: (exe, args) => args.contains('clone')),
+      );
+      expect(code, ExitCode.unavailable.code);
+      verify(
+        () => progress.fail(any(that: contains('Could not sync'))),
+      ).called(1);
+    });
+
+    test('passes --ref override to clone --branch', () async {
+      await runSync(runner: fakeRunner(), extra: ['--ref', 'v1.0.0']);
+      expect(calls[1], contains('v1.0.0'));
+    });
+
+    test('uses first ref when multiple non-deref lines match', () async {
+      // Simulate a branch and lightweight tag with the same name — ls-remote
+      // returns two lines, neither with ^{}. We must pick the first stably.
+      // ignore: prefer_function_declarations_over_variables
+      final runner =
+          (
+            String exe,
+            List<String> args, {
+            String? workingDirectory,
+            Map<String, String>? environment,
+            bool includeParentEnvironment = true,
+            bool runInShell = false,
+            ProcessOutputMode output = ProcessOutputMode.capture,
+            String? label,
+          }) async {
+            calls.add([exe, ...args]);
+            if (exe == 'git' && args.contains('ls-remote')) {
+              return const RunResult(
+                0,
+                'aaa111\trefs/heads/main\nbbb222\trefs/tags/main\n',
+                '',
+              );
+            }
+            if (exe == 'git' && args.contains('clone')) {
+              final dest = args.last;
+              final boardsDir = Directory(p.join(dest, 'boards'))
+                ..createSync(recursive: true);
+              File(
+                p.join(boardsDir.path, 'test-board.emb.yaml'),
+              ).writeAsStringSync('id: test-board\n');
+            }
+            return const RunResult(0, '', '');
+          };
+      final code = await runSync(runner: runner);
+      expect(code, ExitCode.success.code);
+      // Verify it picked the first SHA (aaa111) by checking the stamp file.
+      final shaFile = File(
+        p.join(tmp.path, 'data', 'emb', 'boards', 'priv', '.emb-boards-sha'),
+      );
+      expect(shaFile.readAsStringSync().trim(), 'aaa111');
+    });
+
+    test('treats short hex ref as branch name, not SHA', () async {
+      // A ref like "deadbeef" should be passed to --branch, not treated as
+      // a raw SHA (which would skip --branch and use fetch+checkout instead).
+      final runner = fakeRunner();
+      await runSync(runner: runner, extra: ['--ref', 'deadbeef']);
+      // clone call should contain --branch deadbeef
+      expect(calls[1], contains('--branch'));
+      expect(calls[1], contains('deadbeef'));
+    });
+
+    test('prefers dereferenced commit SHA over tag-object SHA', () async {
+      final runner = fakeRunner(sha: 'commit-sha-real');
+      await runSync(runner: runner);
+      calls.clear();
+
+      // Second sync — the stamp holds the commit SHA from the ^{} line,
+      // so ls-remote returning it again means up-to-date.
+      final code = await runSync(runner: runner);
+      expect(code, ExitCode.success.code);
+      expect(calls, hasLength(1));
+      verify(
+        () => progress.complete(any(that: contains('up to date'))),
+      ).called(1);
+    });
+  });
+
+  group('emb boards remove', () {
+    final err = <String>[];
+
+    setUp(() {
+      when(() => logger.err(any())).thenAnswer((i) {
+        err.add('${i.positionalArguments.first}');
+      });
+      err.clear();
+    });
+
+    Future<int> runRemove(List<String> args) async {
+      Directory(p.join(tmp.path, 'config', 'emb')).createSync(recursive: true);
+      final runner = CommandRunner<int>('emb', 'test')
+        ..addCommand(
+          BoardsCommand(
+            logger: logger,
+            environment: {
+              'HOME': tmp.path,
+              'XDG_CONFIG_HOME': p.join(tmp.path, 'config'),
+            },
+          ),
+        );
+      return await runner.run(['boards', 'remove', ...args]) ?? 0;
+    }
+
+    test('rejects names with path-traversal characters', () async {
+      final code = await runRemove(['../escape']);
+      expect(code, ExitCode.usage.code);
+      expect(err.join(), contains('Invalid source name'));
+    });
+
+    test('removes a source and cleans synced directory', () async {
+      when(() => logger.info(any())).thenAnswer((_) {});
+
+      // Set up config with one source.
+      final configDir = Directory(p.join(tmp.path, 'config', 'emb'))
+        ..createSync(recursive: true);
+      BoardSourceConfig([
+        const GithubBoardSource(name: 'priv', repo: 'org/priv'),
+        const GithubBoardSource(name: 'other', repo: 'org/other'),
+      ]).save(File(p.join(configDir.path, 'boards.yaml')));
+
+      // Create a synced dir for 'priv'.
+      final syncedDir = Directory(
+        p.join(tmp.path, 'data', 'emb', 'boards', 'priv'),
+      )..createSync(recursive: true);
+
+      final env = {
+        'HOME': tmp.path,
+        'XDG_CONFIG_HOME': p.join(tmp.path, 'config'),
+        'XDG_DATA_HOME': p.join(tmp.path, 'data'),
+      };
+      final runner = CommandRunner<int>('emb', 'test')
+        ..addCommand(BoardsCommand(logger: logger, environment: env));
+      final code = await runner.run(['boards', 'remove', 'priv']) ?? 0;
+      expect(code, ExitCode.success.code);
+      expect(syncedDir.existsSync(), isFalse);
+
+      // Config should still have the other source.
+      final reloaded = BoardSourceConfig.load(
+        File(p.join(configDir.path, 'boards.yaml')),
+      );
+      expect(reloaded.sources, hasLength(1));
+      expect(reloaded.sources.first.name, 'other');
+    });
+
+    test('warns when removing the last source', () async {
+      when(() => logger.info(any())).thenAnswer((_) {});
+
+      final configDir = Directory(p.join(tmp.path, 'config', 'emb'))
+        ..createSync(recursive: true);
+      BoardSourceConfig([
+        const GithubBoardSource(name: 'only', repo: 'org/only'),
+      ]).save(File(p.join(configDir.path, 'boards.yaml')));
+
+      final env = {
+        'HOME': tmp.path,
+        'XDG_CONFIG_HOME': p.join(tmp.path, 'config'),
+      };
+      final runner = CommandRunner<int>('emb', 'test')
+        ..addCommand(BoardsCommand(logger: logger, environment: env));
+      final code = await runner.run(['boards', 'remove', 'only']) ?? 0;
+      expect(code, ExitCode.success.code);
+      expect(warn.join(), contains('No sources remain'));
     });
   });
 }

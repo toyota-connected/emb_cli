@@ -2,19 +2,18 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:args/command_runner.dart';
+import 'package:emb_cli/src/cross/board_source.dart';
 import 'package:emb_cli/src/cross/boards_dir.dart';
 import 'package:emb_cli/src/cross/cross_project.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/cross/custom_device_builder.dart';
 import 'package:emb_cli/src/cross/deployer.dart';
+import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/flutter/custom_devices_config.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
 import 'package:emb_cli/src/version.dart';
 import 'package:mason_logger/mason_logger.dart';
 import 'package:path/path.dart' as p;
-
-/// GitHub repository the board library is fetched from.
-const _repoSlug = 'toyota-connected/emb_cli';
 
 /// {@template boards_command}
 /// `emb boards` — inspect and install the shipped board library that
@@ -31,6 +30,7 @@ class BoardsCommand extends Command<int> {
     HttpClient? httpClient,
     Map<String, String>? environment,
     Uri? apiBase,
+    ProcessRunner? processRunner,
   }) {
     addSubcommand(BoardsListCommand(logger: logger, environment: environment));
     addSubcommand(
@@ -42,7 +42,12 @@ class BoardsCommand extends Command<int> {
         httpClient: httpClient,
         environment: environment,
         apiBase: apiBase,
+        processRunner: processRunner,
       ),
+    );
+    addSubcommand(BoardsAddCommand(logger: logger, environment: environment));
+    addSubcommand(
+      BoardsRemoveCommand(logger: logger, environment: environment),
     );
   }
 
@@ -59,7 +64,13 @@ class BoardsListCommand extends Command<int> {
   /// Creates the command.
   BoardsListCommand({required Logger logger, Map<String, String>? environment})
     : _logger = logger,
-      _environment = environment ?? Platform.environment;
+      _environment = environment ?? Platform.environment {
+    argParser.addFlag(
+      'sources',
+      help: 'List configured board sources instead of board targets.',
+      negatable: false,
+    );
+  }
 
   final Logger _logger;
   final Map<String, String> _environment;
@@ -72,27 +83,38 @@ class BoardsListCommand extends Command<int> {
 
   @override
   Future<int> run() async {
-    // Going through the resolver rather than reading the directory directly
-    // means this reports exactly what `extends:` would see, including which
-    // rung won -- the question people actually have when it misbehaves.
+    if (argResults?['sources'] == true) return _listSources();
+
     final resolver = CrossProjectResolver(
       const ManifestLoader(),
       null,
       _environment,
     );
     final names = resolver.boardNames();
+
     final dir = resolveBoardsDir(environment: _environment);
 
     _logger
       ..info('Source:  ${resolver.boardsProvenance ?? "not resolved"}')
       ..info('Install: ${dir.path}');
 
-    final stamp = dir.existsSync() ? readBoardsStamp(dir) : null;
-    if (stamp != null) {
-      _logger.info(
-        'Version: $stamp'
-        '${stamp == packageVersion ? "" : "  (emb is $packageVersion)"}',
-      );
+    // Per-source stamp reporting.
+    final config = BoardSourceConfig.load(
+      resolveBoardSourcesFile(environment: _environment),
+      onWarning: _logger.warn,
+    );
+    for (final s in config.sources) {
+      final sourceDir = switch (s) {
+        LocalBoardSource(:final path) => Directory(path),
+        _ => Directory(p.join(dir.path, s.name)),
+      };
+      final stamp = sourceDir.existsSync() ? readBoardsStamp(sourceDir) : null;
+      if (stamp != null) {
+        _logger.info(
+          'Version: $stamp (${s.name})'
+          '${stamp == packageVersion ? "" : "  (emb is $packageVersion)"}',
+        );
+      }
     }
 
     if (names.isEmpty) {
@@ -101,9 +123,49 @@ class BoardsListCommand extends Command<int> {
         ..info('Run `emb boards sync` to install the board library.');
       return ExitCode.unavailable.code;
     }
-    _logger.info('');
+
+    // Group by source prefix.
+    final grouped = <String, List<String>>{};
     for (final n in names) {
-      _logger.info('  $n');
+      final slash = n.indexOf('/');
+      final source = slash >= 0 ? n.substring(0, slash) : '(unknown)';
+      final target = slash >= 0 ? n.substring(slash + 1) : n;
+      (grouped[source] ??= []).add(target);
+    }
+
+    _logger.info('');
+    for (final MapEntry(key: source, value: targets) in grouped.entries) {
+      _logger.info('$source:');
+      for (final t in targets) {
+        _logger.info('  $t');
+      }
+    }
+    return ExitCode.success.code;
+  }
+
+  int _listSources() {
+    final config = BoardSourceConfig.load(
+      resolveBoardSourcesFile(environment: _environment),
+      onWarning: _logger.warn,
+    );
+    final installed = resolveBoardsDir(environment: _environment);
+    for (final s in config.sources) {
+      final dir = switch (s) {
+        LocalBoardSource(:final path) => Directory(path),
+        _ => Directory(p.join(installed.path, s.name)),
+      };
+      final synced = switch (s) {
+        LocalBoardSource() => dir.existsSync() ? 'found' : 'missing',
+        _ => dir.existsSync() ? 'synced' : 'not synced',
+      };
+      final type = s is GithubBoardSource ? 'github' : 'local';
+      _logger.info('${s.name} ($type, $synced)');
+      final map = s.toMap()
+        ..remove('name')
+        ..remove('type');
+      for (final e in map.entries) {
+        _logger.info('  ${e.key}: ${e.value}');
+      }
     }
     return ExitCode.success.code;
   }
@@ -117,21 +179,30 @@ class BoardsSyncCommand extends Command<int> {
     HttpClient? httpClient,
     Map<String, String>? environment,
     Uri? apiBase,
+    ProcessRunner? processRunner,
   }) : _logger = logger,
-       _http = httpClient ?? HttpClient(),
+       _http = httpClient ?? (HttpClient()..connectionTimeout = _httpTimeout),
        _environment = environment ?? Platform.environment,
-       _apiBase = apiBase ?? Uri.https('api.github.com', '/') {
-    argParser.addOption(
-      'ref',
-      help:
-          'Git ref to fetch from (default: the tag matching this emb, '
-          'v$packageVersion).',
-    );
+       _apiBase = apiBase ?? Uri.https('api.github.com', '/'),
+       _runProcess = processRunner ?? defaultProcessRunner {
+    argParser
+      ..addOption(
+        'ref',
+        help:
+            'Git ref to fetch from (default: the tag matching this emb, '
+            'v$packageVersion). Applies to all GitHub sources unless '
+            'the source config pins a specific ref.',
+      )
+      ..addOption(
+        'source',
+        help: 'Sync only the named source instead of all sources.',
+      );
   }
 
   final Logger _logger;
   final HttpClient _http;
   final Map<String, String> _environment;
+  final ProcessRunner _runProcess;
 
   /// Base of the contents API. Overridable so the fetch path can be tested
   /// against a local server instead of reaching GitHub.
@@ -146,81 +217,582 @@ class BoardsSyncCommand extends Command<int> {
 
   @override
   Future<int> run() async {
-    final ref = (argResults?['ref'] as String?) ?? 'v$packageVersion';
-    final dest = resolveBoardsDir(environment: _environment);
-
-    // An explicit, user-invoked network step on purpose. Fetching lazily on an
-    // `extends:` miss would put the network behind parse-only operations and
-    // break `--offline` and `emb matrix`'s side-effect-free contract.
-    final progress = _logger.progress('Fetching board library at $ref');
-    final List<({String name, Uri url})> entries;
     try {
-      entries = await _listBoards(ref);
-    } on Object catch (e) {
-      progress.fail('Could not list boards at $ref');
-      _logger
-        ..err('$e')
-        ..info(
-          'If this emb is newer than the published tag, pass an existing ref: '
-          'emb boards sync --ref main',
+      final refOverride = argResults?['ref'] as String?;
+      final sourceFilter = argResults?['source'] as String?;
+      final dest = resolveBoardsDir(environment: _environment);
+      final config = BoardSourceConfig.load(
+        resolveBoardSourcesFile(environment: _environment),
+        onWarning: _logger.warn,
+      );
+
+      if (sourceFilter != null && !config.contains(sourceFilter)) {
+        _logger.err(
+          'Unknown source "$sourceFilter". '
+          'Known: ${config.sources.map((s) => s.name).join(", ")}.',
         );
-      return ExitCode.unavailable.code;
-    }
-    if (entries.isEmpty) {
-      progress.fail('No board files found at $ref');
-      return ExitCode.unavailable.code;
-    }
-
-    try {
-      dest.createSync(recursive: true);
-      for (final e in entries) {
-        progress.update('Fetching ${e.name}');
-        final bytes = await _get(e.url);
-        File(p.join(dest.path, e.name)).writeAsBytesSync(bytes);
+        return ExitCode.usage.code;
       }
-      File(
-        p.join(dest.path, boardsVersionStamp),
-      ).writeAsStringSync('$packageVersion\n');
+
+      var synced = 0;
+      final failed = <String>[];
+      for (final source in config.sources) {
+        if (sourceFilter != null && source.name != sourceFilter) continue;
+        switch (source) {
+          case GithubBoardSource():
+            final code = await _syncGithub(source, dest, refOverride);
+            if (code != ExitCode.success.code) {
+              failed.add(source.name);
+            } else {
+              synced++;
+            }
+          case LocalBoardSource(:final path):
+            final dir = Directory(path);
+            if (!dir.existsSync()) {
+              _logger.warn(
+                'Local source "${source.name}" at $path does not exist.',
+              );
+              continue;
+            }
+            _logger.info(
+              'Local source "${source.name}" at $path '
+              '— no sync needed.',
+            );
+            synced++;
+        }
+      }
+
+      if (synced == 0 && failed.isEmpty) {
+        _logger.warn('No sources to sync.');
+        return ExitCode.unavailable.code;
+      }
+      if (failed.isNotEmpty) {
+        _logger.err('Failed to sync: ${failed.join(", ")}.');
+        return ExitCode.unavailable.code;
+      }
+      return ExitCode.success.code;
+    } finally {
+      _http.close();
+    }
+  }
+
+  static const _shaStamp = '.emb-boards-sha';
+  static const _httpTimeout = Duration(seconds: 30);
+  static const _gitNoPrompt = {
+    'GIT_TERMINAL_PROMPT': '0',
+    'GIT_SSH_COMMAND': 'ssh -o BatchMode=yes',
+  };
+
+  Future<int> _syncGithub(
+    GithubBoardSource source,
+    Directory boardsRoot,
+    String? refOverride,
+  ) async {
+    final ref =
+        refOverride ?? (source.ref == 'auto' ? 'v$packageVersion' : source.ref);
+    final sourceDest = Directory(p.join(boardsRoot.path, source.name));
+    final shaFile = File(p.join(sourceDest.path, _shaStamp));
+
+    final progress = _logger.progress(
+      'Checking ${source.name} (${source.repo}) at $ref',
+    );
+
+    final String remoteSha;
+    try {
+      remoteSha = source.useSsh
+          ? await _remoteSshSha(source, ref)
+          : await _remoteApiSha(source, ref);
     } on Object catch (e) {
-      progress.fail('Could not write ${dest.path}');
+      progress.fail('Could not check ${source.name} at $ref');
       _logger.err('$e');
-      return ExitCode.cantCreate.code;
+      if (source.ref == 'auto') {
+        _logger.info(
+          'If this emb is newer than the published tag, pass an '
+          'existing ref: emb boards sync --ref main',
+        );
+      }
+      return ExitCode.unavailable.code;
     }
 
-    progress.complete('Installed ${entries.length} board file(s)');
-    _logger.info(dest.path);
+    final localSha = shaFile.existsSync()
+        ? shaFile.readAsStringSync().trim()
+        : '';
+    if (localSha == remoteSha) {
+      // Refresh the version stamp even when the SHA hasn't changed — an emb
+      // upgrade with no remote change must update the stamp so doctor doesn't
+      // perpetually report version skew.
+      final stampFile = File(p.join(sourceDest.path, boardsVersionStamp));
+      if (sourceDest.existsSync() &&
+          (!stampFile.existsSync() ||
+              stampFile.readAsStringSync().trim() != packageVersion)) {
+        stampFile.writeAsStringSync('$packageVersion\n');
+      }
+      progress.complete('${source.name}: up to date ($ref)');
+      return ExitCode.success.code;
+    }
+
+    progress.update('Fetching ${source.name} (${source.repo}) at $ref');
+
+    final int count;
+    try {
+      count = source.useSsh
+          ? await _fetchBoardsSsh(source, ref, sourceDest, progress)
+          : await _fetchBoardsApi(source, ref, sourceDest, progress);
+    } on Object catch (e) {
+      progress.fail('Could not sync ${source.name} at $ref');
+      _logger.err('$e');
+      return ExitCode.unavailable.code;
+    }
+    if (count == 0) {
+      progress.fail('No board files found for ${source.name} at $ref');
+      return ExitCode.unavailable.code;
+    }
+
+    File(
+      p.join(sourceDest.path, boardsVersionStamp),
+    ).writeAsStringSync('$packageVersion\n');
+    shaFile.writeAsStringSync('$remoteSha\n');
+
+    progress.complete('${source.name}: installed $count board file(s)');
+    _logger.info(sourceDest.path);
     return ExitCode.success.code;
   }
 
-  /// The `boards/*.emb.yaml` entries at [ref], via the GitHub contents API.
-  Future<List<({String name, Uri url})>> _listBoards(String ref) async {
+  // -- Transport: remote SHA -------------------------------------------
+
+  Future<String> _remoteApiSha(GithubBoardSource source, String ref) async {
     final api = _apiBase.replace(
-      path: '/repos/$_repoSlug/contents/boards',
+      path: '/repos/${source.repo}/commits/${Uri.encodeComponent(ref)}',
+    );
+    final decoded = jsonDecode(utf8.decode(await _get(api, source)));
+    if (decoded is Map && decoded['sha'] is String) {
+      return decoded['sha'] as String;
+    }
+    throw StateError('unexpected response fetching commit SHA for $ref');
+  }
+
+  Future<String> _remoteSshSha(GithubBoardSource source, String ref) async {
+    final sshUrl = 'git@github.com:${source.repo}.git';
+    final result = await _runProcess('git', [
+      'ls-remote',
+      sshUrl,
+      ref,
+      '$ref^{}',
+    ], environment: _gitNoPrompt);
+    if (result.exitCode != 0) {
+      throw StateError(
+        result.stderr.isNotEmpty ? result.stderr : result.stdout,
+      );
+    }
+    // For annotated tags ls-remote returns both the tag object and the
+    // dereferenced commit (the ^{} line). Prefer the commit SHA so the
+    // staleness check is consistent with the HTTPS /commits/ endpoint.
+    String? first;
+    String? deref;
+    for (final line in result.stdout.split('\n')) {
+      final parts = line.split(RegExp(r'\s+'));
+      if (parts.length < 2 || parts[0].isEmpty) continue;
+      if (line.contains('^{}')) {
+        deref = parts[0];
+        break;
+      }
+      first ??= parts[0];
+    }
+    final sha = deref ?? first;
+    if (sha == null || sha.isEmpty) {
+      throw StateError('ref "$ref" not found in ${source.repo}');
+    }
+    return sha;
+  }
+
+  // -- Transport: fetch board files ------------------------------------
+
+  Future<int> _fetchBoardsApi(
+    GithubBoardSource source,
+    String ref,
+    Directory dest,
+    Progress progress,
+  ) async {
+    final entries = await _listBoards(source, ref);
+    if (entries.isEmpty) return 0;
+
+    dest.createSync(recursive: true);
+    final written = <String>{};
+    for (final e in entries) {
+      final safeName = p.basename(e.name);
+      if (safeName != e.name) {
+        _logger.warn('Skipping board with unsafe filename: ${e.name}');
+        continue;
+      }
+      progress.update('Fetching $safeName');
+      final bytes = await _get(
+        e.url,
+        source,
+        accept: 'application/vnd.github.raw+json',
+      );
+      File(p.join(dest.path, safeName)).writeAsBytesSync(bytes);
+      written.add(safeName);
+    }
+    for (final f in dest.listSync().whereType<File>().where(
+      (f) =>
+          f.path.endsWith('.emb.yaml') && !written.contains(p.basename(f.path)),
+    )) {
+      f.deleteSync();
+    }
+    return entries.length;
+  }
+
+  Future<int> _fetchBoardsSsh(
+    GithubBoardSource source,
+    String ref,
+    Directory dest,
+    Progress progress,
+  ) async {
+    final sshUrl = 'git@github.com:${source.repo}.git';
+    final tmp = Directory.systemTemp.createTempSync('emb_boards_');
+    try {
+      // --branch accepts tags and branch names but not raw SHAs. For a SHA
+      // we clone without --branch and fetch the exact commit instead.
+      final isSha = RegExp(r'^[0-9a-f]{40}$').hasMatch(ref);
+      final clone = await _runProcess('git', [
+        'clone',
+        '--depth',
+        '1',
+        if (!isSha) '--branch',
+        if (!isSha) ref,
+        '--filter=blob:none',
+        '--sparse',
+        sshUrl,
+        tmp.path,
+      ], environment: _gitNoPrompt);
+      if (clone.exitCode != 0) {
+        throw StateError(clone.stderr.isNotEmpty ? clone.stderr : clone.stdout);
+      }
+      if (isSha) {
+        final fetch = await _runProcess(
+          'git',
+          ['fetch', 'origin', ref],
+          workingDirectory: tmp.path,
+          environment: _gitNoPrompt,
+        );
+        if (fetch.exitCode != 0) {
+          throw StateError(
+            fetch.stderr.isNotEmpty ? fetch.stderr : fetch.stdout,
+          );
+        }
+        final checkout = await _runProcess('git', [
+          'checkout',
+          ref,
+        ], workingDirectory: tmp.path);
+        if (checkout.exitCode != 0) {
+          throw StateError(
+            checkout.stderr.isNotEmpty ? checkout.stderr : checkout.stdout,
+          );
+        }
+      }
+
+      final sparseSet = await _runProcess('git', [
+        'sparse-checkout',
+        'set',
+        source.path,
+      ], workingDirectory: tmp.path);
+      if (sparseSet.exitCode != 0) {
+        throw StateError(sparseSet.stderr);
+      }
+
+      final srcDir = Directory(p.join(tmp.path, source.path));
+      if (!srcDir.existsSync()) return 0;
+
+      final files = srcDir
+          .listSync()
+          .whereType<File>()
+          .where((f) => f.path.endsWith('.emb.yaml'))
+          .toList();
+      if (files.isEmpty) return 0;
+
+      dest.createSync(recursive: true);
+      final written = <String>{};
+      for (final f in files) {
+        final name = p.basename(f.path);
+        f.copySync(p.join(dest.path, name));
+        written.add(name);
+      }
+      for (final existing in dest.listSync().whereType<File>().where(
+        (f) =>
+            f.path.endsWith('.emb.yaml') &&
+            !written.contains(p.basename(f.path)),
+      )) {
+        existing.deleteSync();
+      }
+      return files.length;
+    } finally {
+      try {
+        tmp.deleteSync(recursive: true);
+      } on Object catch (e) {
+        _logger.detail('cleanup of ${tmp.path} failed: $e');
+      }
+    }
+  }
+
+  /// The `boards/*.emb.yaml` entries at [ref], via the GitHub contents API.
+  Future<List<({String name, Uri url})>> _listBoards(
+    GithubBoardSource source,
+    String ref,
+  ) async {
+    final api = _apiBase.replace(
+      path: '/repos/${source.repo}/contents/${source.path}',
       queryParameters: {'ref': ref},
     );
-    final decoded = jsonDecode(utf8.decode(await _get(api)));
+    final decoded = jsonDecode(utf8.decode(await _get(api, source)));
     if (decoded is! List) {
-      throw StateError('unexpected response listing boards at $ref');
+      throw StateError(
+        'unexpected response listing boards for ${source.name} at $ref',
+      );
     }
     return [
       for (final e in decoded)
         if (e is Map &&
             e['type'] == 'file' &&
             '${e['name']}'.endsWith('.emb.yaml') &&
-            e['download_url'] != null)
-          (name: '${e['name']}', url: Uri.parse('${e['download_url']}')),
+            e['url'] != null)
+          (name: '${e['name']}', url: Uri.parse('${e['url']}')),
     ];
   }
 
-  Future<List<int>> _get(Uri url) async {
+  Future<List<int>> _get(
+    Uri url,
+    GithubBoardSource source, {
+    String? accept,
+  }) async {
     final req = await _http.getUrl(url)
       ..headers.set(HttpHeaders.userAgentHeader, 'emb/$packageVersion')
-      ..headers.set(HttpHeaders.acceptHeader, 'application/vnd.github+json');
+      ..headers.set(
+        HttpHeaders.acceptHeader,
+        accept ?? 'application/vnd.github+json',
+      );
+    if (source.tokenEnv != null &&
+        url.scheme == _apiBase.scheme &&
+        url.host == _apiBase.host &&
+        url.port == _apiBase.port) {
+      final token = _environment[source.tokenEnv!];
+      if (token != null && token.isNotEmpty) {
+        req.headers.set(HttpHeaders.authorizationHeader, 'Bearer $token');
+      }
+    }
     final res = await req.close();
     if (res.statusCode != HttpStatus.ok) {
+      await res.drain<void>();
       throw HttpException('HTTP ${res.statusCode} for $url');
     }
     return [for (final chunk in await res.toList()) ...chunk];
+  }
+}
+
+/// `emb boards add` — add a board source to the config.
+class BoardsAddCommand extends Command<int> {
+  /// Creates the command.
+  BoardsAddCommand({required Logger logger, Map<String, String>? environment})
+    : _logger = logger,
+      _environment = environment ?? Platform.environment {
+    argParser
+      ..addOption(
+        'name',
+        abbr: 'n',
+        help: 'Source name (required).',
+        mandatory: true,
+      )
+      ..addOption(
+        'path',
+        help:
+            'Subdirectory within the repo (github) '
+            'or local path.',
+      )
+      ..addOption(
+        'ref',
+        help:
+            'Git ref (github). '
+            '"auto" tracks emb version.',
+        defaultsTo: 'main',
+      )
+      ..addOption('token-env', help: 'Env var holding a GitHub PAT.')
+      ..addOption(
+        'transport',
+        help: 'Transport protocol: https (GitHub API) or ssh (git clone).',
+        allowed: ['https', 'ssh'],
+        defaultsTo: 'https',
+      );
+  }
+
+  final Logger _logger;
+  final Map<String, String> _environment;
+
+  @override
+  String get description => 'Add a board source (github or local).';
+
+  @override
+  String get name => 'add';
+
+  @override
+  String get invocation => 'emb boards add <type> <repo-or-path>';
+
+  @override
+  Future<int> run() async {
+    final args = argResults!;
+    if (args.rest.length < 2) {
+      _logger.err(
+        'Usage: emb boards add <github|local> <repo-or-path> --name <name>',
+      );
+      return ExitCode.usage.code;
+    }
+    final type = args.rest[0];
+    final target = args.rest[1];
+    final sourceName = args['name'] as String;
+
+    final file = resolveBoardSourcesFile(environment: _environment);
+    final config = BoardSourceConfig.load(file, onWarning: _logger.warn);
+
+    if (!validSourceName.hasMatch(sourceName)) {
+      _logger.err(
+        'Invalid source name "$sourceName". '
+        'Use only letters, digits, dashes, and underscores.',
+      );
+      return ExitCode.usage.code;
+    }
+
+    if (config.contains(sourceName)) {
+      _logger.err(
+        'Source "$sourceName" already exists. '
+        'Remove it first with `emb boards remove $sourceName`.',
+      );
+      return ExitCode.config.code;
+    }
+
+    final BoardSource source;
+    switch (type) {
+      case 'github':
+        if (!validRepoRef.hasMatch(target)) {
+          _logger.err('Invalid repo "$target". Use "owner/repo" format.');
+          return ExitCode.usage.code;
+        }
+        final sourcePath = args['path'] as String? ?? 'boards';
+        if (sourcePath.split('/').contains('..') || p.isAbsolute(sourcePath)) {
+          _logger.err(
+            'Invalid path "$sourcePath". '
+            'Must be relative and not contain "..".',
+          );
+          return ExitCode.usage.code;
+        }
+        source = GithubBoardSource(
+          name: sourceName,
+          repo: target,
+          path: sourcePath,
+          ref: args['ref'] as String,
+          tokenEnv: args['token-env'] as String?,
+          transport: args['transport'] as String,
+        );
+      case 'local':
+        source = LocalBoardSource(name: sourceName, path: target);
+      default:
+        _logger.err('Unknown source type "$type". Use "github" or "local".');
+        return ExitCode.usage.code;
+    }
+
+    if (config.droppedEntries) {
+      _logger.err(
+        'Cannot write: ${file.path} contains invalid entries that would be '
+        'lost. Fix or remove them first.',
+      );
+      return ExitCode.config.code;
+    }
+    BoardSourceConfig([...config.sources, source]).save(file);
+    _logger.info('Added source "$sourceName" → ${file.path}');
+    if (source is GithubBoardSource) {
+      _logger.info('Run `emb boards sync --source $sourceName` to fetch.');
+    }
+    return ExitCode.success.code;
+  }
+}
+
+/// `emb boards remove` — remove a board source from the config.
+class BoardsRemoveCommand extends Command<int> {
+  /// Creates the command.
+  BoardsRemoveCommand({
+    required Logger logger,
+    Map<String, String>? environment,
+  }) : _logger = logger,
+       _environment = environment ?? Platform.environment;
+
+  final Logger _logger;
+  final Map<String, String> _environment;
+
+  @override
+  String get description => 'Remove a configured board source.';
+
+  @override
+  String get name => 'remove';
+
+  @override
+  String get invocation => 'emb boards remove <source-name>';
+
+  @override
+  Future<int> run() async {
+    final args = argResults!;
+    if (args.rest.isEmpty) {
+      _logger.err('Usage: emb boards remove <source-name>');
+      return ExitCode.usage.code;
+    }
+    final sourceName = args.rest.first;
+
+    if (!validSourceName.hasMatch(sourceName)) {
+      _logger.err(
+        'Invalid source name "$sourceName". '
+        'Use only letters, digits, dashes, and underscores.',
+      );
+      return ExitCode.usage.code;
+    }
+
+    final file = resolveBoardSourcesFile(environment: _environment);
+    final config = BoardSourceConfig.load(file, onWarning: _logger.warn);
+
+    if (!config.contains(sourceName)) {
+      _logger.err(
+        'No source named "$sourceName". '
+        'Known: ${config.sources.map((s) => s.name).join(", ")}.',
+      );
+      return ExitCode.usage.code;
+    }
+
+    if (config.droppedEntries) {
+      _logger.err(
+        'Cannot write: ${file.path} contains invalid entries that would be '
+        'lost. Fix or remove them first.',
+      );
+      return ExitCode.config.code;
+    }
+    final updated = config.sources.where((s) => s.name != sourceName).toList();
+    BoardSourceConfig(updated).save(file);
+    _logger.info('Removed source "$sourceName".');
+    if (updated.isEmpty) {
+      _logger.warn(
+        'No sources remain. The default source will be restored on next load.',
+      );
+    }
+
+    // Clean up the synced directory under the installed data dir only — never
+    // delete under a user-overridden EMB_BOARDS_DIR (could be a git checkout).
+    final dataDir = Directory(
+      p.join(
+        dataHomeDir(environment: _environment).path,
+        'emb',
+        'boards',
+        sourceName,
+      ),
+    );
+    if (dataDir.existsSync()) {
+      _logger.info('Removing synced boards at ${dataDir.path}');
+      dataDir.deleteSync(recursive: true);
+    }
+    return ExitCode.success.code;
   }
 }
 

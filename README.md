@@ -1077,9 +1077,10 @@ cycles are rejected.
 
 `emb` is installed as a standalone compiled binary, which carries no package
 data files — so the board library is installed alongside it rather than
-traveling inside it. It is looked up in this order, **first hit wins** (each
-rung is a whole directory; they are never merged, so a stale installed board
-can't silently shadow a checkout edit):
+traveling inside it. It is looked up in this order, **first hit wins** (rungs
+are never merged, so a stale installed board can't silently shadow a checkout
+edit). Rungs 1, 2, and 3 all auto-detect the multi-source subdirectory layout
+(`<source>/*.emb.yaml`); a flat directory of `*.emb.yaml` files also works.
 
 | # | Location | Applies to |
 |---|---|---|
@@ -1105,6 +1106,57 @@ stamp from a different emb is reported, not enforced — a hand-maintained
 
 If `extends:` reports that the board library was not found, `emb boards list`
 shows every path that was tried.
+
+##### Multiple board sources
+
+Board files can come from more than one repository. Each source is named and
+installed into its own subdirectory, so names never collide. `extends:` resolves
+as `<source>/<target>` (e.g. `extends: raspi-emb/my-board`).
+
+```sh
+# Add a source (GitHub, HTTPS transport — uses the contents API + a PAT):
+emb boards add github org/board-repo --name my-boards --token-env GITHUB_TOKEN
+
+# Add a private source over SSH (uses git clone, no PAT needed):
+emb boards add github org/private-boards --name priv --transport ssh
+
+# Sync one source:
+emb boards sync --source priv
+
+# List configured sources:
+emb boards list --sources
+
+# Remove a source (also deletes its synced boards):
+emb boards remove priv
+```
+
+Sources are stored in `~/.config/emb/boards.yaml` (or the platform equivalent).
+A source entry looks like:
+
+```yaml
+sources:
+  - name: priv
+    type: github
+    repo: org/private-boards
+    path: boards           # subdirectory in the repo (default: boards)
+    ref: main              # git ref (default: main; "auto" tracks emb version)
+    transport: ssh         # https (default) or ssh
+    token_env: GITHUB_TOKEN  # env var holding a PAT (https only)
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `name` | — | Unique name; used in `extends: <name>/<target>` and on disk. |
+| `repo` | — | GitHub `owner/repo`. |
+| `path` | `boards` | Subdirectory containing `*.emb.yaml` board files. |
+| `ref` | `main` | Git ref to fetch. `auto` resolves to the tag matching this emb (`v<version>`). |
+| `transport` | `https` | `https` uses the GitHub contents API (needs a PAT for private repos via `token_env`). `ssh` uses `git clone` over SSH — works with SSH keys, no PAT required. |
+| `token_env` | — | Name of an environment variable holding a GitHub PAT (https only). |
+
+**Staleness.** Both transports check the remote commit SHA before fetching. If
+the ref hasn't moved since the last sync, the clone/download is skipped entirely.
+The SHA is stored alongside the boards in `.emb-boards-sha`. To force a
+re-fetch, delete that file or the source's board directory and sync again.
 
 #### Flutter custom devices (`flutter run` against a board)
 
