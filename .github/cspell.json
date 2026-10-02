@@ -19,6 +19,8 @@
   ],
   "useGitignore": true,
   "words": [
+    "zipball",
+    "tgz",
     "Artifactory",
     "Embedder",
     "embedders",

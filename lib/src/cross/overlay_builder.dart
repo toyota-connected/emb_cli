@@ -1,7 +1,10 @@
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
+import 'package:emb_cli/src/cache/cache_lock.dart';
 import 'package:emb_cli/src/cross/build_jobs.dart';
 import 'package:emb_cli/src/cross/cross_keys.dart'
     show augmentIdentity, contentHash;
@@ -10,7 +13,9 @@ import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/cross/toolchain_emitter.dart';
 import 'package:emb_cli/src/repo/patch_series.dart';
+import 'package:emb_cli/src/step_reporter.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
+import 'package:mason_logger/mason_logger.dart';
 import 'package:path/path.dart' as p;
 
 /// The include/lib/pkg-config search dirs an overlay contributes. The build
@@ -51,6 +56,198 @@ class OverlayPaths {
   }
 }
 
+/// Outcome of validating a downloaded tarball. `fatal` marks the results a
+/// re-download cannot fix: the bytes are not the problem, the environment is.
+/// Everything else is a bad or half-written body, so the caller deletes the
+/// file and fetches again.
+enum _ValidationCode {
+  success(fatal: false),
+  missingFile(fatal: false),
+  fsError(fatal: false),
+  corruptArchive(fatal: false),
+  // Neither the magic bytes nor the filename name a supported format. An HTML
+  // error page, a rate-limit body or an auth redirect saved under a tarball
+  // name looks exactly like this, and those *are* worth re-fetching — so this
+  // stays retryable even though a genuinely unsupported format will exhaust
+  // the retries before it fails.
+  unsupportedArchive(fatal: false),
+  // A format we positively recognize and do not handle (7-zip, lz4, an rpm
+  // served where a tarball was promised). Unlike the case above there is
+  // nothing to re-fetch: the manifest names something emb cannot unpack.
+  unhandledFormat(fatal: true),
+  failedOpen(fatal: false),
+  invalidSha(fatal: false),
+  // The bytes passed both the sha pin and the magic check; the host just has
+  // no tool to test or unpack them. Re-fetching identical bytes cannot help.
+  missingCmd(fatal: true);
+
+  const _ValidationCode({required this.fatal});
+
+  final bool fatal;
+}
+
+class _BinResult {
+  _BinResult({required this.wasCached, required this.binPath});
+
+  final bool wasCached;
+  final String binPath;
+}
+
+const Map<_ValidationCode, String> _overlayDownloadErrorMessage = {
+  _ValidationCode.success: 'download successful!',
+  _ValidationCode.missingFile: 'destination file missing',
+  _ValidationCode.fsError: 'FileSystemException',
+  _ValidationCode.corruptArchive: 'corrupt archive data',
+  _ValidationCode.unsupportedArchive: 'unsupported archive format',
+  _ValidationCode.unhandledFormat: 'archive format emb cannot unpack',
+  _ValidationCode.failedOpen: 'failed to decompress archive',
+  _ValidationCode.invalidSha: 'sha256 signature is not valid',
+  _ValidationCode.missingCmd: 'required command is missing',
+};
+
+/// `tar` reads gzip/xz/bzip2/zstd itself (`-xf` sniffs the compression), so
+/// every tar-based format shares one extraction argv. `%1` is the tarball,
+/// `%2` the destination directory; both are substituted per element, never by
+/// splitting a command string — a path containing a space would otherwise turn
+/// into two arguments.
+const _tarExtract = ['tar', '-xf', '%1', '-C', '%2', '--strip-components=1'];
+
+/// Probe with the same tool that will extract: `tar -tf` reads the table of
+/// contents through whatever compression `tar -xf` would sniff. Probing the
+/// standalone `xz`/`zstd`/`bzip2` binaries instead would fail a host where the
+/// extraction itself works — bsdtar on macOS carries all four codecs and ships
+/// none of those binaries — and a probe that cannot run is fatal.
+const _tarProbe = ['tar', '-tf'];
+
+/// Formats worth naming but not handled: recognizing them turns "unsupported
+/// archive format", which otherwise costs three downloads before it gives up,
+/// into an immediate error that says which format arrived. Bytes are read at
+/// offset 0.
+const _unhandledMagics = <String, List<int>>{
+  '7-zip': [0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c],
+  'lz4': [0x04, 0x22, 0x4d, 0x18],
+  'lzip': [0x4c, 0x5a, 0x49, 0x50],
+  'compress (.Z)': [0x1f, 0x9d],
+  'rar': [0x52, 0x61, 0x72, 0x21],
+  'cab': [0x4d, 0x53, 0x43, 0x46],
+  'rpm': [0xed, 0xab, 0xee, 0xdb],
+  'deb/ar': [0x21, 0x3c, 0x61, 0x72, 0x63, 0x68, 0x3e],
+};
+
+// Maintainable enum of supported archive formats. Each row carries its magic
+// signatures and their offset, the extensions that name it, the argv that
+// integrity-tests it (the tarball path is appended), and the argv that extracts
+// it. Adding a format is a row here — the one piece of logic that still names a
+// type is the lone-top-level-dir promotion in _fetchSource, which only zip
+// needs (`unzip` has no --strip-components).
+enum _ArchiveType {
+  // dart format off
+  gzip    ([[0x1f, 0x8b]],                          0,   _tarProbe,
+                                                ['.gz', '.tgz'], _tarExtract),
+  // All three local-header variants, and all four bytes of each: `PK` alone
+  // also matches an uncompressed tar whose first member is named `PKGBUILD`,
+  // and \x03\x04 cannot appear in a tar filename field.
+  zip     ([[0x50, 0x4b, 0x03, 0x04],
+            [0x50, 0x4b, 0x05, 0x06],
+            [0x50, 0x4b, 0x07, 0x08]],              0,   ['unzip', '-t', '-q'],
+                                                ['.zip','.jar', '.war', '.apk'],
+            ['unzip', '-q', '%1', '-d', '%2']),
+  xz      ([[0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]],  0,   _tarProbe,
+                                                ['.xz', '.txz'], _tarExtract),
+  bzip2   ([[0x42, 0x5a, 0x68]],                    0,   _tarProbe,
+                                  ['.bz2', '.tbz2', '.tbz'], _tarExtract),
+  zstd    ([[0x28, 0xb5, 0x2f, 0xfd]],              0,   _tarProbe,
+                                          ['.zst', '.zstd'], _tarExtract),
+  // 'ustar' in ASCII bytes. Absent from the older v7/GNU layouts, which the
+  // extension fallback in _validateArchive still recognizes.
+  tar     ([[0x75, 0x73, 0x74, 0x61, 0x72]],        257, _tarProbe,
+                                                ['.tar'], _tarExtract);
+  // dart format on
+
+  const _ArchiveType(
+    this.magics,
+    this.magicOffset,
+    this.probeCmd,
+    this.extensions,
+    this.extractCmd,
+  );
+
+  /// Signatures that all identify this format; any one matching is a match.
+  final List<List<int>> magics;
+  final int magicOffset;
+  final List<String> probeCmd;
+  final List<String> extensions;
+  final List<String> extractCmd;
+
+  /// The extraction argv with `%1`/`%2` bound to [tarball] and [destDir].
+  List<String> extractArgv(String tarball, String destDir) => [
+    for (final a in extractCmd)
+      switch (a) {
+        '%1' => tarball,
+        '%2' => destDir,
+        _ => a,
+      },
+  ];
+
+  /// Whether [magic] (the head of the file, [length] bytes of it valid) carries
+  /// one of this format's signatures.
+  bool matches(Uint8List magic, int length) {
+    for (final sig in magics) {
+      if (length < magicOffset + sig.length) continue;
+      var ok = true;
+      for (var i = 0; i < sig.length; i++) {
+        if (magic[magicOffset + i] != sig[i]) {
+          ok = false;
+          break;
+        }
+      }
+      if (ok) return true;
+    }
+    return false;
+  }
+}
+
+/// Bytes to read from the head of a download: enough to cover the deepest
+/// signature in the table (tar's `ustar` at 257). Computed once — it is a
+/// property of the table, not of the file.
+final _magicWindow = _ArchiveType.values
+    .expand((t) => [for (final m in t.magics) t.magicOffset + m.length])
+    .reduce(max);
+
+/// A body shorter than the shortest signature in the table cannot be any
+/// archive, so it is corrupt rather than unsupported.
+final _magicFloor = _ArchiveType.values
+    .expand((t) => [for (final m in t.magics) m.length])
+    .reduce(min);
+
+/// Ceiling on a single augment download. Source tarballs are megabytes; this is
+/// only here so a hostile or misconfigured origin cannot stream until the cache
+/// disk is full.
+const _maxDownloadBytes = 4 * 1024 * 1024 * 1024;
+
+/// Whether the first [length] valid bytes of [head] begin with [signature].
+bool _startsWith(Uint8List head, int length, List<int> signature) {
+  if (length < signature.length) return false;
+  for (var i = 0; i < signature.length; i++) {
+    if (head[i] != signature[i]) return false;
+  }
+  return true;
+}
+
+class _OverlayValidationResult {
+  const _OverlayValidationResult({
+    required this.code,
+    this.archiveType,
+    this.message,
+  });
+
+  final _ValidationCode code;
+  final _ArchiveType? archiveType;
+
+  /// Optional human-readable message printed only for fatal errors.
+  final String? message;
+}
+
 /// Builds [CrossTarget.augment] libraries (libdisplay-info, Vulkan-Headers, …)
 /// from source into a per-workspace overlay prefix, against an already-resolved
 /// [CrossProfile].
@@ -69,10 +266,15 @@ class OverlayBuilder {
     ProcessRunner runProcess = defaultProcessRunner,
     HttpClient? httpClient,
     String? launcher,
+    Directory? sourceCacheDir,
+    Logger? logger,
   }) : _emitter = emitter,
        _run = runProcess,
        _http = httpClient ?? HttpClient(),
-       _launcher = launcher;
+       _launcher = launcher,
+       _sourceCacheDir = sourceCacheDir,
+       _logger = logger,
+       _steps = logger == null ? null : StepReporter(logger);
 
   final Workspace workspace;
   final CrossProfile profile;
@@ -85,7 +287,33 @@ class OverlayBuilder {
   /// not the host-tool builds (those use the host compiler).
   final String? _launcher;
 
+  /// Project root whose `.cache/overlay-src` holds fetched augment tarballs —
+  /// isolating sources per project rather than sharing them in the workspace.
+  /// When unset, falls back to today's shared `<workspace>/overlay-src`.
+  final Directory? _sourceCacheDir;
+
+  /// Spinner/banners for long steps (per-lib augment fetches + builds). Null
+  /// when no logger was injected — keeps unit tests free of console output.
+  final StepReporter? _steps;
+
+  /// For warnings that must outlive a spinner line (an unpinned or plain-http
+  /// augment source). Null in unit tests, like [_steps].
+  final Logger? _logger;
+
   String? _cachedCompilerVersions;
+
+  /// Format a byte count as e.g. `12.3 MB`, matching `_human` style used by
+  /// other emb commands (`cross_command.dart`).
+  static String _bytes(int n) {
+    const units = ['B', 'KB', 'MB', 'GB'];
+    var v = n.toDouble();
+    var i = 0;
+    while (v >= 1024 && i < units.length - 1) {
+      v /= 1024;
+      i++;
+    }
+    return '${v.toStringAsFixed(i == 0 || v >= 100 ? 0 : 1)} ${units[i]}';
+  }
 
   /// First line of `$CC --version` and `$CXX --version`, joined, used to key
   /// host-tool stamps so a compiler upgrade invalidates the cached binary.
@@ -138,20 +366,54 @@ class OverlayBuilder {
       // not cross-compiled into the sysroot. They have no pkg-config presence,
       // so skip the sysroot satisfied check.
       if (lib.host) {
-        final hostBin = await _buildHostTool(lib);
-        if (!binDirs.contains(hostBin)) binDirs.add(hostBin);
+        final onStep = _steps?.start('augment ${lib.pkg}');
+        try {
+          final buildResult = await _buildHostTool(lib, onStep: onStep);
+          if (!binDirs.contains(buildResult.binPath)) {
+            binDirs.add(buildResult.binPath);
+          }
+
+          if (buildResult.wasCached) {
+            onStep?.complete('${lib.pkg} host cached → ${buildResult.binPath}');
+          } else {
+            onStep?.complete('${lib.pkg} host built → ${buildResult.binPath}');
+          }
+        } catch (e) {
+          onStep?.fail(e is OverlayBuildException ? e.message : '$e');
+          rethrow;
+        }
         continue;
       }
+
+      // Start the spinner *before* the sysroot probe so a slow pkg-config
+      // check doesn't leave silence between libs. If satisfied, complete it as
+      // "cached"; otherwise run fetch+build and update/complete along the way.
+      final onStep = _steps?.start('augment ${lib.pkg}');
+
       // A local augment is always built: the developer is editing that tree,
       // and a previously installed copy satisfying `min` is exactly when the
       // edit under way would be skipped. See AugmentLib.path.
-      if (!lib.isLocal && await _satisfied(lib)) continue;
-      switch (lib.build) {
-        case CrossGenerator.meson:
-          await _buildMeson(lib, overlay);
-        case CrossGenerator.cmake:
-          await _buildCMake(lib, overlay);
+      try {
+        if (lib.isLocal || !await _satisfied(lib)) {
+          switch (lib.build) {
+            case CrossGenerator.meson:
+              await _buildMeson(lib, overlay, onStep: onStep);
+            case CrossGenerator.cmake:
+              await _buildCMake(lib, overlay, onStep: onStep);
+          }
+          onStep?.complete(
+            '${lib.pkg}: installed to ${overlay.path}', //
+          );
+        } else {
+          onStep?.complete(
+            '${lib.pkg}: cached (sysroot satisfies ${lib.minVersion})',
+          );
+        }
+      } catch (e) {
+        onStep?.fail(e is OverlayBuildException ? e.message : '$e');
+        rethrow;
       }
+      continue;
     }
     return OverlayPaths(
       prefix: overlay.path,
@@ -200,7 +462,160 @@ class OverlayBuilder {
     return r.exitCode == 0;
   }
 
-  Future<Directory> _fetchSource(AugmentLib lib) async {
+  /// Where fetched augment tarballs + unpacked trees live. Project-local when a
+  /// sourceCacheDir was passed (so projects don't collide on the shared
+  /// workspace dir), else the legacy workspace `overlay-src` location.
+  Directory _overlaySrcDir() {
+    final root = _sourceCacheDir;
+    if (root == null) return workspace.ensurePlatformDir('overlay-src');
+    return Directory(p.join(root.path, '.cache', 'overlay-src'))
+      ..createSync(recursive: true);
+  }
+
+  /// Classifies [tarball]: a [sha] match when the manifest pins one, then
+  /// recognized magic bytes, then a passing integrity probe.
+  /// A cached download can be truncated (an interrupted fetch, a disk-full
+  /// write) or hold an HTML error page saved under a tarball name; trusting
+  /// `existsSync()` alone lets those through, and the failure only surfaces
+  /// later as a misleading patch error against an empty tree.
+  /// A non-fatal result means the bytes are suspect, so the caller deletes and
+  /// re-downloads; a fatal one ([_ValidationCode.fatal]) means the host is at
+  /// fault, so the file is kept and the build stops.
+  Future<_OverlayValidationResult> _validateArchive(
+    File tarball,
+    String? sha,
+  ) async {
+    // Check 0: is the file present?
+    if (!tarball.existsSync()) {
+      return const _OverlayValidationResult(code: _ValidationCode.missingFile);
+    }
+
+    // Check 1: is SHA256 valid?
+    final expected = sha?.toLowerCase();
+    if (expected != null) {
+      final actual = await _sha256(tarball);
+      if (actual != expected) {
+        return const _OverlayValidationResult(code: _ValidationCode.invalidSha);
+      }
+    }
+
+    // Check 2: are the magic bytes valid for archive type? A format may pin
+    // its magic at a nonzero offset (tar's 'ustar' sits at 257), so read a
+    // window wide enough to cover the deepest one and compare per-type.
+    final magic = Uint8List(_magicWindow);
+    // Bytes actually read: the buffer is always [_magicWindow] long and
+    // zero-filled past the end of a short file, so comparing against its length
+    // would let a 3-byte file "match" any signature made of leading zeros.
+    var magicLength = 0;
+    try {
+      final raf = await tarball.open();
+      try {
+        // Looped: a single readInto may return short on a FUSE or
+        // network-backed cache dir, which would silently skip tar's signature
+        // at 257 and mis-detect the file.
+        while (magicLength < _magicWindow) {
+          final n = await raf.readInto(magic, magicLength, _magicWindow);
+          if (n == 0) break;
+          magicLength += n;
+        }
+        if (magicLength < _magicFloor) {
+          return const _OverlayValidationResult(
+            code: _ValidationCode.corruptArchive,
+          );
+        }
+      } finally {
+        await raf.close();
+      }
+    } on FileSystemException catch (e) {
+      // Carry the OS message: "FileSystemException" on its own says nothing
+      // about whether this is permissions, ENOSPC or a vanished cache dir.
+      return _OverlayValidationResult(
+        code: _ValidationCode.fsError,
+        message: '${e.message}${e.osError == null ? '' : ' (${e.osError})'}',
+      );
+    }
+
+    final lowerPath = tarball.path.toLowerCase();
+    _ArchiveType? archiveType;
+    _ArchiveType? namedByExtension;
+    for (final type in _ArchiveType.values) {
+      final matchesExtension = type.extensions.any(lowerPath.endsWith);
+      if (matchesExtension) namedByExtension ??= type;
+      if (!type.matches(magic, magicLength)) continue;
+      // Magic AND extension match -> unambiguous.
+      if (matchesExtension) {
+        archiveType = type;
+        break;
+      }
+      // Magic only: keep scanning for a type whose extension also matches, so
+      // a later both-match row beats this one. Content still wins over a name
+      // that matches nothing — a zip served as `.tar.gz` unpacks as a zip.
+      archiveType ??= type;
+    }
+
+    // No signature matched. A format we recognize but do not handle is named
+    // outright and is fatal; a name we know with bytes we don't is a bad body
+    // (an HTML error page under a .tar.gz name), and so is a body that matches
+    // nothing at all — both retryable, because a re-fetch can fix them.
+    if (archiveType == null) {
+      for (final entry in _unhandledMagics.entries) {
+        if (!_startsWith(magic, magicLength, entry.value)) continue;
+        return _OverlayValidationResult(
+          code: _ValidationCode.unhandledFormat,
+          message:
+              'The download is ${entry.key}, which emb does not unpack. '
+              'Point url: at a tar or zip archive instead.',
+        );
+      }
+      // An extension we know with no signature to back it: older v7/GNU tars
+      // carry no `ustar` at 257, so let the probe have the final say rather
+      // than deleting a file that `tar` can read.
+      if (namedByExtension != null && namedByExtension.magicOffset > 0) {
+        archiveType = namedByExtension;
+      } else if (namedByExtension != null) {
+        return const _OverlayValidationResult(
+          code: _ValidationCode.corruptArchive,
+        );
+      } else {
+        return const _OverlayValidationResult(
+          code: _ValidationCode.unsupportedArchive,
+        );
+      }
+    }
+
+    // Check 3: does the file open?
+    // The two arms are not duplicates, and the distinction is what decides
+    // whether the tarball is thrown away: a nonzero exit means the probe ran
+    // and refused the bytes (retryable), while a ProcessException means it was
+    // never spawned — missing, not executable, or exec-format mismatch — which
+    // says nothing about the bytes and is fatal. No `which` pre-check: spawning
+    // the probe answers the same question without making `which` itself a
+    // dependency of every fetch.
+    final cmd = archiveType.probeCmd.first;
+    final args = [...archiveType.probeCmd.skip(1), tarball.path];
+    try {
+      final test = await _run(cmd, args);
+      if (test.exitCode != 0) {
+        return const _OverlayValidationResult(code: _ValidationCode.failedOpen);
+      }
+    } on ProcessException {
+      return _OverlayValidationResult(
+        code: _ValidationCode.missingCmd,
+        archiveType: archiveType,
+        message:
+            'Could not run "$cmd" to verify ${p.basename(tarball.path)}. '
+            'Install it (and check it is on PATH and executable), then build '
+            'again — the download itself is fine and has been kept.',
+      );
+    }
+
+    return _OverlayValidationResult(
+      code: _ValidationCode.success,
+      archiveType: archiveType,
+    );
+  }
+
+  Future<Directory> _fetchSource(AugmentLib lib, {StepHandle? onStep}) async {
     // A local tree is the source: nothing to download, nothing to unpack, and
     // nothing to patch (CrossTarget rejects `patches:` with `path:`, because
     // applying them would rewrite files emb did not create).
@@ -214,57 +629,232 @@ class OverlayBuilder {
       return dir;
     }
 
-    final src = workspace.ensurePlatformDir('overlay-src');
-    final tarball = File(p.join(src.path, p.basename(Uri.parse(lib.url).path)));
-    if (!tarball.existsSync()) {
+    final src = _overlaySrcDir();
+    // Serialize on the package: every name in the cache derives from `pkg` and
+    // `min` alone, so two runs over one checkout — `--target A` alongside
+    // `--target B`, or two CI jobs sharing a workspace — otherwise interleave
+    // `.part` writes, delete each other's staging dir, and race the promotion
+    // rename, which surfaces as a raw FileSystemException rather than a
+    // reported build failure.
+    return withFileLock(
+      File(p.join(src.path, '.${lib.pkg}.lock')),
+      () => _fetchRemoteSource(lib, src, onStep: onStep),
+    );
+  }
+
+  /// The body of [_fetchSource] for a `url:` augment, run under the per-package
+  /// cache lock.
+  Future<Directory> _fetchRemoteSource(
+    AugmentLib lib,
+    Directory src, {
+    StepHandle? onStep,
+  }) async {
+    // Prefix the package name so two augments whose URLs share a basename
+    // (e.g. two vendors both publishing `v1.0.0.tar.gz`) can't collide on,
+    // and then cross-validate, the same cached tarball.
+    final tarball = File(
+      p.join(src.path, '${lib.pkg}-${_urlBasename(lib.url)}'),
+    );
+    final dir = Directory(p.join(src.path, '${lib.pkg}-${lib.minVersion}'));
+    // Belt and braces over the `pkg`/`min` charset check in AugmentLib: these
+    // two paths are written to, renamed onto and deleted recursively, so a
+    // future parsing change must not be able to aim them outside the cache.
+    _assertInsideCache(lib, src, tarball.path);
+    _assertInsideCache(lib, src, dir.path);
+
+    if (Uri.parse(lib.url).scheme == 'http') {
+      _logger?.warn(
+        'augment ${lib.pkg}: url is plain http — anyone on the path chooses '
+        'the source emb compiles. Prefer https.',
+      );
+    }
+    if (lib.sha256 == null) {
+      _logger?.warn(
+        'augment ${lib.pkg}: no sha256 — whoever answers '
+        '${Uri.parse(lib.url).host} decides what gets built. The archive '
+        'checks below detect corruption, not substitution; pin the digest.',
+      );
+    }
+
+    // An unpacked tree is reused as-is, which stays correct only while what
+    // shaped it is unchanged: the source it came from (url + pin) and the patch
+    // series on top. Leaving url/sha out of the stamp meant repointing `url:`
+    // at a new tag while `min:` stayed put re-downloaded the tarball and then
+    // built the *old* tree — and that a tree unpacked from a substituted
+    // tarball survived adding the correct pin afterwards.
+    // Patch paths are already absolute: CrossTarget.withResolvedPatches rebases
+    // them against the declaring manifest at load, so the paths hashed into the
+    // cache keys and the paths applied here are the same files.
+    // The stamp is written even when there are no patches, so a directory only
+    // survives reuse when this code created it — stale trees from older runs or
+    // hand-made dirs carry no stamp, mismatch the current key, and get
+    // re-unpacked; without that guard a no-patch augment could silently reuse
+    // an empty foreign dir (the original bug we are fixing).
+    final patches = lib.patches;
+    final treeKey = contentHash([
+      lib.url,
+      lib.sha256 ?? '',
+      if (patches.isEmpty) '' else patchSeriesDigest(patches),
+    ]);
+    final stamp = File(p.join(dir.path, '.emb-patch-stamp'));
+    final treeIsCurrent =
+        dir.existsSync() &&
+        stamp.existsSync() &&
+        stamp.readAsStringSync().trim() == treeKey;
+    // Ask the tree before the tarball: when the tree is ours and current there
+    // is nothing to fetch and nothing to check. Validating first cost a full
+    // SHA-256 stream plus a probe that reads the whole archive on every build,
+    // and re-downloaded the tarball outright for anyone who prunes tarballs to
+    // reclaim disk while keeping the extracted trees.
+    if (treeIsCurrent) {
+      onStep?.update('${lib.pkg} source cached');
+      return dir;
+    }
+
+    // Retry downloading: a sha-pinned source whose bytes don't match the
+    // pin is deleted and re-fetched (an upstream mirror swap or a half-written
+    // body recover cleanly), and the last mismatch is a real manifest/upstream
+    // divergence that must fail loudly, not loop. The final "fetched" label
+    // stays on this handle until the caller completes/fails it —
+    // StepHandle.complete() may only be called once per spinner.
+    const maxAttempts = 3;
+    _OverlayValidationResult? result;
+
+    for (var attempts = 0; ; attempts++) {
+      // Check previous attempt
+      if (tarball.existsSync()) {
+        // If tarball is valid, skip download
+        result = await _validateArchive(tarball, lib.sha256);
+
+        if (result.code == _ValidationCode.success) {
+          // A usable archive was already in the cache before we tried to fetch.
+          if (attempts == 0) {
+            onStep?.update(
+              '${lib.pkg} (${_bytes(tarball.lengthSync())}, cached)',
+            );
+          } else {
+            final size = tarball.lengthSync();
+            onStep?.update('${lib.pkg} fetched (${_bytes(size)})');
+          }
+          break;
+        }
+        // If there was a previous failed download attempt, delete it
+        else {
+          // A fatal result is not about the bytes: re-fetching the same body
+          // cannot help, and it is worth keeping — the user installs the
+          // missing tool (or looks at what the server actually sent) and builds
+          // again without paying for the download twice. So throw *before* the
+          // delete below.
+          if (result.code.fatal) {
+            throw OverlayBuildException(
+              '${lib.pkg}: cannot use this download (${lib.url})\n'
+              '${_overlayDownloadErrorMessage[result.code]}'
+              '${result.message == null ? '' : '\n${result.message}'}\n'
+              'Kept at ${tarball.path}',
+            );
+          }
+          _io(lib, 'discarding the bad download', tarball.deleteSync);
+        }
+      }
+
+      if (attempts == maxAttempts) {
+        throw OverlayBuildException(
+          '${lib.pkg}: '
+          '${_overlayDownloadErrorMessage[result?.code] ?? 'download failed'}'
+          ' after $maxAttempts attempts (${lib.url})'
+          '${result?.message == null ? '' : '\n${result!.message}'}',
+        );
+      }
+
+      // Try downloading
+      onStep?.update(
+        'Downloading ${lib.pkg} (attempt ${attempts + 1}/$maxAttempts)',
+      );
+      // `_download` retries transient failures internally and raises
+      // OverlayBuildException on a hard one, which build()'s handler turns into
+      // a failed spinner rather than a stuck one.
       await _download(lib.url, tarball);
     }
-    final dir = Directory(p.join(src.path, '${lib.pkg}-${lib.minVersion}'));
 
-    // An unpacked tree is reused as-is, which stays correct only while the
-    // patch series that shaped it is unchanged. Neither `url` nor `min` moves
-    // when a patch is edited in place, so stamp the tree with a digest of the
-    // series and re-unpack when it no longer matches -- otherwise an edited
-    // patch would silently have no effect on the next build.
-    // Already absolute: CrossTarget.withResolvedPatches rebases them against
-    // the declaring manifest at load, so the paths hashed into the cache keys
-    // and the paths applied here are the same files.
-    final patches = lib.patches;
-    final digest = patches.isEmpty ? '' : patchSeriesDigest(patches);
-    final stamp = File(p.join(dir.path, '.emb-patch-stamp'));
-    if (dir.existsSync() && patches.isNotEmpty) {
-      final stamped = stamp.existsSync() ? stamp.readAsStringSync().trim() : '';
-      if (stamped != digest) dir.deleteSync(recursive: true);
+    // Reuse is only safe when this code wrote the tree from *this* source: an
+    // absent stamp or a stale key means wipe and re-unpack.
+    if (dir.existsSync()) {
+      _io(lib, 'clearing the stale source tree', () {
+        dir.deleteSync(recursive: true);
+      });
     }
 
     if (!dir.existsSync()) {
-      if (tarball.path.toLowerCase().endsWith('.zip')) {
-        // GNU `tar` can't read a zip and `unzip` has no `--strip-components`,
-        // so unzip into a staging dir and promote a lone top-level directory to
-        // reproduce the tar path's `--strip-components=1`. Release zips that
-        // bundle vendored subtrees (e.g. sentry-native's crashpad/breakpad) come
-        // this way.
-        final stage = Directory('${dir.path}.unzip');
+      onStep?.update('Extracting ${lib.pkg}…');
+      // Extract into a staging dir and promote it only on success, so a
+      // failing extraction (corrupt tarball, `tar` exit != 0) can never leave
+      // a pre-created empty [dir] behind for the next run to reuse — that
+      // hole is what turned a bad download into a misleading patch error
+      // against an empty tree.
+      final stage = Directory('${dir.path}.unzip');
+      _io(lib, 'preparing the staging dir', () {
         if (stage.existsSync()) stage.deleteSync(recursive: true);
         stage.createSync(recursive: true);
-        await _run('unzip', ['-q', tarball.path, '-d', stage.path]);
-        final top = stage.listSync();
-        if (top.length == 1 && top.single is Directory) {
-          (top.single as Directory).renameSync(dir.path);
+      });
+      // Use the appropriate extraction command based on the file type.
+      final archiveType = result.archiveType!;
+      final extract = archiveType.extractArgv(tarball.path, stage.path);
+      final extracted = await _run(extract.first, extract.sublist(1));
+      final detail = [
+        extracted.stdout,
+        extracted.stderr,
+      ].map((s) => s.trim()).where((s) => s.isNotEmpty).join('\n');
+      if (extracted.exitCode != 0) {
+        // A non-zero exit is also how both tools refuse a hostile member name:
+        // GNU tar rejects `..` outright, and unzip rewrites a traversal and
+        // still exits non-zero. Wiping the stage keeps a partial unpack from
+        // being reused.
+        _io(lib, 'clearing the staging dir', () {
           stage.deleteSync(recursive: true);
-        } else {
-          stage.renameSync(dir.path);
-        }
-      } else {
-        dir.createSync(recursive: true);
-        await _run('tar', [
-          '-xf',
-          tarball.path,
-          '-C',
-          dir.path,
-          '--strip-components=1',
-        ]);
+        });
+        throw OverlayBuildException(
+          '${lib.pkg}: extract failed (exit ${extracted.exitCode}) '
+          'from ${tarball.path}'
+          '${detail.isEmpty ? '' : '\n$detail'}',
+        );
       }
+      if (stage.listSync(followLinks: false).isEmpty) {
+        // Exit 0 on an empty archive (e.g. a stub tarball) would otherwise
+        // produce an empty source tree that "builds" into nothing.
+        _io(lib, 'clearing the staging dir', () {
+          stage.deleteSync(recursive: true);
+        });
+        throw OverlayBuildException(
+          '${lib.pkg}: extract produced no files from ${tarball.path}'
+          '${detail.isEmpty ? '' : '\n$detail'}',
+        );
+      }
+      // Keyed on the detected type, not the filename: a zip served as
+      // `/tarball/v1.2.3`, a `.jar`, or one misnamed `.tar.gz` all extract
+      // through `unzip` and so all need this promotion. Testing the name here
+      // would unpack them one directory too deep and fail configure with a
+      // puzzling "no meson.build".
+      _io(lib, 'promoting the extracted tree', () {
+        if (archiveType == _ArchiveType.zip) {
+          // followLinks: false, and the type re-checked without following:
+          // listSync() reports a symlink-to-directory as a Directory, so an
+          // archive whose single top-level member is a symlink could otherwise
+          // be promoted as-is — leaving the source dir a link to wherever the
+          // archive pointed, which the stamp write, the `_build` wipe and the
+          // configure step would then all follow out of the cache.
+          final top = stage.listSync(followLinks: false);
+          final onlyDir =
+              top.length == 1 &&
+              FileSystemEntity.typeSync(top.single.path, followLinks: false) ==
+                  FileSystemEntityType.directory;
+          if (onlyDir) {
+            Directory(top.single.path).renameSync(dir.path);
+            stage.deleteSync(recursive: true);
+            return;
+          }
+        }
+        stage.renameSync(dir.path);
+      });
 
       // Patch the freshly unpacked tree, then stamp it. On failure the tree is
       // removed so the next run unpacks clean rather than reusing a partially
@@ -275,7 +865,7 @@ class OverlayBuilder {
           await applyPatchSeries(
             runner: (args, {required workingDirectory}) =>
                 Process.run('git', args, workingDirectory: workingDirectory),
-            workDir: dir.path,
+            workDir: dir.absolute.path,
             patches: patches,
             onto: '${lib.pkg} ${lib.minVersion}',
             restore: () async {
@@ -289,14 +879,20 @@ class OverlayBuilder {
           // `sync`, and keeps every OverlayBuilder caller consistent.
           throw OverlayBuildException('${lib.pkg}: ${e.message}');
         }
-        stamp.writeAsStringSync(digest);
       }
+      _io(lib, 'stamping the source tree', () {
+        stamp.writeAsStringSync(treeKey);
+      });
     }
     return dir;
   }
 
-  Future<void> _buildMeson(AugmentLib lib, Directory overlay) async {
-    final src = await _fetchSource(lib);
+  Future<void> _buildMeson(
+    AugmentLib lib,
+    Directory overlay, {
+    StepHandle? onStep,
+  }) async {
+    final src = await _fetchSource(lib, onStep: onStep);
     final bld = _freshBuildDir(lib, src);
     // Prefer the profile's meson cross file; else emit one from its fields.
     final cross =
@@ -332,7 +928,9 @@ class OverlayBuilder {
       environment: profile.buildEnv(),
       output: ProcessOutputMode.stream,
     );
+    onStep?.update('${lib.pkg}: meson setup');
     _check(lib, 'meson setup', setup);
+    onStep?.update('${lib.pkg}: building (ninja)');
     _check(
       lib,
       'ninja',
@@ -350,8 +948,12 @@ class OverlayBuilder {
     );
   }
 
-  Future<void> _buildCMake(AugmentLib lib, Directory overlay) async {
-    final src = await _fetchSource(lib);
+  Future<void> _buildCMake(
+    AugmentLib lib,
+    Directory overlay, {
+    StepHandle? onStep,
+  }) async {
+    final src = await _fetchSource(lib, onStep: onStep);
     // Configure a subtree when the augment asks for one (patches still applied
     // against the unpacked root by _fetchSource). Lets a repository whose root
     // builds a whole app expose a self-contained library under a subdir.
@@ -384,6 +986,7 @@ class OverlayBuilder {
       environment: profile.buildEnv(),
       output: ProcessOutputMode.stream,
     );
+    onStep?.update('${lib.pkg}: cmake configure');
     _check(lib, 'cmake configure', configure);
     // Build before install. A no-op for header-only libs (e.g. Vulkan-Headers,
     // which expose no compiled targets), but required for compiled libs (e.g.
@@ -428,7 +1031,10 @@ class OverlayBuilder {
   /// cmake dir. The stamp is deleted before each build so a failed install
   /// doesn't leave a stale hit; the payload dir is also checked so a partial
   /// prune falls through to a rebuild rather than returning a bad path.
-  Future<String> _buildHostTool(AugmentLib lib) async {
+  Future<_BinResult> _buildHostTool(
+    AugmentLib lib, {
+    StepHandle? onStep,
+  }) async {
     final hostTools = workspace.ensurePlatformDir('host-tools');
     final toolDir = Directory(p.join(hostTools.path, lib.pkg))
       ..createSync(recursive: true);
@@ -438,16 +1044,16 @@ class OverlayBuilder {
     if (stampFile.existsSync() &&
         stampFile.readAsStringSync().trim() == key &&
         Directory(binDir).existsSync()) {
-      return binDir;
+      return _BinResult(wasCached: true, binPath: binDir);
     }
     if (stampFile.existsSync()) stampFile.deleteSync();
     final bin = await switch (lib.build) {
-      CrossGenerator.cmake => _buildCMakeHost(lib, toolDir),
-      CrossGenerator.meson => _buildMesonHost(lib, toolDir),
+      CrossGenerator.cmake => _buildCMakeHost(lib, toolDir, onStep: onStep),
+      CrossGenerator.meson => _buildMesonHost(lib, toolDir, onStep: onStep),
     };
     Directory(bin).createSync(recursive: true);
     stampFile.writeAsStringSync(key);
-    return bin;
+    return _BinResult(wasCached: false, binPath: bin);
   }
 
   Future<String> _hostToolKey(AugmentLib lib) async => contentHash([
@@ -457,8 +1063,12 @@ class OverlayBuilder {
     await _compilerVersions(),
   ]);
 
-  Future<String> _buildCMakeHost(AugmentLib lib, Directory toolDir) async {
-    final src = await _fetchSource(lib);
+  Future<String> _buildCMakeHost(
+    AugmentLib lib,
+    Directory toolDir, {
+    StepHandle? onStep,
+  }) async {
+    final src = await _fetchSource(lib, onStep: onStep);
     final bld = _freshBuildDir(lib, src);
     _check(
       lib,
@@ -473,6 +1083,7 @@ class OverlayBuilder {
         for (final e in lib.defines.entries) '-D${e.key}=${e.value}',
       ], output: ProcessOutputMode.stream),
     );
+    onStep?.update('${lib.pkg}: cmake configure');
     _check(
       lib,
       'cmake build (host)',
@@ -496,8 +1107,12 @@ class OverlayBuilder {
     return p.join(toolDir.path, 'usr', 'bin');
   }
 
-  Future<String> _buildMesonHost(AugmentLib lib, Directory toolDir) async {
-    final src = await _fetchSource(lib);
+  Future<String> _buildMesonHost(
+    AugmentLib lib,
+    Directory toolDir, {
+    StepHandle? onStep,
+  }) async {
+    final src = await _fetchSource(lib, onStep: onStep);
     final bld = _freshBuildDir(lib, src);
     _check(
       lib,
@@ -515,6 +1130,7 @@ class OverlayBuilder {
         for (final e in lib.defines.entries) '-D${e.key}=${e.value}',
       ], output: ProcessOutputMode.stream),
     );
+    onStep?.update('${lib.pkg}: meson setup');
     _check(
       lib,
       'ninja (host)',
@@ -531,6 +1147,45 @@ class OverlayBuilder {
       ),
     );
     return p.join(toolDir.path, 'usr', 'bin');
+  }
+
+  /// The cache filename for [url]'s basename. A URL whose path ends in `/` (or
+  /// has none) has no basename, which would otherwise name the cache entry
+  /// `<pkg>-` and read as a truncation in every later error message.
+  static String _urlBasename(String url) {
+    final base = p.basename(Uri.parse(url).path);
+    final cleaned = base.replaceAll('/', '');
+    return cleaned.isEmpty ? 'source' : cleaned;
+  }
+
+  /// Refuse a cache path that escaped [cache]. `p.join` drops its base when the
+  /// next part is absolute, so a `pkg:`/`min:` carrying `/` or `..` would aim
+  /// the writes — and the recursive deletes — at the developer's own files.
+  void _assertInsideCache(AugmentLib lib, Directory cache, String path) {
+    final root = p.canonicalize(cache.path);
+    final target = p.canonicalize(path);
+    if (target == root || !p.isWithin(root, target)) {
+      throw OverlayBuildException(
+        '${lib.pkg}: refusing to use "$path" — it resolves outside the source '
+        'cache ($root). Check pkg:/min: in the manifest.',
+      );
+    }
+  }
+
+  /// Run a filesystem mutation, reporting a failure as a build error rather
+  /// than an uncaught FileSystemException. These paths are shared with the
+  /// user's own housekeeping, so a vanished directory or a cross-device rename
+  /// must read as a reported failure, not a stack trace.
+  T _io<T>(AugmentLib lib, String what, T Function() body) {
+    try {
+      return body();
+    } on FileSystemException catch (e) {
+      throw OverlayBuildException(
+        '${lib.pkg}: $what failed — ${e.message}'
+        '${e.path == null ? '' : ' (${e.path})'}'
+        '${e.osError == null ? '' : ': ${e.osError!.message}'}',
+      );
+    }
   }
 
   /// Throw with the failing [step]'s stderr so an overlay failure is
@@ -553,24 +1208,65 @@ class OverlayBuilder {
     // Retry transient failures (5xx / 429 / network) with backoff — a CI run
     // fetches augment sources on every job, so a single upstream hiccup (e.g.
     // a gitlab 500) shouldn't fail the build. 4xx and the like fail fast.
+    // Write to a `.part` file and rename into place only on success, so an
+    // interrupted fetch (Ctrl-C, kill, disk-full) can never leave a truncated
+    // body at [dest] for the next run to trust as a complete download.
     const maxAttempts = 4;
+    final part = File('${dest.path}.part');
     for (var attempt = 1; ; attempt++) {
       try {
         final req = await _http.getUrl(Uri.parse(url));
         req.followRedirects = true;
         final resp = await req.close();
         if (resp.statusCode == 200) {
-          await resp.pipe(dest.openWrite());
+          if (part.existsSync()) part.deleteSync();
+          // Counted rather than piped: an augment URL can answer with anything,
+          // and an unbounded `pipe` lets a hostile (or misconfigured) origin
+          // fill the cache disk. The cap is far above any real source tarball.
+          // Note this bounds the *download*; a compression bomb still expands
+          // unbounded at extraction, which neither `tar` nor `unzip` can limit.
+          final sink = part.openWrite();
+          var written = 0;
+          try {
+            await resp.forEach((chunk) {
+              written += chunk.length;
+              if (written > _maxDownloadBytes) {
+                throw OverlayBuildException(
+                  'download exceeded ${_bytes(_maxDownloadBytes)} ($url)',
+                );
+              }
+              sink.add(chunk);
+            });
+          } finally {
+            await sink.close();
+          }
+          // A chunked response cut short otherwise lands as a short file that
+          // only the archive probe notices, three downloads later.
+          if (resp.contentLength > 0 && written != resp.contentLength) {
+            if (part.existsSync()) part.deleteSync();
+            throw OverlayBuildException(
+              'download truncated ($url): got $written of '
+              '${resp.contentLength} bytes',
+            );
+          }
+          part.renameSync(dest.path);
           return;
         }
         await resp.drain<void>();
         final transient = resp.statusCode >= 500 || resp.statusCode == 429;
         if (!transient || attempt == maxAttempts) {
+          if (part.existsSync()) part.deleteSync();
           throw OverlayBuildException(
             'download failed ($url): ${resp.statusCode}',
           );
         }
+      } on OverlayBuildException {
+        // Over the cap or short of the promised length: the partial body is
+        // useless and must not be left where the next run could trust it.
+        if (part.existsSync()) part.deleteSync();
+        rethrow;
       } on IOException catch (e) {
+        if (part.existsSync()) part.deleteSync();
         if (attempt == maxAttempts) {
           throw OverlayBuildException('download failed ($url): $e');
         }
@@ -582,9 +1278,10 @@ class OverlayBuilder {
   /// Close the underlying HTTP client.
   void close() => _http.close(force: true);
 
-  // Retained for sha-pinned augment sources (parity with EngineArtifacts).
-  // ignore: unused_element
-  String _sha256(File f) => sha256.convert(f.readAsBytesSync()).toString();
+  Future<String> _sha256(File f) async {
+    final digest = await sha256.bind(f.openRead()).first;
+    return digest.toString();
+  }
 }
 
 /// Thrown when an augment library fails to build into the overlay.

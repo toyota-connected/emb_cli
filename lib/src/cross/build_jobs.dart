@@ -33,9 +33,20 @@ int cmakeBuildJobs([Map<String, String>? environment]) {
   return byMemory < cpus ? byMemory : cpus;
 }
 
+/// Memoized: physical memory does not change within a run, and this is called
+/// once per cmake configure *and* once per cmake build, for every augment.
+int? _memoryGb;
+bool _memoryGbProbed = false;
+
 /// Total physical memory in GiB from `/proc/meminfo`, or null off Linux (or if
 /// the file is unreadable or shaped unexpectedly).
 int? _totalMemoryGb() {
+  if (_memoryGbProbed) return _memoryGb;
+  _memoryGbProbed = true;
+  return _memoryGb = _readTotalMemoryGb();
+}
+
+int? _readTotalMemoryGb() {
   try {
     final meminfo = File('/proc/meminfo');
     if (!meminfo.existsSync()) return null;
