@@ -22,6 +22,16 @@ apps share one key and so one build dir — so the new ones are the correct ones
 Two cache-key corrections. Both are about a key that does not name everything
 the thing it keys was built with, so two different trees can share one entry.
 
+- feat(cross): `cross.run.command` and `cross.run.env` — the command `--run`
+  executes and the environment it runs under, instead of a hardcoded
+  `./<embedder> -b .`. `${embedder}` and `${deploy_dir}` expand in it, the
+  generated Flutter custom device uses the same command, and every token and env
+  value is single-quoted for the remote shell. `run.env` keys must be shell
+  identifiers (`[A-Za-z_][A-Za-z0-9_]*`): a key that is not checked becomes an
+  assignment prefix in the remote shell, i.e. arbitrary command execution on the
+  board from a board YAML. `run.env` is not for secrets — the values reach build logs,
+  `custom_devices.config` and the deploy transport in cleartext.
+
 - fix(cross): `sysrootKey` folds in `cpu_flags` once an augment stages into the
   sysroot. Omitting them is right while a sysroot is only an extracted image --
   cpu-only variants of one board then share a single extraction -- and stops

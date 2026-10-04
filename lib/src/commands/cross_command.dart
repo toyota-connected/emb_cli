@@ -36,6 +36,7 @@ import 'package:emb_cli/src/cross/overlay_builder.dart';
 import 'package:emb_cli/src/cross/package_files.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/cross/rpm_packager.dart';
+import 'package:emb_cli/src/cross/run_command.dart';
 import 'package:emb_cli/src/cross/runnable_bundle.dart';
 import 'package:emb_cli/src/cross/tarball_packager.dart';
 import 'package:emb_cli/src/engine/engine_artifacts.dart';
@@ -675,9 +676,13 @@ class CrossCommand extends Command<int> {
               vars: patchVars,
             )
             .withDefineOverrides(cliDefines);
-        // fromMap throws ArgumentError on an unknown provider token.
+        // fromMap throws ArgumentError on an unknown provider token,
+        // FormatException on a malformed run: block.
         // ignore: avoid_catching_errors
       } on ArgumentError catch (e) {
+        _logger.err('Invalid cross: block — ${e.message}');
+        return null;
+      } on FormatException catch (e) {
         _logger.err('Invalid cross: block — ${e.message}');
         return null;
       }
@@ -2319,9 +2324,24 @@ class CrossCommand extends Command<int> {
         for (final soname in staged.staged) {
           _logger.detail('  ${r.backend ?? ""}: staged lib/$soname');
         }
+        final hintUnknowns = <String>{};
+        final runHint = runCmdString(
+          applyRunVars(target.runCommand ?? defaultRunTemplate, {
+            'embedder': p.basename(bin.path),
+            'deploy_dir': '.',
+          }, unknowns: hintUnknowns),
+          env: target.runEnv,
+        );
+        if (hintUnknowns.isNotEmpty) {
+          _logger.warn(
+            'run.command: unknown variable(s) '
+            '${hintUnknowns.map((v) => '\${$v}').join(', ')} '
+            '(left verbatim)',
+          );
+        }
         _logger.info(
           '  ${r.backend ?? ""}: runnable → ${outDir.path}  '
-          '(run: ./${p.basename(bin.path)} -b .)',
+          '(run: $runHint)',
         );
         if (tar) {
           final archive = await runnable.tar(outDir);
@@ -2353,6 +2373,8 @@ class CrossCommand extends Command<int> {
             bundleArch: archOfTriple(profile.targetTriple),
             // Auto-run only makes sense for a single embedder.
             run: run && built.length == 1,
+            runTemplate: target.runCommand,
+            runEnv: target.runEnv,
           );
           if (rc != ExitCode.success.code) return rc;
         } else if (run && built.length == 1) {
@@ -2363,7 +2385,12 @@ class CrossCommand extends Command<int> {
             // The assembled bundle's copy, not the build tree's: the
             // embedder's RUNPATH is $ORIGIN/lib, which only resolves
             // from here. See #185.
-            final rc = await _runLocal(bin, outDir);
+            final rc = await _runLocal(
+              bin,
+              outDir,
+              runTemplate: target.runCommand,
+              runEnv: target.runEnv,
+            );
             if (rc != ExitCode.success.code) return rc;
           } else {
             _logger.warn(
@@ -2449,6 +2476,8 @@ class CrossCommand extends Command<int> {
     required String destDir,
     required String bundleArch,
     required bool run,
+    List<String>? runTemplate,
+    Map<String, String> runEnv = const {},
   }) async {
     final deployer = Deployer(runProcess: _runProcess);
     final label = device.label;
@@ -2481,7 +2510,20 @@ class CrossCommand extends Command<int> {
         '--deploy-dir if a removed file must not linger.',
       );
     }
-    final runCmd = './$binName -b .';
+    final template = runTemplate ?? defaultRunTemplate;
+    final unknowns = <String>{};
+    final expanded = applyRunVars(template, {
+      'embedder': binName,
+      'deploy_dir': '.',
+    }, unknowns: unknowns);
+    if (unknowns.isNotEmpty) {
+      _logger.warn(
+        'run.command: unknown variable(s) '
+        '${unknowns.map((v) => '\${$v}').join(', ')} '
+        '(left verbatim)',
+      );
+    }
+    final runCmd = runCmdString(expanded, env: runEnv);
     if (!run) {
       final argv = deployer.runArgv(device, destDir, runCmd);
       _logger.info('  run on target: ${argv.join(' ')}');
@@ -2489,36 +2531,57 @@ class CrossCommand extends Command<int> {
     }
     _logger.info('  running on $label …');
     final argv = deployer.runArgv(device, destDir, runCmd);
-    final proc = await Process.start(
-      argv.first,
-      argv.sublist(1),
-      mode: ProcessStartMode.inheritStdio,
-    );
-    return proc.exitCode;
+    try {
+      final proc = await Process.start(
+        argv.first,
+        argv.sublist(1),
+        mode: ProcessStartMode.inheritStdio,
+      );
+      return await proc.exitCode;
+    } on ProcessException catch (e) {
+      _logger.err('run failed on $label: ${e.message}');
+      return ExitCode.software.code;
+    }
   }
 
-  /// Launch the native [embedder] from inside [bundle] on this host
-  /// (`./<embedder> -b .`), inheriting stdio. Used by `--run` for a
-  /// `--target local` build, where there is no deploy step.
-  ///
-  /// [embedder] must be the bundle's own copy, not the one left in the build
-  /// tree. The embedder is linked with RUNPATH `$ORIGIN/lib:$ORIGIN`, and only
-  /// the assembled bundle has the layout that satisfies it: in the build tree a
-  /// project library such as libihs_shared sits in a sibling directory rather
-  /// than in `lib/`, so launching from there dies in the loader before main.
-  ///
-  /// Runs with the bundle as the working directory, so the invocation is the
-  /// one printed when the bundle is assembled.
-  Future<int> _runLocal(File embedder, Directory bundle) async {
-    final exe = './${p.basename(embedder.path)}';
-    _logger.info('  running $exe -b . in ${bundle.path} …');
-    final proc = await Process.start(
-      exe,
-      ['-b', '.'],
-      workingDirectory: bundle.path,
-      mode: ProcessStartMode.inheritStdio,
-    );
-    return proc.exitCode;
+  /// Launch the native [embedder] from inside [bundle] on this host,
+  /// inheriting stdio. Uses the manifest's `cross.run` template when set,
+  /// otherwise `./${embedder} -b .`.
+  Future<int> _runLocal(
+    File embedder,
+    Directory bundle, {
+    List<String>? runTemplate,
+    Map<String, String> runEnv = const {},
+  }) async {
+    final template = runTemplate ?? defaultRunTemplate;
+    final unknowns = <String>{};
+    final expanded = applyRunVars(template, {
+      'embedder': p.basename(embedder.path),
+      'deploy_dir': '.',
+    }, unknowns: unknowns);
+    if (unknowns.isNotEmpty) {
+      _logger.warn(
+        'run.command: unknown variable(s) '
+        '${unknowns.map((v) => '\${$v}').join(', ')} '
+        '(left verbatim)',
+      );
+    }
+    _logger.info('  running ${expanded.join(' ')} in ${bundle.path} …');
+    try {
+      final proc = await Process.start(
+        expanded.first,
+        expanded.sublist(1),
+        workingDirectory: bundle.path,
+        environment: runEnv.isNotEmpty
+            ? {...Platform.environment, ...runEnv}
+            : null,
+        mode: ProcessStartMode.inheritStdio,
+      );
+      return await proc.exitCode;
+    } on ProcessException catch (e) {
+      _logger.err('run failed: ${e.message}');
+      return ExitCode.software.code;
+    }
   }
 
   /// Recursively copy the contents of [src] into [dst] (preserving symlinks +

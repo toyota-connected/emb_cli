@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/manifest/build_config.dart';
 import 'package:emb_cli/src/manifest/host_deps.dart';
@@ -119,6 +121,9 @@ class EmbManifest {
       // fromMap throws ArgumentError on a missing/unknown provider token.
       // ignore: avoid_catching_errors
     } on ArgumentError {
+      return null;
+    } on FormatException catch (e) {
+      stderr.writeln('warning: ${e.message} (cross: block ignored)');
       return null;
     }
   }

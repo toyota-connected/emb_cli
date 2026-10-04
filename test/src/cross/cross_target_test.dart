@@ -284,6 +284,169 @@ void main() {
     });
   });
 
+  group('CrossTarget.fromMap run', () {
+    test('parses run.command as a list of strings', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'triple': 'aarch64-none-linux-gnu',
+        'run': {
+          'command': [r'./${embedder}', '--config', '/etc/app.conf', '-b', '.'],
+        },
+      });
+      expect(t.runCommand, [
+        r'./${embedder}',
+        '--config',
+        '/etc/app.conf',
+        '-b',
+        '.',
+      ]);
+    });
+
+    test('parses run.env as a string map', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'triple': 'aarch64-none-linux-gnu',
+        'run': {
+          'env': {'XDG_RUNTIME_DIR': '/run/user/0'},
+        },
+      });
+      expect(t.runEnv, {'XDG_RUNTIME_DIR': '/run/user/0'});
+      expect(t.runCommand, isNull);
+    });
+
+    test('absent run: leaves fields at defaults', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'triple': 'aarch64-none-linux-gnu',
+      });
+      expect(t.runCommand, isNull);
+      expect(t.runEnv, isEmpty);
+    });
+
+    test('rejects a bare string for run.command', () {
+      expect(
+        () => CrossTarget.fromMap(const {
+          'provider': 'arm-gnu',
+          'triple': 'aarch64-none-linux-gnu',
+          'run': {'command': './app -b .'},
+        }),
+        throwsFormatException,
+      );
+    });
+
+    test('rejects an empty list for run.command', () {
+      expect(
+        () => CrossTarget.fromMap(const {
+          'provider': 'arm-gnu',
+          'triple': 'aarch64-none-linux-gnu',
+          'run': {'command': <String>[]},
+        }),
+        throwsFormatException,
+      );
+    });
+
+    test(r'rejects an unterminated ${ in run.command', () {
+      // Such a token reaches Flutter's own interpolation, whose match then runs
+      // to the brace of the ${engineOptions} emb appends and eats the closing
+      // quote — the board gets a command with an unterminated string.
+      expect(
+        () => CrossTarget.fromMap(const {
+          'provider': 'arm-gnu',
+          'triple': 'aarch64-none-linux-gnu',
+          'run': {
+            'command': [r'./${embedder}', r'--flag=${'],
+          },
+        }),
+        throwsFormatException,
+      );
+    });
+
+    test(r'rejects an unterminated ${ in a run.env value', () {
+      expect(
+        () => CrossTarget.fromMap(const {
+          'provider': 'arm-gnu',
+          'triple': 'aarch64-none-linux-gnu',
+          'run': {
+            'command': ['./app'],
+            'env': {'A': r'a${b'},
+          },
+        }),
+        throwsFormatException,
+      );
+    });
+
+    test('a balanced but unknown variable parses — it warns at use', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'triple': 'aarch64-none-linux-gnu',
+        'run': {
+          'command': [r'./${embedder}', r'--x=${my-var}'],
+        },
+      });
+      expect(t.runCommand, [r'./${embedder}', r'--x=${my-var}']);
+    });
+
+    test('rejects non-map run: value', () {
+      expect(
+        () => CrossTarget.fromMap(const {
+          'provider': 'arm-gnu',
+          'triple': 'aarch64-none-linux-gnu',
+          'run': './app -b .',
+        }),
+        throwsFormatException,
+      );
+    });
+
+    test('rejects invalid env key', () {
+      expect(
+        () => CrossTarget.fromMap(const {
+          'provider': 'arm-gnu',
+          'triple': 'aarch64-none-linux-gnu',
+          'run': {
+            'env': {'X; rm -rf /': 'v'},
+          },
+        }),
+        throwsFormatException,
+      );
+    });
+
+    test('accepts valid env keys', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'triple': 'aarch64-none-linux-gnu',
+        'run': {
+          'env': {'_FOO': 'a', 'BAR_2': 'b'},
+        },
+      });
+      expect(t.runEnv, {'_FOO': 'a', 'BAR_2': 'b'});
+    });
+
+    test('null env value becomes empty string', () {
+      final t = CrossTarget.fromMap({
+        'provider': 'arm-gnu',
+        'triple': 'aarch64-none-linux-gnu',
+        'run': {
+          'env': {'FOO': null},
+        },
+      });
+      expect(t.runEnv, {'FOO': ''});
+    });
+
+    test('survives withDefineOverrides', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'triple': 'aarch64-none-linux-gnu',
+        'run': {
+          'command': ['./custom', '-b', '.'],
+          'env': {'FOO': 'bar'},
+        },
+      });
+      final overridden = t.withDefineOverrides(const {'X': '1'});
+      expect(overridden.runCommand, ['./custom', '-b', '.']);
+      expect(overridden.runEnv, {'FOO': 'bar'});
+    });
+  });
+
   group('CrossTarget.gatedAugments', () {
     // Two variants of one package, gated against each other. They install into
     // the same overlay prefix, so building both means the last one wins and

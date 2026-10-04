@@ -127,13 +127,13 @@ $extra''');
     await run([board(), '--target', 'rpi5']);
     final d = readCustomDevices(configFile()).single;
     // `shell/homescreen` → `homescreen`: the name inside the bundle.
-    expect((d['runDebug']! as List).last, contains('./homescreen -b .'));
+    expect((d['runDebug']! as List).last, contains("'./homescreen' '-b' '.'"));
   });
 
   test('--bin overrides it', () async {
     await run([board(), '--target', 'rpi5', '--bin', 'my-shell']);
     final d = readCustomDevices(configFile()).single;
-    expect((d['runDebug']! as List).last, contains('./my-shell -b .'));
+    expect((d['runDebug']! as List).last, contains("'./my-shell' '-b' '.'"));
   });
 
   test('--dry-run writes nothing', () async {
