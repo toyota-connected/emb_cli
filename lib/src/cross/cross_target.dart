@@ -425,7 +425,9 @@ class ModuleSpec {
   /// Module label — used for the build dir (`module-<name>`) and diagnostics.
   final String name;
 
-  /// Source directory, relative to the manifest.
+  /// Source directory. Manifest-relative as written; absolute once
+  /// [CrossTarget.withResolvedPatches] has run [withExpandedPath], which is
+  /// what every key and build site sees.
   final String path;
 
   /// Build system.
@@ -1124,12 +1126,20 @@ class CrossTarget {
       if (!defineSatisfied(a.requiresDefine, defines)) a,
   ];
 
-  /// True when any key-affecting path (augment local path, module path)
-  /// still contains an unexpanded `${…}` token. Keys computed from such a
-  /// target are meaningless — they hash the literal token instead of the
+  /// True when any key-affecting path (augment local path, augment patch,
+  /// module path) still contains an unexpanded `${…}` token. Keys computed from
+  /// such a target are meaningless — they hash the literal token instead of the
   /// resolved path.
+  ///
+  /// `patches` counts: `patchSeriesDigest` hashes `<missing>` for a path that
+  /// does not exist, so a literal `${app_root}/fix.patch` yields a stable but
+  /// wrong digest rather than an obvious failure.
   bool get hasUnresolvedKeyPaths =>
-      augment.any((a) => a.isLocal && hasUnresolvedVars(a.path!)) ||
+      augment.any(
+        (a) =>
+            (a.isLocal && hasUnresolvedVars(a.path!)) ||
+            a.patches.any(hasUnresolvedVars),
+      ) ||
       modules.any((m) => hasUnresolvedVars(m.path));
 
   /// App-owned native libraries built from the app's own source tree and

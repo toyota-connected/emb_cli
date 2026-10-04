@@ -157,7 +157,7 @@ Future<String?> vendorTargetCargo({
   void Function(String name)? onModule,
 }) async {
   final moduleVars = {
-    'embedder_root': manifestDir.path,
+    'embedder_root': p.normalize(manifestDir.absolute.path),
     if (appDir != null) 'app_root': appDir,
   };
   final vendor = CargoVendor(run: run);

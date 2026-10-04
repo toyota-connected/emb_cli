@@ -553,20 +553,38 @@ class CrossProjectResolver {
       }
       // Stamp augments with their declaring file so provenance survives
       // the union merge when an app extends this project.
-      final cross = target.cross;
-      final augments = cross['augment'];
-      if (augments is List && target.sourcePath != null) {
-        for (var i = 0; i < augments.length; i++) {
-          final a = augments[i];
-          if (a is Map && !a.containsKey('_source')) {
-            augments[i] = {...a, '_source': target.sourcePath};
-          }
-        }
-      }
-      return cross;
+      return _stampAugments(target.cross, target.sourcePath);
     } finally {
       _resolvingProjects.remove(abs);
     }
+  }
+
+  /// A copy of [cross] whose augment maps carry `_source: [source]`, so a
+  /// relative `path:`/`patches:` still resolves against the manifest that
+  /// declared it after an `extends:` union merge hands the entry to another
+  /// project (or app) layer. Entries already stamped keep their stamp — the
+  /// nearest declaring file wins — and an absent [source] is a no-op.
+  ///
+  /// Copies the list and each map rather than writing through: `deepMerge`
+  /// assigns lists by reference, so the list reached here can be the one in a
+  /// shared `.emb/base.emb.yaml` block, and stamping it in place would make the
+  /// first target's provenance stick to its siblings.
+  Map<String, dynamic> _stampAugments(
+    Map<String, dynamic> cross,
+    String? source,
+  ) {
+    final augments = cross['augment'];
+    if (source == null || augments is! List) return cross;
+    return {
+      ...cross,
+      'augment': [
+        for (final a in augments)
+          if (a is Map && !a.containsKey('_source'))
+            {...a, '_source': source}
+          else
+            a,
+      ],
+    };
   }
 
   /// The project root for a manifest at [sourcePath]: the `.emb/` parent in
@@ -674,12 +692,15 @@ class CrossProjectResolver {
             final override = e.value is Map
                 ? Map<String, dynamic>.from(e.value as Map)
                 : const <String, dynamic>{};
-            out[e.key.toString()] = _mergeSharedOverride(shared, override);
+            out[e.key.toString()] = _stampAugments(
+              _mergeSharedOverride(shared, override),
+              f.path,
+            );
           }
         } else {
           final name =
               (m['id'] as String?) ?? p.basename(f.path).split('.').first;
-          out[name] = shared;
+          out[name] = _stampAugments(shared, f.path);
         }
       }
     }

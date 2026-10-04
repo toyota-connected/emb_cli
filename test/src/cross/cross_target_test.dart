@@ -718,4 +718,61 @@ void main() {
       expect(resolved.modules.first.path, '/emb/native/hello');
     });
   });
+  group('hasUnresolvedKeyPaths', () {
+    CrossTarget target(Map<String, Object?> augment) => CrossTarget.fromMap({
+      'provider': 'arm-gnu',
+      'triple': 'aarch64-linux-gnu',
+      'augment': [augment],
+    });
+
+    test('an unbound var in patches: counts', () {
+      // patchSeriesDigest hashes `<missing>` for a path that does not exist, so
+      // a literal ${app_root}/fix.patch yields a stable but wrong digest —
+      // keys emitted from it can never match what `emb cross --app` builds.
+      final t = target({
+        'pkg': 'libfoo',
+        'url': 'https://x/libfoo-1.0.tar.gz',
+        'patches': [r'${app_root}/patches/fix.patch'],
+      });
+      expect(t.hasUnresolvedKeyPaths, isTrue);
+    });
+
+    test('an unbound var in a local path: counts', () {
+      final t = target({'pkg': 'libfoo', 'path': r'${app_root}/native/libfoo'});
+      expect(t.hasUnresolvedKeyPaths, isTrue);
+    });
+
+    test('an unbound var in a module path: counts', () {
+      final t = CrossTarget.fromMap({
+        'provider': 'arm-gnu',
+        'modules': [
+          {
+            'name': 'm',
+            'path': r'${app_root}/rust/m',
+            'build': 'cargo',
+            'artifacts': ['libm.so'],
+          },
+        ],
+      });
+      expect(t.hasUnresolvedKeyPaths, isTrue);
+    });
+
+    test('resolved paths and a url-only augment do not', () {
+      expect(
+        target({
+          'pkg': 'libfoo',
+          'url': 'https://x/libfoo-1.0.tar.gz',
+          'patches': ['/abs/patches/fix.patch'],
+        }).hasUnresolvedKeyPaths,
+        isFalse,
+      );
+      expect(
+        target({
+          'pkg': 'libfoo',
+          'url': 'https://x/libfoo-1.0.tar.gz',
+        }).hasUnresolvedKeyPaths,
+        isFalse,
+      );
+    });
+  });
 }

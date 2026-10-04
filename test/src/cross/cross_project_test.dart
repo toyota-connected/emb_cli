@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:emb_cli/src/cross/cross_keys.dart';
 import 'package:emb_cli/src/cross/cross_project.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
@@ -978,4 +979,140 @@ cross:
       expect(project().selectTarget('nope'), isNull);
     });
   });
+  group('augment provenance through extends:', () {
+    late Directory tmp;
+    setUp(() => tmp = Directory.systemTemp.createTempSync('emb_prov_'));
+    tearDown(() => tmp.deleteSync(recursive: true));
+
+    /// Replays what `CrossCommand.resolveTarget()` does: stamp the project's
+    /// augments, apply the app layer, stamp what the app added, then resolve
+    /// each augment against the manifest that declared it.
+    CrossTarget resolved({String? appDir}) {
+      final selection = CrossProjectResolver()
+          .resolve(p.join(tmp.path, 'embedder', 'emb.yaml'))!
+          .selectTarget('rpi5')!;
+      var cross = selection.cross;
+      var declaring = selection.sourcePath;
+      if (appDir != null) {
+        cross = CrossProjectResolver().applyAppLayer(
+          cross: cross,
+          appDir: appDir,
+          targetName: 'rpi5',
+        );
+        declaring =
+            CrossProjectResolver().appLayerSourcePath(
+              appDir: appDir,
+              targetName: 'rpi5',
+            ) ??
+            declaring;
+      }
+      return CrossTarget.fromMap(cross).withResolvedPatches(
+        declaring,
+        vars: {
+          'embedder_root': p.join(tmp.path, 'embedder'),
+          if (appDir != null) 'app_root': appDir,
+        },
+      );
+    }
+
+    void writeProject({String augment = _projectAugment}) {
+      File(p.join(tmp.path, 'embedder', 'emb.yaml'))
+        ..createSync(recursive: true)
+        ..writeAsStringSync(_projectHead + augment);
+    }
+
+    Directory writeApp(String targetBody) {
+      final appDir = Directory(p.join(tmp.path, 'apps', 'myapp'))
+        ..createSync(recursive: true);
+      File(p.join(appDir.path, '.emb', 'board.emb.yaml'))
+        ..createSync(recursive: true)
+        ..writeAsStringSync(_appHead + targetBody);
+      return appDir;
+    }
+
+    test('a project augment keeps its own base when an app extends it', () {
+      // The app's resolved cross: carries copies of the project's augments, so
+      // without provenance the union merge rebases them onto the app dir and
+      // desyncs augmentIdentity between `emb fetch` and `emb cross --app`.
+      writeProject();
+      final appDir = writeApp('');
+
+      // The app layer really applied: applyAppLayer swallows
+      // CrossProjectException, so a fixture whose extends: ref does not resolve
+      // would leave the project cross untouched and pass this vacuously.
+      expect(
+        CrossProjectResolver().appLayerSourcePath(
+          appDir: appDir.path,
+          targetName: 'rpi5',
+        ),
+        isNotNull,
+        reason: 'app layer must be in play for this test to mean anything',
+      );
+
+      final bare = resolved();
+      final withApp = resolved(appDir: appDir.path);
+      expect(bare.augment.single.path, p.join(tmp.path, 'libs', 'libfoo'));
+      expect(withApp.augment.single.path, bare.augment.single.path);
+      expect(
+        augmentIdentity(withApp.augment.single),
+        augmentIdentity(bare.augment.single),
+        reason: 'fetch and cross --app must key the same overlay',
+      );
+    });
+
+    test('an app augment resolves against the app manifest', () {
+      writeProject();
+      final appDir = writeApp(_appAugment);
+      final byPkg = {
+        for (final a in resolved(appDir: appDir.path).augment) a.pkg: a.path,
+      };
+      expect(byPkg['libfoo'], p.join(tmp.path, 'libs', 'libfoo'));
+      expect(byPkg['libbaz'], p.join(appDir.path, '.emb', 'native', 'libbaz'));
+    });
+
+    test('a hand-written _source is dropped at load', () {
+      // `_source` is emb's own stamp; honoring one from YAML would let a
+      // manifest choose the base its relative paths resolve against.
+      writeProject(augment: _evilAugment);
+      expect(
+        resolved().augment.single.path,
+        p.join(tmp.path, 'embedder', 'relative', 'tree'),
+      );
+    });
+  });
 }
+
+const _projectHead = '''
+id: embedder
+cross:
+  provider: arm-gnu
+  targets:
+    rpi5:
+      triple: aarch64-linux-gnu
+''';
+
+const _projectAugment = '''
+      augment:
+        - { pkg: libfoo, path: ../libs/libfoo, build: meson }
+''';
+
+const _evilAugment = '''
+      augment:
+        - pkg: libevil
+          path: relative/tree
+          build: cmake
+          _source: /elsewhere/manifest.emb.yaml
+''';
+
+const _appHead = '''
+id: myapp
+cross:
+  targets:
+    rpi5:
+      extends: '../../embedder#rpi5'
+''';
+
+const _appAugment = '''
+      augment:
+        - { pkg: libbaz, path: native/libbaz, build: cmake }
+''';
