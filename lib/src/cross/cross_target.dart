@@ -893,6 +893,9 @@ class CrossTarget {
     final provider = CrossProviderKind.fromToken(
       (map['provider'] ?? '').toString(),
     );
+    // Parsed once: it validates env keys and values, so parsing twice would
+    // report the same bad manifest line twice.
+    final run = _runBlock(map['run']);
     return CrossTarget(
       provider: provider,
       targetTriple:
@@ -942,8 +945,8 @@ class CrossTarget {
       hostDevPackages: _stringList(map['host_dev_packages']),
       source: repoFrom(map['source']),
       app: repoFrom(map['app']),
-      runCommand: _runCommandList(_runBlock(map['run'])?.command),
-      runEnv: _runBlock(map['run'])?.env ?? const {},
+      runCommand: _runCommandList(run?.command),
+      runEnv: run?.env ?? const {},
       aotObfuscate: map['aot_obfuscate'] as bool?,
       aotStrip: map['aot_strip'] as bool?,
     );
@@ -1304,6 +1307,9 @@ class CrossTarget {
 
   static final _envKeyRe = RegExp(r'^[A-Za-z_][A-Za-z0-9_]*$');
 
+  /// A `\${` that no `}` closes, anywhere in the string.
+  static final _unterminatedVar = RegExp(r'\$\{[^}]*$');
+
   static List<String> _stringList(dynamic v) {
     if (v is List) return v.map((e) => e.toString()).toList();
     if (v is String && v.isNotEmpty) return v.split(RegExp(r'\s+'));
@@ -1318,7 +1324,20 @@ class CrossTarget {
     if (v.isEmpty) {
       throw const FormatException('run.command must not be empty');
     }
-    return v.map((e) => e.toString()).toList();
+    return [for (final e in v) _checkBalancedVars('run.command', e.toString())];
+  }
+
+  /// Reject a `${` that no `}` closes. Such a token survives emb's own
+  /// expansion untouched and is quoted into the `runDebug` string, where
+  /// Flutter re-interpolates with its own, wider pattern: the match then runs
+  /// from that `${` to the closing brace of the `${engineOptions}` emb appends,
+  /// swallowing the quote in between and leaving the board a command with an
+  /// unterminated string. Fail at parse time instead, naming the field.
+  static String _checkBalancedVars(String field, String s) {
+    if (_unterminatedVar.hasMatch(s)) {
+      throw FormatException('$field: unterminated \${ in "$s"');
+    }
+    return s;
   }
 
   static ({Object? command, Map<String, String> env})? _runBlock(Object? v) {
@@ -1337,7 +1356,7 @@ class CrossTarget {
             '(must match [A-Za-z_][A-Za-z0-9_]*)',
           );
         }
-        env[key] = val?.toString() ?? '';
+        env[key] = _checkBalancedVars('run.env[$key]', val?.toString() ?? '');
       });
     } else if (rawEnv != null) {
       throw const FormatException('run.env must be a map of strings');

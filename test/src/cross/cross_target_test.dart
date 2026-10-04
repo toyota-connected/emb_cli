@@ -335,6 +335,47 @@ void main() {
       );
     });
 
+    test(r'rejects an unterminated ${ in run.command', () {
+      // Such a token reaches Flutter's own interpolation, whose match then runs
+      // to the brace of the ${engineOptions} emb appends and eats the closing
+      // quote — the board gets a command with an unterminated string.
+      expect(
+        () => CrossTarget.fromMap(const {
+          'provider': 'arm-gnu',
+          'triple': 'aarch64-none-linux-gnu',
+          'run': {
+            'command': [r'./${embedder}', r'--flag=${'],
+          },
+        }),
+        throwsFormatException,
+      );
+    });
+
+    test(r'rejects an unterminated ${ in a run.env value', () {
+      expect(
+        () => CrossTarget.fromMap(const {
+          'provider': 'arm-gnu',
+          'triple': 'aarch64-none-linux-gnu',
+          'run': {
+            'command': ['./app'],
+            'env': {'A': r'a${b'},
+          },
+        }),
+        throwsFormatException,
+      );
+    });
+
+    test('a balanced but unknown variable parses — it warns at use', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'triple': 'aarch64-none-linux-gnu',
+        'run': {
+          'command': [r'./${embedder}', r'--x=${my-var}'],
+        },
+      });
+      expect(t.runCommand, [r'./${embedder}', r'--x=${my-var}']);
+    });
+
     test('rejects non-map run: value', () {
       expect(
         () => CrossTarget.fromMap(const {
