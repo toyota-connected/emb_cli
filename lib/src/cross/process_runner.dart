@@ -84,6 +84,11 @@ typedef TimedProcessRunner =
       Duration? timeout,
     });
 
+/// How long to let the pipes flush after the child has exited, before giving up
+/// on them. Only reached when something other than the child still holds the
+/// write end open.
+const _pipeFlushGrace = Duration(seconds: 2);
+
 /// The exit code reported for a run that hit its limit, matching GNU
 /// `timeout(1)` so a caller that already prints an exit code says something
 /// recognizable.
@@ -142,32 +147,42 @@ TimedProcessRunner makeTimedProcessRunner({
     }
 
     try {
-      var out = '';
-      var err = '';
-      if (output != ProcessOutputMode.inherit) {
-        // Drain both pipes concurrently with waiting on the exit code: a child
-        // that fills a pipe buffer blocks, and a blocked child never exits, so
-        // collecting serially would hang exactly where a timeout is wanted.
-        final collected = await Future.wait([
-          proc.stdout.transform(utf8.decoder).join(),
-          proc.stderr.transform(utf8.decoder).join(),
-        ]);
-        out = collected[0];
-        err = collected[1];
-      }
+      // Collect into buffers while the child runs — a child that fills a pipe
+      // buffer blocks, and a blocked child never exits, so the pipes have to be
+      // drained concurrently with waiting on the exit code.
+      final out = StringBuffer();
+      final err = StringBuffer();
+      final drained = output == ProcessOutputMode.inherit
+          ? const <Future<void>>[]
+          : <Future<void>>[
+              proc.stdout.transform(utf8.decoder).forEach(out.write),
+              proc.stderr.transform(utf8.decoder).forEach(err.write),
+            ];
+
+      // The exit code is the authoritative signal, not the pipes closing. A
+      // grandchild can hold the write end open after the child is gone — `sh -c
+      // 'trap "" TERM; sleep 30'` leaves exactly that behind — and waiting on
+      // the streams then outlives the kill, which is the hang a timeout exists
+      // to prevent. So wait on the exit, then give the pipes a short grace to
+      // flush and stop caring.
       final code = await proc.exitCode;
+      if (drained.isNotEmpty) {
+        await Future.wait(
+          drained,
+        ).timeout(_pipeFlushGrace, onTimeout: () => const <void>[]);
+      }
       if (timedOut) {
         final cmd = [executable, ...arguments].join(' ');
         return RunResult(
           timedOutExitCode,
-          out,
+          out.toString(),
           [
-            if (err.isNotEmpty) err,
+            if (err.isNotEmpty) err.toString().trimRight(),
             'timed out after ${timeout!.inSeconds}s: $cmd',
           ].join('\n'),
         );
       }
-      return RunResult(code, out, err);
+      return RunResult(code, out.toString(), err.toString());
     } finally {
       killer?.cancel();
       escalate?.cancel();

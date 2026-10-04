@@ -147,15 +147,40 @@ void main() {
     });
 
     test('escalates to SIGKILL when SIGTERM is ignored', () async {
+      // A child that ignores SIGTERM, written in Dart rather than as
+      // `sh -c 'trap "" TERM; …'`: whether a shell traps or execs through
+      // depends on which /bin/sh the host has, so the shell version asserted
+      // nothing reliable — it passed locally while timing out on CI.
+      final dir = Directory.systemTemp.createTempSync('emb_sigterm_');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final child = File(p.join(dir.path, 'stubborn.dart'))
+        ..writeAsStringSync(
+          [
+            "import 'dart:async';",
+            "import 'dart:io';",
+            'void main() {',
+            '  ProcessSignal.sigterm.watch().listen((_) {});',
+            '  Timer(const Duration(seconds: 60), () {});',
+            '}',
+          ].join('\n'),
+        );
+
       final stubborn = makeTimedProcessRunner(
-        graceOnTimeout: const Duration(milliseconds: 300),
+        graceOnTimeout: const Duration(seconds: 1),
       );
-      final r = await stubborn('sh', [
-        '-c',
-        'trap "" TERM; sleep 30',
-      ], timeout: const Duration(seconds: 1));
+      final sw = Stopwatch()..start();
+      final r = await stubborn(Platform.resolvedExecutable, [
+        'run',
+        child.path,
+      ], timeout: const Duration(seconds: 3));
+      sw.stop();
+
       expect(r.exitCode, timedOutExitCode);
-    });
+      // It outlived SIGTERM (so at least the limit) and died on SIGKILL rather
+      // than running its full 60 seconds.
+      expect(sw.elapsed, greaterThanOrEqualTo(const Duration(seconds: 3)));
+      expect(sw.elapsed, lessThan(const Duration(seconds: 30)));
+    }, timeout: const Timeout(Duration(seconds: 60)));
 
     test('a run inside its limit is untouched', () async {
       final r = await run('echo', [
