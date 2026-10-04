@@ -1084,6 +1084,135 @@ void main() {
   );
 
   _securityAndDetection();
+  group('an augment can see the ones before it', () {
+    /// Records every cmake/meson invocation with the env it ran under.
+    late List<({List<String> argv, Map<String, String>? env})> calls;
+
+    Future<RunResult> run(
+      String exe,
+      List<String> args, {
+      String? workingDirectory,
+      Map<String, String>? environment,
+      bool includeParentEnvironment = true,
+      bool runInShell = false,
+      ProcessOutputMode output = ProcessOutputMode.capture,
+      String? label,
+    }) async {
+      calls.add((argv: [exe, ...args], env: environment));
+      if (exe == 'pkg-config') return const RunResult(1, '', '');
+      if (exe == 'tar' && args.contains('-tf')) {
+        return const RunResult(0, '', '');
+      }
+      if (exe == 'tar') {
+        final dest = args[args.indexOf('-C') + 1];
+        File(p.join(dest, 'present.txt')).writeAsStringSync('x');
+        return const RunResult(0, '', '');
+      }
+      return const RunResult(0, '', '');
+    }
+
+    setUp(() => calls = []);
+
+    /// Pre-stage a tarball so the fetch is a cache hit.
+    void stage(String pkg, String min) {
+      final src = Directory(
+        p.join(tmp.path, '.config', 'flutter_workspace', 'overlay-src'),
+      )..createSync(recursive: true);
+      File(
+        p.join(src.path, '$pkg-$pkg-$min.tar.gz'),
+      ).writeAsBytesSync(gzip.encode(utf8.encode('stub')));
+    }
+
+    test('a later augment gets host-tool bins on PATH', () async {
+      // The host pass's executables used to be collected for the embedder
+      // build only, so a later augment's configure never saw them — the
+      // Filament case, where the target pass runs matc from the host pass.
+      stage('wayland-cxx-scanner', '1.0.0');
+      stage('needs-tool', '2.0.0');
+      final ob = OverlayBuilder(Workspace(tmp), _profile, runProcess: run);
+      await ob.build([
+        _hostLib(),
+        AugmentLib.fromMap({
+          'pkg': 'needs-tool',
+          'min': '2.0.0',
+          'url': 'https://x/needs-tool-2.0.0.tar.gz',
+          'build': 'cmake',
+        }),
+      ]);
+      ob.close();
+
+      // The dependent augment's configure ran with the host tool's bin dir
+      // first on PATH.
+      final configure = calls.lastWhere(
+        (c) => c.argv.first == 'cmake' && c.argv.contains('-S'),
+      );
+      final path = configure.env?['PATH'];
+      expect(path, isNotNull, reason: 'no PATH passed to the augment build');
+      expect(
+        path!.split(':').first,
+        endsWith(p.join('wayland-cxx-scanner', 'usr', 'bin')),
+        reason: 'host-tool bin must come first, got $path',
+      );
+    });
+
+    test('a later augment searches the overlay for pkg-config', () async {
+      stage('libfoo', '1.0.0');
+      final ob = OverlayBuilder(Workspace(tmp), _profile, runProcess: run);
+      await ob.build([
+        AugmentLib.fromMap({
+          'pkg': 'libfoo',
+          'min': '1.0.0',
+          'url': 'https://x/libfoo-1.0.0.tar.gz',
+          'build': 'cmake',
+        }),
+      ]);
+      ob.close();
+
+      final configure = calls.lastWhere(
+        (c) => c.argv.first == 'cmake' && c.argv.contains('-S'),
+      );
+      // _profile is a cross profile, so the overlay goes in PKG_CONFIG_LIBDIR
+      // ahead of the sysroot's own dirs.
+      final libdir = configure.env?['PKG_CONFIG_LIBDIR'];
+      expect(libdir, isNotNull);
+      expect(libdir!.split(':').first, contains('overlay-'));
+      expect(libdir, contains('/sr/usr/lib/pkgconfig'));
+    });
+
+    test(r'defines expand ${overlay} and ${host_tools}', () async {
+      // PATH is not always the interface: a build may import an earlier
+      // augment's output through an export file, which the manifest names.
+      stage('libfoo', '1.0.0');
+      final ob = OverlayBuilder(Workspace(tmp), _profile, runProcess: run);
+      await ob.build([
+        AugmentLib.fromMap({
+          'pkg': 'libfoo',
+          'min': '1.0.0',
+          'url': 'https://x/libfoo-1.0.0.tar.gz',
+          'build': 'cmake',
+          'defines': {
+            'TOOLS_PREFIX': r'${host_tools}/filament-host/usr',
+            'CMAKE_PREFIX_PATH': r'${overlay}',
+          },
+        }),
+      ]);
+      ob.close();
+
+      final configure = calls
+          .lastWhere((c) => c.argv.first == 'cmake' && c.argv.contains('-S'))
+          .argv;
+      final tools = configure.firstWhere(
+        (a) => a.startsWith('-DTOOLS_PREFIX='),
+      );
+      expect(tools, contains(p.join('host-tools', 'filament-host', 'usr')));
+      expect(tools, isNot(contains(r'${host_tools}')));
+      final prefix = configure.firstWhere(
+        (a) => a.startsWith('-DCMAKE_PREFIX_PATH='),
+      );
+      expect(prefix, endsWith(p.join('usr')));
+      expect(prefix, contains('overlay-'));
+    });
+  });
 }
 
 void _securityAndDetection() {

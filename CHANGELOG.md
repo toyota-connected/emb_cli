@@ -1,3 +1,74 @@
+# Unreleased
+
+Everything here is on `main` and not published. `0.3.7` below is the released
+patch; the `0.3.6` heading under it still mixes what that tag published with
+work merged before this section existed — splitting it belongs to the release
+that picks the next version.
+
+**Security.** A sweep over the packaging and deploy paths, prompted by reviewing
+the board-registry and manifest-variable work. Every one of these took a value a
+manifest or a board file supplies and let it reach a shell, a path, or a package
+field unchecked:
+
+- fix(rpm): a maintainer script was inlined into the generated spec, and rpmbuild
+  macro-expands a spec — `%(command)` in a postinst ran on the **build host** at
+  package time, and a line starting with `%` closed the scriptlet and injected
+  spec directives. Scripts are referenced with `%post -f` and every `%` escaped;
+  `-f` alone is not enough, which is what testing against real rpmbuild showed.
+  (#233)
+- fix(flatpak): `icon`, `files[].mode` and `files[].to` were interpolated bare
+  into `build-commands`, which flatpak-builder runs through a shell; `to:` was
+  also unnormalized, so `/../../../../etc/evil.conf` escaped the `/app` prefix.
+  Values are shell-quoted, `mode` must be octal, and `to:` is confined. The same
+  values were emitted as YAML plain scalars, so a `#` in a command name was
+  silently truncated — they are quoted scalars now. (#234)
+- fix(packaging): `package.name` named a directory that is deleted recursively,
+  `files[].to` was checked with `isAbsolute` only (so `/../..` escaped the
+  staging root, and `/../<pkg>.stage/DEBIAN/postinst` re-entered the control dir
+  past the maintainer-script allowlist), `files[].mode` reached `chmod` as an
+  argument (`--reference=/etc/shadow` stole another file's bits), and a newline
+  in a deb/ipk control value added a field — `Essential: yes` made a package
+  un-removable. All four validated. (#235)
+- fix(cross): the tar-over-ssh push built its remote command with double quotes,
+  so a deploy dir — or a `cross.backends` key concatenated into it — reached the
+  board's shell. (#236)
+- fix(cross): the generated Flutter custom device flattened `host`, `ssh_opts`
+  and `adb_serial` into an `sh -c` script that runs on the developer's machine
+  and is persisted in `custom_devices.config`, so it re-executed on every
+  `flutter run -d`. (#232)
+- fix(flutter): a malformed `custom_devices.json` was silently replaced, losing
+  every device the user had registered; it is copied aside first and the path
+  reported. The file was also left at the umask's mode (0644) while carrying
+  `cross.run.env` values — now 0600. (#237)
+- fix(packaging): one `chmod` per staged file, ~2000 spawns for a large asset
+  tree; batched by mode, with `--` before the mode and the exit code checked.
+  (#238, #240)
+
+**Boards.**
+
+- fix(boards): a `boards.yaml` emb could not parse was replaced by the defaults
+  and written back, losing every source the user declared; a damaged install
+  reported "up to date" forever because only the remote SHA was checked;
+  `GIT_SSH_COMMAND` was replaced rather than extended, dropping a custom key in
+  CI; the HTTP body had no size cap and no read timeout; and syncs shared one
+  install dir with no lock. (#241)
+- fix(doctor): board version stamps were enumerated from `boards.yaml`, which
+  describes the installed layout only, so a library resolved from an
+  `EMB_BOARDS_DIR` checkout reported its boards with no version and the skew
+  check was blind. (#249)
+
+**Cross.**
+
+- feat(cross): `--deploy` and `--run` work without `--build`, shipping the bundle
+  a previous build left behind — a redeploy after a failed transfer, a rerun to
+  reproduce a crash, or pushing one build to a second board, none of which should
+  cost another AOT pass. Nothing built is an error with guidance; a bundle older
+  than the embedder source is deployed with a warning. (#214)
+- feat(cross): an augment can see the augments before it — host-tool bins on
+  `PATH`, the overlay ahead of the sysroot for pkg-config, and `${overlay}` /
+  `${host_tools}` expanded in `defines:` so a build that imports an earlier
+  augment through an export file can name the prefix. (#122)
+
 # 0.3.7
 
 A maintenance release cut from the `v0.3.6` tag, not from `main`: the two
