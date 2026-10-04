@@ -17,6 +17,17 @@ class _CaptureLogger extends Logger {
   final StringBuffer buffer = StringBuffer();
   @override
   void info(String? message, {LogStyle? style}) => buffer.writeln(message);
+
+  /// Errors land in the same buffer: a test asserting on a failure message
+  /// should not have to know which channel it came out of. `runJson` only ever
+  /// reads a successful run's JSON, so nothing is muddied by this.
+  final StringBuffer errors = StringBuffer();
+  @override
+  void err(String? message, {LogStyle? style}) => errors.writeln(message);
+
+  @override
+  void warn(String? message, {String tag = 'WARN', LogStyle? style}) =>
+      errors.writeln(message);
 }
 
 /// Thrown by a fake process runner to end a command early.
@@ -921,6 +932,181 @@ void main() {
       ).writeAsStringSync('void helper() {}');
       final after = await sourceFingerprint(dir);
       expect(before, isNot(after));
+    });
+  });
+  group('--deploy/--run without --build', () {
+    // A native (--target local) manifest resolves without downloading a
+    // toolchain, which is what lets these drive the real command.
+    String nativeManifest() =>
+        'id: redeploy\ntype: app\ncross:\n  provider: arm-gnu\n'
+        '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n'
+        '  package:\n    bin: homescreen\n';
+
+    /// The build root the command would use, read out of the command's own
+    /// "nothing to deploy" message rather than recomputed — recomputing it here
+    /// would duplicate the very derivation this is meant to exercise.
+    Future<Directory> buildRootFrom(Directory ws, Directory pkg) async {
+      final logger = _CaptureLogger();
+      final runner = CommandRunner<int>('emb', 'test')
+        ..addCommand(CrossCommand(logger: logger, host: _host));
+      await runner.run([
+        'cross',
+        '--target',
+        'local',
+        '--deploy',
+        'pi@board',
+        '-w',
+        ws.path,
+        pkg.path,
+      ]);
+      final match = RegExp(r'under (\S+)').firstMatch(logger.errors.toString());
+      expect(match, isNotNull, reason: logger.errors.toString());
+      return Directory(match!.group(1)!);
+    }
+
+    test('fails with guidance when nothing has been built', () async {
+      final pkg = pkgWith('rd1', nativeManifest());
+      final ws = Directory(p.join(tmp.path, 'ws1'))..createSync();
+      final logger = _CaptureLogger();
+      final runner = CommandRunner<int>('emb', 'test')
+        ..addCommand(CrossCommand(logger: logger, host: _host));
+      final code = await runner.run([
+        'cross',
+        '--target',
+        'local',
+        '--deploy',
+        'pi@board',
+        '-w',
+        ws.path,
+        pkg.path,
+      ]);
+      expect(code, ExitCode.noInput.code);
+      expect(logger.errors.toString(), contains('nothing to deploy'));
+      expect(logger.buffer.toString(), contains('--build'));
+    });
+
+    test('deploys the existing runnable without rebuilding', () async {
+      final pkg = pkgWith('rd2', nativeManifest());
+      final ws = Directory(p.join(tmp.path, 'ws2'))..createSync();
+      final calls = <List<String>>[];
+      Future<RunResult> fake(
+        String exe,
+        List<String> args, {
+        String? workingDirectory,
+        Map<String, String>? environment,
+        bool includeParentEnvironment = true,
+        bool runInShell = false,
+        ProcessOutputMode output = ProcessOutputMode.capture,
+        String? label,
+      }) async {
+        calls.add([exe, ...args]);
+        // rsync is "present" on the board, so the push takes that path.
+        return const RunResult(0, '', '');
+      }
+
+      // Stand in for what a build leaves behind: a runnable bundle with the
+      // embedder at its root.
+      final runnable = Directory(
+        p.join((await buildRootFrom(ws, pkg)).path, 'runnable'),
+      )..createSync(recursive: true);
+      File(p.join(runnable.path, 'homescreen')).writeAsStringSync('elf');
+      Directory(p.join(runnable.path, 'lib')).createSync();
+
+      final logger = _CaptureLogger();
+      final runner = CommandRunner<int>('emb', 'test')
+        ..addCommand(
+          CrossCommand(logger: logger, host: _host, processRunner: fake),
+        );
+      final code = await runner.run([
+        'cross',
+        '--target',
+        'local',
+        '--deploy',
+        'pi@board',
+        '-w',
+        ws.path,
+        pkg.path,
+      ]);
+
+      expect(code, ExitCode.success.code);
+      // The bundle was pushed, and no compiler ran.
+      expect(
+        calls.any((c) => c.first == 'rsync' || c.first == 'sh'),
+        isTrue,
+        reason: 'expected a push, got ${calls.map((c) => c.first).toSet()}',
+      );
+      expect(
+        calls.any((c) => c.first == 'cmake' || c.first == 'ninja'),
+        isFalse,
+      );
+    });
+
+    test('warns when the embedder source changed since the build', () async {
+      final pkg = pkgWith('rd3', nativeManifest());
+      final ws = Directory(p.join(tmp.path, 'ws3'))..createSync();
+      final root = await buildRootFrom(ws, pkg);
+      final runnable = Directory(p.join(root.path, 'runnable'))
+        ..createSync(recursive: true);
+      File(p.join(runnable.path, 'homescreen')).writeAsStringSync('elf');
+      // A stamp that cannot match any fingerprint of the source tree.
+      File(
+        p.join(root.path, '.emb-source-stamp'),
+      ).writeAsStringSync('stale-fingerprint');
+
+      final logger = _CaptureLogger();
+      final runner = CommandRunner<int>('emb', 'test')
+        ..addCommand(
+          CrossCommand(
+            logger: logger,
+            host: _host,
+            processRunner:
+                (
+                  exe,
+                  args, {
+                  workingDirectory,
+                  environment,
+                  includeParentEnvironment = true,
+                  runInShell = false,
+                  output = ProcessOutputMode.capture,
+                  label,
+                }) async => const RunResult(0, '', ''),
+          ),
+        );
+      final code = await runner.run([
+        'cross',
+        '--target',
+        'local',
+        '--deploy',
+        'pi@board',
+        '-w',
+        ws.path,
+        pkg.path,
+      ]);
+      expect(code, ExitCode.success.code);
+      expect(
+        logger.errors.toString(),
+        contains('embedder source has changed'),
+        reason: 'deploying a stale bundle is allowed, but must be said',
+      );
+    });
+
+    test('--run with no bundle fails the same way as --deploy', () async {
+      final pkg = pkgWith('rd4', nativeManifest());
+      final ws = Directory(p.join(tmp.path, 'ws4'))..createSync();
+      final logger = _CaptureLogger();
+      final runner = CommandRunner<int>('emb', 'test')
+        ..addCommand(CrossCommand(logger: logger, host: _host));
+      final code = await runner.run([
+        'cross',
+        '--target',
+        'local',
+        '--run',
+        '-w',
+        ws.path,
+        pkg.path,
+      ]);
+      expect(code, ExitCode.noInput.code);
+      expect(logger.errors.toString(), contains('nothing to run'));
     });
   });
 }
