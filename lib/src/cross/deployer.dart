@@ -176,7 +176,14 @@ class Deployer {
     String? opts,
   ) async {
     final ssh = ['ssh', ..._sshArgs(port, opts), host].join(' ');
-    final remote = 'mkdir -p "$destDir" && tar -xzf - -C "$destDir"';
+    // Single-quoted, not double: the remote shell expands "$x" and runs
+    // "$(x)" inside double quotes, so a deploy dir — or a `cross.backends` key,
+    // which is concatenated into it — reached the board's shell. Every other
+    // site here already uses _shQuote; this one did not. The outer _shQuote
+    // below protects the *local* sh -c, which is why the hole was easy to miss.
+    final remote =
+        'mkdir -p ${_shQuote(destDir)} && '
+        'tar -xzf - -C ${_shQuote(destDir)}';
     final pipeline =
         'tar -czf - -C ${_shQuote(localDir.path)} . | $ssh ${_shQuote(remote)}';
     final r = await _run('sh', [

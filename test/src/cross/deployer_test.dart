@@ -109,8 +109,8 @@ void main() {
     expect(sh[1], '-c');
     expect(sh[2], startsWith('tar -czf - -C'));
     expect(sh[2], contains('| ssh pi@board'));
-    expect(sh[2], contains('mkdir -p "ivi-homescreen"'));
-    expect(sh[2], contains('tar -xzf - -C "ivi-homescreen"'));
+    // Single-quoted, not double: the remote shell expands inside "…".
+    expect(sh[2], contains(_shq(_remoteFor('ivi-homescreen'))));
   });
 
   test('remoteArch queries uname -m over the ssh transport', () async {
@@ -350,4 +350,30 @@ void main() {
       expect(t.host, isNull);
     });
   });
+  test('a deploy dir cannot run a command on the board', () async {
+    // `_pushTar` built the remote command with double quotes, so the board's
+    // shell expanded it. `--deploy-dir` reaches here, and so does a
+    // `cross.backends` key, which is concatenated into the destination.
+    final rec = recorder(exitNonZero: _isRsyncProbe);
+    const dest = 'ivi"; touch /tmp/emb-pwned; echo "';
+    await Deployer(
+      runProcess: rec.run,
+    ).push(tmp, device: const DeployTarget.ssh('pi@board'), destDir: dest);
+    final sh = rec.calls.firstWhere((c) => c.first == 'sh')[2];
+    // Both layers must be right: the destination quoted for the *board's* shell
+    // (inner), and that whole remote command quoted for the local `sh -c`
+    // (outer). _shq here is an independent implementation, so dropping either
+    // layer in the packager fails this.
+    expect(sh, contains(_shq(_remoteFor(dest))));
+    // Separately verified with a fake ssh that joins its args and runs them
+    // through a shell: the board received `mkdir -p 'ivi"; touch …; echo "'`
+    // as one argument and the canary file was never created.
+  });
 }
+
+/// POSIX single-quoting, written out independently of the implementation.
+String _shq(String s) => "'${s.replaceAll("'", r"'\''")}'";
+
+/// The remote command `_pushTar` must build for [dest].
+String _remoteFor(String dest) =>
+    'mkdir -p ${_shq(dest)} && tar -xzf - -C ${_shq(dest)}';
