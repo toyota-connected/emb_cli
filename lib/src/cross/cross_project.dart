@@ -843,18 +843,33 @@ class CrossProjectResolver {
   /// `*.emb.yaml` files, return each as a source. If only flat files exist at
   /// the top level, return the directory as the `dev` source.
   Map<String, Directory> _detectSourceSubdirs(Directory boardsDir) {
+    // An absent or unreadable dir is a clean miss, so the caller reports
+    // "no boards are loaded" with the rungs it tried. Listing it unguarded
+    // turned a typo in EMB_BOARDS_DIR into a PathNotFoundException stack trace
+    // out of every `emb cross`, `boards list` and `doctor`.
+    if (!boardsDir.existsSync()) return {};
+    final List<FileSystemEntity> top;
+    try {
+      top = boardsDir.listSync();
+    } on FileSystemException {
+      return {};
+    }
     final sources = <String, Directory>{};
-    for (final entry in boardsDir.listSync()) {
-      if (entry is Directory) {
+    for (final entry in top.whereType<Directory>()) {
+      try {
         final hasManifests = entry.listSync().whereType<File>().any(
           (f) => f.path.endsWith('.emb.yaml'),
         );
         if (hasManifests) sources[p.basename(entry.path)] = entry;
+      } on FileSystemException {
+        // An unreadable source dir drops out of the registry rather than
+        // failing the whole lookup.
+        continue;
       }
     }
     if (sources.isNotEmpty) return sources;
     // Legacy flat layout: *.emb.yaml at the top level.
-    final hasFlat = boardsDir.listSync().whereType<File>().any(
+    final hasFlat = top.whereType<File>().any(
       (f) => f.path.endsWith('.emb.yaml'),
     );
     if (hasFlat) return {'dev': boardsDir};

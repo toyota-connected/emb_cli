@@ -259,6 +259,7 @@ def install_boards(root, os_name):
 
     dst_base = boards_data_dir(os_name)
     total = 0
+    version = package_version(root)
     try:
         for source_name, source_path in source_dirs.items():
             dst = os.path.join(dst_base, source_name)
@@ -275,10 +276,14 @@ def install_boards(root, os_name):
                     shutil.copy2(os.path.join(source_path, n),
                                  os.path.join(dst, n))
                 total += len(names)
-        version = package_version(root)
-        if version:
-            with open(os.path.join(dst_base, ".emb-boards-version"), "w") as f:
-                f.write(version + "\n")
+            # Per source, not in dst_base: emb reads the stamp from the
+            # source's own dir (boards_command readBoardsStamp, doctor
+            # likewise), so one in the parent is never found and version skew
+            # goes unreported after bootstrap.sh.
+            if version:
+                stamp = os.path.join(dst, ".emb-boards-version")
+                with open(stamp, "w") as f:
+                    f.write(version + "\n")
     except OSError as e:
         log("WARNING: could not install the board library to %s: %s"
             % (dst_base, e))

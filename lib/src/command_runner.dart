@@ -106,6 +106,18 @@ class EmbCliCommandRunner extends CompletionCommandRunner<int> {
         ..info('')
         ..info(e.usage);
       return ExitCode.usage.code;
+    } on FileSystemException catch (e) {
+      // A denied, missing or full path is the environment's state, not a bug in
+      // emb: name the path and the OS reason. Commands write in many places
+      // (board config and sync stamps, caches, staging trees), and every
+      // unguarded one of them used to surface as a raw stack trace and exit
+      // 255 — e.g. `emb boards add` under a read-only XDG_CONFIG_HOME.
+      _logger.err(
+        'filesystem error: ${e.message}'
+        '${e.path == null ? '' : ' (${e.path})'}'
+        '${e.osError == null ? '' : ': ${e.osError!.message}'}',
+      );
+      return ExitCode.software.code;
     }
   }
 

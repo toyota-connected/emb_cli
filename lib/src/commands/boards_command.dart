@@ -433,13 +433,18 @@ class BoardsSyncCommand extends Command<int> {
       File(p.join(dest.path, safeName)).writeAsBytesSync(bytes);
       written.add(safeName);
     }
+    // Prune only once something was actually written: a listing whose every
+    // entry was skipped (an unsafe filename, say) must not delete the installed
+    // boards and then stamp the new SHA, which would report success and leave
+    // `extends:` resolving nothing until the stamp was removed by hand.
+    if (written.isEmpty) return 0;
     for (final f in dest.listSync().whereType<File>().where(
       (f) =>
           f.path.endsWith('.emb.yaml') && !written.contains(p.basename(f.path)),
     )) {
       f.deleteSync();
     }
-    return entries.length;
+    return written.length;
   }
 
   Future<int> _fetchBoardsSsh(

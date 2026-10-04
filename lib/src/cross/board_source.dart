@@ -188,7 +188,12 @@ class BoardSourceConfig {
 
   static String _scalar(String v) {
     if (v.contains('\n') || v.contains('\r')) {
-      throw ArgumentError('board source values must not contain newlines');
+      // FormatException, not ArgumentError: the runner reports the former as a
+      // usage error, and a newline in a --ref/--path is exactly that. Thrown
+      // before the write, so a bad value cannot truncate boards.yaml.
+      throw const FormatException(
+        'board source values must not contain newlines',
+      );
     }
     return "'${v.replaceAll("'", "''")}'";
   }

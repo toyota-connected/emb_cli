@@ -230,4 +230,42 @@ void main() {
     expect(code, isNot(ExitCode.success.code));
     expect(dest().existsSync(), isFalse, reason: 'no partial install');
   });
+  test('a listing whose every entry is skipped changes nothing', () async {
+    // The unsafe-name guard must not turn into a pruning sync: counting listed
+    // entries instead of written ones deleted every installed board, stamped
+    // the new SHA, and reported success — after which every later sync said
+    // "up to date" with an empty library and `extends:` resolved nothing.
+    expect(await runSync([]), ExitCode.success.code);
+    final installed = Directory(p.join(dest().path, 'emb-public'));
+    expect(
+      File(p.join(installed.path, 'raspberry-pi.emb.yaml')).existsSync(),
+      isTrue,
+    );
+
+    github
+      ..boards.clear()
+      ..boards['../../../pwned.emb.yaml'] = 'id: pwned\ntype: board\n'
+      ..commitSha = 'fake-sha-001';
+
+    final code = await runSync([]);
+    expect(
+      File(p.join(installed.path, 'raspberry-pi.emb.yaml')).existsSync(),
+      isTrue,
+      reason: 'the good board must survive an all-skipped listing',
+    );
+    expect(
+      File(p.join(installed.path, 'pwned.emb.yaml')).existsSync(),
+      isFalse,
+    );
+    expect(File(p.join(tmp.path, 'pwned.emb.yaml')).existsSync(), isFalse);
+    // The SHA must not be stamped, or the next sync reports "up to date" over
+    // a library this sync never wrote.
+    final sha = File(p.join(installed.path, '.emb-boards-sha'));
+    expect(
+      !sha.existsSync() || sha.readAsStringSync().trim() != 'fake-sha-001',
+      isTrue,
+      reason: 'a sync that wrote nothing must not record the remote SHA',
+    );
+    expect(code, isNot(ExitCode.success.code));
+  });
 }

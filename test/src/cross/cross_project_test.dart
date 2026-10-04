@@ -866,6 +866,68 @@ cross:
       expect(project.targets['x']!.cross['triple'], 'OVERRIDE-TRIPLE');
     });
 
+    test('an absent EMB_BOARDS_DIR is a clean miss, not a crash', () {
+      // One typo used to list a nonexistent directory and throw
+      // PathNotFoundException out of every `emb cross`, `boards list` and
+      // `doctor` — exit 255 with a stack trace.
+      final resolver = CrossProjectResolver(const ManifestLoader(), null, {
+        'HOME': tmp.path,
+        'XDG_DATA_HOME': p.join(tmp.path, 'data'),
+        'EMB_BOARDS_DIR': p.join(tmp.path, 'no-such-dir'),
+      });
+      expect(resolver.boardNames(), isEmpty);
+      expect(
+        () => resolver.resolve(appExtending('rpi5-trixie').path),
+        throwsA(
+          isA<CrossProjectException>().having(
+            (e) => e.message,
+            'message',
+            contains('board library not found'),
+          ),
+        ),
+      );
+    });
+
+    test('EMB_BOARDS_DIR reads a multi-source layout, qualified', () {
+      // The shipped library is `boards/<source>/*.emb.yaml`; a checkout pointed
+      // at by EMB_BOARDS_DIR must resolve through the same subdirectories, and
+      // the registry key must be the source dir's name — not the rung label —
+      // so the documented `extends: <source>/<target>` form works here too.
+      final src = Directory(p.join(tmp.path, 'co', 'boards', 'mysrc'))
+        ..createSync(recursive: true);
+      File(p.join(src.path, 'b.emb.yaml')).writeAsStringSync('''
+id: b
+type: board
+cross:
+  provider: arm-gnu
+  triple: SUBDIR-TRIPLE
+  targets:
+    rpi5-trixie: {}
+''');
+      final env = {
+        'HOME': tmp.path,
+        'XDG_DATA_HOME': p.join(tmp.path, 'data'),
+        'EMB_BOARDS_DIR': p.join(tmp.path, 'co', 'boards'),
+      };
+      expect(
+        CrossProjectResolver(const ManifestLoader(), null, env).boardNames(),
+        contains('mysrc/rpi5-trixie'),
+      );
+      final qualified = CrossProjectResolver(
+        const ManifestLoader(),
+        null,
+        env,
+      ).resolve(appExtending('mysrc/rpi5-trixie').path)!;
+      expect(qualified.targets['x']!.cross['triple'], 'SUBDIR-TRIPLE');
+      // The unqualified form still resolves while the name is unambiguous.
+      final bare = CrossProjectResolver(
+        const ManifestLoader(),
+        null,
+        env,
+      ).resolve(appExtending('rpi5-trixie').path)!;
+      expect(bare.targets['x']!.cross['triple'], 'SUBDIR-TRIPLE');
+    });
+
     test('an empty registry says the library is missing, not the name', () {
       // Regression guard for the reported bug: `Known boards: none.` reads as a
       // typo'd board name and sends people to audit a manifest that is fine.
@@ -1187,6 +1249,38 @@ sources:
         resolved().augment.single.path,
         p.join(tmp.path, 'embedder', 'relative', 'tree'),
       );
+    });
+  });
+
+  group('shipped board library layout', () {
+    test('every board file lives in a source subdirectory', () {
+      // _detectSourceSubdirs returns subdirectory sources as soon as one subdir
+      // has manifests and never looks at top-level files, and
+      // tool/bootstrap_dart.py does the same. A board added at the top level of
+      // boards/ therefore disappears from the registry with no error — which is
+      // exactly what happened when a board added on main met the multi-source
+      // layout during a merge.
+      final boards = Directory('boards');
+      expect(boards.existsSync(), isTrue, reason: 'run from the package root');
+      final stray = boards
+          .listSync()
+          .whereType<File>()
+          .map((f) => p.basename(f.path))
+          .where((n) => n.endsWith('.emb.yaml'))
+          .toList();
+      expect(
+        stray,
+        isEmpty,
+        reason:
+            'move these into boards/<source>/ — at the top level they are '
+            'invisible to the registry and to bootstrap',
+      );
+      final sources = boards.listSync().whereType<Directory>().where(
+        (d) => d.listSync().whereType<File>().any(
+          (f) => f.path.endsWith('.emb.yaml'),
+        ),
+      );
+      expect(sources, isNotEmpty, reason: 'the library ships at least one');
     });
   });
 }
