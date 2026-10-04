@@ -982,6 +982,40 @@ augment:
     build: cmake
 ```
 
+##### An augment that depends on another
+
+Augments build in manifest order, and each one sees what the ones before it
+produced:
+
+- **`PATH`** carries the bin dirs of every `host: true` augment built so far, so
+  a `find_program` in a later augment resolves a build-machine binary.
+- **pkg-config** searches the overlay before the sysroot, so a later augment
+  finds an earlier one's `.pc` file.
+- **`defines:` values expand `${overlay}` and `${host_tools}`** —
+  `<overlay>/usr` and the root holding one `<pkg>/usr` prefix per `host: true`
+  augment. Compose the second: `${host_tools}/<pkg>/usr`.
+
+The variables matter because `PATH` is not always the interface. A project that
+imports its tools through a CMake export file rather than `find_program` has to
+be *pointed* at the host pass's install prefix:
+
+```yaml
+augment:
+  # Host pass: the generators the target pass runs.
+  - { pkg: filament-host, min: '1.65.4', url: https://.../filament-1.65.4.tar.gz,
+      build: cmake, host: true }
+  # Target pass: the libraries, told where the host tools landed.
+  - pkg: filament
+    min: '1.65.4'
+    url: https://.../filament-1.65.4.tar.gz
+    build: cmake
+    defines:
+      FILAMENT_IMPORT_TOOLS_PREFIX: ${host_tools}/filament-host/usr
+```
+
+Two entries still repeat `url` and version — one declaration producing both
+passes is a separate change, tracked in #122.
+
 ##### `host_dev_packages` — build-machine deps
 
 An `augment` entry marked `host: true` is a codegen tool emb compiles with the

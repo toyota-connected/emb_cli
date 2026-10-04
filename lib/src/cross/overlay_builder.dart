@@ -357,7 +357,6 @@ class OverlayBuilder {
     final overlay =
         stageInto ??
         workspace.ensurePlatformDir('overlay-${profile.targetTriple}');
-    final usr = p.join(overlay.path, 'usr');
     final binDirs = <String>[];
 
     for (final lib in libs) {
@@ -395,11 +394,13 @@ class OverlayBuilder {
       // edit under way would be skipped. See AugmentLib.path.
       try {
         if (lib.isLocal || !await _satisfied(lib)) {
+          // What this augment can see of the ones before it.
+          final soFar = _pathsSoFar(overlay, binDirs);
           switch (lib.build) {
             case CrossGenerator.meson:
-              await _buildMeson(lib, overlay, onStep: onStep);
+              await _buildMeson(lib, overlay, soFar, onStep: onStep);
             case CrossGenerator.cmake:
-              await _buildCMake(lib, overlay, onStep: onStep);
+              await _buildCMake(lib, overlay, soFar, onStep: onStep);
           }
           onStep?.complete(
             '${lib.pkg}: installed to ${overlay.path}', //
@@ -415,6 +416,19 @@ class OverlayBuilder {
       }
       continue;
     }
+    return _pathsSoFar(overlay, binDirs);
+  }
+
+  /// The paths an augment build can see of the augments before it: the overlay
+  /// it installs into, and the host tools built so far.
+  ///
+  /// Augments build in manifest order, so "before" is well defined. Without
+  /// this, an augment that depends on an earlier one could not find it at all —
+  /// not its headers, not its `.pc` file, and not a `host: true` tool it needs
+  /// to run. That is the general form of the Filament case: one tree needs a
+  /// host pass whose executables the target pass then consumes.
+  OverlayPaths _pathsSoFar(Directory overlay, List<String> binDirs) {
+    final usr = p.join(overlay.path, 'usr');
     return OverlayPaths(
       prefix: overlay.path,
       includeDirs: [p.join(usr, 'include')],
@@ -426,6 +440,38 @@ class OverlayBuilder {
       binDirs: binDirs,
     );
   }
+
+  /// Build env for one augment: the profile's toolchain env, plus the overlay
+  /// and host tools built before it.
+  ///
+  /// `PATH` is prepended with the host-tool bin dirs so a `find_program` in a
+  /// later augment resolves a build-machine binary, and pkg-config is pointed
+  /// at the overlay first so a later augment finds an earlier one's `.pc` file
+  /// rather than only the sysroot's.
+  Map<String, String> _augmentEnv(OverlayPaths paths) {
+    final env = {...profile.buildEnv(), ...paths.pkgConfigEnv(profile)};
+    if (paths.binDirs.isNotEmpty) {
+      final inherited = Platform.environment['PATH'];
+      env['PATH'] = [
+        ...paths.binDirs,
+        if (inherited != null && inherited.isNotEmpty) inherited,
+      ].join(':');
+    }
+    return env;
+  }
+
+  /// Expand the placeholders an augment may use in its `defines:` values, so a
+  /// build that needs to be *pointed* at an earlier augment's output can name
+  /// it. Filament imports its host tools through a CMake export file rather
+  /// than `find_program`, so PATH alone cannot reach it; the manifest has to
+  /// name the prefix.
+  ///
+  /// `${overlay}` is where augments install (`<overlay>/usr`), and
+  /// `${host_tools}` is the root holding one `<pkg>/usr` prefix per `host: true`
+  /// augment — composable, so a manifest writes `${host_tools}/<pkg>/usr`.
+  String _expandAugmentVars(String value, Directory overlay) => value
+      .replaceAll(r'${overlay}', p.join(overlay.path, 'usr'))
+      .replaceAll(r'${host_tools}', workspace.platformDir('host-tools').path);
 
   /// A fresh build dir for [lib]'s source — wiped first so a re-run never
   /// reuses a stale (possibly mis-configured) meson/cmake cache.
@@ -889,7 +935,8 @@ class OverlayBuilder {
 
   Future<void> _buildMeson(
     AugmentLib lib,
-    Directory overlay, {
+    Directory overlay,
+    OverlayPaths soFar, {
     StepHandle? onStep,
   }) async {
     final src = await _fetchSource(lib, onStep: onStep);
@@ -923,9 +970,10 @@ class OverlayBuilder {
         // Package-specific project options, mirroring the CMake path's cache
         // entries (e.g. `-Dsome_feature=enabled`). Meson uses the same
         // `-Dkey=value` syntax for project options.
-        for (final e in lib.defines.entries) '-D${e.key}=${e.value}',
+        for (final e in lib.defines.entries)
+          '-D${e.key}=${_expandAugmentVars(e.value, overlay)}',
       ],
-      environment: profile.buildEnv(),
+      environment: _augmentEnv(soFar),
       output: ProcessOutputMode.stream,
     );
     onStep?.update('${lib.pkg}: meson setup');
@@ -950,7 +998,8 @@ class OverlayBuilder {
 
   Future<void> _buildCMake(
     AugmentLib lib,
-    Directory overlay, {
+    Directory overlay,
+    OverlayPaths soFar, {
     StepHandle? onStep,
   }) async {
     final src = await _fetchSource(lib, onStep: onStep);
@@ -981,9 +1030,10 @@ class OverlayBuilder {
         // BUILD_SHARED_LIBS (no explicit STATIC/SHARED on add_library).
         '-DBUILD_SHARED_LIBS=${lib.staticLink ? 'OFF' : 'ON'}',
         // Package-specific cache entries (e.g. BLEND2D_STATIC / BLEND2D_NO_JIT).
-        for (final e in lib.defines.entries) '-D${e.key}=${e.value}',
+        for (final e in lib.defines.entries)
+          '-D${e.key}=${_expandAugmentVars(e.value, overlay)}',
       ],
-      environment: profile.buildEnv(),
+      environment: _augmentEnv(soFar),
       output: ProcessOutputMode.stream,
     );
     onStep?.update('${lib.pkg}: cmake configure');
