@@ -104,13 +104,49 @@ void main() {
       expect(ids, ['other', 'rpi5']);
     });
 
-    test('malformed JSON is replaced, not thrown on', () {
-      // flutter treats an unusable managed config as empty rather than
-      // deleting it; a write must still land.
-      final f = cfg()..writeAsStringSync('{not json');
-      writeCustomDevice(f, {'id': 'rpi5'});
+    test('malformed JSON is backed up, not silently replaced', () {
+      // flutter treats an unusable managed config as empty rather than deleting
+      // it — but it does not rewrite it either. Rewriting from {} dropped every
+      // device the user had plus any top-level key, for one stray comma. The
+      // write must still land, and the old file must survive somewhere.
+      final f = cfg()
+        ..writeAsStringSync(
+          r'{"$schema": "x", "custom-devices": [{"id": "other"}],}',
+        );
+      final w = writeCustomDevice(f, {'id': 'rpi5'});
       expect(readCustomDevices(f).single['id'], 'rpi5');
+      expect(w.backupPath, isNotNull);
+      final backup = File(w.backupPath!);
+      expect(backup.existsSync(), isTrue);
+      expect(backup.readAsStringSync(), contains('"id": "other"'));
+      expect(backup.readAsStringSync(), contains(r'$schema'));
     });
+
+    test('a parsable config is rewritten with no backup', () {
+      final f = cfg()..writeAsStringSync('{"custom-devices": []}');
+      expect(writeCustomDevice(f, {'id': 'rpi5'}).backupPath, isNull);
+      expect(
+        Directory(
+          p.dirname(f.path),
+        ).listSync().where((e) => e.path.contains('.corrupt-')),
+        isEmpty,
+      );
+    });
+
+    test('the written config is not readable by other accounts', () {
+      // The entries carry whatever cross.run.env holds, and the default umask
+      // leaves a new file 0644.
+      final f = cfg();
+      writeCustomDevice(f, {'id': 'rpi5'});
+      final mode = f.statSync().mode & 0x1FF;
+      expect(
+        mode & 0x3F,
+        0,
+        reason:
+            'group and other bits must be clear, got '
+            '${mode.toRadixString(8)}',
+      );
+    }, skip: Platform.isWindows ? 'POSIX modes only' : null);
 
     test('writes 2-space JSON with a trailing newline', () {
       final f = cfg();

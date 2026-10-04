@@ -65,6 +65,7 @@ class CustomDeviceWrite {
     required this.file,
     required this.id,
     required this.replaced,
+    this.backupPath,
   });
 
   final File file;
@@ -72,6 +73,10 @@ class CustomDeviceWrite {
 
   /// True when an entry with the same id was already present and was replaced.
   final bool replaced;
+
+  /// Where the previous file was copied when it could not be parsed, so the
+  /// caller can say so. Null on the ordinary path.
+  final String? backupPath;
 }
 
 /// Merge [device] into [file] by its `id`, preserving every other device and
@@ -84,11 +89,21 @@ CustomDeviceWrite writeCustomDevice(File file, Map<String, dynamic> device) {
   final id = device['id'] as String;
 
   Map<String, dynamic> root;
+  String? backupPath;
   if (file.existsSync()) {
     try {
       final decoded = jsonDecode(file.readAsStringSync());
       root = decoded is Map ? Map<String, dynamic>.from(decoded) : {};
     } on FormatException {
+      // Flutter treats a malformed managed config as empty; it does not then
+      // *rewrite* it. Starting from {} and writing dropped every device the
+      // user had registered, plus any top-level key, with no warning — one
+      // stray comma was enough. Copy it aside first, so the write stays
+      // recoverable and the caller can say where it went.
+      backupPath =
+          '${file.path}.corrupt-'
+          '${DateTime.now().toIso8601String().replaceAll(':', '-')}';
+      file.copySync(backupPath);
       root = {};
     }
   } else {
@@ -110,5 +125,22 @@ CustomDeviceWrite writeCustomDevice(File file, Map<String, dynamic> device) {
   file.writeAsStringSync(
     '${const JsonEncoder.withIndent('  ').convert(root)}\n',
   );
-  return CustomDeviceWrite(file: file, id: id, replaced: replaced);
+  // 0600: the entries carry whatever `cross.run.env` holds, and the default
+  // umask leaves this 0644 — readable by every local account. dart:io cannot
+  // chmod, so shell out; skip on Windows, where the mode means nothing and
+  // chmod does not exist.
+  if (!Platform.isWindows) {
+    try {
+      Process.runSync('chmod', ['600', file.path]);
+    } on ProcessException {
+      // A host without chmod still gets the config; it just keeps the umask's
+      // mode. Failing the registration over the mode would be worse.
+    }
+  }
+  return CustomDeviceWrite(
+    file: file,
+    id: id,
+    replaced: replaced,
+    backupPath: backupPath,
+  );
 }

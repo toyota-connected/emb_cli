@@ -1038,6 +1038,12 @@ class BoardsCustomDevicesCommand extends Command<int> {
         continue;
       }
       final write = writeCustomDevice(file, entry);
+      if (write.backupPath case final backup?) {
+        _logger.warn(
+          '  ${write.file.path} could not be parsed, so the devices it held '
+          'were not carried over. The previous file is at $backup.',
+        );
+      }
       _logger.info(
         '  ${write.replaced ? "Updated" : "Registered"} '
         "'${write.id}' (${e.key}) → ${write.file.path}",
