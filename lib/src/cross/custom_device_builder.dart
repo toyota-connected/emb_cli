@@ -118,14 +118,22 @@ List<String> _ping(DeployTarget d) => switch (d.transport) {
 /// serves it.
 List<String> _install(DeployTarget d, String assets) {
   final prep = _q('rm -rf ${_q(assets)} && mkdir -p ${_q(assets)}');
+  // Flutter runs this script through a shell on the *developer's machine*, so
+  // every manifest-sourced value in it is quoted: `host` (cross.sysroot.host),
+  // and each element of ssh_opts / adb_serial. Quoting per element, not the
+  // joined string, keeps them separate arguments.
+  final sshOpts = _sshOpts(d, quoted: true).join(' ');
+  final scpOpts = _sshScpOpts(d, quoted: true).join(' ');
+  final adbArgs = _adbArgs(d, quoted: true).join(' ');
+  final host = d.host == null ? '' : _q(d.host!);
   final script = switch (d.transport) {
     DeviceTransport.ssh =>
-      'ssh ${_sshOpts(d).join(' ')} ${d.host} $prep && '
-          'scp -r ${_sshScpOpts(d).join(' ')} '
-          "'\${localPath}'/. ${d.host}:${_q(assets)}",
+      'ssh $sshOpts $host $prep && '
+          'scp -r $scpOpts '
+          "'\${localPath}'/. $host:${_q(assets)}",
     DeviceTransport.adb =>
-      'adb ${_adbArgs(d).join(' ')} shell $prep && '
-          "adb ${_adbArgs(d).join(' ')} push '\${localPath}'/. ${_q(assets)}",
+      'adb $adbArgs shell $prep && '
+          "adb $adbArgs push '\${localPath}'/. ${_q(assets)}",
   };
   return ['sh', '-c', script];
 }
@@ -163,27 +171,34 @@ String _adbForward(DeployTarget d) =>
 
 /// `BatchMode=yes` on every ssh: Flutter runs these unattended, and a password
 /// prompt would hang the run rather than fail it.
-List<String> _sshOpts(DeployTarget d) => [
+/// emb's own flags stay bare — they are constants, and a readable command in
+/// the written config is worth keeping. Only [DeployTarget.opts], which comes
+/// from the manifest, is quoted, and per token so a multi-flag string still
+/// arrives as separate arguments.
+List<String> _sshOpts(DeployTarget d, {bool quoted = false}) => [
   '-o',
   'BatchMode=yes',
   if (d.port != 22) ...['-p', '${d.port}'],
-  ...?_extra(d.opts),
+  ...?_extra(d.opts)?.map((o) => quoted ? _q(o) : o),
 ];
 
 /// scp spells the port `-P`, not `-p`.
-List<String> _sshScpOpts(DeployTarget d) => [
+List<String> _sshScpOpts(DeployTarget d, {bool quoted = false}) => [
   '-o',
   'BatchMode=yes',
   if (d.port != 22) ...['-P', '${d.port}'],
-  ...?_extra(d.opts),
+  ...?_extra(d.opts)?.map((o) => quoted ? _q(o) : o),
 ];
 
 List<String>? _extra(String? opts) => (opts == null || opts.trim().isEmpty)
     ? null
     : opts.trim().split(RegExp(r'\s+'));
 
-List<String> _adbArgs(DeployTarget d) => [
-  if (d.serial != null && d.serial!.isNotEmpty) ...['-s', d.serial!],
+List<String> _adbArgs(DeployTarget d, {bool quoted = false}) => [
+  if (d.serial != null && d.serial!.isNotEmpty) ...[
+    '-s',
+    if (quoted) _q(d.serial!) else d.serial!,
+  ],
 ];
 
 String _q(String s) => "'${s.replaceAll("'", r"'\''")}'";

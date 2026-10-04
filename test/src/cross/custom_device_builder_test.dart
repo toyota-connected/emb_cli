@@ -187,10 +187,35 @@ void main() {
       expect(e['ping'], ['adb', 'shell', 'true']);
     });
 
+    test('host, ssh opts and adb serial are quoted in install', () {
+      // Flutter runs `install` through a shell on the developer's machine, and
+      // the written config outlives emb — so an unquoted value here re-executes
+      // on every `flutter run -d <id>`. All three come from the manifest
+      // (cross.sysroot.host / ssh_opts / adb_serial).
+      final ssh = build(
+        device: const DeployTarget.ssh(
+          'board; touch pwned-host #',
+          opts: r'-v$(touch-pwned-opts)',
+        ),
+      );
+      final sshCmd = (ssh['install'] as List)[2] as String;
+      expect(sshCmd, contains(_q('board; touch pwned-host #')));
+      expect(sshCmd, contains(_q(r'-v$(touch-pwned-opts)')));
+      // emb's own flags stay bare, which keeps the written config readable;
+      // what matters is that no manifest value sits outside a quote.
+      expect(sshCmd, contains('ssh -o BatchMode=yes '));
+
+      final adb = build(
+        device: const DeployTarget.adb(serial: r'S1 $(touch pwned-serial)'),
+      );
+      final adbCmd = (adb['install'] as List)[2] as String;
+      expect(adbCmd, contains(_q(r'S1 $(touch pwned-serial)')));
+    });
+
     test('install pushes into the assets dir', () {
       final cmd = (build(device: adb)['install'] as List)[2] as String;
-      expect(cmd, contains('adb -s ABC123 shell'));
-      expect(cmd, contains('adb -s ABC123 push'));
+      expect(cmd, contains("adb -s 'ABC123' shell"));
+      expect(cmd, contains("adb -s 'ABC123' push"));
       expect(cmd, contains(r"'${localPath}'/."));
     });
 
@@ -273,3 +298,6 @@ void main() {
     });
   });
 }
+
+/// POSIX single-quoting, independent of the implementation.
+String _q(String s) => "'${s.replaceAll("'", r"'\''")}'";
