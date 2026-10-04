@@ -118,7 +118,12 @@ class MatrixCommand extends Command<int> {
             Map<String, dynamic>.from(entry.merged),
             file.path,
           );
-          target = CrossTarget.fromMap(resolved).withResolvedPatches(file.path);
+          target = CrossTarget.fromMap(resolved).withResolvedPatches(
+            file.path,
+            vars: {
+              'embedder_root': p.normalize(p.dirname(p.absolute(file.path))),
+            },
+          );
           // fromMap throws ArgumentError on an unknown/missing provider token;
           // extends resolution throws CrossProjectException (bad board/ref).
           // ignore: avoid_catching_errors
@@ -140,6 +145,14 @@ class MatrixCommand extends Command<int> {
             ? file.path
             : '${file.path} --target ${entry.name}';
 
+        if (target.hasUnresolvedKeyPaths) {
+          _logger.warn(
+            '${file.path}#${entry.name}: augment/module paths contain '
+            r'unbound ${app_root} — sysroot_key/build_key omitted '
+            '(they require --app to resolve)',
+          );
+        }
+
         for (final h in hosts) {
           final runner = _runner(h);
           include.add({
@@ -152,8 +165,10 @@ class MatrixCommand extends Command<int> {
             'provider': target.provider.token,
             'triple': target.triple ?? '',
             'preflight': provider.preflightTools.join(' '),
-            'sysroot_key': sysrootKey(target),
-            'build_key': buildKey(target),
+            if (!target.hasUnresolvedKeyPaths) ...{
+              'sysroot_key': sysrootKey(target),
+              'build_key': buildKey(target),
+            },
             'args': crossArgs,
           });
         }

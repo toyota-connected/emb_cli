@@ -42,6 +42,16 @@ void main() {
       expect(t.provider, base.provider);
     });
 
+    test('customDevice is preserved', () {
+      final withDevice = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'triple': 'aarch64-none-linux-gnu',
+        'custom_device': {'id': 'my-board'},
+      });
+      final t = withDevice.withDefineOverrides(const {'X': '1'});
+      expect(t.customDevice?.id, 'my-board');
+    });
+
     test('empty overrides return the same instance', () {
       expect(identical(base.withDefineOverrides(const {}), base), isTrue);
     });
@@ -574,10 +584,195 @@ void main() {
       expect(a.path, '/src/libfoo');
     });
 
+    test(r'${embedder_root} expands in local path before absolutizing', () {
+      final a = augmentOf({'path': r'${embedder_root}/libs/libfoo'})
+          .resolvePatchesAgainst(
+            '/w/boards/pi5.emb.yaml',
+            vars: {'embedder_root': '/emb'},
+          );
+      expect(a.path, '/emb/libs/libfoo');
+    });
+
+    test(r'${app_root} expands in local path before absolutizing', () {
+      final a = augmentOf({'path': r'${app_root}/native/libfoo'})
+          .resolvePatchesAgainst(
+            '/w/boards/pi5.emb.yaml',
+            vars: {'app_root': '/myapp'},
+          );
+      expect(a.path, '/myapp/native/libfoo');
+    });
+
+    test(r'${embedder_root} expands in patches before resolving', () {
+      final a =
+          augmentOf({
+            'url': 'https://example.com/libfoo-1.0.tar.gz',
+            'patches': [r'${embedder_root}/patches/fix.patch'],
+          }).resolvePatchesAgainst(
+            '/w/boards/pi5.emb.yaml',
+            vars: {'embedder_root': '/emb'},
+          );
+      expect(a.patches, ['/emb/patches/fix.patch']);
+    });
+
+    test('withResolvedPatches resolves local path even when no patches', () {
+      // Previously the early exit `augment.every(a => a.patches.isEmpty)` would
+      // skip absolutizing a local path when there were no patches.
+      final target = CrossTarget.fromMap({
+        'provider': 'arm-gnu',
+        'triple': 'aarch64-none-linux-gnu',
+        'augment': [
+          {'pkg': 'libfoo', 'path': '../libfoo'},
+        ],
+      });
+      final resolved = target.withResolvedPatches('/w/boards/pi5.emb.yaml');
+      expect(resolved.augment.first.path, '/w/libfoo');
+    });
+
+    test('withResolvedPatches preserves customDevice', () {
+      final target = CrossTarget.fromMap({
+        'provider': 'arm-gnu',
+        'triple': 'aarch64-none-linux-gnu',
+        'custom_device': {'id': 'my-board'},
+        'augment': [
+          {'pkg': 'libfoo', 'path': '../libfoo'},
+        ],
+      });
+      final resolved = target.withResolvedPatches('/w/boards/pi5.emb.yaml');
+      expect(resolved.customDevice?.id, 'my-board');
+    });
+
+    test('withResolvedPatches passes vars to augment resolution', () {
+      final target = CrossTarget.fromMap({
+        'provider': 'arm-gnu',
+        'triple': 'aarch64-none-linux-gnu',
+        'augment': [
+          {'pkg': 'libfoo', 'path': r'${app_root}/native/libfoo'},
+        ],
+      });
+      final resolved = target.withResolvedPatches(
+        '/w/boards/pi5.emb.yaml',
+        vars: {'embedder_root': '/emb', 'app_root': '/myapp'},
+      );
+      expect(resolved.augment.first.path, '/myapp/native/libfoo');
+    });
+
     test('two checkouts of one package key differently', () {
       final a = augmentOf({'path': '/src/a'});
       final b = augmentOf({'path': '/src/b'});
       expect(augmentIdentity(a), isNot(augmentIdentity(b)));
+    });
+
+    test('resolvePatchesAgainst preserves declaringFile', () {
+      final a = AugmentLib.fromMap({
+        'pkg': 'libfoo',
+        'path': '../libfoo',
+        '_source': '/proj/.emb/pi5.emb.yaml',
+      });
+      final resolved = a.resolvePatchesAgainst('/fallback/base.emb.yaml');
+      expect(resolved.declaringFile, '/proj/.emb/pi5.emb.yaml');
+    });
+
+    test('resolvePatchesAgainst records fallback when no declaringFile', () {
+      final a = AugmentLib.fromMap({'pkg': 'libfoo', 'path': '../libfoo'});
+      final resolved = a.resolvePatchesAgainst('/fallback/base.emb.yaml');
+      expect(resolved.declaringFile, '/fallback/base.emb.yaml');
+    });
+
+    test('withResolvedPatches expands module paths', () {
+      final target = CrossTarget.fromMap({
+        'provider': 'arm-gnu',
+        'triple': 'aarch64-none-linux-gnu',
+        'modules': [
+          {
+            'name': 'hello',
+            'path': r'${app_root}/native/hello',
+            'build': 'cmake',
+            'artifacts': ['libhello.so'],
+          },
+        ],
+      });
+      final resolved = target.withResolvedPatches(
+        '/w/boards/pi5.emb.yaml',
+        vars: {'app_root': '/myapp'},
+      );
+      expect(resolved.modules.first.path, '/myapp/native/hello');
+    });
+
+    test('withResolvedPatches with null declaringFile still expands vars', () {
+      final target = CrossTarget.fromMap({
+        'provider': 'arm-gnu',
+        'triple': 'aarch64-none-linux-gnu',
+        'modules': [
+          {
+            'name': 'hello',
+            'path': r'${embedder_root}/native/hello',
+            'build': 'cmake',
+            'artifacts': ['libhello.so'],
+          },
+        ],
+      });
+      final resolved = target.withResolvedPatches(
+        null,
+        vars: {'embedder_root': '/emb'},
+      );
+      expect(resolved.modules.first.path, '/emb/native/hello');
+    });
+  });
+  group('hasUnresolvedKeyPaths', () {
+    CrossTarget target(Map<String, Object?> augment) => CrossTarget.fromMap({
+      'provider': 'arm-gnu',
+      'triple': 'aarch64-linux-gnu',
+      'augment': [augment],
+    });
+
+    test('an unbound var in patches: counts', () {
+      // patchSeriesDigest hashes `<missing>` for a path that does not exist, so
+      // a literal ${app_root}/fix.patch yields a stable but wrong digest —
+      // keys emitted from it can never match what `emb cross --app` builds.
+      final t = target({
+        'pkg': 'libfoo',
+        'url': 'https://x/libfoo-1.0.tar.gz',
+        'patches': [r'${app_root}/patches/fix.patch'],
+      });
+      expect(t.hasUnresolvedKeyPaths, isTrue);
+    });
+
+    test('an unbound var in a local path: counts', () {
+      final t = target({'pkg': 'libfoo', 'path': r'${app_root}/native/libfoo'});
+      expect(t.hasUnresolvedKeyPaths, isTrue);
+    });
+
+    test('an unbound var in a module path: counts', () {
+      final t = CrossTarget.fromMap({
+        'provider': 'arm-gnu',
+        'modules': [
+          {
+            'name': 'm',
+            'path': r'${app_root}/rust/m',
+            'build': 'cargo',
+            'artifacts': ['libm.so'],
+          },
+        ],
+      });
+      expect(t.hasUnresolvedKeyPaths, isTrue);
+    });
+
+    test('resolved paths and a url-only augment do not', () {
+      expect(
+        target({
+          'pkg': 'libfoo',
+          'url': 'https://x/libfoo-1.0.tar.gz',
+          'patches': ['/abs/patches/fix.patch'],
+        }).hasUnresolvedKeyPaths,
+        isFalse,
+      );
+      expect(
+        target({
+          'pkg': 'libfoo',
+          'url': 'https://x/libfoo-1.0.tar.gz',
+        }).hasUnresolvedKeyPaths,
+        isFalse,
+      );
     });
   });
 }

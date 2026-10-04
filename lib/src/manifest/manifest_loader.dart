@@ -151,7 +151,17 @@ class ManifestLoader {
 
   dynamic _convertYaml(dynamic node) {
     if (node is YamlMap) {
-      return node.map((k, v) => MapEntry(k.toString(), _convertYaml(v)));
+      return {
+        for (final e in node.entries)
+          // `_source` is emb's own provenance stamp, written onto augment maps
+          // after load (CrossProjectResolver, _stampAugmentSource) so a merged
+          // entry still knows which manifest declared it. Dropping it on the
+          // way in keeps a hand-written one from choosing the base its relative
+          // `path:`/`patches:` resolve against — and keeps a non-string value
+          // out of the parse.
+          if (e.key.toString() != '_source')
+            e.key.toString(): _convertYaml(e.value),
+      };
     }
     if (node is YamlList) {
       return node.map(_convertYaml).toList();

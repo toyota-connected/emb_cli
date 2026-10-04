@@ -126,11 +126,25 @@ class FetchCommand extends Command<int> {
       );
       return ExitCode.usage.code;
     }
+    final embedderRoot =
+        FileSystemEntity.typeSync(inputPath) == FileSystemEntityType.file
+        ? p.dirname(p.absolute(inputPath))
+        : p.absolute(inputPath);
+    final appArg = args['app'] as String?;
+    final appDir = appArg == null
+        ? null
+        : FileSystemEntity.typeSync(appArg) == FileSystemEntityType.file
+        ? p.dirname(p.absolute(appArg))
+        : p.absolute(appArg);
     final CrossTarget target;
     try {
-      target = CrossTarget.fromMap(
-        selection.cross,
-      ).withResolvedPatches(selection.sourcePath);
+      target = CrossTarget.fromMap(selection.cross).withResolvedPatches(
+        selection.sourcePath,
+        vars: {
+          'embedder_root': embedderRoot,
+          if (appDir != null) 'app_root': appDir,
+        },
+      );
       // fromMap throws ArgumentError on an unknown provider token.
       // ignore: avoid_catching_errors
     } on ArgumentError catch (e) {
@@ -218,13 +232,14 @@ class FetchCommand extends Command<int> {
         return ExitCode.unavailable.code;
       }
       final manifestDir = FileSystemEntity.isDirectorySync(inputPath)
-          ? Directory(inputPath)
-          : File(inputPath).parent;
+          ? Directory(inputPath).absolute
+          : File(inputPath).absolute.parent;
       final err = await vendorTargetCargo(
         target: target,
         manifestDir: manifestDir,
         storeRoot: ensureCacheDir(),
         run: _runProcess,
+        appDir: appDir,
         onModule: (m) => _logger.info('  module $m: vendored cargo deps'),
       );
       if (err != null) {
@@ -236,8 +251,8 @@ class FetchCommand extends Command<int> {
     // Prefetch the app's pub packages so an offline build resolves them from
     // PUB_CACHE. `--enforce-lockfile` fails rather than silently updating, and
     // populates the app's `.dart_tool` for the later build.
-    if (args['app'] case final appPath?) {
-      final rc = await _prefetchPub(appPath as String, host);
+    if (appArg case final appPath?) {
+      final rc = await _prefetchPub(appPath, host);
       if (rc != ExitCode.success.code) return rc;
     }
 

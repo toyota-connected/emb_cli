@@ -1,5 +1,24 @@
 # 0.3.6
 
+**Breaking (cache):** `augmentOverlayKey` and `buildKey` now hash resolved
+(absolute) paths instead of raw manifest-relative values — augment `path:` and
+`modules[*].path` both. Any project with a `path:` augment or a `cross.modules`
+entry sees a one-time cold sysroot, overlay and build directory on upgrade, and
+existing `emb.lock` entries report drift. The previous keys were wrong — they
+depended on the working directory, and an unexpanded `${app_root}` made two
+apps share one key and so one build dir — so the new ones are the correct ones.
+
+- feat(cross): `${embedder_root}`, `${app_root}` and `${runnable}` in manifest
+  paths, so a manifest can name files across project boundaries and stay
+  relocatable. Supported in `package.files`, `package.scripts`,
+  `package.flatpak.icon`, `modules[*].path`, and augment `path:`/`patches:`;
+  `${runnable}` needs `--app` and is packaging-only. See the variable table in
+  the README for which fields bind which.
+  `emb matrix` omits `sysroot_key`/`build_key` for a cell whose key-affecting
+  paths still hold an unbound variable, and warns — a workflow that keys a cache
+  on them must skip the step when they are empty, as `.github/workflows/cross.yaml`
+  now does, or different boards collapse onto one cache entry.
+
 Two cache-key corrections. Both are about a key that does not name everything
 the thing it keys was built with, so two different trees can share one entry.
 

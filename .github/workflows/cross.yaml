@@ -132,7 +132,14 @@ jobs:
       # The toolchain + sysroot extraction is the expensive, content-addressed
       # artifact — keyed on the cell's sysroot_key so cpu-only variants of one
       # board (rpi4/rpi5 on one image) restore the same cache.
+      #
+      # `emb matrix` omits sysroot_key when the target's key-affecting paths
+      # still hold an unbound ${app_root}, and an omitted matrix property
+      # interpolates as the empty string — so without this guard every such cell
+      # would key on `cross-<provider>-` and boards with different sysroot images
+      # would share one cache entry. Skip the cache instead of poisoning it.
       - name: ♻️ Restore toolchain + sysroot
+        if: ${{ matrix.sysroot_key != '' }}
         uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/.ws/.config/flutter_workspace
