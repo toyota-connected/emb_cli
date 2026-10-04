@@ -147,14 +147,67 @@ void main() {
     expect(boards, containsPair('installed', isA<String>()));
     expect(boards, containsPair('count', isA<int>()));
     expect(boards, containsPair('names', isA<List<dynamic>>()));
-    if (boards.containsKey('versions')) {
-      for (final v in boards['versions'] as List) {
-        final entry = v as Map<String, dynamic>;
-        expect(entry, containsPair('version', isA<String>()));
-        expect(entry, containsPair('source', isA<String>()));
-        expect(entry, containsPair('skewed', isA<bool>()));
-      }
+    // `versions` is absent only when no source carries a stamp; when present
+    // every entry must carry the full shape. The stamped case is asserted
+    // outright below, so this loop is no longer the only coverage.
+    for (final v in (boards['versions'] as List?) ?? const []) {
+      final entry = v as Map<String, dynamic>;
+      expect(entry, containsPair('version', isA<String>()));
+      expect(entry, containsPair('source', isA<String>()));
+      expect(entry, containsPair('skewed', isA<bool>()));
     }
+  });
+
+  test('--json reports a version stamp per board source', () async {
+    // The shape assertion used to sit behind `if (boards.containsKey(...))`, so
+    // it passed on any machine with no stamped install — i.e. vacuously in CI.
+    // Point doctor at a fixture that has one and assert the stamp is reported.
+    final tmp = Directory.systemTemp.createTempSync('emb_doctor_boards_');
+    addTearDown(() => tmp.deleteSync(recursive: true));
+    // The installed data dir, not EMB_BOARDS_DIR: _boardStamps enumerates the
+    // sources declared in boards.yaml (default: emb-public) under
+    // <data>/emb/boards/<name>. A stamp in an EMB_BOARDS_DIR checkout is
+    // reported by neither path — see the known gap in the PR description.
+    final source = Directory(
+      p.join(tmp.path, 'data', 'emb', 'boards', 'emb-public'),
+    )..createSync(recursive: true);
+    File(p.join(source.path, 'b.emb.yaml')).writeAsStringSync('''
+id: b
+type: board
+cross:
+  provider: arm-gnu
+  targets:
+    rpi5-trixie: {}
+''');
+    File(p.join(source.path, '.emb-boards-version')).writeAsStringSync('9.9.9');
+
+    final logger = _CaptureLogger();
+    final runner = CommandRunner<int>('emb', 'test')
+      ..addCommand(
+        DoctorCommand(
+          logger: logger,
+          host: _host,
+          provisionerFactory: (_) => _FakeProvisioner(),
+          environment: {
+            'HOME': tmp.path,
+            'XDG_DATA_HOME': p.join(tmp.path, 'data'),
+            'XDG_CONFIG_HOME': p.join(tmp.path, 'config'),
+          },
+        ),
+      );
+    await runner.run(['doctor', '--json']);
+    final data =
+        (jsonDecode(logger.buffer.toString()) as Map<String, dynamic>)['data']
+            as Map<String, dynamic>;
+    final boards = data['boards'] as Map<String, dynamic>;
+    expect(boards['names'], contains('emb-public/rpi5-trixie'));
+    final versions = boards['versions'] as List;
+    expect(versions, hasLength(1));
+    final entry = versions.single as Map<String, dynamic>;
+    expect(entry['version'], '9.9.9');
+    expect(entry['source'], 'emb-public');
+    // 9.9.9 is not this emb, so the skew must be reported, not hidden.
+    expect(entry['skewed'], isTrue);
   });
 
   test('--json reports ok:false when the backend is unavailable', () async {

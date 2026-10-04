@@ -119,15 +119,36 @@ class BoardSourceConfig {
   BoardSourceConfig(this.sources, {this.droppedEntries = false});
 
   /// Load from [file], falling back to the single default source.
+  ///
+  /// [droppedEntries] is set whenever the file existed but what it declared did
+  /// not survive the load — a syntax error, a non-map document, a `sources:`
+  /// that is not a list. Callers that write the config back must refuse: a
+  /// defaults-only fallback written over a file emb could not read loses every
+  /// source the user had.
   factory BoardSourceConfig.load(File file, {WarnFn? onWarning}) {
     if (!file.existsSync()) return BoardSourceConfig([defaultSource]);
     try {
       final yaml = loadYaml(file.readAsStringSync());
-      if (yaml is! Map) return BoardSourceConfig([defaultSource]);
+      if (yaml is! Map) {
+        onWarning?.call(
+          '${file.path} is not a YAML map — using defaults, not writing.',
+        );
+        return BoardSourceConfig([defaultSource], droppedEntries: true);
+      }
       final list = yaml['sources'];
-      if (list is! List || list.isEmpty) {
+      // An explicitly empty list declares nothing, so replacing it loses
+      // nothing; a `sources:` of the wrong shape is a file emb cannot read.
+      if (list is! List) {
+        if (list != null) {
+          onWarning?.call(
+            '${file.path}: sources must be a list — using defaults, '
+            'not writing.',
+          );
+          return BoardSourceConfig([defaultSource], droppedEntries: true);
+        }
         return BoardSourceConfig([defaultSource]);
       }
+      if (list.isEmpty) return BoardSourceConfig([defaultSource]);
       final parsed = <BoardSource>[];
       var dropped = false;
       for (final e in list) {
@@ -147,14 +168,18 @@ class BoardSourceConfig {
       }
       return BoardSourceConfig(parsed, droppedEntries: dropped);
     } on Object catch (e) {
-      onWarning?.call('Failed to parse ${file.path}: $e — using defaults.');
-      return BoardSourceConfig([defaultSource]);
+      onWarning?.call(
+        'Failed to parse ${file.path}: $e — using defaults, not writing.',
+      );
+      return BoardSourceConfig([defaultSource], droppedEntries: true);
     }
   }
 
   final List<BoardSource> sources;
 
-  /// True when `load` skipped one or more unparseable entries.
+  /// True when `load` could not carry everything the file declared into
+  /// [sources] — a skipped entry, or a file it could not parse at all. A writer
+  /// must refuse rather than persist the reduced list.
   final bool droppedEntries;
 
   /// Write the config to [file] as YAML. Uses temp+rename for atomicity.

@@ -228,7 +228,26 @@ void main() {
     github.failListing = true;
     final code = await runSync([]);
     expect(code, isNot(ExitCode.success.code));
-    expect(dest().existsSync(), isFalse, reason: 'no partial install');
+    // The default source resolves ref: auto -> v<packageVersion>, which does
+    // not exist for an unreleased build, so this is the common failure and the
+    // message must say how to get past it.
+    expect(
+      info.join('\n'),
+      contains('--ref'),
+      reason: 'the hint telling the user which ref to pass must survive',
+    );
+    // The boards root itself may exist — it holds the per-source sync lock —
+    // but nothing may be installed under it: no source dir, no manifest, no
+    // stamp for the next run to trust.
+    final installed = Directory(p.join(dest().path, 'emb-public'));
+    expect(installed.existsSync(), isFalse, reason: 'no partial install');
+    if (dest().existsSync()) {
+      expect(
+        dest().listSync().whereType<File>().map((f) => p.basename(f.path)),
+        everyElement(endsWith('.lock')),
+        reason: 'only lock bookkeeping, never board content',
+      );
+    }
   });
   test('a listing whose every entry is skipped changes nothing', () async {
     // The unsafe-name guard must not turn into a pruning sync: counting listed

@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:args/command_runner.dart';
+import 'package:emb_cli/src/cache/cache_lock.dart';
 import 'package:emb_cli/src/cross/board_source.dart';
 import 'package:emb_cli/src/cross/boards_dir.dart';
 import 'package:emb_cli/src/cross/cross_project.dart';
@@ -278,12 +280,42 @@ class BoardsSyncCommand extends Command<int> {
 
   static const _shaStamp = '.emb-boards-sha';
   static const _httpTimeout = Duration(seconds: 30);
-  static const _gitNoPrompt = {
-    'GIT_TERMINAL_PROMPT': '0',
-    'GIT_SSH_COMMAND': 'ssh -o BatchMode=yes',
-  };
+  static const _maxBodyBytes = 8 * 1024 * 1024;
+  static const _bodyTimeout = Duration(seconds: 60);
 
+  /// Git env that cannot stop for input: a prompt in CI is an indefinite hang.
+  /// `GIT_SSH_COMMAND` is extended, not replaced — overwriting it drops a
+  /// custom key or wrapper the user set (`ssh -i …`, a proxy command), which is
+  /// ordinary CI configuration, and ssh-transport sync would then fail.
+  Map<String, String> get _gitNoPrompt {
+    final ssh = _environment['GIT_SSH_COMMAND']?.trim();
+    return {
+      'GIT_TERMINAL_PROMPT': '0',
+      'GIT_SSH_COMMAND': [
+        if (ssh == null || ssh.isEmpty) 'ssh' else ssh,
+        '-o',
+        'BatchMode=yes',
+      ].join(' '),
+    };
+  }
+
+  /// Sync one source under a per-source lock: two concurrent `emb boards sync`
+  /// runs (two CI jobs on one data dir, or a sync racing a `boards add`) write
+  /// the same install dir, the same stamps and the same prune list, so one can
+  /// delete files the other is still fetching.
   Future<int> _syncGithub(
+    GithubBoardSource source,
+    Directory boardsRoot,
+    String? refOverride,
+  ) {
+    boardsRoot.createSync(recursive: true);
+    return withFileLock(
+      File(p.join(boardsRoot.path, '.${source.name}.lock')),
+      () => _syncGithubLocked(source, boardsRoot, refOverride),
+    );
+  }
+
+  Future<int> _syncGithubLocked(
     GithubBoardSource source,
     Directory boardsRoot,
     String? refOverride,
@@ -317,7 +349,16 @@ class BoardsSyncCommand extends Command<int> {
     final localSha = shaFile.existsSync()
         ? shaFile.readAsStringSync().trim()
         : '';
-    if (localSha == remoteSha) {
+    // The SHA says what the remote held, not what survived locally: a pruned or
+    // hand-deleted board file left the install short while every later sync
+    // reported "up to date" and `extends:` resolved nothing. Treat an install
+    // with no manifests as stale and re-fetch.
+    final installedBoards =
+        sourceDest.existsSync() &&
+        sourceDest.listSync().whereType<File>().any(
+          (f) => f.path.endsWith('.emb.yaml'),
+        );
+    if (localSha == remoteSha && installedBoards) {
       // Refresh the version stamp even when the SHA hasn't changed — an emb
       // upgrade with no remote change must update the stamp so doctor doesn't
       // perpetually report version skew.
@@ -485,10 +526,12 @@ class BoardsSyncCommand extends Command<int> {
             fetch.stderr.isNotEmpty ? fetch.stderr : fetch.stdout,
           );
         }
-        final checkout = await _runProcess('git', [
-          'checkout',
-          ref,
-        ], workingDirectory: tmp.path);
+        final checkout = await _runProcess(
+          'git',
+          ['checkout', ref],
+          workingDirectory: tmp.path,
+          environment: _gitNoPrompt,
+        );
         if (checkout.exitCode != 0) {
           throw StateError(
             checkout.stderr.isNotEmpty ? checkout.stderr : checkout.stdout,
@@ -584,12 +627,34 @@ class BoardsSyncCommand extends Command<int> {
         req.headers.set(HttpHeaders.authorizationHeader, 'Bearer $token');
       }
     }
-    final res = await req.close();
+    final res = await req.close().timeout(
+      _httpTimeout,
+      onTimeout: () => throw HttpException('timed out waiting for $url'),
+    );
     if (res.statusCode != HttpStatus.ok) {
       await res.drain<void>();
       throw HttpException('HTTP ${res.statusCode} for $url');
     }
-    return [for (final chunk in await res.toList()) ...chunk];
+    // Counted and time-boxed: a board listing or manifest is kilobytes, and an
+    // endpoint that streams forever — or stalls mid-body, which
+    // connectionTimeout does not cover — would otherwise hang the sync or
+    // exhaust memory.
+    final body = <int>[];
+    try {
+      await res
+          .forEach((chunk) {
+            body.addAll(chunk);
+            if (body.length > _maxBodyBytes) {
+              throw HttpException(
+                'response larger than $_maxBodyBytes bytes for $url',
+              );
+            }
+          })
+          .timeout(_bodyTimeout);
+    } on TimeoutException {
+      throw HttpException('timed out reading the body of $url');
+    }
+    return body;
   }
 }
 
