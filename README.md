@@ -795,6 +795,15 @@ emb cross <project-dir|manifest.yaml> [options]
 | `--[no-]interactive` | on | Allow the system package manager to prompt for authorization when `--install-deps` is used. See [Authorization](#authorization). |
 | `--dockerfile` | off | Resolve, then emit a `Dockerfile` + `.dockerignore` (into the platform dir) that bake the toolchain + sysroot into an OCI image so CI pulls instead of resolving. arm-gnu only; does not build. See [Toolchain images](#toolchain-images). |
 
+`--deploy` and `--run` both work **without** `--build`, shipping the bundle a
+previous build left behind — a redeploy after a failed transfer, a rerun to reproduce a crash,
+or pushing one build to a second board, none of which should cost another AOT
+pass. The bundle is found under this target's build root, so a manifest change
+that moves that root reports nothing to deploy rather than shipping a stale
+tree; `--build` first in that case. When the embedder source has changed since
+the bundle was assembled it is still deployed, with a warning — it cannot see
+app-side changes at all, so the warning is a hint, not a guarantee.
+
 ```sh
 emb cross ./app/ivi-homescreen --dry-run      # plan only, no side effects
 emb cross ./app/ivi-homescreen --build        # toolchain + sysroot + build

@@ -1054,6 +1054,26 @@ class CrossCommand extends Command<int> {
       if (preparedEmbedder == null) return ExitCode.software.code;
     }
 
+    // --deploy/--run without --build: ship what is already built rather than
+    // re-running the pipeline. The flags used to be parameters of _build only,
+    // so without --build they were silently ignored and a redeploy after a
+    // failed transfer cost a full AOT rebuild.
+    if (!doBuild &&
+        (args['deploy'] != null || args['run'] == true) &&
+        !doPrepare) {
+      return _deployRunExisting(
+        profile,
+        target,
+        workspace,
+        manifestDir: manifestDir,
+        source: source,
+        selectedBackends: selectedBackends,
+        deployHost: args['deploy'] as String?,
+        deployDir: args['deploy-dir'] as String,
+        run: args['run'] == true,
+      );
+    }
+
     if (doBuild) {
       return _build(
         profile,
@@ -1282,8 +1302,7 @@ class CrossCommand extends Command<int> {
     // source was configured is in buildKey (see cross_keys: `src:`), so two
     // `cross.source:` URIs under one manifest still get their own trees.
     final buildRoot = workspace.ensurePlatformDir(
-      'cross-build-${profile.targetTriple}-${buildKey(target)}'
-      '-${projectKey(manifestDir.path)}',
+      _buildRootName(profile, target, manifestDir),
     );
 
     // Native keeps the host compiler env; cross neutralizes it.
@@ -2363,43 +2382,20 @@ class CrossCommand extends Command<int> {
           );
           if (rc != ExitCode.success.code) return rc;
         }
-        if (deployHost != null) {
-          final dest = multi ? '$deployDir/${r.backend}' : deployDir;
-          final rc = await _deploy(
-            outDir,
-            binName: p.basename(bin.path),
-            device: _deployTarget(deployHost, target.sysroot),
-            destDir: dest,
-            bundleArch: archOfTriple(profile.targetTriple),
-            // Auto-run only makes sense for a single embedder.
-            run: run && built.length == 1,
-            runTemplate: target.runCommand,
-            runEnv: target.runEnv,
-          );
-          if (rc != ExitCode.success.code) return rc;
-        } else if (run && built.length == 1) {
-          // No --deploy: launch the freshly-built embedder against the app
-          // bundle on this host. Only a native (--target local) build is
-          // host-runnable; a cross-build would hit `Exec format error`.
-          if (native) {
-            // The assembled bundle's copy, not the build tree's: the
-            // embedder's RUNPATH is $ORIGIN/lib, which only resolves
-            // from here. See #185.
-            final rc = await _runLocal(
-              bin,
-              outDir,
-              runTemplate: target.runCommand,
-              runEnv: target.runEnv,
-            );
-            if (rc != ExitCode.success.code) return rc;
-          } else {
-            _logger.warn(
-              '  --run without --deploy only runs a native (--target local) '
-              'build; skipping this ${archOfTriple(profile.targetTriple)} '
-              'cross-build.',
-            );
-          }
-        }
+        final rc = await _deployOrRun(
+          outDir: outDir,
+          bin: bin,
+          target: target,
+          profile: profile,
+          backend: r.backend,
+          multi: multi,
+          deployDir: deployDir,
+          deployHost: deployHost,
+          run: run,
+          single: built.length == 1,
+          native: native,
+        );
+        if (rc != ExitCode.success.code) return rc;
       } on RunnableBundleException catch (e) {
         _logger.err('  ${r.backend ?? ""}: ${e.message}');
         return ExitCode.software.code;
@@ -2407,6 +2403,170 @@ class CrossCommand extends Command<int> {
     }
     return ExitCode.success.code;
   }
+
+  /// `--deploy`/`--run` with no `--build`: find the runnable directories a
+  /// previous build left under this target's build root and ship those.
+  ///
+  /// The build root is named by [_buildRootName], so this finds exactly what a
+  /// build wrote — a config change yields a different root and so misses here,
+  /// which is the honest answer: that bundle was never built.
+  Future<int> _deployRunExisting(
+    CrossProfile profile,
+    CrossTarget target,
+    Workspace workspace, {
+    required Directory manifestDir,
+    required Directory source,
+    required List<String> selectedBackends,
+    required String? deployHost,
+    required String deployDir,
+    required bool run,
+  }) async {
+    // platformDir, not ensurePlatformDir: this path must not create the root it
+    // is looking for, or "nothing to deploy" would read as an empty build.
+    final buildRoot = workspace.platformDir(
+      _buildRootName(profile, target, manifestDir),
+    );
+    final backends = selectedBackends.isEmpty
+        ? target.backends.keys.toList()
+        : selectedBackends;
+
+    // Single-backend builds assemble `runnable/`; a multi-backend build
+    // assembles `runnable-<backend>` each. Take whichever exists rather than
+    // inferring from the manifest, so a build of one backend out of several is
+    // still deployable.
+    final found = <({Directory dir, String? backend})>[];
+    final single = Directory(p.join(buildRoot.path, 'runnable'));
+    if (single.existsSync()) found.add((dir: single, backend: null));
+    for (final b in backends) {
+      final dir = Directory(p.join(buildRoot.path, 'runnable-$b'));
+      if (dir.existsSync()) found.add((dir: dir, backend: b));
+    }
+
+    if (found.isEmpty) {
+      _logger
+        ..err(
+          'nothing to ${deployHost != null ? "deploy" : "run"}: no assembled '
+          'bundle for ${profile.targetTriple} under ${buildRoot.path}',
+        )
+        ..info(
+          'Run `emb cross --build --app <dir>` first; '
+          '--deploy/--run on their own ship what that left behind.',
+        );
+      return ExitCode.noInput.code;
+    }
+
+    // The bundle may predate edits to the embedder source. Say so rather than
+    // refusing: deploying a known-older build is a legitimate thing to do, and
+    // the stamp cannot see app-side changes at all.
+    final stamp = File(p.join(buildRoot.path, '.emb-source-stamp'));
+    if (stamp.existsSync() &&
+        stamp.readAsStringSync().trim() != await _sourceFingerprint(source)) {
+      _logger.warn(
+        'the embedder source has changed since this bundle was built — '
+        'shipping the older build; --build to refresh it',
+      );
+    }
+
+    final native = profile.providerName == 'local';
+    for (final r in found) {
+      final bin = _artifactFor(r.dir.path, target.package?.bin);
+      if (bin == null) {
+        _logger.err(
+          '  ${r.backend ?? ""}: no embedder binary in ${r.dir.path} '
+          '(set cross.package.bin)',
+        );
+        return ExitCode.software.code;
+      }
+      _logger.info(
+        '  ${r.backend ?? ""}: ${deployHost != null ? "deploying" : "running"} '
+        '${r.dir.path}',
+      );
+      final rc = await _deployOrRun(
+        outDir: r.dir,
+        bin: bin,
+        target: target,
+        profile: profile,
+        backend: r.backend,
+        multi: r.backend != null,
+        deployDir: deployDir,
+        deployHost: deployHost,
+        run: run,
+        single: found.length == 1,
+        native: native,
+      );
+      if (rc != ExitCode.success.code) return rc;
+    }
+    return ExitCode.success.code;
+  }
+
+  /// Deploy and/or run one assembled runnable directory.
+  ///
+  /// Shared by the `--build` pipeline and by `--deploy`/`--run` on their own, so
+  /// a redeploy behaves exactly like the deploy at the end of a build.
+  Future<int> _deployOrRun({
+    required Directory outDir,
+    required File bin,
+    required CrossTarget target,
+    required CrossProfile profile,
+    required String? backend,
+    required bool multi,
+    required String deployDir,
+    required String? deployHost,
+    required bool run,
+    required bool single,
+    required bool native,
+  }) async {
+    if (deployHost != null) {
+      final dest = multi ? '$deployDir/$backend' : deployDir;
+      return _deploy(
+        outDir,
+        binName: p.basename(bin.path),
+        device: _deployTarget(deployHost, target.sysroot),
+        destDir: dest,
+        bundleArch: archOfTriple(profile.targetTriple),
+        // Auto-run only makes sense for a single embedder.
+        run: run && single,
+        runTemplate: target.runCommand,
+        runEnv: target.runEnv,
+      );
+    }
+    if (run && single) {
+      // No --deploy: launch the embedder against the app bundle on this host.
+      // Only a native (--target local) build is host-runnable; a cross-build
+      // would hit `Exec format error`.
+      if (native) {
+        // The assembled bundle's copy, not the build tree's: the embedder's
+        // RUNPATH is $ORIGIN/lib, which only resolves from here. See #185.
+        return _runLocal(
+          bin,
+          outDir,
+          runTemplate: target.runCommand,
+          runEnv: target.runEnv,
+        );
+      }
+      _logger.warn(
+        '  --run without --deploy only runs a native (--target local) '
+        'build; skipping this ${archOfTriple(profile.targetTriple)} '
+        'cross-build.',
+      );
+    }
+    return ExitCode.success.code;
+  }
+
+  /// The per-target build root's directory name.
+  ///
+  /// One definition, because `--deploy`/`--run` without `--build` has to find
+  /// the same directory the build wrote. Keyed on the manifest rather than on
+  /// the embedder source, because `--clean` clones nothing and has only the
+  /// manifest to match against; which embedder source was configured is in
+  /// buildKey.
+  String _buildRootName(
+    CrossProfile profile,
+    CrossTarget target,
+    Directory manifestDir,
+  ) =>
+      'cross-build-${profile.targetTriple}-${buildKey(target)}'
+      '-${projectKey(manifestDir.path)}';
 
   /// Resolve the `--deploy` value plus the manifest device block into a
   /// [DeployTarget].
