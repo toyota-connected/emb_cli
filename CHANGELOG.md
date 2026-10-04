@@ -1,4 +1,28 @@
+# 0.3.7
+
+A maintenance release cut from the `v0.3.6` tag, not from `main`: the two
+bundle-audit fixes below and nothing else, both already on `main`. `main` carries
+the cache-key corrections, the manifest path variables, `cross.run.command` and
+the multi-source board library, which change cache keys and the board-library
+layout — those ship as their own release rather than as a patch.
+
+- fix(cross): the bundle audit no longer rejects staged Dart code assets. An app
+  whose dependency ships a native library as a code asset (sqlite3) had it copied
+  into the bundle's `lib/` by emb and then refused by emb's own audit:
+  `bundle lib/: unexpected file "libsqlite3.so"`. The audit takes the staged
+  names as an input, read from where the stager copied them, so the two cannot
+  drift. The arch check still applies. (#239)
+
+- fix(cross): a bad bundle lib is reported once per file, with what to do about
+  it, rather than once per audit pass.
+
 # 0.3.6
+
+> The entries under this heading are a mix: the ones the `v0.3.6` tag published,
+> and everything merged since, which is unreleased. The pubspec was never bumped
+> after tagging, so new work landed under the published version's heading. The
+> next release should split them — unreleased work above, `0.3.6` as it shipped
+> below.
 
 **Breaking (cache):** `augmentOverlayKey` and `buildKey` now hash resolved
 (absolute) paths instead of raw manifest-relative values — augment `path:` and

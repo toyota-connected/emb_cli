@@ -19,6 +19,7 @@
   ],
   "useGitignore": true,
   "words": [
+    "libsqlite",
     "zipball",
     "tgz",
     "Artifactory",
