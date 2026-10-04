@@ -120,4 +120,90 @@ void main() {
       expect(gotCwd, '/app');
     });
   });
+
+  group('makeTimedProcessRunner', () {
+    final run = makeTimedProcessRunner();
+
+    Future<int> aliveSleeps() async {
+      final r = await Process.run('pgrep', ['-cx', 'sleep']);
+      return int.tryParse((r.stdout as String).trim()) ?? 0;
+    }
+
+    test('kills the child and reports the limit', () async {
+      final before = await aliveSleeps();
+      final sw = Stopwatch()..start();
+      final r = await run('sleep', ['30'], timeout: const Duration(seconds: 1));
+      sw.stop();
+
+      expect(r.exitCode, timedOutExitCode);
+      expect(r.stderr, contains('timed out after 1s'));
+      expect(r.stderr, contains('sleep 30'));
+      // It returned on the limit, not after the sleep.
+      expect(sw.elapsed, lessThan(const Duration(seconds: 10)));
+      // And the child is gone: a `.timeout()` on the future would have left it
+      // running, which is why the limit lives in the runner.
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      expect(await aliveSleeps(), before);
+    });
+
+    test('escalates to SIGKILL when SIGTERM is ignored', () async {
+      // A child that ignores SIGTERM, written in Dart rather than as
+      // `sh -c 'trap "" TERM; …'`: whether a shell traps or execs through
+      // depends on which /bin/sh the host has, so the shell version asserted
+      // nothing reliable — it passed locally while timing out on CI.
+      final dir = Directory.systemTemp.createTempSync('emb_sigterm_');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final child = File(p.join(dir.path, 'stubborn.dart'))
+        ..writeAsStringSync(
+          [
+            "import 'dart:async';",
+            "import 'dart:io';",
+            'void main() {',
+            '  ProcessSignal.sigterm.watch().listen((_) {});',
+            '  Timer(const Duration(seconds: 60), () {});',
+            '}',
+          ].join('\n'),
+        );
+
+      final stubborn = makeTimedProcessRunner(
+        graceOnTimeout: const Duration(seconds: 1),
+      );
+      final sw = Stopwatch()..start();
+      final r = await stubborn(Platform.resolvedExecutable, [
+        'run',
+        child.path,
+      ], timeout: const Duration(seconds: 3));
+      sw.stop();
+
+      expect(r.exitCode, timedOutExitCode);
+      // It outlived SIGTERM (so at least the limit) and died on SIGKILL rather
+      // than running its full 60 seconds.
+      expect(sw.elapsed, greaterThanOrEqualTo(const Duration(seconds: 3)));
+      expect(sw.elapsed, lessThan(const Duration(seconds: 30)));
+    }, timeout: const Timeout(Duration(seconds: 60)));
+
+    test('a run inside its limit is untouched', () async {
+      final r = await run('echo', [
+        'hello',
+      ], timeout: const Duration(seconds: 30));
+      expect(r.exitCode, 0);
+      expect(r.stdout.trim(), 'hello');
+      expect(r.stderr, isEmpty);
+    });
+
+    test('no limit means no limit', () async {
+      final r = await run('echo', ['hi']);
+      expect(r.exitCode, 0);
+      expect(r.stdout.trim(), 'hi');
+    });
+
+    test('a non-zero exit is reported as itself, not as a timeout', () async {
+      final r = await run('sh', [
+        '-c',
+        'echo oops >&2; exit 3',
+      ], timeout: const Duration(seconds: 30));
+      expect(r.exitCode, 3);
+      expect(r.stderr.trim(), 'oops');
+    });
+  });
 }

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -59,6 +60,161 @@ typedef ProcessRunner =
       ProcessOutputMode output,
       String? label,
     });
+
+/// Like [ProcessRunner], but a call may set a wall-clock limit.
+///
+/// A separate seam rather than a parameter on [ProcessRunner]: adding one there
+/// would make all 50-odd existing fakes declare a parameter they ignore, and
+/// only the calls that reach the network actually need a limit.
+///
+/// A limit can only be enforced where the child is spawned — a wrapper around a
+/// `Future<RunResult>` has no handle to kill, so a `.timeout()` on one leaves
+/// the process running while the caller tears down the directory under it. That
+/// is why this lives beside [makeProcessRunner] rather than above it.
+typedef TimedProcessRunner =
+    Future<RunResult> Function(
+      String executable,
+      List<String> arguments, {
+      String? workingDirectory,
+      Map<String, String>? environment,
+      bool includeParentEnvironment,
+      bool runInShell,
+      ProcessOutputMode output,
+      String? label,
+      Duration? timeout,
+    });
+
+/// How long to let the pipes flush after the child has exited, before giving up
+/// on them. Only reached when something other than the child still holds the
+/// write end open.
+const _pipeFlushGrace = Duration(seconds: 2);
+
+/// The exit code reported for a run that hit its limit, matching GNU
+/// `timeout(1)` so a caller that already prints an exit code says something
+/// recognizable.
+const timedOutExitCode = 124;
+
+/// Builds a [TimedProcessRunner].
+///
+/// On expiry the child gets SIGTERM, then SIGKILL after [graceOnTimeout] if it
+/// has not gone — a `git clone` wedged on a dead connection ignores the first.
+/// The call then completes with [timedOutExitCode] and a stderr line naming the
+/// limit, so callers that already surface stderr need no new error type.
+///
+/// The signal reaches the **direct child only**, which is all `dart:io` offers:
+/// `Process.kill` takes no process group. Measured: a timed-out `sleep` leaves
+/// nothing behind, while `sh -c 'sleep 30'` kills the shell and orphans the
+/// sleep. So give a timed call the real executable rather than a shell
+/// wrapper — every call that sets a limit today does.
+TimedProcessRunner makeTimedProcessRunner({
+  Duration graceOnTimeout = const Duration(seconds: 5),
+}) {
+  return (
+    String executable,
+    List<String> arguments, {
+    String? workingDirectory,
+    Map<String, String>? environment,
+    bool includeParentEnvironment = true,
+    bool runInShell = false,
+    ProcessOutputMode output = ProcessOutputMode.capture,
+    String? label,
+    Duration? timeout,
+  }) async {
+    final proc = await Process.start(
+      executable,
+      arguments,
+      workingDirectory: workingDirectory,
+      environment: environment,
+      includeParentEnvironment: includeParentEnvironment,
+      runInShell: runInShell,
+      mode: output == ProcessOutputMode.inherit
+          ? ProcessStartMode.inheritStdio
+          : ProcessStartMode.normal,
+    );
+
+    var timedOut = false;
+    Timer? killer;
+    Timer? escalate;
+    if (timeout != null) {
+      killer = Timer(timeout, () {
+        timedOut = true;
+        proc.kill();
+        escalate = Timer(
+          graceOnTimeout,
+          () => proc.kill(ProcessSignal.sigkill),
+        );
+      });
+    }
+
+    try {
+      // Collect into buffers while the child runs — a child that fills a pipe
+      // buffer blocks, and a blocked child never exits, so the pipes have to be
+      // drained concurrently with waiting on the exit code.
+      final out = StringBuffer();
+      final err = StringBuffer();
+      final drained = output == ProcessOutputMode.inherit
+          ? const <Future<void>>[]
+          : <Future<void>>[
+              proc.stdout.transform(utf8.decoder).forEach(out.write),
+              proc.stderr.transform(utf8.decoder).forEach(err.write),
+            ];
+
+      // The exit code is the authoritative signal, not the pipes closing. A
+      // grandchild can hold the write end open after the child is gone — `sh -c
+      // 'trap "" TERM; sleep 30'` leaves exactly that behind — and waiting on
+      // the streams then outlives the kill, which is the hang a timeout exists
+      // to prevent. So wait on the exit, then give the pipes a short grace to
+      // flush and stop caring.
+      final code = await proc.exitCode;
+      if (drained.isNotEmpty) {
+        await Future.wait(
+          drained,
+        ).timeout(_pipeFlushGrace, onTimeout: () => const <void>[]);
+      }
+      if (timedOut) {
+        final cmd = [executable, ...arguments].join(' ');
+        return RunResult(
+          timedOutExitCode,
+          out.toString(),
+          [
+            if (err.isNotEmpty) err.toString().trimRight(),
+            'timed out after ${timeout!.inSeconds}s: $cmd',
+          ].join('\n'),
+        );
+      }
+      return RunResult(code, out.toString(), err.toString());
+    } finally {
+      killer?.cancel();
+      escalate?.cancel();
+    }
+  };
+}
+
+final TimedProcessRunner _defaultTimedRunner = makeTimedProcessRunner();
+
+/// The default production [TimedProcessRunner] (a top-level function so it can
+/// be a default parameter value).
+Future<RunResult> defaultTimedProcessRunner(
+  String executable,
+  List<String> arguments, {
+  String? workingDirectory,
+  Map<String, String>? environment,
+  bool includeParentEnvironment = true,
+  bool runInShell = false,
+  ProcessOutputMode output = ProcessOutputMode.capture,
+  String? label,
+  Duration? timeout,
+}) => _defaultTimedRunner(
+  executable,
+  arguments,
+  workingDirectory: workingDirectory,
+  environment: environment,
+  includeParentEnvironment: includeParentEnvironment,
+  runInShell: runInShell,
+  output: output,
+  label: label,
+  timeout: timeout,
+);
 
 /// Builds the production [ProcessRunner].
 ///

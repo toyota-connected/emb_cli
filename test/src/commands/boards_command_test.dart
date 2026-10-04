@@ -271,10 +271,12 @@ sources:
   group('emb boards sync (ssh)', () {
     late Progress progress;
     late List<List<String>> calls;
+    late List<Duration?> timeouts;
     final err = <String>[];
 
     setUp(() {
       progress = _MockProgress();
+      timeouts = [];
       when(() => logger.progress(any())).thenReturn(progress);
       when(() => logger.err(any())).thenAnswer((i) {
         err.add('${i.positionalArguments.first}');
@@ -285,7 +287,7 @@ sources:
 
     const fakeSha = 'abc123def456';
 
-    ProcessRunner fakeRunner({
+    TimedProcessRunner fakeRunner({
       bool Function(String, List<String>)? failOn,
       String sha = fakeSha,
     }) {
@@ -298,8 +300,10 @@ sources:
         bool runInShell = false,
         ProcessOutputMode output = ProcessOutputMode.capture,
         String? label,
+        Duration? timeout,
       }) async {
         calls.add([exe, ...args]);
+        timeouts.add(timeout);
         final fail = failOn?.call(exe, args) ?? false;
         if (fail) return const RunResult(1, '', 'simulated failure');
 
@@ -328,7 +332,7 @@ sources:
     }
 
     Future<int> runSync({
-      required ProcessRunner runner,
+      required TimedProcessRunner runner,
       List<String> extra = const [],
     }) async {
       final configDir = Directory(p.join(tmp.path, 'config', 'emb'))
@@ -363,6 +367,19 @@ sources:
           ]) ??
           0;
     }
+
+    test('every git spawn carries a time limit', () async {
+      // The hang this guards is not an error: GIT_TERMINAL_PROMPT=0 and
+      // BatchMode=yes stopped git *prompting*, and a stall on a dead connection
+      // still waited for as long as CI allowed.
+      await runSync(runner: fakeRunner());
+      expect(calls, isNotEmpty);
+      expect(
+        timeouts.take(calls.length),
+        everyElement(isNotNull),
+        reason: 'git calls: ${calls.map((c) => c.take(2).join(" ")).toList()}',
+      );
+    });
 
     test('clones via SSH and copies board files', () async {
       final code = await runSync(runner: fakeRunner());
@@ -438,6 +455,7 @@ sources:
             bool runInShell = false,
             ProcessOutputMode output = ProcessOutputMode.capture,
             String? label,
+            Duration? timeout,
           }) async {
             calls.add([exe, ...args]);
             if (exe == 'git' && args.contains('ls-remote')) {
