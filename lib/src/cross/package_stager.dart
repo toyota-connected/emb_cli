@@ -22,6 +22,18 @@ abstract class PackageStager {
   /// Throw the format's typed exception, so callers' `catch` stays specific.
   Never fail(String message);
 
+  static final _safeName = RegExp(r'^[A-Za-z0-9][A-Za-z0-9._+-]*$');
+  static final _octalMode = RegExp(r'^[0-7]{3,4}$');
+
+  /// A mode reaches `chmod` as an argument, so an option-shaped value is read
+  /// as an option: `--reference=/etc/shadow` copied another file's bits, and
+  /// the batched call applies one mode to many files at once. Octal only.
+  void _checkMode(String mode) {
+    if (!_octalMode.hasMatch(mode)) {
+      fail('file mode must be 3-4 octal digits, got "$mode"');
+    }
+  }
+
   /// Stage [binary] at the absolute [installPath], plus [extraFiles] (host
   /// source → absolute target path), under `<outDir>/<packageName>.stage`
   /// (0755 on the binary). [fileModes] gives an octal mode per extra-file
@@ -43,12 +55,42 @@ abstract class PackageStager {
     for (final dest in extraFiles.values) {
       if (!p.isAbsolute(dest)) fail('extra file dest must be absolute: $dest');
     }
+    // `packageName` names a directory that is deleted recursively below, and
+    // `p.join` drops its base when the next part is absolute — so `../../x` or
+    // `/home/dev/proj` aimed both the staging and that delete at the
+    // developer's own files.
+    if (!_safeName.hasMatch(packageName)) {
+      fail(
+        'package name must match [A-Za-z0-9][A-Za-z0-9._+-]* — it names a '
+        'staging directory, got "$packageName"',
+      );
+    }
+    for (final mode in fileModes.values) {
+      _checkMode(mode);
+    }
 
     outDir.createSync(recursive: true);
     final root = Directory(p.join(outDir.path, '$packageName.stage'));
     if (root.existsSync()) root.deleteSync(recursive: true);
 
-    String stagedPath(String target) => p.join(root.path, target.substring(1));
+    /// Where [target] lands inside the staging root.
+    ///
+    /// `isAbsolute` alone was not enough. `/../../escaped` resolved outside the
+    /// root, so the file survived the clean; and a `to:` of
+    /// `/../<pkg>.stage/DEBIAN/postinst` normalized back *inside* the package,
+    /// into the control dir, past the maintainer-script allowlist. A `..`
+    /// segment has no legitimate use in an on-target path, so refuse it
+    /// outright and keep the containment check as a backstop.
+    String stagedPath(String target) {
+      if (p.split(target).contains('..')) {
+        fail('destination must not contain "..": $target');
+      }
+      final staged = p.normalize(p.join(root.path, target.substring(1)));
+      if (!p.isWithin(root.path, staged)) {
+        fail('destination escapes the staging root: $target');
+      }
+      return staged;
+    }
 
     Future<void> chmod(String mode, List<String> paths) async {
       final result = await _run('chmod', ['--', mode, ...paths]);

@@ -184,7 +184,10 @@ void main() {
     ]);
   });
 
-  test('passes -- before a mode and reports a batched chmod failure', () async {
+  test('an option-shaped mode is refused before chmod runs', () async {
+    // `--` keeps chmod from reading the mode as an option; validating it keeps
+    // the invalid mode from reaching chmod at all, which names the manifest
+    // field instead of reporting a chmod exit code.
     final calls = <List<String>>[];
     Future<RunResult> fakeRun(
       String executable,
@@ -197,8 +200,50 @@ void main() {
       String? label,
     }) async {
       if (executable == 'chmod') calls.add(List.of(arguments));
-      if (arguments.length > 1 && arguments[1].startsWith('--reference=')) {
-        return const RunResult(1, '', 'invalid mode');
+      return const RunResult(0, '', '');
+    }
+
+    final binary = File(p.join(tmp.path, 'app'))..writeAsStringSync('app');
+    final extra = File(p.join(tmp.path, 'extra'))..writeAsStringSync('extra');
+    for (final mode in ['--reference=unexpected', '0999', 'u+x', '']) {
+      await expectLater(
+        _TestStager(fakeRun).stagePayload(
+          binary: binary,
+          installPath: '/usr/bin/app',
+          packageName: 'example',
+          outDir: Directory(p.join(tmp.path, 'out')),
+          extraFiles: {extra.path: '/share/extra'},
+          fileModes: {extra.path: mode},
+        ),
+        throwsA(
+          isA<StateError>().having(
+            (e) => e.toString(),
+            'message',
+            contains('file mode must be 3-4 octal digits'),
+          ),
+        ),
+        reason: 'mode "$mode" must be refused',
+      );
+    }
+    expect(calls, isEmpty, reason: 'nothing may be chmodded on a bad mode');
+  });
+
+  test('a batched chmod failure is reported', () async {
+    // The exit-code check still has to hold for a mode that passes validation.
+    final calls = <List<String>>[];
+    Future<RunResult> fakeRun(
+      String executable,
+      List<String> arguments, {
+      String? workingDirectory,
+      Map<String, String>? environment,
+      bool includeParentEnvironment = true,
+      bool runInShell = false,
+      ProcessOutputMode output = ProcessOutputMode.capture,
+      String? label,
+    }) async {
+      if (executable == 'chmod') calls.add(List.of(arguments));
+      if (arguments.contains('0640')) {
+        return const RunResult(1, '', 'Operation not permitted');
       }
       return const RunResult(0, '', '');
     }
@@ -212,16 +257,102 @@ void main() {
         packageName: 'example',
         outDir: Directory(p.join(tmp.path, 'out')),
         extraFiles: {extra.path: '/share/extra'},
-        fileModes: {extra.path: '--reference=unexpected'},
+        fileModes: {extra.path: '0640'},
       ),
       throwsA(
         isA<StateError>().having(
           (e) => e.toString(),
           'message',
-          contains('chmod failed (exit 1): invalid mode'),
+          contains('chmod failed (exit 1): Operation not permitted'),
         ),
       ),
     );
-    expect(calls.last.take(2).toList(), ['--', '--reference=unexpected']);
+    expect(calls.last.take(2).toList(), ['--', '0640']);
+  });
+
+  test('a destination that escapes the staging root is refused', () async {
+    // isAbsolute does not stop `/../..`: the file used to land outside the root,
+    // so it survived the clean, and `/../<pkg>.stage/DEBIAN/postinst`
+    // normalized back inside the package past the script allowlist.
+    Future<RunResult> fakeRun(
+      String executable,
+      List<String> arguments, {
+      String? workingDirectory,
+      Map<String, String>? environment,
+      bool includeParentEnvironment = true,
+      bool runInShell = false,
+      ProcessOutputMode output = ProcessOutputMode.capture,
+      String? label,
+    }) async => const RunResult(0, '', '');
+
+    final binary = File(p.join(tmp.path, 'app'))..writeAsStringSync('app');
+    final extra = File(p.join(tmp.path, 'extra'))..writeAsStringSync('extra');
+    for (final dest in [
+      '/../../ESCAPED/pwned.txt',
+      '/../example.stage/DEBIAN/postinst',
+    ]) {
+      await expectLater(
+        _TestStager(fakeRun).stagePayload(
+          binary: binary,
+          installPath: '/usr/bin/app',
+          packageName: 'example',
+          outDir: Directory(p.join(tmp.path, 'out')),
+          extraFiles: {extra.path: dest},
+        ),
+        throwsA(
+          isA<StateError>().having(
+            (e) => e.toString(),
+            'message',
+            anyOf(
+              contains('escapes the staging root'),
+              contains('must not contain ".."'),
+            ),
+          ),
+        ),
+        reason: 'dest "$dest" must be refused',
+      );
+    }
+    expect(
+      File(p.join(tmp.path, 'ESCAPED', 'pwned.txt')).existsSync(),
+      isFalse,
+    );
+  });
+
+  test('a package name that is a path is refused', () async {
+    // packageName names the staging dir, which is deleted recursively — and
+    // p.join drops its base when the next part is absolute.
+    Future<RunResult> fakeRun(
+      String executable,
+      List<String> arguments, {
+      String? workingDirectory,
+      Map<String, String>? environment,
+      bool includeParentEnvironment = true,
+      bool runInShell = false,
+      ProcessOutputMode output = ProcessOutputMode.capture,
+      String? label,
+    }) async => const RunResult(0, '', '');
+
+    final victim = Directory(p.join(tmp.path, 'important'))..createSync();
+    File(p.join(victim.path, 'keep.txt')).writeAsStringSync('precious');
+    final binary = File(p.join(tmp.path, 'app'))..writeAsStringSync('app');
+    for (final name in ['../../important', '/tmp/absolute', 'a/b', '..']) {
+      await expectLater(
+        _TestStager(fakeRun).stagePayload(
+          binary: binary,
+          installPath: '/usr/bin/app',
+          packageName: name,
+          outDir: Directory(p.join(tmp.path, 'out', 'dist')),
+        ),
+        throwsA(
+          isA<StateError>().having(
+            (e) => e.toString(),
+            'message',
+            contains('package name must match'),
+          ),
+        ),
+        reason: 'name "$name" must be refused',
+      );
+    }
+    expect(File(p.join(victim.path, 'keep.txt')).existsSync(), isTrue);
   });
 }
