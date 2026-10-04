@@ -209,7 +209,7 @@ lrwxrwxrwx root/root 0 2024-01-01 ./usr/lib/aarch64-linux-gnu/libgbm.so.1 -> lib
     // The staged extra file was chmod 0755'd (separate from the binary's).
     expect(
       chmodArgs.any(
-        (a) => a.startsWith('0755 ') && a.endsWith('usr/bin/helper'),
+        (a) => a.startsWith('-- 0755 ') && a.endsWith('usr/bin/helper'),
       ),
       isTrue,
     );

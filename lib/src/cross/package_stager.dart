@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:emb_cli/src/cross/process_runner.dart';
@@ -47,22 +48,68 @@ abstract class PackageStager {
     final root = Directory(p.join(outDir.path, '$packageName.stage'));
     if (root.existsSync()) root.deleteSync(recursive: true);
 
+    String stagedPath(String target) => p.join(root.path, target.substring(1));
+
+    Future<void> chmod(String mode, List<String> paths) async {
+      final result = await _run('chmod', ['--', mode, ...paths]);
+      if (result.exitCode != 0) {
+        fail('chmod failed (exit ${result.exitCode}): ${result.stderr.trim()}');
+      }
+    }
+
     // Install the binary at the requested path inside the staging root.
-    final dest = File(p.join(root.path, installPath.substring(1)))
+    final dest = File(stagedPath(installPath))
       ..parent.createSync(recursive: true);
     binary.copySync(dest.path);
-    await _run('chmod', ['0755', dest.path]);
+    await chmod('0755', [dest.path]);
 
-    // Stage any extra files at their absolute target paths inside the root,
-    // applying an explicit mode when given.
+    // Repeated destinations must retain their original copy/chmod order.
+    final seenDestinations = <String>{};
+    final repeatedDestinations = <String>{};
+    for (final target in extraFiles.values) {
+      final staged = stagedPath(target);
+      if (!seenDestinations.add(staged)) repeatedDestinations.add(staged);
+    }
+
+    // Stage extra files, collecting unique destinations by requested mode.
+    final pathsByMode = <String, List<String>>{};
     for (final entry in extraFiles.entries) {
       final src = File(entry.key);
       if (!src.existsSync()) fail('extra file not found: ${entry.key}');
-      final to = File(p.join(root.path, entry.value.substring(1)))
+      final to = File(stagedPath(entry.value))
         ..parent.createSync(recursive: true);
       src.copySync(to.path);
       final mode = fileModes[entry.key];
-      if (mode != null) await _run('chmod', [mode, to.path]);
+      if (mode != null) {
+        if (repeatedDestinations.contains(to.path)) {
+          await chmod(mode, [to.path]);
+        } else {
+          pathsByMode.putIfAbsent(mode, () => []).add(to.path);
+        }
+      }
+    }
+    // Bound both the path count and argv bytes; hundreds of asset files should
+    // not cause hundreds of processes or exceed a platform's argument limit.
+    const maxPathsPerCall = 1024;
+    const maxArgumentBytes = 96 * 1024;
+    for (final entry in pathsByMode.entries) {
+      final mode = entry.key;
+      final initialArgumentBytes = 3 + utf8.encode(mode).length + 1;
+      var paths = <String>[];
+      var argumentBytes = initialArgumentBytes;
+      for (final path in entry.value) {
+        final pathBytes = utf8.encode(path).length + 1;
+        if (paths.isNotEmpty &&
+            (paths.length >= maxPathsPerCall ||
+                argumentBytes + pathBytes > maxArgumentBytes)) {
+          await chmod(mode, paths);
+          paths = <String>[];
+          argumentBytes = initialArgumentBytes;
+        }
+        paths.add(path);
+        argumentBytes += pathBytes;
+      }
+      if (paths.isNotEmpty) await chmod(mode, paths);
     }
     return root;
   }
