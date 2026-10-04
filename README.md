@@ -404,6 +404,14 @@ until a manifest uses `extends:`, so it is worth surfacing here rather than at
 the point of failure. See
 [Where the board library lives](#where-the-board-library-lives).
 
+Under `--json` that lands in `data.boards` as `source`, `installed`, `count`,
+`names` (qualified `<source>/<target>`), and `versions` — one
+`{version, source, skewed}` per source that carries a stamp, `skewed` true when
+the stamp is not this emb's version. `versions` is absent when no source carries
+one: a stamp is written by `emb boards sync` and by the bootstrap installer, so a
+library used straight from a checkout via `EMB_BOARDS_DIR` reports names without
+versions.
+
 With `--target <name>` it instead reports a cross target's **provider
 preflight** — the host tools that target's provider needs (e.g. `tar`/`xz`/
 `rsync` for arm-gnu), each present or missing, with an install hint — resolving
