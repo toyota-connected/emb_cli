@@ -38,17 +38,57 @@ abstract class ControlArchivePackager extends PackageStager {
     String priority = 'optional',
     List<String> depends = const [],
   }) {
-    final b = StringBuffer()
-      ..writeln('Package: $name')
-      ..writeln('Version: $version')
-      ..writeln('Architecture: $architecture')
-      ..writeln('Maintainer: $maintainer')
-      ..writeln('Section: $section')
-      ..writeln('Priority: $priority');
-    if (depends.isNotEmpty) b.writeln('Depends: ${depends.join(', ')}');
-    // Both formats require a synopsis line; indent any continuation.
+    // A control file is one field per line, so a newline in a value is a new
+    // field: `description: 'demo\nEssential: yes'` made the package
+    // un-removable on the target, and `Pre-Depends:` could be added the same
+    // way. Refuse the character rather than silently folding it — a manifest
+    // that wants a multi-line description can use the indented continuation
+    // form, which `Description` handles below.
+    final fields = <String, String>{
+      'Package': name,
+      'Version': version,
+      'Architecture': architecture,
+      'Maintainer': maintainer,
+      'Section': section,
+      'Priority': priority,
+      if (depends.isNotEmpty) 'Depends': depends.join(', '),
+    };
+    for (final e in {...fields, 'Depends entry': depends.join(' ')}.entries) {
+      _checkField(e.key, e.value);
+    }
+    final b = StringBuffer();
+    for (final e in fields.entries) {
+      b.writeln('${e.key}: ${e.value}');
+    }
+    // Both formats require a synopsis line; a continuation must be indented, so
+    // only the deliberate ' ' form is allowed through.
+    _checkDescription(description);
     b.writeln('Description: $description');
     return b.toString();
+  }
+
+  static final _controlBreak = RegExp(r'[\r\n]');
+
+  /// Refuse a control value that would break out of its field.
+  void _checkField(String field, String value) {
+    if (_controlBreak.hasMatch(value)) {
+      fail('$field must not contain a newline: "$value"');
+    }
+  }
+
+  /// `Description` is the one field where a newline is legal, and only as an
+  /// indented continuation — a bare one starts a new field, which is how
+  /// `Essential: yes` got added.
+  void _checkDescription(String description) {
+    final lines = description.split(RegExp(r'\r?\n'));
+    for (final line in lines.skip(1)) {
+      if (!line.startsWith(' ') && !line.startsWith('\t')) {
+        fail(
+          'a Description continuation line must be indented, got "$line" — '
+          'an unindented line starts a new control field',
+        );
+      }
+    }
   }
 
   /// Stage the payload plus [maintainerScripts] (script name → host file),
