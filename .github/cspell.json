@@ -19,6 +19,7 @@
   ],
   "useGitignore": true,
   "words": [
+    "libsqlite",
     "Embedder",
     "embedders",
     "aarch",
