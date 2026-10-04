@@ -336,29 +336,34 @@ class FlatpakPackager {
     final desktopDest = '/app/share/applications/${m.appId}.desktop';
     final iconDest =
         '/app/share/icons/hicolor/256x256/apps/${m.appId}${_iconExt(m.icon)}';
+    // Every manifest-derived value is shell-quoted: flatpak-builder runs each
+    // build-command through a shell, so an unquoted `command`, icon extension,
+    // mode or destination was a command of the manifest author's choosing
+    // running inside the build. `prefix`, `staged` and the appId are emb's own
+    // (the appId is pattern-checked above), but quoting them too keeps the rule
+    // "nothing here is bare" easy to hold.
     final cmds = <String>[
-      'mkdir -p $prefix',
-      'cp -r bundle/. $prefix/',
-      'chmod 0755 $prefix/${m.command}',
-      'install -Dm755 launcher.sh /app/bin/${m.command}',
-      'install -Dm644 ${m.appId}.desktop $desktopDest',
+      'mkdir -p ${_shQuote(prefix)}',
+      'cp -r bundle/. ${_shQuote("$prefix/")}',
+      'chmod 0755 ${_shQuote("$prefix/${m.command}")}',
+      'install -Dm755 launcher.sh ${_shQuote("/app/bin/${m.command}")}',
+      _install('644', '${m.appId}.desktop', desktopDest),
       if (m.icon != null)
-        'install -Dm644 icon${p.extension(m.icon!.path)} $iconDest',
-      for (final e in extras)
-        'install -Dm${e.mode ?? "644"} ${e.staged} ${e.dest}',
+        _install('644', 'icon${p.extension(m.icon!.path)}', iconDest),
+      for (final e in extras) _install(_mode(e.mode), e.staged, e.dest),
     ];
     final b = StringBuffer()
       ..writeln('app-id: ${m.appId}')
       // Pin the app branch so the exported ref matches `build-bundle`'s branch.
       ..writeln('branch: ${m.branch}')
       ..writeln('default-branch: ${m.branch}')
-      ..writeln('runtime: ${m.runtime}')
-      ..writeln("runtime-version: '${m.runtimeVersion}'")
-      ..writeln('sdk: ${m.sdk}')
-      ..writeln('command: ${m.command}')
+      ..writeln('runtime: ${_yaml(m.runtime)}')
+      ..writeln('runtime-version: ${_yaml(m.runtimeVersion)}')
+      ..writeln('sdk: ${_yaml(m.sdk)}')
+      ..writeln('command: ${_yaml(m.command)}')
       ..writeln('finish-args:');
     for (final a in m.finishArgs) {
-      b.writeln('  - $a');
+      b.writeln('  - ${_yaml(a)}');
     }
     b
       ..writeln('modules:')
@@ -366,7 +371,7 @@ class FlatpakPackager {
       ..writeln('    buildsystem: simple')
       ..writeln('    build-commands:');
     for (final c in cmds) {
-      b.writeln('      - $c');
+      b.writeln('      - ${_yaml(c)}');
     }
     b
       ..writeln('    sources:')
@@ -393,11 +398,49 @@ class FlatpakPackager {
     return b.toString();
   }
 
-  /// Normalize an extra-file destination to an absolute `/app/...` path.
+  /// Normalize an extra-file destination to an absolute `/app/...` path, and
+  /// refuse one that climbs out of it. Unnormalized, a `to:` of
+  /// `/../../../../etc/evil.conf` produced `/app/../../../../etc/evil.conf`,
+  /// which `install` resolves outside the flatpak prefix.
   String _appDest(String dest) {
     final rel = dest.startsWith('/') ? dest.substring(1) : dest;
-    return p.posix.join('/app', rel);
+    final joined = p.posix.normalize(p.posix.join('/app', rel));
+    if (joined != '/app' && !p.posix.isWithin('/app', joined)) {
+      throw FlatpakPackageException(
+        'package file destination escapes /app: $dest',
+      );
+    }
+    return joined;
   }
+
+  /// A file mode for `install -Dm<mode>`, defaulting to 644. Octal only: the
+  /// value reaches `install` as part of an argument, so `--reference=…` or any
+  /// other option-shaped string would be read as one.
+  String _mode(String? mode) {
+    if (mode == null) return '644';
+    if (!RegExp(r'^[0-7]{3,4}$').hasMatch(mode)) {
+      throw FlatpakPackageException(
+        'file mode must be 3-4 octal digits, got "$mode"',
+      );
+    }
+    return mode;
+  }
+
+  /// A YAML double-quoted scalar. Plain scalars are not safe for values emb
+  /// does not control: a ` #` starts a comment (so `command: app #x` silently
+  /// became `app`), a `: ` splits a mapping, and a leading `'` or `[` changes
+  /// the type. Shell quoting inside survives untouched — single quotes need no
+  /// escaping here, only `\` and `"`.
+  String _yaml(String v) =>
+      '"${v.replaceAll(r'\', r'\\').replaceAll('"', r'\"')}"';
+
+  /// One `install -Dm<mode> <src> <dest>` with both paths quoted.
+  String _install(String mode, String src, String dest) =>
+      'install -Dm$mode ${_shQuote(src)} ${_shQuote(dest)}';
+
+  /// POSIX single-quoting: everything inside is literal, and an embedded quote
+  /// is closed, escaped and reopened.
+  String _shQuote(String s) => "'${s.replaceAll("'", r"'\''")}'";
 
   String _iconExt(File? icon) {
     if (icon == null) return '.png';

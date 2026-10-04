@@ -4,6 +4,7 @@ import 'package:emb_cli/src/cross/flatpak_packager.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
+import 'package:yaml/yaml.dart';
 
 void main() {
   late Directory tmp;
@@ -74,9 +75,12 @@ void main() {
     expect(capturedManifest, contains('app-id: com.example.Homescreen'));
     // Branch is pinned so the export ref matches build-bundle's branch.
     expect(capturedManifest, contains('branch: stable'));
-    expect(capturedManifest, contains('command: homescreen'));
+    expect(capturedManifest, contains('command: "homescreen"'));
     expect(capturedManifest, contains('buildsystem: simple'));
-    expect(capturedManifest, contains('cp -r bundle/. /app/com.example.'));
+    // Paths in build-commands are shell-quoted: flatpak-builder runs each
+    // through a shell, so a bare manifest value was a command of its author's
+    // choosing.
+    expect(capturedManifest, contains("cp -r bundle/. '/app/com.example."));
     expect(capturedManifest, contains('--socket=wayland'));
     // Launcher execs the embedder against its in-prefix bundle dir.
     expect(
@@ -103,7 +107,7 @@ void main() {
     // Leading-slash-free dest lands under /app; install command is emitted.
     expect(
       capturedManifest,
-      contains('install -Dm644 extra/0 /app/etc/app.toml'),
+      contains("install -Dm644 'extra/0' '/app/etc/app.toml'"),
     );
   });
 
@@ -122,7 +126,7 @@ void main() {
     );
     expect(
       capturedManifest,
-      contains('install -Dm0755 extra/0 /app/bin/helper'),
+      contains("install -Dm0755 'extra/0' '/app/bin/helper'"),
     );
   });
 
@@ -411,5 +415,119 @@ void main() {
     expect(capturedManifest, isNot(contains('name: Flutter Remote Manager')));
     // The human name still reaches the desktop entry.
     expect(capturedManifest, contains('com.example.RemoteManager.desktop'));
+  });
+  test('a hostile command name cannot inject a build command', () async {
+    // flatpak-builder runs each build-command through a shell, so `command`
+    // used to be an injection point in both `chmod` and the launcher install.
+    // The packager separately requires `command` to name a file in the bundle,
+    // which narrows who can reach this, so the bundle carries one here.
+    const hostile = 'app;touch pwned-flatpak #';
+    final bundle = fakeBundle();
+    File(p.join(bundle.path, hostile)).writeAsStringSync('elf');
+    final packager = FlatpakPackager(runProcess: fakeRun);
+    await packager.build(
+      bundleDir: bundle,
+      meta: const FlatpakMetadata(appId: 'com.example.App', command: hostile),
+      outDir: Directory(p.join(tmp.path, 'dist')),
+    );
+    for (final line in capturedManifest!.split('\n')) {
+      if (!line.contains('touch pwned-flatpak')) continue;
+      final isBuildCommand = line.trimLeft().startsWith('- ');
+      if (isBuildCommand) {
+        // Shell-quoted inside the command, so the shell sees one argument.
+        expect(
+          RegExp("'[^']*touch pwned-flatpak[^']*'").hasMatch(line),
+          isTrue,
+          reason: 'build-command must quote the command name: $line',
+        );
+      } else {
+        // A YAML plain scalar would be truncated at the ` #` comment, so the
+        // value emb writes is a quoted scalar.
+        expect(
+          line,
+          contains('"app;touch pwned-flatpak #"'),
+          reason: 'YAML value must be quoted: $line',
+        );
+      }
+    }
+    expect(capturedManifest, contains('touch pwned-flatpak'));
+
+    // And the manifest still parses, with the command intact rather than cut
+    // off at the comment marker.
+    final doc = loadYaml(capturedManifest!) as Map;
+    expect(doc['command'], 'app;touch pwned-flatpak #');
+  });
+
+  test('an icon filename cannot inject a build command', () async {
+    // The extension went in raw, and it comes from a manifest-supplied path.
+    final icon = File(p.join(tmp.path, 'icon.png;touch pwned-icon #'))
+      ..writeAsStringSync('png');
+    final packager = FlatpakPackager(runProcess: fakeRun);
+    await packager.build(
+      bundleDir: fakeBundle(),
+      meta: FlatpakMetadata(
+        appId: 'com.example.App',
+        command: 'homescreen',
+        icon: icon,
+      ),
+      outDir: Directory(p.join(tmp.path, 'dist')),
+    );
+    final install = capturedManifest!
+        .split('\n')
+        .firstWhere((l) => l.contains('pwned-icon'));
+    expect(
+      RegExp("'[^']*touch pwned-icon[^']*'").hasMatch(install),
+      isTrue,
+      reason: 'the icon filename must be quoted: $install',
+    );
+  });
+
+  test('a file mode that is not octal is refused', () async {
+    // `mode` lands in `install -Dm<mode>`, so an option-shaped value would be
+    // read as an option — `--reference=` steals another file's bits.
+    final helper = File(p.join(tmp.path, 'helper'))..writeAsStringSync('#!sh');
+    for (final mode in ['--reference=/etc/shadow', '0999', 'u+x', '']) {
+      final packager = FlatpakPackager(runProcess: fakeRun);
+      await expectLater(
+        packager.build(
+          bundleDir: fakeBundle(),
+          meta: const FlatpakMetadata(
+            appId: 'com.example.App',
+            command: 'homescreen',
+          ),
+          outDir: Directory(p.join(tmp.path, 'dist')),
+          extraFiles: {helper.path: 'bin/helper'},
+          fileModes: {helper.path: mode},
+        ),
+        throwsA(isA<FlatpakPackageException>()),
+        reason: 'mode "$mode" must be refused',
+      );
+    }
+  });
+
+  test('a destination that climbs out of /app is refused', () async {
+    // _appDest joined without normalizing, so `/../../../../etc/evil.conf`
+    // became `/app/../../../../etc/evil.conf` — which install resolves outside
+    // the flatpak prefix.
+    final cfg = File(p.join(tmp.path, 'evil.conf'))..writeAsStringSync('x');
+    final packager = FlatpakPackager(runProcess: fakeRun);
+    await expectLater(
+      packager.build(
+        bundleDir: fakeBundle(),
+        meta: const FlatpakMetadata(
+          appId: 'com.example.App',
+          command: 'homescreen',
+        ),
+        outDir: Directory(p.join(tmp.path, 'dist')),
+        extraFiles: {cfg.path: '/../../../../etc/evil.conf'},
+      ),
+      throwsA(
+        isA<FlatpakPackageException>().having(
+          (e) => e.message,
+          'message',
+          contains('escapes /app'),
+        ),
+      ),
+    );
   });
 }
