@@ -124,7 +124,7 @@ class RpmPackager extends PackageStager {
 
     final paths = [installPath, ...extraFiles.values];
     final spec = File(p.join(topDir.path, '${meta.name}.spec'))
-      ..writeAsStringSync(await _spec(meta, paths, payload));
+      ..writeAsStringSync(await _spec(meta, paths, payload, topDir));
 
     final r = await run('rpmbuild', [
       '-bb',
@@ -176,6 +176,7 @@ class RpmPackager extends PackageStager {
     RpmMetadata m,
     List<String> paths,
     Directory payload,
+    Directory topDir,
   ) async {
     final b = StringBuffer()
       // Ship the cross-built binary as-is: no strip, no debuginfo subpackage,
@@ -208,9 +209,20 @@ class RpmPackager extends PackageStager {
       if (!src.existsSync()) {
         fail('maintainer script not found: ${entry.value}');
       }
+      // Reference the script through `-f`, with every `%` escaped, rather than
+      // inlining its text. rpmbuild macro-expands a spec, and a scriptlet body
+      // is no exception: `%(command)` in a maintainer script ran on the *build
+      // host* at package time, and a line starting with `%` ended the scriptlet
+      // section and injected spec directives of the author's choosing. `-f`
+      // stops the section-termination half (the line stays in the body), and
+      // `%%` stops the expansion half — rpm unescapes it, so the installed
+      // scriptlet still sees a single `%` and `echo 100%` keeps working.
+      final staged = File(p.join(topDir.path, 'scriptlet-${entry.key}'))
+        ..writeAsStringSync(
+          '${src.readAsStringSync().trimRight().replaceAll('%', '%%')}\n',
+        );
       b
-        ..writeln('%${_scriptlet[entry.key]}')
-        ..writeln(src.readAsStringSync().trimRight())
+        ..writeln('%${_scriptlet[entry.key]} -f ${staged.path}')
         ..writeln();
     }
 

@@ -13,6 +13,7 @@ void main() {
   // A fake ProcessRunner standing in for command/chmod/rpmbuild, capturing the
   // generated .spec and faking the built rpm into RPMS/<arch>/.
   String? capturedSpec;
+  final capturedScriptlets = <String, String>{};
   List<String>? rpmbuildArgv;
   Future<RunResult> fakeRun(
     String exe,
@@ -30,6 +31,14 @@ void main() {
       rpmbuildArgv = args;
       final spec = args.last;
       capturedSpec = File(spec).readAsStringSync();
+      // The packager deletes _topdir once the build returns, so read the
+      // scriptlet files it referenced while they still exist.
+      for (final f in Directory(p.dirname(spec)).listSync().whereType<File>()) {
+        final name = p.basename(f.path);
+        if (name.startsWith('scriptlet-')) {
+          capturedScriptlets[name] = f.readAsStringSync();
+        }
+      }
       // Emulate the artifact rpmbuild would drop under _topdir/RPMS/<arch>/.
       final topDir = p.dirname(spec);
       File(
@@ -77,9 +86,20 @@ void main() {
     expect(capturedSpec, contains('License: MIT'));
     expect(capturedSpec, contains('BuildArch: aarch64'));
     expect(capturedSpec, contains('Requires: mesa-libgbm'));
-    // postinst → %post scriptlet, with the script body inlined.
-    expect(capturedSpec, contains('%post'));
-    expect(capturedSpec, contains('/sbin/ldconfig'));
+    // postinst → `%post -f <file>`; the body is NOT inlined, because rpmbuild
+    // macro-expands a spec and that made the script's own text executable at
+    // package time. The scriptlet file carries it instead.
+    expect(capturedSpec, contains('%post -f '));
+    expect(
+      capturedSpec,
+      isNot(contains('/sbin/ldconfig')),
+      reason: 'the body must not be inlined into the spec',
+    );
+    expect(capturedScriptlets, contains('scriptlet-postinst'));
+    expect(
+      capturedScriptlets['scriptlet-postinst'],
+      contains('/sbin/ldconfig'),
+    );
     // %install copies the staged payload; %files lists binary + extra file.
     expect(capturedSpec, contains('%install'));
     expect(capturedSpec, contains('cp -a'));
@@ -148,6 +168,52 @@ void main() {
           contains('rpm-build'),
         ),
       ),
+    );
+  });
+  test('a scriptlet cannot reach the build host or the spec', () async {
+    // rpmbuild macro-expands the spec, scriptlet bodies included: `%(cmd)` in a
+    // maintainer script ran `cmd` on the *build host* at package time, and a
+    // line starting with `%` closed the scriptlet and injected spec directives.
+    // Verified against real rpmbuild: `-f` keeps such a line inert in the body,
+    // and `%%` survives expansion as a single `%`, so the installed script is
+    // unchanged while neither trick fires.
+    final postinst = File(p.join(tmp.path, 'postinst'))
+      ..writeAsStringSync(
+        '#!/bin/sh\n'
+        'echo "pct: 100%"\n'
+        '%(touch /tmp/emb-rpm-build-host-rce)\n'
+        '%files\n'
+        '/etc/shadow\n',
+      );
+    final packager = RpmPackager(runProcess: fakeRun);
+    await packager.build(
+      binary: fakeBinary(),
+      installPath: '/usr/bin/homescreen',
+      meta: RpmMetadata(
+        name: 'ivi-homescreen',
+        version: '1.0.0',
+        architecture: 'aarch64',
+        license: 'MIT',
+        summary: 'IVI shell',
+        scriptlets: {'postinst': postinst.path},
+      ),
+      outDir: Directory(p.join(tmp.path, 'dist')),
+    );
+
+    // Nothing of the script's text reaches the spec.
+    expect(capturedSpec, contains('%post -f '));
+    expect(capturedSpec, isNot(contains('touch /tmp/emb-rpm-build-host-rce')));
+    expect(capturedSpec, isNot(contains('/etc/shadow')));
+
+    // Every `%` in the staged file is escaped, so rpm expands none of them.
+    final staged = capturedScriptlets['scriptlet-postinst']!;
+    expect(staged, contains('%%(touch /tmp/emb-rpm-build-host-rce)'));
+    expect(staged, contains('%%files'));
+    expect(staged, contains('echo "pct: 100%%"'));
+    expect(
+      RegExp('(?<!%)%(?!%)').hasMatch(staged),
+      isFalse,
+      reason: 'an unescaped % would be expanded by rpmbuild',
     );
   });
 }
