@@ -210,6 +210,51 @@ cross:
     expect(entry['skewed'], isTrue);
   });
 
+  test('--json reports a stamp for an EMB_BOARDS_DIR library', () async {
+    // The stamps used to be enumerated from boards.yaml, which describes the
+    // installed layout only — so a library resolved from a checkout reported
+    // its board names with no version at all, and the skew check was blind.
+    final tmp = Directory.systemTemp.createTempSync('emb_doctor_env_');
+    addTearDown(() => tmp.deleteSync(recursive: true));
+    final source = Directory(p.join(tmp.path, 'boards', 'mysrc'))
+      ..createSync(recursive: true);
+    File(p.join(source.path, 'b.emb.yaml')).writeAsStringSync('''
+id: b
+type: board
+cross:
+  provider: arm-gnu
+  targets:
+    rpi5-trixie: {}
+''');
+    File(p.join(source.path, '.emb-boards-version')).writeAsStringSync('9.9.9');
+
+    final logger = _CaptureLogger();
+    final runner = CommandRunner<int>('emb', 'test')
+      ..addCommand(
+        DoctorCommand(
+          logger: logger,
+          host: _host,
+          provisionerFactory: (_) => _FakeProvisioner(),
+          environment: {
+            'HOME': tmp.path,
+            'XDG_DATA_HOME': p.join(tmp.path, 'data'),
+            'XDG_CONFIG_HOME': p.join(tmp.path, 'config'),
+            'EMB_BOARDS_DIR': p.join(tmp.path, 'boards'),
+          },
+        ),
+      );
+    await runner.run(['doctor', '--json']);
+    final data =
+        (jsonDecode(logger.buffer.toString()) as Map<String, dynamic>)['data']
+            as Map<String, dynamic>;
+    final boards = data['boards'] as Map<String, dynamic>;
+    expect(boards['names'], contains('mysrc/rpi5-trixie'));
+    final entry = (boards['versions'] as List).single as Map<String, dynamic>;
+    expect(entry['version'], '9.9.9');
+    expect(entry['source'], 'mysrc', reason: 'the source dir names the stamp');
+    expect(entry['skewed'], isTrue);
+  });
+
   test('--json reports ok:false when the backend is unavailable', () async {
     final (code, json) = await _runJson(_FakeProvisioner(available: false));
     expect(code, ExitCode.unavailable.code);

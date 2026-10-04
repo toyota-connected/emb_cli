@@ -3,7 +3,6 @@ import 'dart:io';
 import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/cache/cache_dir.dart';
 import 'package:emb_cli/src/cache/store.dart';
-import 'package:emb_cli/src/cross/board_source.dart';
 import 'package:emb_cli/src/cross/boards_dir.dart';
 import 'package:emb_cli/src/cross/cargo_vendor.dart';
 import 'package:emb_cli/src/cross/cross_profile.dart';
@@ -235,7 +234,7 @@ class DoctorCommand extends Command<int> {
 
     // Skew is reported, never enforced: a hand-maintained EMB_BOARDS_DIR
     // legitimately has no stamp and that path must not be blocked.
-    for (final stamp in _boardStamps(installed)) {
+    for (final stamp in _boardStamps(resolver)) {
       if (stamp.version != packageVersion) {
         _logger.warn(
           ' version: ${stamp.version} (${stamp.source}), '
@@ -247,19 +246,21 @@ class DoctorCommand extends Command<int> {
     }
   }
 
-  List<({String version, String? source})> _boardStamps(Directory installed) {
-    final config = BoardSourceConfig.load(
-      resolveBoardSourcesFile(environment: _environment),
-      onWarning: _logger.warn,
-    );
+  /// Version stamps for the sources the resolver actually used.
+  ///
+  /// Keyed off [CrossProjectResolver.boardSources] rather than `boards.yaml`:
+  /// the config describes the installed layout only, so a library resolved from
+  /// `EMB_BOARDS_DIR` or a dev checkout reported board names with no version.
+  /// A source with no stamp is simply absent here — one is written by
+  /// `emb boards sync` and by the bootstrap installer, so a hand-maintained
+  /// checkout legitimately has none, and skew is reported, never enforced.
+  List<({String version, String? source})> _boardStamps(
+    CrossProjectResolver resolver,
+  ) {
     final results = <({String version, String source})>[];
-    for (final s in config.sources) {
-      final dir = switch (s) {
-        LocalBoardSource(:final path) => Directory(path),
-        _ => Directory(p.join(installed.path, s.name)),
-      };
-      final stamp = dir.existsSync() ? readBoardsStamp(dir) : null;
-      if (stamp != null) results.add((version: stamp, source: s.name));
+    for (final e in resolver.boardSources().entries) {
+      final stamp = readBoardsStamp(e.value);
+      if (stamp != null) results.add((version: stamp, source: e.key));
     }
     return results;
   }
@@ -290,7 +291,7 @@ class DoctorCommand extends Command<int> {
       );
       final boardNames = boardsResolver.boardNames();
       final boardsInstalled = resolveBoardsDir(environment: _environment);
-      final stamps = _boardStamps(boardsInstalled);
+      final stamps = _boardStamps(boardsResolver);
       final data = <String, Object?>{
         'host': _hostData(host),
         'boards': {
