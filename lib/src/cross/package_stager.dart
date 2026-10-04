@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:emb_cli/src/cross/process_runner.dart';
@@ -53,8 +54,16 @@ abstract class PackageStager {
     binary.copySync(dest.path);
     await _run('chmod', ['0755', dest.path]);
 
-    // Stage any extra files at their absolute target paths inside the root,
-    // applying an explicit mode when given.
+    // Repeated destinations must retain their original copy/chmod order.
+    final seenDestinations = <String>{};
+    final repeatedDestinations = <String>{};
+    for (final target in extraFiles.values) {
+      final staged = p.join(root.path, target.substring(1));
+      if (!seenDestinations.add(staged)) repeatedDestinations.add(staged);
+    }
+
+    // Stage extra files, collecting unique destinations by requested mode.
+    final pathsByMode = <String, List<String>>{};
     for (final entry in extraFiles.entries) {
       final src = File(entry.key);
       if (!src.existsSync()) fail('extra file not found: ${entry.key}');
@@ -62,7 +71,36 @@ abstract class PackageStager {
         ..parent.createSync(recursive: true);
       src.copySync(to.path);
       final mode = fileModes[entry.key];
-      if (mode != null) await _run('chmod', [mode, to.path]);
+      if (mode != null) {
+        if (repeatedDestinations.contains(to.path)) {
+          await _run('chmod', [mode, to.path]);
+        } else {
+          pathsByMode.putIfAbsent(mode, () => []).add(to.path);
+        }
+      }
+    }
+    // Bound both the path count and argv bytes; hundreds of asset files should
+    // not cause hundreds of processes or exceed a platform's argument limit.
+    const maxPathsPerCall = 1024;
+    final maxArgumentBytes = Platform.isWindows ? 24 * 1024 : 96 * 1024;
+    for (final entry in pathsByMode.entries) {
+      final mode = entry.key;
+      final modeBytes = utf8.encode(mode).length + 1;
+      var args = <String>[mode];
+      var argumentBytes = modeBytes;
+      for (final path in entry.value) {
+        final pathBytes = utf8.encode(path).length + 1;
+        if (args.length > 1 &&
+            (args.length - 1 >= maxPathsPerCall ||
+                argumentBytes + pathBytes > maxArgumentBytes)) {
+          await _run('chmod', args);
+          args = [mode];
+          argumentBytes = modeBytes;
+        }
+        args.add(path);
+        argumentBytes += pathBytes;
+      }
+      if (args.length > 1) await _run('chmod', args);
     }
     return root;
   }
