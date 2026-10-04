@@ -120,4 +120,65 @@ void main() {
       expect(gotCwd, '/app');
     });
   });
+
+  group('makeTimedProcessRunner', () {
+    final run = makeTimedProcessRunner();
+
+    Future<int> aliveSleeps() async {
+      final r = await Process.run('pgrep', ['-cx', 'sleep']);
+      return int.tryParse((r.stdout as String).trim()) ?? 0;
+    }
+
+    test('kills the child and reports the limit', () async {
+      final before = await aliveSleeps();
+      final sw = Stopwatch()..start();
+      final r = await run('sleep', ['30'], timeout: const Duration(seconds: 1));
+      sw.stop();
+
+      expect(r.exitCode, timedOutExitCode);
+      expect(r.stderr, contains('timed out after 1s'));
+      expect(r.stderr, contains('sleep 30'));
+      // It returned on the limit, not after the sleep.
+      expect(sw.elapsed, lessThan(const Duration(seconds: 10)));
+      // And the child is gone: a `.timeout()` on the future would have left it
+      // running, which is why the limit lives in the runner.
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      expect(await aliveSleeps(), before);
+    });
+
+    test('escalates to SIGKILL when SIGTERM is ignored', () async {
+      final stubborn = makeTimedProcessRunner(
+        graceOnTimeout: const Duration(milliseconds: 300),
+      );
+      final r = await stubborn('sh', [
+        '-c',
+        'trap "" TERM; sleep 30',
+      ], timeout: const Duration(seconds: 1));
+      expect(r.exitCode, timedOutExitCode);
+    });
+
+    test('a run inside its limit is untouched', () async {
+      final r = await run('echo', [
+        'hello',
+      ], timeout: const Duration(seconds: 30));
+      expect(r.exitCode, 0);
+      expect(r.stdout.trim(), 'hello');
+      expect(r.stderr, isEmpty);
+    });
+
+    test('no limit means no limit', () async {
+      final r = await run('echo', ['hi']);
+      expect(r.exitCode, 0);
+      expect(r.stdout.trim(), 'hi');
+    });
+
+    test('a non-zero exit is reported as itself, not as a timeout', () async {
+      final r = await run('sh', [
+        '-c',
+        'echo oops >&2; exit 3',
+      ], timeout: const Duration(seconds: 30));
+      expect(r.exitCode, 3);
+      expect(r.stderr.trim(), 'oops');
+    });
+  });
 }

@@ -32,7 +32,7 @@ class BoardsCommand extends Command<int> {
     HttpClient? httpClient,
     Map<String, String>? environment,
     Uri? apiBase,
-    ProcessRunner? processRunner,
+    TimedProcessRunner? processRunner,
   }) {
     addSubcommand(BoardsListCommand(logger: logger, environment: environment));
     addSubcommand(
@@ -181,12 +181,12 @@ class BoardsSyncCommand extends Command<int> {
     HttpClient? httpClient,
     Map<String, String>? environment,
     Uri? apiBase,
-    ProcessRunner? processRunner,
+    TimedProcessRunner? processRunner,
   }) : _logger = logger,
        _http = httpClient ?? (HttpClient()..connectionTimeout = _httpTimeout),
        _environment = environment ?? Platform.environment,
        _apiBase = apiBase ?? Uri.https('api.github.com', '/'),
-       _runProcess = processRunner ?? defaultProcessRunner {
+       _runProcess = processRunner ?? defaultTimedProcessRunner {
     argParser
       ..addOption(
         'ref',
@@ -204,7 +204,10 @@ class BoardsSyncCommand extends Command<int> {
   final Logger _logger;
   final HttpClient _http;
   final Map<String, String> _environment;
-  final ProcessRunner _runProcess;
+
+  /// Timed, because every spawn here reaches the network: a `git` wedged on a
+  /// dead connection used to hang the sync for as long as CI allowed.
+  final TimedProcessRunner _runProcess;
 
   /// Base of the contents API. Overridable so the fetch path can be tested
   /// against a local server instead of reaching GitHub.
@@ -280,6 +283,13 @@ class BoardsSyncCommand extends Command<int> {
 
   static const _shaStamp = '.emb-boards-sha';
   static const _httpTimeout = Duration(seconds: 30);
+
+  /// A ref lookup is one round trip; a clone is a transfer. Both bounded,
+  /// because the common CI failure is not an error but a hang: the earlier fix
+  /// stopped git *prompting* (GIT_TERMINAL_PROMPT=0, BatchMode=yes) and a stall
+  /// on a dead connection still waited forever.
+  static const _gitProbeTimeout = Duration(minutes: 1);
+  static const _gitTransferTimeout = Duration(minutes: 10);
   static const _maxBodyBytes = 8 * 1024 * 1024;
   static const _bodyTimeout = Duration(seconds: 60);
 
@@ -414,12 +424,12 @@ class BoardsSyncCommand extends Command<int> {
 
   Future<String> _remoteSshSha(GithubBoardSource source, String ref) async {
     final sshUrl = 'git@github.com:${source.repo}.git';
-    final result = await _runProcess('git', [
-      'ls-remote',
-      sshUrl,
-      ref,
-      '$ref^{}',
-    ], environment: _gitNoPrompt);
+    final result = await _runProcess(
+      'git',
+      ['ls-remote', sshUrl, ref, '$ref^{}'],
+      environment: _gitNoPrompt,
+      timeout: _gitProbeTimeout,
+    );
     if (result.exitCode != 0) {
       throw StateError(
         result.stderr.isNotEmpty ? result.stderr : result.stdout,
@@ -500,17 +510,22 @@ class BoardsSyncCommand extends Command<int> {
       // --branch accepts tags and branch names but not raw SHAs. For a SHA
       // we clone without --branch and fetch the exact commit instead.
       final isSha = RegExp(r'^[0-9a-f]{40}$').hasMatch(ref);
-      final clone = await _runProcess('git', [
-        'clone',
-        '--depth',
-        '1',
-        if (!isSha) '--branch',
-        if (!isSha) ref,
-        '--filter=blob:none',
-        '--sparse',
-        sshUrl,
-        tmp.path,
-      ], environment: _gitNoPrompt);
+      final clone = await _runProcess(
+        'git',
+        [
+          'clone',
+          '--depth',
+          '1',
+          if (!isSha) '--branch',
+          if (!isSha) ref,
+          '--filter=blob:none',
+          '--sparse',
+          sshUrl,
+          tmp.path,
+        ],
+        environment: _gitNoPrompt,
+        timeout: _gitTransferTimeout,
+      );
       if (clone.exitCode != 0) {
         throw StateError(clone.stderr.isNotEmpty ? clone.stderr : clone.stdout);
       }
@@ -520,6 +535,7 @@ class BoardsSyncCommand extends Command<int> {
           ['fetch', 'origin', ref],
           workingDirectory: tmp.path,
           environment: _gitNoPrompt,
+          timeout: _gitTransferTimeout,
         );
         if (fetch.exitCode != 0) {
           throw StateError(
@@ -531,6 +547,7 @@ class BoardsSyncCommand extends Command<int> {
           ['checkout', ref],
           workingDirectory: tmp.path,
           environment: _gitNoPrompt,
+          timeout: _gitTransferTimeout,
         );
         if (checkout.exitCode != 0) {
           throw StateError(
@@ -539,11 +556,13 @@ class BoardsSyncCommand extends Command<int> {
         }
       }
 
-      final sparseSet = await _runProcess('git', [
-        'sparse-checkout',
-        'set',
-        source.path,
-      ], workingDirectory: tmp.path);
+      final sparseSet = await _runProcess(
+        'git',
+        ['sparse-checkout', 'set', source.path],
+        workingDirectory: tmp.path,
+        // Local work, but it can fetch missing blobs under --filter.
+        timeout: _gitTransferTimeout,
+      );
       if (sparseSet.exitCode != 0) {
         throw StateError(sparseSet.stderr);
       }
