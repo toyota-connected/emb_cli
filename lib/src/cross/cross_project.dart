@@ -703,11 +703,21 @@ class CrossProjectResolver {
   /// `emb boards list` reports what `extends:` actually sees.
   List<String> boardNames() => _boardRegistry().keys.toList();
 
+  /// The board sources `extends:` actually resolved against: source name → the
+  /// directory each was read from, in load order.
+  ///
+  /// This is what the registry used, whichever rung won — a multi-source
+  /// `EMB_BOARDS_DIR` checkout included. `doctor` reports version stamps from
+  /// these rather than from the sources `boards.yaml` declares: the two
+  /// disagree whenever the library did not come from the installed data dir,
+  /// and the result was board names listed with no version at all.
+  Map<String, Directory> boardSources() => Map.unmodifiable(_resolvedSources());
+
   Map<String, Map<String, dynamic>> _boardRegistry() {
     if (_boards case final cached?) return cached;
     final out = <String, Map<String, dynamic>>{};
     for (final MapEntry(key: sourceName, value: dir)
-        in _boardSources().entries) {
+        in _resolvedSources().entries) {
       _loadBoardsFromDir(dir, sourceName, out);
     }
     return _boards = out;
@@ -750,6 +760,12 @@ class CrossProjectResolver {
   /// Override/env-var rungs produce a single source; the installed data dir
   /// uses the multi-source layout from `boards.yaml`; package-config and
   /// script-relative discovery are a dev-time fallback.
+  Map<String, Directory>? _sources;
+
+  /// [_boardSources] memoized — it walks the disk and sets [boardsProvenance],
+  /// and both the registry and [boardSources] want the same answer.
+  Map<String, Directory> _resolvedSources() => _sources ??= _boardSources();
+
   Map<String, Directory> _boardSources() {
     _boardsTried.clear();
 
