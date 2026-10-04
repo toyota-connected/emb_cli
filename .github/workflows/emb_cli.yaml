@@ -393,7 +393,18 @@ jobs:
         run: |
           python3 -c "import sys; sys.path.insert(0,'tool'); \
             import bootstrap_dart as b; b.install_boards('.', 'linux')"
-          test -s "$RUNNER_TEMP/data/emb/boards/.emb-boards-version"
+          # The stamp belongs in each source dir, which is where emb reads it
+          # (readBoardsStamp(<installed>/<source>)); one in the parent is never
+          # found, so `boards list` prints no version and doctor can never
+          # report skew. Asserting the parent path is what let that ship.
+          shopt -s nullglob
+          sources=("$RUNNER_TEMP/data/emb/boards"/*/)
+          test ${#sources[@]} -gt 0 || {
+            echo "::error::no board source dir installed"; exit 1; }
+          for d in "${sources[@]}"; do
+            test -s "$d.emb-boards-version" || {
+              echo "::error::missing version stamp in $d"; exit 1; }
+          done
 
       - name: ✅ The installed binary resolves the board
         env:
@@ -423,4 +434,15 @@ jobs:
         run: |
           ./bootstrap.sh --install .
           ls "$RUNNER_TEMP/data2/emb/boards"
-          test -s "$RUNNER_TEMP/data2/emb/boards/.emb-boards-version"
+          # The stamp belongs in each source dir, which is where emb reads it
+          # (readBoardsStamp(<installed>/<source>)); one in the parent is never
+          # found, so `boards list` prints no version and doctor can never
+          # report skew. Asserting the parent path is what let that ship.
+          shopt -s nullglob
+          sources=("$RUNNER_TEMP/data2/emb/boards"/*/)
+          test ${#sources[@]} -gt 0 || {
+            echo "::error::no board source dir installed"; exit 1; }
+          for d in "${sources[@]}"; do
+            test -s "$d.emb-boards-version" || {
+              echo "::error::missing version stamp in $d"; exit 1; }
+          done
