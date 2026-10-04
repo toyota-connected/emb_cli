@@ -22,6 +22,21 @@ class _FakeGitHub {
   _FakeGitHub(this._server, {required this.boards}) {
     _server.listen((req) async {
       requestedPaths.add('${req.uri.path}?${req.uri.query}');
+
+      // SHA staleness check: /repos/:owner/:repo/commits/:ref
+      if (req.uri.path.contains('/commits/')) {
+        if (failListing) {
+          req.response.statusCode = HttpStatus.notFound;
+          await req.response.close();
+          return;
+        }
+        req.response
+          ..headers.contentType = ContentType.json
+          ..write(jsonEncode({'sha': commitSha}));
+        await req.response.close();
+        return;
+      }
+
       if (req.uri.path.endsWith('/contents/boards')) {
         if (failListing) {
           req.response.statusCode = HttpStatus.notFound;
@@ -30,7 +45,12 @@ class _FakeGitHub {
         }
         final body = [
           for (final name in boards.keys)
-            {'type': 'file', 'name': name, 'download_url': '$origin/raw/$name'},
+            {
+              'type': 'file',
+              'name': name,
+              'download_url': '$origin/raw/$name',
+              'url': '$origin/repos/test/contents/boards/$name',
+            },
           // A non-board entry the client must ignore.
           {'type': 'file', 'name': 'README.md', 'download_url': '$origin/x'},
           {'type': 'dir', 'name': 'nested', 'download_url': null},
@@ -62,6 +82,7 @@ class _FakeGitHub {
   final Map<String, String> boards;
   final List<String> requestedPaths = [];
   bool failListing = false;
+  String commitSha = 'fake-sha-000';
 
   String get origin => 'http://127.0.0.1:${_server.port}';
   Uri get base => Uri.parse(origin);
@@ -115,12 +136,13 @@ void main() {
   test('downloads the board files and writes the version stamp', () async {
     final code = await runSync([]);
     expect(code, ExitCode.success.code);
+    final sourceDir = Directory(p.join(dest().path, 'emb-public'));
     expect(
-      File(p.join(dest().path, 'raspberry-pi.emb.yaml')).readAsStringSync(),
+      File(p.join(sourceDir.path, 'raspberry-pi.emb.yaml')).readAsStringSync(),
       contains('id: raspberry-pi'),
     );
     expect(
-      File(p.join(dest().path, '.emb-boards-version')).existsSync(),
+      File(p.join(sourceDir.path, '.emb-boards-version')).existsSync(),
       isTrue,
       reason: 'the stamp is how version skew is detectable later',
     );
@@ -128,7 +150,11 @@ void main() {
 
   test('ignores entries that are not board files', () async {
     await runSync([]);
-    final written = dest().listSync().map((e) => p.basename(e.path)).toList();
+    final sourceDir = Directory(p.join(dest().path, 'emb-public'));
+    final written = sourceDir
+        .listSync()
+        .map((e) => p.basename(e.path))
+        .toList();
     expect(written, contains('raspberry-pi.emb.yaml'));
     expect(written, isNot(contains('README.md')));
     expect(written, isNot(contains('nested')));
@@ -136,11 +162,66 @@ void main() {
 
   test('defaults to the tag matching this emb, and --ref overrides', () async {
     await runSync([]);
-    expect(github.requestedPaths.first, contains('ref=v'));
+    // First request is the SHA check (/commits/<ref>), second is contents.
+    expect(github.requestedPaths.first, contains('/commits/v'));
+    final listing = github.requestedPaths.firstWhere(
+      (p) => p.contains('/contents/'),
+    );
+    expect(listing, contains('ref=v'));
 
     github.requestedPaths.clear();
+    github.commitSha = 'new-sha-001';
     await runSync(['--ref', 'main']);
-    expect(github.requestedPaths.first, contains('ref=main'));
+    expect(github.requestedPaths.first, contains('/commits/main'));
+    final listing2 = github.requestedPaths.firstWhere(
+      (p) => p.contains('/contents/'),
+    );
+    expect(listing2, contains('ref=main'));
+  });
+
+  test('removes stale board files on re-sync', () async {
+    await runSync([]);
+    final sourceDir = Directory(p.join(dest().path, 'emb-public'));
+    expect(
+      File(p.join(sourceDir.path, 'raspberry-pi.emb.yaml')).existsSync(),
+      isTrue,
+    );
+
+    github.boards
+      ..clear()
+      ..['new-board.emb.yaml'] = 'id: new-board\ntype: board\n';
+    github.commitSha = 'new-sha-999';
+
+    final code = await runSync([]);
+    expect(code, ExitCode.success.code);
+    expect(
+      File(p.join(sourceDir.path, 'new-board.emb.yaml')).existsSync(),
+      isTrue,
+    );
+    expect(
+      File(p.join(sourceDir.path, 'raspberry-pi.emb.yaml')).existsSync(),
+      isFalse,
+      reason: 'stale board file should be removed on re-sync',
+    );
+  });
+
+  test('rejects filenames with path traversal', () async {
+    github.boards['../../../pwned.emb.yaml'] = 'id: pwned\ntype: board\n';
+    final code = await runSync([]);
+    expect(code, ExitCode.success.code);
+    final sourceDir = Directory(p.join(dest().path, 'emb-public'));
+    expect(
+      File(p.join(sourceDir.path, 'raspberry-pi.emb.yaml')).existsSync(),
+      isTrue,
+      reason: 'safe files should still be written',
+    );
+    expect(
+      File(
+        p.join(dest().path, '..', '..', '..', 'pwned.emb.yaml'),
+      ).existsSync(),
+      isFalse,
+      reason: 'traversal filename must not escape the dest directory',
+    );
   });
 
   test('a failed listing reports it and writes nothing', () async {
@@ -148,10 +229,43 @@ void main() {
     final code = await runSync([]);
     expect(code, isNot(ExitCode.success.code));
     expect(dest().existsSync(), isFalse, reason: 'no partial install');
+  });
+  test('a listing whose every entry is skipped changes nothing', () async {
+    // The unsafe-name guard must not turn into a pruning sync: counting listed
+    // entries instead of written ones deleted every installed board, stamped
+    // the new SHA, and reported success — after which every later sync said
+    // "up to date" with an empty library and `extends:` resolved nothing.
+    expect(await runSync([]), ExitCode.success.code);
+    final installed = Directory(p.join(dest().path, 'emb-public'));
     expect(
-      info.join('\n'),
-      contains('--ref'),
-      reason: 'an emb newer than the published tag needs to be told what to do',
+      File(p.join(installed.path, 'raspberry-pi.emb.yaml')).existsSync(),
+      isTrue,
     );
+
+    github
+      ..boards.clear()
+      ..boards['../../../pwned.emb.yaml'] = 'id: pwned\ntype: board\n'
+      ..commitSha = 'fake-sha-001';
+
+    final code = await runSync([]);
+    expect(
+      File(p.join(installed.path, 'raspberry-pi.emb.yaml')).existsSync(),
+      isTrue,
+      reason: 'the good board must survive an all-skipped listing',
+    );
+    expect(
+      File(p.join(installed.path, 'pwned.emb.yaml')).existsSync(),
+      isFalse,
+    );
+    expect(File(p.join(tmp.path, 'pwned.emb.yaml')).existsSync(), isFalse);
+    // The SHA must not be stamped, or the next sync reports "up to date" over
+    // a library this sync never wrote.
+    final sha = File(p.join(installed.path, '.emb-boards-sha'));
+    expect(
+      !sha.existsSync() || sha.readAsStringSync().trim() != 'fake-sha-001',
+      isTrue,
+      reason: 'a sync that wrote nothing must not record the remote SHA',
+    );
+    expect(code, isNot(ExitCode.success.code));
   });
 }

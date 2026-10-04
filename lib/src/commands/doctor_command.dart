@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/cache/cache_dir.dart';
 import 'package:emb_cli/src/cache/store.dart';
+import 'package:emb_cli/src/cross/board_source.dart';
 import 'package:emb_cli/src/cross/boards_dir.dart';
 import 'package:emb_cli/src/cross/cargo_vendor.dart';
 import 'package:emb_cli/src/cross/cross_profile.dart';
@@ -234,15 +235,33 @@ class DoctorCommand extends Command<int> {
 
     // Skew is reported, never enforced: a hand-maintained EMB_BOARDS_DIR
     // legitimately has no stamp and that path must not be blocked.
-    final stamp = installed.existsSync() ? readBoardsStamp(installed) : null;
-    if (stamp != null && stamp != packageVersion) {
-      _logger.warn(
-        ' version: $stamp, but emb is $packageVersion — '
-        'run `emb boards sync`',
-      );
-    } else if (stamp != null) {
-      _logger.info(' version: $stamp');
+    for (final stamp in _boardStamps(installed)) {
+      if (stamp.version != packageVersion) {
+        _logger.warn(
+          ' version: ${stamp.version} (${stamp.source}), '
+          'but emb is $packageVersion — run `emb boards sync`',
+        );
+      } else {
+        _logger.info(' version: ${stamp.version} (${stamp.source})');
+      }
     }
+  }
+
+  List<({String version, String? source})> _boardStamps(Directory installed) {
+    final config = BoardSourceConfig.load(
+      resolveBoardSourcesFile(environment: _environment),
+      onWarning: _logger.warn,
+    );
+    final results = <({String version, String source})>[];
+    for (final s in config.sources) {
+      final dir = switch (s) {
+        LocalBoardSource(:final path) => Directory(path),
+        _ => Directory(p.join(installed.path, s.name)),
+      };
+      final stamp = dir.existsSync() ? readBoardsStamp(dir) : null;
+      if (stamp != null) results.add((version: stamp, source: s.name));
+    }
+    return results;
   }
 
   /// The `--json` path: compute the same host/backend facts without the text
@@ -271,9 +290,7 @@ class DoctorCommand extends Command<int> {
       );
       final boardNames = boardsResolver.boardNames();
       final boardsInstalled = resolveBoardsDir(environment: _environment);
-      final boardsStamp = boardsInstalled.existsSync()
-          ? readBoardsStamp(boardsInstalled)
-          : null;
+      final stamps = _boardStamps(boardsInstalled);
       final data = <String, Object?>{
         'host': _hostData(host),
         'boards': {
@@ -281,10 +298,15 @@ class DoctorCommand extends Command<int> {
           'installed': boardsInstalled.path,
           'count': boardNames.length,
           'names': boardNames,
-          if (boardsStamp != null) ...{
-            'version': boardsStamp,
-            'skewed': boardsStamp != packageVersion,
-          },
+          if (stamps.isNotEmpty)
+            'versions': [
+              for (final s in stamps)
+                {
+                  'version': s.version,
+                  'source': s.source,
+                  'skewed': s.version != packageVersion,
+                },
+            ],
         },
         'backend': {
           'name': provisioner.name,

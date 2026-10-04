@@ -224,7 +224,11 @@ def package_version(root):
 
 
 def install_boards(root, os_name):
-    """Copy <root>/boards/*.emb.yaml into the data dir, with a version stamp.
+    """Copy board manifests from <root>/boards/ into the data dir.
+
+    Supports two layouts:
+    - Multi-source: boards/<source>/*.emb.yaml (subdirectories are sources)
+    - Legacy flat: boards/*.emb.yaml (installed as source "emb-public")
 
     `dart install` AOT-compiles a standalone binary that carries no package
     data files, so boards/ never reaches the installed emb on its own. Without
@@ -234,26 +238,58 @@ def install_boards(root, os_name):
     if not os.path.isdir(src):
         log("no boards/ in %s -- skipping board library" % root)
         return
-    names = [n for n in sorted(os.listdir(src)) if n.endswith(".emb.yaml")]
-    if not names:
-        log("boards/ is empty -- skipping board library")
+
+    # Detect multi-source layout: subdirectories containing *.emb.yaml files.
+    source_dirs = {}
+    for entry in sorted(os.listdir(src)):
+        sub = os.path.join(src, entry)
+        if os.path.isdir(sub) and any(
+            f.endswith(".emb.yaml") for f in os.listdir(sub)
+        ):
+            source_dirs[entry] = sub
+
+    # Legacy flat layout: *.emb.yaml at the top level → treat as "emb-public".
+    flat = [n for n in sorted(os.listdir(src)) if n.endswith(".emb.yaml")]
+    if flat and not source_dirs:
+        source_dirs["emb-public"] = None  # sentinel for flat files
+
+    if not source_dirs:
+        log("boards/ has no manifests -- skipping board library")
         return
 
-    dst = boards_data_dir(os_name)
+    dst_base = boards_data_dir(os_name)
+    total = 0
+    version = package_version(root)
     try:
-        os.makedirs(dst, exist_ok=True)
-        for n in names:
-            shutil.copy2(os.path.join(src, n), os.path.join(dst, n))
-        version = package_version(root)
-        if version:
-            with open(os.path.join(dst, ".emb-boards-version"), "w") as f:
-                f.write(version + "\n")
+        for source_name, source_path in source_dirs.items():
+            dst = os.path.join(dst_base, source_name)
+            os.makedirs(dst, exist_ok=True)
+            if source_path is None:
+                # Legacy flat: files are directly in boards/
+                for n in flat:
+                    shutil.copy2(os.path.join(src, n), os.path.join(dst, n))
+                total += len(flat)
+            else:
+                names = [n for n in sorted(os.listdir(source_path))
+                         if n.endswith(".emb.yaml")]
+                for n in names:
+                    shutil.copy2(os.path.join(source_path, n),
+                                 os.path.join(dst, n))
+                total += len(names)
+            # Per source, not in dst_base: emb reads the stamp from the
+            # source's own dir (boards_command readBoardsStamp, doctor
+            # likewise), so one in the parent is never found and version skew
+            # goes unreported after bootstrap.sh.
+            if version:
+                stamp = os.path.join(dst, ".emb-boards-version")
+                with open(stamp, "w") as f:
+                    f.write(version + "\n")
     except OSError as e:
-        # A failed board copy must not fail the install: emb is usable without
-        # boards for everything except `extends:`, and EMB_BOARDS_DIR remains.
-        log("WARNING: could not install the board library to %s: %s" % (dst, e))
+        log("WARNING: could not install the board library to %s: %s"
+            % (dst_base, e))
         return
-    log("installed %d board file(s): %s" % (len(names), dst))
+    log("installed %d board file(s) from %d source(s): %s"
+        % (total, len(source_dirs), dst_base))
 
 
 def install(dart, bin_dir, target, os_name):

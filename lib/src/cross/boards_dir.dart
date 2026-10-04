@@ -42,6 +42,32 @@ Directory resolveBoardsDir({
 Directory dataHomeDir({
   Map<String, String>? environment,
   String? operatingSystem,
+}) => xdgDir(
+  xdgVar: 'XDG_DATA_HOME',
+  linuxFallback: '.local/share',
+  environment: environment,
+  operatingSystem: operatingSystem,
+);
+
+/// The per-OS config home (XDG_CONFIG_HOME / platform equivalent).
+Directory configHomeDir({
+  Map<String, String>? environment,
+  String? operatingSystem,
+}) => xdgDir(
+  xdgVar: 'XDG_CONFIG_HOME',
+  linuxFallback: '.config',
+  environment: environment,
+  operatingSystem: operatingSystem,
+);
+
+/// Shared XDG-style directory resolver. Windows and macOS use their platform
+/// paths; Linux (and others) check [xdgVar], falling back to
+/// `$HOME/[linuxFallback]`.
+Directory xdgDir({
+  required String xdgVar,
+  required String linuxFallback,
+  Map<String, String>? environment,
+  String? operatingSystem,
 }) {
   final env = environment ?? Platform.environment;
   final os = operatingSystem ?? Platform.operatingSystem;
@@ -58,14 +84,14 @@ Directory dataHomeDir({
 
   final home = env['HOME'] ?? env['USERPROFILE'] ?? Directory.systemTemp.path;
 
+  // macOS has no config/data split; both land under Application Support.
   if (os == 'macos') {
     return Directory(p.join(home, 'Library', 'Application Support'));
   }
 
-  // Linux and everything else: XDG.
-  final xdg = env['XDG_DATA_HOME'];
+  final xdg = env[xdgVar];
   if (xdg != null && xdg.isNotEmpty) return Directory(xdg);
-  return Directory(p.join(home, '.local', 'share'));
+  return Directory(p.join(home, linuxFallback));
 }
 
 /// The version stamp written beside an installed board library, or null when
