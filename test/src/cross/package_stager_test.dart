@@ -63,7 +63,11 @@ void main() {
         fileModes: modes,
       );
 
-      expect(chmodCalls.first, ['0755', p.join(root.path, 'usr/bin/app')]);
+      expect(chmodCalls.first, [
+        '--',
+        '0755',
+        p.join(root.path, 'usr/bin/app'),
+      ]);
       final extraCalls = chmodCalls.skip(1).toList();
       expect(extraCalls.length, lessThan(12));
 
@@ -78,15 +82,16 @@ void main() {
       final actual = <String, Set<String>>{'0644': {}, '0755': {}};
       var pathCount = 0;
       for (final args in extraCalls) {
-        expect(args.length, greaterThan(1));
+        expect(args.length, greaterThan(2));
         expect(
           utf8.encode(args.join('\u0000')).length + 1,
           lessThanOrEqualTo(100 * 1024),
         );
-        final mode = args.first;
+        expect(args.first, '--');
+        final mode = args[1];
         expect(actual, contains(mode));
-        actual[mode]!.addAll(args.skip(1));
-        pathCount += args.length - 1;
+        actual[mode]!.addAll(args.skip(2));
+        pathCount += args.length - 2;
       }
       expect(pathCount, 960);
       expect(actual, expected);
@@ -130,8 +135,10 @@ void main() {
     );
     final extraCalls = chmodCalls.skip(1).toList();
     expect(extraCalls.length, lessThanOrEqualTo(3));
-    expect(extraCalls.map((args) => args.first).toSet(), {'0644'});
-    expect(extraCalls.expand((args) => args.skip(1)).toSet(), {
+    for (final args in extraCalls) {
+      expect(args.take(2).toList(), ['--', '0644']);
+    }
+    expect(extraCalls.expand((args) => args.skip(2)).toSet(), {
       for (final dest in extras.values) p.join(root.path, dest.substring(1)),
     });
   });
@@ -171,9 +178,50 @@ void main() {
     final target = p.join(root.path, 'share/repeated');
     expect(File(target).readAsStringSync(), 'c');
     expect(calls, [
-      ['0755', p.join(root.path, 'usr/bin/app')],
-      ['0600', target],
-      ['0644', target],
+      ['--', '0755', p.join(root.path, 'usr/bin/app')],
+      ['--', '0600', target],
+      ['--', '0644', target],
     ]);
+  });
+
+  test('passes -- before a mode and reports a batched chmod failure', () async {
+    final calls = <List<String>>[];
+    Future<RunResult> fakeRun(
+      String executable,
+      List<String> arguments, {
+      String? workingDirectory,
+      Map<String, String>? environment,
+      bool includeParentEnvironment = true,
+      bool runInShell = false,
+      ProcessOutputMode output = ProcessOutputMode.capture,
+      String? label,
+    }) async {
+      if (executable == 'chmod') calls.add(List.of(arguments));
+      if (arguments.length > 1 && arguments[1].startsWith('--reference=')) {
+        return const RunResult(1, '', 'invalid mode');
+      }
+      return const RunResult(0, '', '');
+    }
+
+    final binary = File(p.join(tmp.path, 'app'))..writeAsStringSync('app');
+    final extra = File(p.join(tmp.path, 'extra'))..writeAsStringSync('extra');
+    await expectLater(
+      _TestStager(fakeRun).stagePayload(
+        binary: binary,
+        installPath: '/usr/bin/app',
+        packageName: 'example',
+        outDir: Directory(p.join(tmp.path, 'out')),
+        extraFiles: {extra.path: '/share/extra'},
+        fileModes: {extra.path: '--reference=unexpected'},
+      ),
+      throwsA(
+        isA<StateError>().having(
+          (e) => e.toString(),
+          'message',
+          contains('chmod failed (exit 1): invalid mode'),
+        ),
+      ),
+    );
+    expect(calls.last.take(2).toList(), ['--', '--reference=unexpected']);
   });
 }

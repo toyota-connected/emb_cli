@@ -48,17 +48,26 @@ abstract class PackageStager {
     final root = Directory(p.join(outDir.path, '$packageName.stage'));
     if (root.existsSync()) root.deleteSync(recursive: true);
 
+    String stagedPath(String target) => p.join(root.path, target.substring(1));
+
+    Future<void> chmod(String mode, List<String> paths) async {
+      final result = await _run('chmod', ['--', mode, ...paths]);
+      if (result.exitCode != 0) {
+        fail('chmod failed (exit ${result.exitCode}): ${result.stderr.trim()}');
+      }
+    }
+
     // Install the binary at the requested path inside the staging root.
-    final dest = File(p.join(root.path, installPath.substring(1)))
+    final dest = File(stagedPath(installPath))
       ..parent.createSync(recursive: true);
     binary.copySync(dest.path);
-    await _run('chmod', ['0755', dest.path]);
+    await chmod('0755', [dest.path]);
 
     // Repeated destinations must retain their original copy/chmod order.
     final seenDestinations = <String>{};
     final repeatedDestinations = <String>{};
     for (final target in extraFiles.values) {
-      final staged = p.join(root.path, target.substring(1));
+      final staged = stagedPath(target);
       if (!seenDestinations.add(staged)) repeatedDestinations.add(staged);
     }
 
@@ -67,13 +76,13 @@ abstract class PackageStager {
     for (final entry in extraFiles.entries) {
       final src = File(entry.key);
       if (!src.existsSync()) fail('extra file not found: ${entry.key}');
-      final to = File(p.join(root.path, entry.value.substring(1)))
+      final to = File(stagedPath(entry.value))
         ..parent.createSync(recursive: true);
       src.copySync(to.path);
       final mode = fileModes[entry.key];
       if (mode != null) {
         if (repeatedDestinations.contains(to.path)) {
-          await _run('chmod', [mode, to.path]);
+          await chmod(mode, [to.path]);
         } else {
           pathsByMode.putIfAbsent(mode, () => []).add(to.path);
         }
@@ -82,25 +91,25 @@ abstract class PackageStager {
     // Bound both the path count and argv bytes; hundreds of asset files should
     // not cause hundreds of processes or exceed a platform's argument limit.
     const maxPathsPerCall = 1024;
-    final maxArgumentBytes = Platform.isWindows ? 24 * 1024 : 96 * 1024;
+    const maxArgumentBytes = 96 * 1024;
     for (final entry in pathsByMode.entries) {
       final mode = entry.key;
-      final modeBytes = utf8.encode(mode).length + 1;
-      var args = <String>[mode];
-      var argumentBytes = modeBytes;
+      final initialArgumentBytes = 3 + utf8.encode(mode).length + 1;
+      var paths = <String>[];
+      var argumentBytes = initialArgumentBytes;
       for (final path in entry.value) {
         final pathBytes = utf8.encode(path).length + 1;
-        if (args.length > 1 &&
-            (args.length - 1 >= maxPathsPerCall ||
+        if (paths.isNotEmpty &&
+            (paths.length >= maxPathsPerCall ||
                 argumentBytes + pathBytes > maxArgumentBytes)) {
-          await _run('chmod', args);
-          args = [mode];
-          argumentBytes = modeBytes;
+          await chmod(mode, paths);
+          paths = <String>[];
+          argumentBytes = initialArgumentBytes;
         }
-        args.add(path);
+        paths.add(path);
         argumentBytes += pathBytes;
       }
-      if (args.length > 1) await _run('chmod', args);
+      if (paths.isNotEmpty) await chmod(mode, paths);
     }
     return root;
   }
