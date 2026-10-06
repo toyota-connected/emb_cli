@@ -90,8 +90,8 @@ class DeployResult {
   const DeployResult({required this.success, this.method, this.message});
   final bool success;
 
-  /// Transport used: `rsync`, `tar` (the fallback when the target has no
-  /// rsync), or `adb`. Null on failure before a method was chosen.
+  /// Transport used: `rsync`, `tar` (SSH with no rsync), or `adb`
+  /// (tar-over-adb). Null on failure before a method was chosen.
   final String? method;
   final String? message;
 }
@@ -197,13 +197,15 @@ class Deployer {
     );
   }
 
-  /// `adb shell mkdir -p <dest>` then `adb push <local>/. <dest>`.
+  /// `adb push <tarball> /tmp/<random>.tar.gz` then `adb shell tar -xzf ...`.
   ///
-  /// Unlike the rsync path this **overlays**: adb has no `--delete`, so a file
-  /// dropped from the bundle since the last push stays on the board. Deleting
-  /// the destination first is not worth the blast radius of an `rm -rf` driven
-  /// by a manifest string, so `--deploy-dir` is pushed into as-is and the
-  /// caller is told. Use a fresh `--deploy-dir` when a stale asset matters.
+  /// Tar + untar is atomic at the board level and avoids the failure mode of
+  /// `adb push` failing partway through a directory with many small files,
+  /// leaving the target in an undefined state. Requires tar on the board
+  /// (available in all Android versions).
+  ///
+  /// Unlike rsync this overlays (tar doesn't delete extraneous files), so a
+  /// file dropped from the bundle since the last push stays on the board.
   Future<DeployResult> _pushAdb(
     Directory localDir,
     DeployTarget device,
@@ -211,30 +213,72 @@ class Deployer {
   ) async {
     final args = _adbArgs(device);
     try {
-      final mk = await _run('adb', [
-        ...args,
-        'shell',
-        'mkdir -p ${_shQuote(destDir)}',
-      ]);
-      if (mk.exitCode != 0) {
-        return DeployResult(
-          success: false,
-          message: 'adb shell mkdir: ${_adbErr(mk)}',
-        );
+      // Create local tarball.
+      final tmpDir = Directory.systemTemp.createTempSync('emb_adb_');
+      final tarName = 'bundle_${DateTime.now().millisecondsSinceEpoch}.tar.gz';
+      final tarPath = '${tmpDir.path}/$tarName';
+      try {
+        final tar = await _run('tar', [
+          '-czf',
+          tarPath,
+          '-C',
+          localDir.path,
+          '.',
+        ]);
+        if (tar.exitCode != 0) {
+          return DeployResult(success: false, message: 'tar: ${tar.stderr}');
+        }
+
+        // Ensure destination directory exists.
+        final mk = await _run('adb', [
+          ...args,
+          'shell',
+          'mkdir -p ${_shQuote(destDir)}',
+        ]);
+        if (mk.exitCode != 0) {
+          return DeployResult(
+            success: false,
+            message: 'adb shell mkdir: ${_adbErr(mk)}',
+          );
+        }
+
+        // Push tarball to device's /tmp.
+        final remoteTar = '/tmp/$tarName';
+        final push = await _run('adb', [
+          ...args,
+          'push',
+          tarPath,
+          remoteTar,
+        ], output: ProcessOutputMode.stream);
+        if (push.exitCode != 0) {
+          return DeployResult(
+            success: false,
+            method: 'adb',
+            message: 'adb push tarball: ${_adbErr(push)}',
+          );
+        }
+
+        // Untar on device.
+        final untarCmd =
+            'tar -xzf ${_shQuote(remoteTar)} -C ${_shQuote(destDir)} && '
+            'rm ${_shQuote(remoteTar)}';
+        final untar = await _run('adb', [...args, 'shell', untarCmd]);
+        if (untar.exitCode != 0) {
+          return DeployResult(
+            success: false,
+            method: 'adb',
+            message: 'adb untar: ${_adbErr(untar)}',
+          );
+        }
+
+        return const DeployResult(success: true, method: 'adb');
+      } finally {
+        try {
+          tmpDir.deleteSync(recursive: true);
+        } catch (_) {
+          // Ignore cleanup failures.
+        }
       }
-      // `<dir>/.` pushes the *contents* of the bundle; `adb push <dir> <dest>`
-      // would nest it as `<dest>/<dir>`.
-      final r = await _run('adb', [
-        ...args,
-        'push',
-        '${_slash(localDir.path)}.',
-        destDir,
-      ], output: ProcessOutputMode.stream);
-      return DeployResult(
-        success: r.exitCode == 0,
-        method: 'adb',
-        message: r.exitCode == 0 ? null : 'adb push: ${_adbErr(r)}',
-      );
     } on ProcessException catch (e) {
       return DeployResult(success: false, message: _adbMissing(e));
     }

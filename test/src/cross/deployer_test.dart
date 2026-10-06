@@ -172,7 +172,7 @@ void main() {
 
   group('adb transport', () {
     test(
-      'push mkdirs over adb shell then pushes the bundle contents',
+      'push creates a tarball, pushes it, and untars on the device',
       () async {
         final rec = recorder();
         final r = await Deployer(runProcess: rec.run).push(
@@ -188,28 +188,69 @@ void main() {
           isFalse,
         );
 
-        final mkdir = rec.calls.firstWhere((c) => c.contains('shell'));
+        // Calls are: tar, adb mkdir, adb push, adb untar.
+        expect(rec.calls.length, 4);
+
+        // First: tar -czf locally (creates temp tarball from bundle contents).
+        final tarCall = rec.calls[0];
+        expect(tarCall.first, 'tar');
+        expect(tarCall, containsAllInOrder(['tar', '-czf']));
+        expect(tarCall, contains('-C'));
+        expect(tarCall, contains('.'));
+
+        // Second: mkdir on device.
+        final mkdir = rec.calls[1];
         expect(mkdir, containsAllInOrder(['adb', '-s', 'ABC123', 'shell']));
         expect(mkdir.last, "mkdir -p '/usr/share/ivi-homescreen'");
 
-        final push = rec.calls.firstWhere((c) => c.contains('push'));
+        // Third: adb push tarball.
+        final push = rec.calls[2];
         expect(push, containsAllInOrder(['adb', '-s', 'ABC123', 'push']));
-        // `<dir>/.` pushes the contents; plain `<dir>` would nest the bundle.
-        expect(push[push.indexOf('push') + 1], '${tmp.path}/.');
-        expect(push.last, '/usr/share/ivi-homescreen');
+        expect(push.last, startsWith('/tmp/bundle_'));
+
+        // Fourth: adb shell untar.
+        final untar = rec.calls[3];
+        expect(untar, containsAllInOrder(['adb', '-s', 'ABC123', 'shell']));
+        expect(untar.last, contains('tar -xzf'));
+        expect(untar.last, contains('/usr/share/ivi-homescreen'));
+        expect(untar.last, contains('rm'));
+        expect(untar.last, contains('bundle_'));
       },
     );
 
     test('no serial omits -s, leaving adb its single-device default', () async {
       final rec = recorder();
-      await Deployer(
+      final r = await Deployer(
         runProcess: rec.run,
       ).push(tmp, device: const DeployTarget.adb(), destDir: 'app');
-      expect(rec.calls.every((c) => !c.contains('-s')), isTrue);
-      expect(rec.calls.first.first, 'adb');
+      expect(r.method, 'adb');
+      // No -s flag in any adb invocations.
+      final adbCalls = rec.calls.where((c) => c.first == 'adb');
+      expect(adbCalls.every((c) => !c.contains('-s')), isTrue);
     });
 
-    test('a failed push reports adb stdout when stderr is empty', () async {
+    test('a failed tar creation reports tar stderr', () async {
+      Future<RunResult> run(
+        String exe,
+        List<String> args, {
+        String? workingDirectory,
+        Map<String, String>? environment,
+        bool includeParentEnvironment = true,
+        bool runInShell = false,
+        ProcessOutputMode output = ProcessOutputMode.capture,
+        String? label,
+      }) async => exe == 'tar'
+          ? const RunResult(1, '', 'tar: some files changed as we read them')
+          : const RunResult(0, '', '');
+
+      final r = await Deployer(
+        runProcess: run,
+      ).push(tmp, device: const DeployTarget.adb(), destDir: 'app');
+      expect(r.success, isFalse);
+      expect(r.message, contains('tar:'));
+    });
+
+    test('a failed adb push reports adb stdout when stderr is empty', () async {
       // adb writes most failures to stdout and still exits non-zero.
       Future<RunResult> run(
         String exe,
@@ -220,7 +261,7 @@ void main() {
         bool runInShell = false,
         ProcessOutputMode output = ProcessOutputMode.capture,
         String? label,
-      }) async => args.contains('push')
+      }) async => exe == 'adb' && args.contains('push')
           ? const RunResult(1, 'adb: error: failed to stat remote', '')
           : const RunResult(0, '', '');
 
