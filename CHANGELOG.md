@@ -68,6 +68,37 @@ field unchecked:
   `PATH`, the overlay ahead of the sysroot for pkg-config, and `${overlay}` /
   `${host_tools}` expanded in `defines:` so a build that imports an earlier
   augment through an export file can name the prefix. (#122)
+- feat(cross): `host_pass:` on an augment entry builds its one source tree twice —
+  a host pass with the build machine's toolchain, then the target pass — closing
+  #122. Filament is the case: it generates its materials and shaders with `matc`,
+  `resgen` and `cmgen`, compiled from its own source, so the build machine has to
+  run build-machine binaries while the libraries they feed are target binaries.
+  Both passes take the entry's `url`, `min`, `sha256`, `subdir` and patch series;
+  `host_pass.defines` are merged over `defines:` so only the difference is
+  written twice. The target pass's `defines:` can name its own host pass with
+  `${host_prefix}` (the install prefix) and `${host_build}` (the build tree) —
+  `${host_build}` is the one Filament needs, since the file that imports its
+  generators is produced in the build tree and never installed. Using either
+  without a `host_pass:` is refused at load rather than expanded to nothing.
+  (#122)
+- fix(cross): the two passes of one augment no longer share a build directory.
+  The unpacked tree is keyed on `pkg` and `min`, so expressing a host and a
+  target pass as two entries put both in `<src>/_build` — and the target pass
+  wipes its build dir first, taking the host pass's tree, and anything the target
+  pass had been told to import from it, with it. The host pass builds in
+  `_build-host`.
+- fix(cross): a `host: true` augment carrying `subdir:` configured the repository
+  root and ignored it, while its cache key named the subtree. Both passes honor
+  `subdir:` now.
+- fix(cross): a host pass's `defines:` were passed to cmake/meson unexpanded, so
+  a `${overlay}` or `${host_tools}` reached them verbatim. They expand on both
+  passes, which matters now that a host pass inherits the entry's `defines:`.
+
+**Breaking (cache):** `augmentIdentity` now folds in `host` and `host_pass`.
+Only a manifest with a `host: true` or `host_pass:` augment moves — every other
+augment's key is unchanged — but those rebuild once. Two entries differing only
+in `host` previously hashed the same, which let one's host-tool stamp answer for
+the other.
 
 # 0.3.7
 

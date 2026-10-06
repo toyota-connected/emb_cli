@@ -354,6 +354,58 @@ void main() {
       expect(augmentIdentity(sub), isNot(augmentIdentity(root)));
     });
 
+    test('augmentIdentity moves when a host pass is added or changed', () {
+      // The host pass's own stamp *is* this identity, so an entry that gained
+      // one — or changed what it configures — must not reuse the single-pass
+      // entry's build. And the target pass's output changes with it: the
+      // generators produce what the libraries are built from.
+      const common = {
+        'pkg': 'filament',
+        'min': '1.65.4',
+        'url': 'https://example/filament.tar.gz',
+        'build': 'cmake',
+      };
+      final single = AugmentLib.fromMap(common);
+      final twoPass = AugmentLib.fromMap({...common, 'host_pass': true});
+      final tuned = AugmentLib.fromMap({
+        ...common,
+        'host_pass': {
+          'defines': {'BUILD_TOOLS': 'ON'},
+        },
+      });
+      expect(augmentIdentity(twoPass), isNot(augmentIdentity(single)));
+      expect(augmentIdentity(tuned), isNot(augmentIdentity(twoPass)));
+    });
+
+    test('augmentIdentity separates a host entry from a target one', () {
+      // Two entries differing only in `host` hashed the same, so the host-tool
+      // stamp of one could answer for the other — a native binary served to a
+      // target build.
+      const common = {'pkg': 'tool', 'url': 'u', 'build': 'cmake'};
+      expect(
+        augmentIdentity(AugmentLib.fromMap({...common, 'host': true})),
+        isNot(augmentIdentity(AugmentLib.fromMap(common))),
+      );
+    });
+
+    test('augmentOverlayKey splits hosts for a two-pass augment', () {
+      // Same reasoning as a `host: true` entry: a `host_pass:` produces
+      // build-machine binaries, so the overlay is not portable across runner
+      // architectures.
+      final twoPass = _t({
+        'provider': 'arm-gnu',
+        'toolchain_version': '12.3.rel1',
+        'image_url': 'https://example/raspios.img.xz',
+        'augment': [
+          {'pkg': 'filament', 'url': 'u', 'build': 'cmake', 'host_pass': true},
+        ],
+      });
+      expect(
+        augmentOverlayKey(twoPass, hostArch: 'x86_64'),
+        isNot(augmentOverlayKey(twoPass, hostArch: 'aarch64')),
+      );
+    });
+
     test('augmentOverlayKey separates cpu variants of one augment set', () {
       final a = patch('0007.patch', 'diff');
       final base = {

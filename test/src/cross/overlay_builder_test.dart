@@ -1212,6 +1212,213 @@ void main() {
       expect(prefix, endsWith(p.join('usr')));
       expect(prefix, contains('overlay-'));
     });
+
+    test('host_pass runs both passes from one entry and one tree', () async {
+      // #122: expressing this as two entries duplicated url, min and the patch
+      // series, and the two then shared one unpacked tree and one build dir.
+      stage('filament', '1.65.4');
+      final ob = OverlayBuilder(Workspace(tmp), _profile, runProcess: run);
+      await ob.build([
+        AugmentLib.fromMap({
+          'pkg': 'filament',
+          'min': '1.65.4',
+          'url': 'https://x/filament-1.65.4.tar.gz',
+          'build': 'cmake',
+          'host_pass': true,
+        }),
+      ]);
+      ob.close();
+
+      final configures = calls
+          .where((c) => c.argv.first == 'cmake' && c.argv.contains('-S'))
+          .toList();
+      expect(
+        configures,
+        hasLength(2),
+        reason:
+            'expected a host and a target '
+            'configure, got ${configures.map((c) => c.argv).toList()}',
+      );
+
+      // The host pass is the one with no cross toolchain file: it has to
+      // produce build-machine binaries.
+      final host = configures.first.argv;
+      final target = configures.last.argv;
+      expect(host.any((a) => a.startsWith('-DCMAKE_TOOLCHAIN_FILE=')), isFalse);
+      expect(target, contains('-DCMAKE_TOOLCHAIN_FILE=/tc.cmake'));
+
+      // One source tree, two build dirs — the point of the change.
+      String buildDir(List<String> argv) => argv[argv.indexOf('-B') + 1];
+      String srcDir(List<String> argv) => argv[argv.indexOf('-S') + 1];
+      expect(srcDir(host), srcDir(target));
+      expect(buildDir(host), endsWith('_build-host'));
+      expect(buildDir(target), endsWith('_build'));
+    });
+
+    test("the host pass's build tree survives the target pass", () async {
+      // The regression this guards: both passes used <src>/_build, so the
+      // target pass's wipe took the host pass's tree with it — and with it
+      // whatever the target pass had been told to import from there.
+      stage('filament', '1.65.4');
+      final marker = <String>[];
+      Future<RunResult> runMarking(
+        String exe,
+        List<String> args, {
+        String? workingDirectory,
+        Map<String, String>? environment,
+        bool includeParentEnvironment = true,
+        bool runInShell = false,
+        ProcessOutputMode output = ProcessOutputMode.capture,
+        String? label,
+      }) async {
+        final r = await run(
+          exe,
+          args,
+          environment: environment,
+          output: output,
+          label: label,
+        );
+        // Stand in for the import file a host pass generates in its build tree.
+        if (exe == 'cmake' && args.contains('-B')) {
+          final bld = args[args.indexOf('-B') + 1];
+          if (bld.endsWith('_build-host')) {
+            final f = File(p.join(bld, 'ImportExecutables.cmake'))
+              ..writeAsStringSync('x');
+            marker.add(f.path);
+          }
+        }
+        return r;
+      }
+
+      final ob = OverlayBuilder(
+        Workspace(tmp),
+        _profile,
+        runProcess: runMarking,
+      );
+      await ob.build([
+        AugmentLib.fromMap({
+          'pkg': 'filament',
+          'min': '1.65.4',
+          'url': 'https://x/filament-1.65.4.tar.gz',
+          'build': 'cmake',
+          'host_pass': true,
+        }),
+      ]);
+      ob.close();
+
+      expect(marker, hasLength(1), reason: 'host pass did not configure');
+      expect(
+        File(marker.single).existsSync(),
+        isTrue,
+        reason: 'the target pass wiped the host build tree',
+      );
+    });
+
+    test(r'the target pass names its host pass with ${host_build}', () async {
+      // Filament imports matc/resgen/cmgen through a CMake file generated in
+      // the host build tree and never installed, so PATH and the install prefix
+      // both miss it.
+      stage('filament', '1.65.4');
+      final ob = OverlayBuilder(Workspace(tmp), _profile, runProcess: run);
+      await ob.build([
+        AugmentLib.fromMap({
+          'pkg': 'filament',
+          'min': '1.65.4',
+          'url': 'https://x/filament-1.65.4.tar.gz',
+          'build': 'cmake',
+          'host_pass': true,
+          'defines': {
+            'IMPORT_EXECUTABLES_DIR': r'${host_build}',
+            'TOOLS_PREFIX': r'${host_prefix}',
+          },
+        }),
+      ]);
+      ob.close();
+
+      final target = calls
+          .lastWhere((c) => c.argv.first == 'cmake' && c.argv.contains('-S'))
+          .argv;
+      final imported = target.firstWhere(
+        (a) => a.startsWith('-DIMPORT_EXECUTABLES_DIR='),
+      );
+      expect(imported, endsWith('_build-host'));
+      expect(imported, isNot(contains(r'${host_build}')));
+      final prefix = target.firstWhere((a) => a.startsWith('-DTOOLS_PREFIX='));
+      expect(prefix, endsWith(p.join('host-tools', 'filament', 'usr')));
+    });
+
+    test(
+      'host_pass defines override the entry only for the host pass',
+      () async {
+        stage('filament', '1.65.4');
+        final ob = OverlayBuilder(Workspace(tmp), _profile, runProcess: run);
+        await ob.build([
+          AugmentLib.fromMap({
+            'pkg': 'filament',
+            'min': '1.65.4',
+            'url': 'https://x/filament-1.65.4.tar.gz',
+            'build': 'cmake',
+            'defines': {'SKIP_SDL2': 'ON', 'BUILD_SAMPLES': 'OFF'},
+            'host_pass': {
+              'defines': {'BUILD_SAMPLES': 'ON'},
+            },
+          }),
+        ]);
+        ob.close();
+
+        final configures = calls
+            .where((c) => c.argv.first == 'cmake' && c.argv.contains('-S'))
+            .toList();
+        // Shared define reaches both; the overridden one differs per pass.
+        expect(configures.first.argv, contains('-DSKIP_SDL2=ON'));
+        expect(configures.last.argv, contains('-DSKIP_SDL2=ON'));
+        expect(configures.first.argv, contains('-DBUILD_SAMPLES=ON'));
+        expect(configures.last.argv, contains('-DBUILD_SAMPLES=OFF'));
+      },
+    );
+
+    test('a satisfied sysroot skips the host pass too', () async {
+      // The generators exist only to build this library. If the sysroot already
+      // provides it, building them is pure cost.
+      stage('filament', '1.65.4');
+      Future<RunResult> satisfied(
+        String exe,
+        List<String> args, {
+        String? workingDirectory,
+        Map<String, String>? environment,
+        bool includeParentEnvironment = true,
+        bool runInShell = false,
+        ProcessOutputMode output = ProcessOutputMode.capture,
+        String? label,
+      }) async {
+        calls.add((argv: [exe, ...args], env: environment));
+        if (exe == 'pkg-config') return const RunResult(0, '', '');
+        return const RunResult(0, '', '');
+      }
+
+      final ob = OverlayBuilder(
+        Workspace(tmp),
+        _profile,
+        runProcess: satisfied,
+      );
+      await ob.build([
+        AugmentLib.fromMap({
+          'pkg': 'filament',
+          'min': '1.65.4',
+          'url': 'https://x/filament-1.65.4.tar.gz',
+          'build': 'cmake',
+          'host_pass': true,
+        }),
+      ]);
+      ob.close();
+
+      expect(
+        calls.where((c) => c.argv.first == 'cmake'),
+        isEmpty,
+        reason:
+            'nothing should be built when the sysroot satisfies the augment',
+      );
+    });
   });
 }
 

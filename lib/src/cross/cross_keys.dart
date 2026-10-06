@@ -119,6 +119,13 @@ String augmentIdentity(AugmentLib a) => [
   a.build.name,
   '${a.staticLink}',
   if (a.defines.isNotEmpty) 'defines:${_kv(a.defines)}',
+  // `host` and `host_pass` change what gets built from the same source, so two
+  // entries differing only in them must key apart — the host-tool stamp is this
+  // identity, and a collision there serves a native binary to a target build.
+  // Emitted only when set, so keys for the ordinary single-pass augment that
+  // neither applies to do not move.
+  if (a.host) 'host:true',
+  if (a.hostPass != null) 'hostpass:${_kv(a.hostPassDefines)}',
   if (a.patches.isNotEmpty) 'patches:${patchSeriesDigest(a.patches)}',
   if (a.subdir != null && a.subdir!.isNotEmpty) 'subdir:${a.subdir}',
 ].join(':');
@@ -165,7 +172,7 @@ String augmentOverlayKey(CrossTarget t, {String hostArch = ''}) {
     'triple:${t.targetTriple ?? ''}',
     'cpu:${t.cpuFlags.join(" ")}',
     'sysroot:${sysrootBaseKey(t)}',
-    if (staged.any((a) => a.host)) 'host:$hostArch',
+    if (staged.any((a) => a.buildsHostBinaries)) 'host:$hostArch',
     for (final a in staged) 'aug:${augmentIdentity(a)}',
   ]);
 }
