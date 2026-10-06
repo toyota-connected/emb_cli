@@ -188,8 +188,8 @@ void main() {
           isFalse,
         );
 
-        // Calls are: tar, adb mkdir, adb push, adb untar.
-        expect(rec.calls.length, 4);
+        // Calls are: tar, adb mkdir, adb push, adb untar, adb rm.
+        expect(rec.calls.length, 5);
 
         // First: tar -czf locally (creates temp tarball from bundle contents).
         final tarCall = rec.calls[0];
@@ -213,8 +213,12 @@ void main() {
         expect(untar, containsAllInOrder(['adb', '-s', 'ABC123', 'shell']));
         expect(untar.last, contains('tar -xzf'));
         expect(untar.last, contains('/usr/share/ivi-homescreen'));
-        expect(untar.last, contains('rm'));
-        expect(untar.last, contains('bundle_'));
+
+        // Fifth: adb shell rm (cleanup).
+        final rm = rec.calls[4];
+        expect(rm, containsAllInOrder(['adb', '-s', 'ABC123', 'shell']));
+        expect(rm.last, contains('rm'));
+        expect(rm.last, contains('bundle_'));
       },
     );
 
@@ -270,6 +274,36 @@ void main() {
       ).push(tmp, device: const DeployTarget.adb(), destDir: 'app');
       expect(r.success, isFalse);
       expect(r.message, contains('failed to stat remote'));
+    });
+
+    test('a failed untar still attempts cleanup', () async {
+      final calls = <List<String>>[];
+      Future<RunResult> run(
+        String exe,
+        List<String> args, {
+        String? workingDirectory,
+        Map<String, String>? environment,
+        bool includeParentEnvironment = true,
+        bool runInShell = false,
+        ProcessOutputMode output = ProcessOutputMode.capture,
+        String? label,
+      }) async {
+        calls.add([exe, ...args]);
+        // Untar fails, but rm is still called.
+        if (exe == 'adb' && args.any((a) => a.contains('tar -xzf'))) {
+          return const RunResult(1, '', 'tar: cannot open for reading');
+        }
+        return const RunResult(0, '', '');
+      }
+
+      final r = await Deployer(
+        runProcess: run,
+      ).push(tmp, device: const DeployTarget.adb(), destDir: 'app');
+      expect(r.success, isFalse);
+      expect(r.message, contains('untar'));
+      // Verify both untar and rm were called (rm called despite untar failure).
+      expect(calls.any((c) => c.any((a) => a.contains('tar -xzf'))), isTrue);
+      expect(calls.any((c) => c.any((a) => a.contains('rm'))), isTrue);
     });
 
     test('a missing adb binary is reported with a hint, not a crash', () async {

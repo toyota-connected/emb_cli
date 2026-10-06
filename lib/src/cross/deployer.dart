@@ -259,11 +259,17 @@ class Deployer {
         }
 
         // Untar on device.
-        final untarCmd =
-            'tar -xzf ${_shQuote(remoteTar)} -C ${_shQuote(destDir)} && '
-            'rm ${_shQuote(remoteTar)}';
-        final untar = await _run('adb', [...args, 'shell', untarCmd]);
-        if (untar.exitCode != 0) {
+        final untar = await _run('adb', [
+          ...args,
+          'shell',
+          'tar -xzf ${_shQuote(remoteTar)} -C ${_shQuote(destDir)}',
+        ]);
+        final untarSuccess = untar.exitCode == 0;
+
+        // Clean up remote tarball (ignore failure).
+        await _run('adb', [...args, 'shell', 'rm ${_shQuote(remoteTar)}']);
+
+        if (!untarSuccess) {
           return DeployResult(
             success: false,
             method: 'adb',
