@@ -87,11 +87,25 @@ enum _ValidationCode {
 }
 
 class _BinResult {
-  _BinResult({required this.wasCached, required this.binPath});
+  _BinResult({
+    required this.wasCached,
+    required this.binPath,
+    required this.buildDir,
+  });
 
   final bool wasCached;
   final String binPath;
+
+  /// The host pass's build directory. A two-pass augment needs to name it: a
+  /// project that imports its generators through a generated CMake file reaches
+  /// them in the build tree, not the install prefix, because that file is not
+  /// installed.
+  final String buildDir;
 }
+
+/// What a host pass produced: the `bin` dir to put on the cross build's PATH,
+/// and the build tree, which a two-pass augment's target pass may need to name.
+typedef _HostBuild = ({String binPath, String buildDir});
 
 const Map<_ValidationCode, String> _overlayDownloadErrorMessage = {
   _ValidationCode.success: 'download successful!',
@@ -367,7 +381,11 @@ class OverlayBuilder {
       if (lib.host) {
         final onStep = _steps?.start('augment ${lib.pkg}');
         try {
-          final buildResult = await _buildHostTool(lib, onStep: onStep);
+          final buildResult = await _buildHostTool(
+            lib,
+            overlay,
+            onStep: onStep,
+          );
           if (!binDirs.contains(buildResult.binPath)) {
             binDirs.add(buildResult.binPath);
           }
@@ -394,13 +412,45 @@ class OverlayBuilder {
       // edit under way would be skipped. See AugmentLib.path.
       try {
         if (lib.isLocal || !await _satisfied(lib)) {
-          // What this augment can see of the ones before it.
+          // A two-pass augment builds its generators with the host toolchain
+          // first, then hands the target pass their prefix and build tree. Both
+          // passes come from this one entry, so they share url, min and the
+          // whole patch series — and the host pass runs inside the satisfied
+          // check, because generators that exist only to build this library are
+          // not worth building when the sysroot already provides it.
+          String? hostBuildDir;
+          if (lib.hostPass != null) {
+            onStep?.update('${lib.pkg}: host pass');
+            final host = await _buildHostTool(
+              _hostVariant(lib),
+              overlay,
+              needsBuildDir: true,
+              onStep: onStep,
+            );
+            if (!binDirs.contains(host.binPath)) binDirs.add(host.binPath);
+            hostBuildDir = host.buildDir;
+          }
+          // What this augment can see of the ones before it — and, for a
+          // two-pass augment, of its own host pass, which is why this comes
+          // after it.
           final soFar = _pathsSoFar(overlay, binDirs);
           switch (lib.build) {
             case CrossGenerator.meson:
-              await _buildMeson(lib, overlay, soFar, onStep: onStep);
+              await _buildMeson(
+                lib,
+                overlay,
+                soFar,
+                hostBuildDir: hostBuildDir,
+                onStep: onStep,
+              );
             case CrossGenerator.cmake:
-              await _buildCMake(lib, overlay, soFar, onStep: onStep);
+              await _buildCMake(
+                lib,
+                overlay,
+                soFar,
+                hostBuildDir: hostBuildDir,
+                onStep: onStep,
+              );
           }
           onStep?.complete(
             '${lib.pkg}: installed to ${overlay.path}', //
@@ -418,6 +468,29 @@ class OverlayBuilder {
     }
     return _pathsSoFar(overlay, binDirs);
   }
+
+  /// The host pass of a two-pass augment, as the single-pass `host: true`
+  /// augment it is equivalent to: same source, same patch series, same subdir,
+  /// built with the build machine's toolchain and installed under `host-tools`.
+  ///
+  /// Carries [AugmentLib.hostPassDefines] rather than `defines`, and no
+  /// `hostPass` of its own — so `augmentIdentity` hashes it apart from the
+  /// target pass and the two get separate host-tool stamps.
+  static AugmentLib _hostVariant(AugmentLib lib) => AugmentLib(
+    pkg: lib.pkg,
+    minVersion: lib.minVersion,
+    url: lib.url,
+    path: lib.path,
+    build: lib.build,
+    staticLink: lib.staticLink,
+    defines: lib.hostPassDefines,
+    host: true,
+    requiresDefine: lib.requiresDefine,
+    patches: lib.patches,
+    subdir: lib.subdir,
+    sha256: lib.sha256,
+    declaringFile: lib.declaringFile,
+  );
 
   /// The paths an augment build can see of the augments before it: the overlay
   /// it installs into, and the host tools built so far.
@@ -460,6 +533,29 @@ class OverlayBuilder {
     return env;
   }
 
+  /// `-D<key>=<value>` per define, with the augment variables expanded in the
+  /// values. CMake cache entries and Meson project options are spelled the same
+  /// way, and both passes go through here — a host pass inherits the entry's
+  /// `defines:` (see [AugmentLib.hostPassDefines]), so a `${overlay}` written
+  /// for the target pass would otherwise reach cmake verbatim.
+  List<String> _defineArgs(
+    AugmentLib lib,
+    Directory overlay, {
+    String? hostBuildDir,
+  }) {
+    final args = <String>[];
+    for (final e in lib.defines.entries) {
+      final value = _expandAugmentVars(
+        e.value,
+        overlay,
+        lib,
+        hostBuildDir: hostBuildDir,
+      );
+      args.add('-D${e.key}=$value');
+    }
+    return args;
+  }
+
   /// Expand the placeholders an augment may use in its `defines:` values, so a
   /// build that needs to be *pointed* at an earlier augment's output can name
   /// it. Filament imports its host tools through a CMake export file rather
@@ -469,9 +565,45 @@ class OverlayBuilder {
   /// `${overlay}` is where augments install (`<overlay>/usr`), and
   /// `${host_tools}` is the root holding one `<pkg>/usr` prefix per `host: true`
   /// augment — composable, so a manifest writes `${host_tools}/<pkg>/usr`.
-  String _expandAugmentVars(String value, Directory overlay) => value
-      .replaceAll(r'${overlay}', p.join(overlay.path, 'usr'))
-      .replaceAll(r'${host_tools}', workspace.platformDir('host-tools').path);
+  ///
+  /// A two-pass augment (`host_pass:`) gets two more, both naming its own host
+  /// pass so the entry need not repeat its own `pkg`: `${host_prefix}` is that
+  /// install prefix, and `${host_build}` the build tree. The build tree is the
+  /// one that matters for Filament — the file that imports `matc` and friends
+  /// is generated there and never installed. Both are left verbatim for a
+  /// single-pass augment, where they name nothing; `AugmentLib.fromMap` rejects
+  /// them at load for exactly that reason, so reaching here unexpanded means
+  /// the host pass ran and reported no build directory.
+  String _expandAugmentVars(
+    String value,
+    Directory overlay,
+    AugmentLib lib, {
+    String? hostBuildDir,
+  }) {
+    final hostTools = workspace.platformDir('host-tools').path;
+    var out = value
+        .replaceAll(r'${overlay}', p.join(overlay.path, 'usr'))
+        .replaceAll(r'${host_tools}', hostTools);
+    if (lib.hostPass == null) return out;
+    out = out.replaceAll(r'${host_prefix}', p.join(hostTools, lib.pkg, 'usr'));
+    if (hostBuildDir != null && hostBuildDir.isNotEmpty) {
+      out = out.replaceAll(r'${host_build}', hostBuildDir);
+    }
+    return out;
+  }
+
+  /// The directory to configure: [AugmentLib.subdir] under the unpacked tree,
+  /// or its root. Patches still apply against the root (see `_fetchSource`),
+  /// so a patch path stays repo-relative either way.
+  ///
+  /// Both passes of a two-pass augment go through here. The host pass used to
+  /// configure the root unconditionally, which was wrong for any `host: true`
+  /// entry carrying a `subdir:` — the key named a subtree and the build ignored
+  /// it.
+  static String _configureDir(AugmentLib lib, Directory src) {
+    final sub = lib.subdir;
+    return sub == null || sub.isEmpty ? src.path : p.join(src.path, sub);
+  }
 
   /// A fresh build dir for [lib]'s source — wiped first so a re-run never
   /// reuses a stale (possibly mis-configured) meson/cmake cache.
@@ -481,15 +613,21 @@ class OverlayBuilder {
   /// its build dir goes in the workspace instead: emb creates and deletes this
   /// directory on every run, which is not something to do inside someone's
   /// checkout.
-  Directory _freshBuildDir(AugmentLib lib, Directory src) {
+  ///
+  /// [host] gives the host pass its own directory. The two passes of one
+  /// augment share an unpacked tree — it is keyed on `pkg` and `min` — so
+  /// without this the target pass's wipe takes the host pass's build tree with
+  /// it, and anything the target pass was told to import from it is gone.
+  Directory _freshBuildDir(AugmentLib lib, Directory src, {bool host = false}) {
+    final suffix = host ? '-host' : '';
     final bld = lib.isLocal
         ? Directory(
             p.join(
               workspace.ensurePlatformDir('overlay-build').path,
-              '${lib.pkg}-local',
+              '${lib.pkg}-local$suffix',
             ),
           )
-        : Directory(p.join(src.path, '_build'));
+        : Directory(p.join(src.path, '_build$suffix'));
     if (bld.existsSync()) bld.deleteSync(recursive: true);
     return bld..createSync(recursive: true);
   }
@@ -937,6 +1075,7 @@ class OverlayBuilder {
     AugmentLib lib,
     Directory overlay,
     OverlayPaths soFar, {
+    String? hostBuildDir,
     StepHandle? onStep,
   }) async {
     final src = await _fetchSource(lib, onStep: onStep);
@@ -970,8 +1109,7 @@ class OverlayBuilder {
         // Package-specific project options, mirroring the CMake path's cache
         // entries (e.g. `-Dsome_feature=enabled`). Meson uses the same
         // `-Dkey=value` syntax for project options.
-        for (final e in lib.defines.entries)
-          '-D${e.key}=${_expandAugmentVars(e.value, overlay)}',
+        ..._defineArgs(lib, overlay, hostBuildDir: hostBuildDir),
       ],
       environment: _augmentEnv(soFar),
       output: ProcessOutputMode.stream,
@@ -1000,16 +1138,11 @@ class OverlayBuilder {
     AugmentLib lib,
     Directory overlay,
     OverlayPaths soFar, {
+    String? hostBuildDir,
     StepHandle? onStep,
   }) async {
     final src = await _fetchSource(lib, onStep: onStep);
-    // Configure a subtree when the augment asks for one (patches still applied
-    // against the unpacked root by _fetchSource). Lets a repository whose root
-    // builds a whole app expose a self-contained library under a subdir.
-    final sub = lib.subdir;
-    final srcDir = sub == null || sub.isEmpty
-        ? src.path
-        : p.join(src.path, sub);
+    final srcDir = _configureDir(lib, src);
     final bld = _freshBuildDir(lib, src);
     final tc = profile.cmakeToolchainFile;
     final configure = await _run(
@@ -1030,8 +1163,7 @@ class OverlayBuilder {
         // BUILD_SHARED_LIBS (no explicit STATIC/SHARED on add_library).
         '-DBUILD_SHARED_LIBS=${lib.staticLink ? 'OFF' : 'ON'}',
         // Package-specific cache entries (e.g. BLEND2D_STATIC / BLEND2D_NO_JIT).
-        for (final e in lib.defines.entries)
-          '-D${e.key}=${_expandAugmentVars(e.value, overlay)}',
+        ..._defineArgs(lib, overlay, hostBuildDir: hostBuildDir),
       ],
       environment: _augmentEnv(soFar),
       output: ProcessOutputMode.stream,
@@ -1071,9 +1203,11 @@ class OverlayBuilder {
 
   /// Build a `host: true` augment with the **host** toolchain and install its
   /// executables under a shared `host-tools` prefix; returns the `bin` dir to
-  /// prepend to the cross build's PATH. Deliberately passes no cross toolchain
-  /// file and no `profile.buildEnv()` — the tool must run on the build machine,
-  /// so it uses the host compiler and the inherited host environment.
+  /// prepend to the cross build's PATH, plus the build directory it used.
+  ///
+  /// Deliberately passes no cross toolchain file and no `profile.buildEnv()` —
+  /// the tool must run on the build machine, so it uses the host compiler and
+  /// the inherited host environment.
   ///
   /// A stamp keyed on [augmentIdentity] plus host OS, arch, and compiler
   /// versions skips the build when the inputs haven't changed — host tools are
@@ -1081,29 +1215,59 @@ class OverlayBuilder {
   /// cmake dir. The stamp is deleted before each build so a failed install
   /// doesn't leave a stale hit; the payload dir is also checked so a partial
   /// prune falls through to a rebuild rather than returning a bad path.
+  ///
+  /// [needsBuildDir] adds the build tree to what the stamp vouches for. A plain
+  /// `host: true` augment is consumed through its install prefix and PATH, so
+  /// the build tree may be pruned without invalidating the stamp; a two-pass
+  /// augment names that tree in its target pass, so a hit that cannot produce
+  /// it is useless and falls through to a rebuild.
   Future<_BinResult> _buildHostTool(
-    AugmentLib lib, {
+    AugmentLib lib,
+    Directory overlay, {
+    bool needsBuildDir = false,
     StepHandle? onStep,
   }) async {
     final hostTools = workspace.ensurePlatformDir('host-tools');
     final toolDir = Directory(p.join(hostTools.path, lib.pkg))
       ..createSync(recursive: true);
     final stampFile = File(p.join(toolDir.path, 'stamp'));
+    final buildDirFile = File(p.join(toolDir.path, 'build-dir'));
     final key = await _hostToolKey(lib);
     final binDir = p.join(toolDir.path, 'usr', 'bin');
     if (stampFile.existsSync() &&
         stampFile.readAsStringSync().trim() == key &&
         Directory(binDir).existsSync()) {
-      return _BinResult(wasCached: true, binPath: binDir);
+      final recorded = buildDirFile.existsSync()
+          ? buildDirFile.readAsStringSync().trim()
+          : '';
+      if (!needsBuildDir ||
+          (recorded.isNotEmpty && Directory(recorded).existsSync())) {
+        return _BinResult(wasCached: true, binPath: binDir, buildDir: recorded);
+      }
     }
     if (stampFile.existsSync()) stampFile.deleteSync();
-    final bin = await switch (lib.build) {
-      CrossGenerator.cmake => _buildCMakeHost(lib, toolDir, onStep: onStep),
-      CrossGenerator.meson => _buildMesonHost(lib, toolDir, onStep: onStep),
+    final built = await switch (lib.build) {
+      CrossGenerator.cmake => _buildCMakeHost(
+        lib,
+        overlay,
+        toolDir,
+        onStep: onStep,
+      ),
+      CrossGenerator.meson => _buildMesonHost(
+        lib,
+        overlay,
+        toolDir,
+        onStep: onStep,
+      ),
     };
-    Directory(bin).createSync(recursive: true);
+    Directory(built.binPath).createSync(recursive: true);
+    buildDirFile.writeAsStringSync(built.buildDir);
     stampFile.writeAsStringSync(key);
-    return _BinResult(wasCached: false, binPath: bin);
+    return _BinResult(
+      wasCached: false,
+      binPath: built.binPath,
+      buildDir: built.buildDir,
+    );
   }
 
   Future<String> _hostToolKey(AugmentLib lib) async => contentHash([
@@ -1113,24 +1277,25 @@ class OverlayBuilder {
     await _compilerVersions(),
   ]);
 
-  Future<String> _buildCMakeHost(
+  Future<_HostBuild> _buildCMakeHost(
     AugmentLib lib,
+    Directory overlay,
     Directory toolDir, {
     StepHandle? onStep,
   }) async {
     final src = await _fetchSource(lib, onStep: onStep);
-    final bld = _freshBuildDir(lib, src);
+    final bld = _freshBuildDir(lib, src, host: true);
     _check(
       lib,
       'cmake configure (host)',
       await _run('cmake', [
         '-S',
-        src.path,
+        _configureDir(lib, src),
         '-B',
         bld.path,
         '-DCMAKE_INSTALL_PREFIX=/usr',
         '-DCMAKE_BUILD_TYPE=Release',
-        for (final e in lib.defines.entries) '-D${e.key}=${e.value}',
+        ..._defineArgs(lib, overlay),
       ], output: ProcessOutputMode.stream),
     );
     onStep?.update('${lib.pkg}: cmake configure');
@@ -1154,30 +1319,31 @@ class OverlayBuilder {
         output: ProcessOutputMode.stream,
       ),
     );
-    return p.join(toolDir.path, 'usr', 'bin');
+    return (binPath: p.join(toolDir.path, 'usr', 'bin'), buildDir: bld.path);
   }
 
-  Future<String> _buildMesonHost(
+  Future<_HostBuild> _buildMesonHost(
     AugmentLib lib,
+    Directory overlay,
     Directory toolDir, {
     StepHandle? onStep,
   }) async {
     final src = await _fetchSource(lib, onStep: onStep);
-    final bld = _freshBuildDir(lib, src);
+    final bld = _freshBuildDir(lib, src, host: true);
     _check(
       lib,
       'meson setup (host)',
       await _run('meson', [
         'setup',
         bld.path,
-        src.path,
+        _configureDir(lib, src),
         '--prefix',
         '/usr',
         '--libdir',
         'lib',
         '--buildtype',
         'release',
-        for (final e in lib.defines.entries) '-D${e.key}=${e.value}',
+        ..._defineArgs(lib, overlay),
       ], output: ProcessOutputMode.stream),
     );
     onStep?.update('${lib.pkg}: meson setup');
@@ -1196,7 +1362,7 @@ class OverlayBuilder {
         output: ProcessOutputMode.stream,
       ),
     );
-    return p.join(toolDir.path, 'usr', 'bin');
+    return (binPath: p.join(toolDir.path, 'usr', 'bin'), buildDir: bld.path);
   }
 
   /// The cache filename for [url]'s basename. A URL whose path ends in `/` (or

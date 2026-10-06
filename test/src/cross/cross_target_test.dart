@@ -239,6 +239,143 @@ void main() {
     });
   });
 
+  group('AugmentLib.fromMap host_pass', () {
+    test('true gives a host pass taking the entry defines', () {
+      final a = AugmentLib.fromMap(const {
+        'pkg': 'filament',
+        'url': 'https://example/filament.tar.gz',
+        'build': 'cmake',
+        'defines': {'SKIP_SDL2': 'ON'},
+        'host_pass': true,
+      });
+      expect(a.hostPass, isNotNull);
+      expect(a.hostPass!.defines, isEmpty);
+      expect(a.hostPassDefines, const {'SKIP_SDL2': 'ON'});
+      // The entry itself is still the target pass.
+      expect(a.host, isFalse);
+      expect(a.buildsHostBinaries, isTrue);
+    });
+
+    test('false is no host pass at all', () {
+      final a = AugmentLib.fromMap(const {
+        'pkg': 'foo',
+        'url': 'u',
+        'host_pass': false,
+      });
+      expect(a.hostPass, isNull);
+      expect(a.buildsHostBinaries, isFalse);
+    });
+
+    test('its defines override the entry, shared ones stay shared', () {
+      final a = AugmentLib.fromMap(const {
+        'pkg': 'filament',
+        'url': 'u',
+        'build': 'cmake',
+        'defines': {'SKIP_SDL2': 'ON', 'BUILD_SAMPLES': 'OFF'},
+        'host_pass': {
+          'defines': {'BUILD_SAMPLES': 'ON'},
+        },
+      });
+      expect(a.defines, const {'SKIP_SDL2': 'ON', 'BUILD_SAMPLES': 'OFF'});
+      expect(a.hostPassDefines, const {
+        'SKIP_SDL2': 'ON',
+        'BUILD_SAMPLES': 'ON',
+      });
+    });
+
+    test('rejects host: true alongside it', () {
+      expect(
+        () => AugmentLib.fromMap(const {
+          'pkg': 'foo',
+          'url': 'u',
+          'host': true,
+          'host_pass': true,
+        }),
+        throwsA(
+          isA<ArgumentError>().having(
+            (e) => '${e.message}',
+            'message',
+            contains('already the host pass'),
+          ),
+        ),
+      );
+    });
+
+    test('rejects an unknown key rather than ignoring it', () {
+      // A typo in a nested block is otherwise silent, and the symptom is a host
+      // pass configured wrong.
+      expect(
+        () => AugmentLib.fromMap(const {
+          'pkg': 'foo',
+          'url': 'u',
+          'host_pass': {'define': <String, String>{}},
+        }),
+        throwsA(
+          isA<ArgumentError>().having(
+            (e) => '${e.message}',
+            'message',
+            contains('does not take define'),
+          ),
+        ),
+      );
+    });
+
+    test('rejects a scalar that is neither true nor a map', () {
+      expect(
+        () => AugmentLib.fromMap(const {
+          'pkg': 'foo',
+          'url': 'u',
+          'host_pass': 'yes',
+        }),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+
+    for (final token in const [r'${host_build}', r'${host_prefix}']) {
+      test('rejects $token in defines without a host pass', () {
+        // Both name this entry's own host pass. Left to expand to nothing they
+        // reach cmake as a plausible-looking option and fail much later, with
+        // no mention of the manifest.
+        expect(
+          () => AugmentLib.fromMap({
+            'pkg': 'foo',
+            'url': 'u',
+            'defines': {'IMPORT_DIR': token},
+          }),
+          throwsA(
+            isA<ArgumentError>().having(
+              (e) => '${e.message}',
+              'message',
+              allOf(contains(token), contains('no host_pass')),
+            ),
+          ),
+        );
+      });
+
+      test('accepts $token with a host pass', () {
+        final a = AugmentLib.fromMap({
+          'pkg': 'foo',
+          'url': 'u',
+          'host_pass': true,
+          'defines': {'IMPORT_DIR': token},
+        });
+        expect(a.defines['IMPORT_DIR'], token);
+      });
+    }
+
+    test('survives resolvePatchesAgainst', () {
+      final a = AugmentLib.fromMap(const {
+        'pkg': 'foo',
+        'url': 'u',
+        'host_pass': {
+          'defines': {'BUILD_TOOLS': 'ON'},
+        },
+        'patches': ['p/0001.patch'],
+      }).resolvePatchesAgainst('/work/manifest.yaml');
+      expect(a.hostPass?.defines, const {'BUILD_TOOLS': 'ON'});
+    });
+  });
+
   group('PackageSpec.fromMap files requires_define', () {
     test('captures a per-file gate; ungated files stay ungated', () {
       final spec = PackageSpec.fromMap(const {

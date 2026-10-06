@@ -1005,25 +1005,80 @@ produced:
   augment. Compose the second: `${host_tools}/<pkg>/usr`.
 
 The variables matter because `PATH` is not always the interface. A project that
-imports its tools through a CMake export file rather than `find_program` has to
-be *pointed* at the host pass's install prefix:
+imports a tool through a CMake export file rather than `find_program` has to be
+*pointed* at where it landed:
 
 ```yaml
 augment:
-  # Host pass: the generators the target pass runs.
-  - { pkg: filament-host, min: '1.65.4', url: https://.../filament-1.65.4.tar.gz,
+  # A code generator, compiled for the build machine.
+  - { pkg: wayland-cxx-scanner, min: '1.0.0', url: https://.../scanner-1.0.0.tar.gz,
       build: cmake, host: true }
-  # Target pass: the libraries, told where the host tools landed.
+  # A library that runs it, told where it landed.
+  - pkg: ivi-homescreen-shared
+    min: '2.0.0'
+    url: https://.../ivi-homescreen-2.0.0.tar.gz
+    build: cmake
+    subdir: shared
+    defines:
+      SCANNER_PREFIX: ${host_tools}/wayland-cxx-scanner/usr
+```
+
+When the two passes are of the **same** source tree, use `host_pass:` below
+instead — two entries would duplicate `url`, `min` and the patch series, and then
+collide on one unpacked tree.
+
+##### `host_pass` — one source, a host pass and a target pass
+
+Some trees have to be built twice: once natively, once for the target, with the
+target pass consuming the host pass's output. Filament is the case — it generates
+its materials and shaders with `matc`, `resgen` and `cmgen`, which it compiles
+from its own source, so the build machine runs build-machine binaries while the
+libraries they feed are target binaries.
+
+`host_pass:` says so in one entry. Both passes take its `url`, `min`, `sha256`,
+`subdir` and patch series; each gets its own build directory, and the host pass
+installs under `host-tools/<pkg>/usr` exactly as a `host: true` entry does.
+
+```yaml
+augment:
   - pkg: filament
     min: '1.65.4'
     url: https://.../filament-1.65.4.tar.gz
+    sha256: '…'
     build: cmake
+    patches: [patches/filament/0001-cross.patch]
     defines:
-      FILAMENT_IMPORT_TOOLS_PREFIX: ${host_tools}/filament-host/usr
+      FILAMENT_SKIP_SDL2: 'ON'
+      IMPORT_EXECUTABLES_DIR: ${host_build}
+    host_pass:
+      defines:
+        FILAMENT_SKIP_SAMPLES: 'ON'
 ```
 
-Two entries still repeat `url` and version — one declaration producing both
-passes is a separate change, tracked in #122.
+`host_pass.defines` are merged **over** `defines:`, so what both passes share is
+written once and only the difference is repeated. Two more variables are
+available in the target pass's `defines:`, both naming this entry's own host pass
+so it need not repeat its `pkg`:
+
+| Variable | Expands to |
+|---|---|
+| `${host_prefix}` | the host pass's install prefix, `<host-tools>/<pkg>/usr` |
+| `${host_build}` | the host pass's **build** directory |
+
+`${host_build}` is the one Filament needs: the file that imports `matc` and
+friends is generated in the build tree and never installed, so neither `PATH` nor
+the install prefix reaches it. Both are refused in an entry without a
+`host_pass:` — they would otherwise expand to nothing and fail much later, inside
+the generated import file, with no mention of the manifest.
+
+The host pass runs inside the same sysroot check as the target pass: generators
+that exist only to build this library are not built when the sysroot already
+satisfies `min`. It is cached on the same stamp as a `host: true` augment, with
+its build tree part of what the stamp vouches for — a hit that cannot produce the
+tree `${host_build}` names falls through to a rebuild.
+
+`host: true` and `host_pass:` on one entry is an error: `host: true` already *is*
+the host pass.
 
 ##### `host_dev_packages` — build-machine deps
 

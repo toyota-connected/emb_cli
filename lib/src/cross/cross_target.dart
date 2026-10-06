@@ -82,6 +82,31 @@ enum ToolchainVersionPolicy {
       };
 }
 
+/// The host pass of an augment that must be built twice from one source tree:
+/// once with the host toolchain, once for the target.
+///
+/// Filament is the case this exists for. It generates its materials and shaders
+/// at build time with tools it compiles from its own source (`matc`, `resgen`,
+/// `cmgen`), so in a cross build those must be **host** binaries — the build
+/// machine runs them — while the libraries they feed are target binaries. One
+/// tree, two full configure/build passes, two toolchains, and the target pass
+/// consumes the host pass's output.
+///
+/// Two separate `augment` entries can express that, but they duplicate `url`,
+/// `min` and the whole patch series, and because the unpacked tree is keyed on
+/// `pkg` and `min` the two entries then share one tree and one build directory.
+/// `host_pass:` is one declaration instead: same source, same patches, two
+/// passes, each with its own build directory.
+class HostPass {
+  const HostPass({this.defines = const {}});
+
+  /// Configure options for the host pass only, merged **over** the entry's
+  /// `defines:`. A host pass usually wants a different set from the target pass
+  /// — build the generators, skip the libraries and samples — so what both
+  /// passes share stays in `defines:` and the difference goes here.
+  final Map<String, String> defines;
+}
+
 /// One source-built library staged into a workspace overlay prefix
 /// (libdisplay-info, Vulkan-Headers, …).
 ///
@@ -99,6 +124,7 @@ class AugmentLib {
     this.staticLink = true,
     this.defines = const {},
     this.host = false,
+    this.hostPass,
     this.requiresDefine,
     this.patches = const [],
     this.subdir,
@@ -176,6 +202,38 @@ class AugmentLib {
       );
     }
 
+    // `host: true` already *is* the host pass; a host_pass on top of it would
+    // have to mean a second one, which nothing does.
+    final hostPass = _parseHostPass(pkg, map['host_pass'] as Object?);
+    final isHost = (map['host'] ?? false) as bool;
+    if (isHost && hostPass != null) {
+      throw ArgumentError(
+        'augment "$pkg" sets both host: true and host_pass:; host: true is '
+        'already the host pass. Drop one: host_pass: for a tree that needs '
+        'both passes, host: true for a tool that is only ever built natively',
+      );
+    }
+    final defines =
+        (map['defines'] as Map?)?.map(
+          (k, v) => MapEntry(k.toString(), v.toString()),
+        ) ??
+        const <String, String>{};
+    // Caught here rather than left to expand to nothing: a
+    // -DIMPORT_EXECUTABLES_DIR=${host_build} reaches cmake as a
+    // plausible-looking option and fails much later, inside the generated
+    // import file, with no mention of the manifest.
+    if (hostPass == null) {
+      for (final token in const [r'${host_build}', r'${host_prefix}']) {
+        if (defines.values.any((v) => v.contains(token))) {
+          throw ArgumentError(
+            'augment "$pkg" uses $token in defines: but declares no '
+            "host_pass:; those name this entry's own host pass, and it has "
+            'none',
+          );
+        }
+      }
+    }
+
     return AugmentLib(
       pkg: pkg,
       minVersion: minVersion,
@@ -183,17 +241,43 @@ class AugmentLib {
       path: path.isEmpty ? null : path,
       build: CrossGenerator.fromToken((map['build'] ?? 'meson').toString()),
       staticLink: (map['static'] ?? true) as bool,
-      defines:
-          (map['defines'] as Map?)?.map(
-            (k, v) => MapEntry(k.toString(), v.toString()),
-          ) ??
-          const <String, String>{},
-      host: (map['host'] ?? false) as bool,
+      defines: defines,
+      host: isHost,
+      hostPass: hostPass,
       requiresDefine: (map['requires_define'] ?? map['when'])?.toString(),
       patches: patches,
       subdir: (map['subdir'] ?? map['source_subdir'])?.toString(),
       sha256: sha,
       declaringFile: map['_source']?.toString(),
+    );
+  }
+
+  /// Parse `host_pass:` — `true` for a host pass taking the entry's own
+  /// `defines:`, or a map carrying `defines:` of its own. Unknown keys are
+  /// refused rather than ignored: a typo in a nested block is otherwise silent,
+  /// and the symptom is a host pass configured wrong.
+  static HostPass? _parseHostPass(String pkg, Object? raw) {
+    if (raw == null) return null;
+    if (raw is bool) return raw ? const HostPass() : null;
+    if (raw is! Map) {
+      throw ArgumentError(
+        'augment "$pkg": host_pass must be true or a map with defines:, '
+        'got ${raw.runtimeType}',
+      );
+    }
+    final unknown = raw.keys.map((k) => '$k').where((k) => k != 'defines');
+    if (unknown.isNotEmpty) {
+      throw ArgumentError(
+        'augment "$pkg": host_pass does not take ${unknown.join(", ")} — '
+        'only defines:',
+      );
+    }
+    return HostPass(
+      defines:
+          (raw['defines'] as Map?)?.map(
+            (k, v) => MapEntry(k.toString(), v.toString()),
+          ) ??
+          const <String, String>{},
     );
   }
 
@@ -275,6 +359,7 @@ class AugmentLib {
       staticLink: staticLink,
       defines: defines,
       host: host,
+      hostPass: hostPass,
       requiresDefine: requiresDefine,
       patches: resolvePatchPaths([
         for (final pat in patches) expandManifestVars(pat, vars),
@@ -309,9 +394,31 @@ class AugmentLib {
   /// executable(s) onto the cross build's PATH, rather than cross-compiling a
   /// library into the sysroot. For codegen/build tools that run on the build
   /// machine during the target build (e.g. a `wayland-cxx-scanner` resolved via
-  /// CMake `find_program`). `static` / `min` / pkg-config probing do not apply;
-  /// only `build: cmake` is supported for host tools.
+  /// CMake `find_program`). `static` / `min` / pkg-config probing do not apply.
+  ///
+  /// For a tree that needs *both* a host and a target pass, use [hostPass]
+  /// instead: this flag builds natively and nothing else, so expressing two
+  /// passes with it takes two entries duplicating `url`, `min` and the patch
+  /// series — and the two then collide on one unpacked tree.
   final bool host;
+
+  /// Build this augment twice from the one source tree: a host pass with the
+  /// build machine's toolchain, then the target pass. Null for the ordinary
+  /// single-pass augment. See [HostPass].
+  final HostPass? hostPass;
+
+  /// Whether this entry produces build-machine binaries — either because it is
+  /// only ever built natively ([host]) or because it carries a [hostPass].
+  /// Folded into the overlay key: an overlay holding host binaries is not
+  /// portable across build-machine architectures.
+  bool get buildsHostBinaries => host || hostPass != null;
+
+  /// The host pass's configure options: the entry's [defines] with the host
+  /// pass's own merged over them.
+  Map<String, String> get hostPassDefines => {
+    ...defines,
+    ...?hostPass?.defines,
+  };
 
   /// Optional embedder-define gate (`requires_define:` / `when:`): this augment
   /// is built only when the named define is satisfied in the effective define

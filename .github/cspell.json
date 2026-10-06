@@ -20,6 +20,9 @@
   "useGitignore": true,
   "words": [
     "libsqlite",
+    "matc",
+    "resgen",
+    "cmgen",
     "zipball",
     "tgz",
     "Artifactory",
