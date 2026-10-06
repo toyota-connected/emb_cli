@@ -1,9 +1,40 @@
-# Unreleased
+# 0.4.0
 
-Everything here is on `main` and not published. `0.3.7` below is the released
-patch; the `0.3.6` heading under it still mixes what that tag published with
-work merged before this section existed — splitting it belongs to the release
-that picks the next version.
+Released from `main`, which is what CI validates: the full matrix builds example
+apps for every example manifest across two host distributions on every commit. The
+0.3.7 patch was cherry-picked onto the `v0.3.6` tag instead, and shipped broken —
+it took the bundle audit's new parameter without the caller that fills it (#255).
+Releasing the tree that gets tested is the correction.
+
+## Upgrading
+
+Three changes need something from you. Nothing else does.
+
+**Cache keys move, so the first build after upgrading is cold.** Two separate
+corrections: `augmentOverlayKey` and `buildKey` now hash resolved (absolute)
+paths rather than raw manifest-relative values — augment `path:` and
+`modules[*].path` both — and `augmentIdentity` now folds in `host` and
+`host_pass`. A project with a `path:` augment, a `cross.modules` entry, or a
+`host: true` augment sees a one-time cold sysroot, overlay and build directory,
+and existing `emb.lock` entries report drift (`--update-lock` to re-pin). The old
+keys were wrong, not merely different: they depended on the working directory, an
+unexpanded `${app_root}` made two apps share one key and so one build directory,
+and two augments differing only in `host` hashed the same — which let one's
+host-tool stamp answer for the other, serving a native binary to a target build.
+
+**The board library is laid out per source.** Boards install into
+`<boards>/<source>/*.emb.yaml` rather than a flat directory, sources are declared
+in `~/.config/emb/boards.yaml`, and the repo's own boards moved to
+`boards/emb-public/`. Run `emb boards sync` after upgrading; `emb boards list`
+reports what is loaded and which rung it came from. `extends:` still accepts an
+unqualified target name — it resolves when exactly one source provides it — so
+existing manifests keep working, but a target name two sources both provide is now
+a hard error naming the qualified alternatives (`<source>/<target>`).
+
+**`--tar` and `--deploy` now carry `cross.package.files`.** They were silently
+dropped before. If you worked around that by hand — staging a config file into the
+bundle yourself, or copying it to the board separately — that payload now arrives
+twice. See the entry under Cross.
 
 **Security.** A sweep over the packaging and deploy paths, prompted by reviewing
 the board-registry and manifest-variable work. Every one of these took a value a
@@ -46,6 +77,16 @@ field unchecked:
 
 **Boards.**
 
+- feat(cross): a configurable multi-source board registry. Board files can come
+  from more than one repository — `emb boards add github org/repo --name priv`,
+  over HTTPS with a PAT (`--token-env`) or SSH (`--transport ssh`) — each
+  installed into its own subdirectory so two sources can both define a
+  `rpi5-bookworm` without colliding. `extends:` resolves `<source>/<target>`, and
+  an unqualified target still resolves when exactly one source provides it.
+  Sources live in `~/.config/emb/boards.yaml`; `emb boards list --sources`,
+  `emb boards sync --source <name>` and `emb boards remove <name>` manage them.
+  Each source carries its own version stamp, so `emb doctor` reports skew per
+  source rather than for the install as a whole. (#231)
 - fix(boards): a `boards.yaml` emb could not parse was replaced by the defaults
   and written back, losing every source the user declared; a damaged install
   reported "up to date" forever because only the remote SHA was checked;
@@ -58,6 +99,27 @@ field unchecked:
   check was blind. (#249)
 
 **Cross.**
+
+- feat(cross): `${embedder_root}`, `${app_root}` and `${runnable}` in manifest
+  paths, so a manifest can name files across project boundaries and stay
+  relocatable. Supported in `package.files`, `package.scripts`,
+  `package.flatpak.icon`, `modules[*].path`, and augment `path:`/`patches:`;
+  `${runnable}` needs `--app` and is packaging-only. See the variable table in
+  the README for which fields bind which.
+  `emb matrix` omits `sysroot_key`/`build_key` for a cell whose key-affecting
+  paths still hold an unbound variable, and warns — a workflow that keys a cache
+  on them must skip the step when they are empty, as `.github/workflows/cross.yaml`
+  now does, or different boards collapse onto one cache entry.
+
+- feat(cross): `cross.run.command` and `cross.run.env` — the command `--run`
+  executes and the environment it runs under, instead of a hardcoded
+  `./<embedder> -b .`. `${embedder}` and `${deploy_dir}` expand in it, the
+  generated Flutter custom device uses the same command, and every token and env
+  value is single-quoted for the remote shell. `run.env` keys must be shell
+  identifiers (`[A-Za-z_][A-Za-z0-9_]*`): a key that is not checked becomes an
+  assignment prefix in the remote shell, i.e. arbitrary command execution on the
+  board from a board YAML. `run.env` is not for secrets — the values reach build logs,
+  `custom_devices.config` and the deploy transport in cleartext.
 
 - fix(cross): `--tar` and `--deploy` carry `cross.package.files`. The runnable
   bundle was the app bundle plus the embedder binary plus its linked libraries,
@@ -106,19 +168,14 @@ field unchecked:
   a `${overlay}` or `${host_tools}` reached them verbatim. They expand on both
   passes, which matters now that a host pass inherits the entry's `defines:`.
 
-**Breaking (cache):** `augmentIdentity` now folds in `host` and `host_pass`.
-Only a manifest with a `host: true` or `host_pass:` augment moves — every other
-augment's key is unchanged — but those rebuild once. Two entries differing only
-in `host` previously hashed the same, which let one's host-tool stamp answer for
-the other.
-
 # 0.3.7
 
 A maintenance release cut from the `v0.3.6` tag, not from `main`: the two
-bundle-audit fixes below and nothing else, both already on `main`. `main` carries
-the cache-key corrections, the manifest path variables, `cross.run.command` and
-the multi-source board library, which change cache keys and the board-library
-layout — those ship as their own release rather than as a patch.
+bundle-audit fixes below and nothing else. Keeping the breaking changes out of a
+patch was the intent; cherry-picking to do it was the mistake. The first fix
+below landed here without the caller that feeds it, so this release did not fix
+what it claimed to (#255) — the unit tests supply that argument themselves and
+stayed green. 0.4.0 ships the tree CI builds instead.
 
 - fix(cross): the bundle audit no longer rejects staged Dart code assets. An app
   whose dependency ships a native library as a code asset (sqlite3) had it copied
@@ -132,43 +189,8 @@ layout — those ship as their own release rather than as a patch.
 
 # 0.3.6
 
-> The entries under this heading are a mix: the ones the `v0.3.6` tag published,
-> and everything merged since, which is unreleased. The pubspec was never bumped
-> after tagging, so new work landed under the published version's heading. The
-> next release should split them — unreleased work above, `0.3.6` as it shipped
-> below.
-
-**Breaking (cache):** `augmentOverlayKey` and `buildKey` now hash resolved
-(absolute) paths instead of raw manifest-relative values — augment `path:` and
-`modules[*].path` both. Any project with a `path:` augment or a `cross.modules`
-entry sees a one-time cold sysroot, overlay and build directory on upgrade, and
-existing `emb.lock` entries report drift. The previous keys were wrong — they
-depended on the working directory, and an unexpanded `${app_root}` made two
-apps share one key and so one build dir — so the new ones are the correct ones.
-
-- feat(cross): `${embedder_root}`, `${app_root}` and `${runnable}` in manifest
-  paths, so a manifest can name files across project boundaries and stay
-  relocatable. Supported in `package.files`, `package.scripts`,
-  `package.flatpak.icon`, `modules[*].path`, and augment `path:`/`patches:`;
-  `${runnable}` needs `--app` and is packaging-only. See the variable table in
-  the README for which fields bind which.
-  `emb matrix` omits `sysroot_key`/`build_key` for a cell whose key-affecting
-  paths still hold an unbound variable, and warns — a workflow that keys a cache
-  on them must skip the step when they are empty, as `.github/workflows/cross.yaml`
-  now does, or different boards collapse onto one cache entry.
-
 Two cache-key corrections. Both are about a key that does not name everything
 the thing it keys was built with, so two different trees can share one entry.
-
-- feat(cross): `cross.run.command` and `cross.run.env` — the command `--run`
-  executes and the environment it runs under, instead of a hardcoded
-  `./<embedder> -b .`. `${embedder}` and `${deploy_dir}` expand in it, the
-  generated Flutter custom device uses the same command, and every token and env
-  value is single-quoted for the remote shell. `run.env` keys must be shell
-  identifiers (`[A-Za-z_][A-Za-z0-9_]*`): a key that is not checked becomes an
-  assignment prefix in the remote shell, i.e. arbitrary command execution on the
-  board from a board YAML. `run.env` is not for secrets — the values reach build logs,
-  `custom_devices.config` and the deploy transport in cleartext.
 
 - fix(cross): `sysrootKey` folds in `cpu_flags` once an augment stages into the
   sysroot. Omitting them is right while a sysroot is only an extracted image --
