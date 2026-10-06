@@ -276,7 +276,7 @@ void main() {
       expect(r.message, contains('failed to stat remote'));
     });
 
-    test('a failed untar still attempts cleanup', () async {
+    test('a failed untar cleans up tarball and partial files', () async {
       final calls = <List<String>>[];
       Future<RunResult> run(
         String exe,
@@ -289,7 +289,7 @@ void main() {
         String? label,
       }) async {
         calls.add([exe, ...args]);
-        // Untar fails, but rm is still called.
+        // Untar fails.
         if (exe == 'adb' && args.any((a) => a.contains('tar -xzf'))) {
           return const RunResult(1, '', 'tar: cannot open for reading');
         }
@@ -301,9 +301,14 @@ void main() {
       ).push(tmp, device: const DeployTarget.adb(), destDir: 'app');
       expect(r.success, isFalse);
       expect(r.message, contains('untar'));
-      // Verify both untar and rm were called (rm called despite untar failure).
+      // Verify untar, rm tarball, and rm destDir were all called.
       expect(calls.any((c) => c.any((a) => a.contains('tar -xzf'))), isTrue);
-      expect(calls.any((c) => c.any((a) => a.contains('rm'))), isTrue);
+      final rmTarball = calls.any(
+        (c) =>
+            c.any((a) => a.contains('rm')) && !c.any((a) => a.contains('rf')),
+      );
+      expect(rmTarball, isTrue);
+      expect(calls.any((c) => c.any((a) => a.contains('rm -rf'))), isTrue);
     });
 
     test('a missing adb binary is reported with a hint, not a crash', () async {

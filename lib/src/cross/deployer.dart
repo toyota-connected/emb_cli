@@ -270,6 +270,8 @@ class Deployer {
         await _run('adb', [...args, 'shell', 'rm ${_shQuote(remoteTar)}']);
 
         if (!untarSuccess) {
+          // Delete partial files left by failed untar (ignore failure).
+          await _run('adb', [...args, 'shell', 'rm -rf ${_shQuote(destDir)}']);
           return DeployResult(
             success: false,
             method: 'adb',
