@@ -34,6 +34,7 @@ import 'package:emb_cli/src/cross/module_stager.dart';
 import 'package:emb_cli/src/cross/offline_enforcement.dart';
 import 'package:emb_cli/src/cross/overlay_builder.dart';
 import 'package:emb_cli/src/cross/package_files.dart';
+import 'package:emb_cli/src/cross/package_stager.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/cross/rpm_packager.dart';
 import 'package:emb_cli/src/cross/run_command.dart';
@@ -2362,10 +2363,10 @@ class CrossCommand extends Command<int> {
           '  ${r.backend ?? ""}: runnable → ${outDir.path}  '
           '(run: $runHint)',
         );
-        if (tar) {
-          final archive = await runnable.tar(outDir);
-          _logger.info('  ${r.backend ?? ""}: ${archive.path}');
-        }
+        // Flatpak runs before the staging below, against the bundle as
+        // assembled: it applies `package.files` itself, at their real `/app`
+        // paths, so a bundle already carrying them at bundle-relative paths
+        // would ship each one twice.
         if (flatpak) {
           final rc = await _packageFlatpak(
             profile,
@@ -2381,6 +2382,30 @@ class CrossCommand extends Command<int> {
             appPath: appPath,
           );
           if (rc != ExitCode.success.code) return rc;
+        }
+        final spec = target.package ?? const PackageSpec();
+        if (spec.files.isNotEmpty) {
+          final staged = await _stageRunnableFiles(
+            outDir,
+            _extraFiles(
+              spec,
+              manifestDir,
+              overlayPrefix: overlayPrefix,
+              defines: target.defines,
+              vars: _manifestVars(
+                manifestDir: manifestDir,
+                appDir: _appDir(appPath),
+                buildRoot: buildRoot,
+                multi: multi,
+                backend: r.backend,
+              ),
+            ),
+          );
+          if (!staged) return ExitCode.software.code;
+        }
+        if (tar) {
+          final archive = await runnable.tar(outDir);
+          _logger.info('  ${r.backend ?? ""}: ${archive.path}');
         }
         final rc = await _deployOrRun(
           outDir: outDir,
@@ -3183,6 +3208,52 @@ class CrossCommand extends Command<int> {
       }
     }
     return ExitCode.success.code;
+  }
+
+  /// Stage `cross.package.files` into an assembled runnable [outDir], so what
+  /// `--tar` archives and `--deploy` ships carries the same payload the package
+  /// formats place. They were dropped here: the runnable was the app bundle
+  /// plus the embedder binary plus its linked libs, and nothing read
+  /// `spec.files` —
+  /// so a config file or a systemd unit declared in the manifest reached a
+  /// `.deb` but never a deployed board, with no warning either way.
+  ///
+  /// The bundle root stands in for the target's `/`, so an absolute `to:` loses
+  /// its leading separator (`/etc/app.conf` → `<runnable>/etc/app.conf`) and a
+  /// relative one lands as-is. This is a layout, not an install: `--deploy`
+  /// copies the bundle to the deploy directory, so these files sit under it
+  /// rather than at `/etc`. Installing them at their real paths is what the
+  /// package formats are for, and what the two-package model in #216 is about.
+  ///
+  /// A source already inside [outDir] is skipped. The documented
+  /// `${runnable}/lib/libfoo.so` pattern names a file the bundle already
+  /// carries, and copying it to a second path inside the same bundle only
+  /// doubles what goes over the wire.
+  Future<bool> _stageRunnableFiles(
+    Directory outDir,
+    ({Map<String, String> files, Map<String, String> modes}) ef,
+  ) async {
+    final files = filesNotAlreadyIn(outDir, ef.files);
+    for (final dropped in ef.files.keys.where((k) => !files.containsKey(k))) {
+      _logger.detail('  package.files: $dropped already in the bundle');
+    }
+    if (files.isEmpty) return true;
+    try {
+      await stageExtraFiles(
+        root: outDir,
+        files: files,
+        fileModes: ef.modes,
+        run: _runProcess,
+        fail: (String m) => throw RunnableBundleException(m),
+      );
+    } on RunnableBundleException catch (e) {
+      _logger.err('  package.files: ${e.message}');
+      return false;
+    }
+    _logger.detail(
+      '  package.files: staged ${files.length} into ${outDir.path}',
+    );
+    return true;
   }
 
   /// Package an assembled runnable [bundleDir] into a single-file `.flatpak`

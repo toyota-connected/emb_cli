@@ -355,4 +355,130 @@ void main() {
     }
     expect(File(p.join(victim.path, 'keep.txt')).existsSync(), isTrue);
   });
+
+  group('stageExtraFiles into a bundle root', () {
+    Future<RunResult> noopRun(
+      String executable,
+      List<String> arguments, {
+      String? workingDirectory,
+      Map<String, String>? environment,
+      bool includeParentEnvironment = true,
+      bool runInShell = false,
+      ProcessOutputMode output = ProcessOutputMode.capture,
+      String? label,
+    }) async => const RunResult(0, '', '');
+
+    Never boom(String m) => throw StateError(m);
+
+    test('an absolute dest loses its leading separator', () async {
+      // #216: the runnable bundle stands in for the target's `/`, so a
+      // `to: /etc/app.conf` lands under the bundle rather than on the host.
+      final root = Directory(p.join(tmp.path, 'runnable'))
+        ..createSync(recursive: true);
+      final src = File(p.join(tmp.path, 'app.conf'))..writeAsStringSync('k=v');
+      await stageExtraFiles(
+        root: root,
+        files: {src.path: '/etc/app.conf'},
+        fileModes: const {},
+        run: noopRun,
+        fail: boom,
+      );
+      expect(File(p.join(root.path, 'etc', 'app.conf')).existsSync(), isTrue);
+    });
+
+    test('a relative dest lands as-is', () async {
+      final root = Directory(p.join(tmp.path, 'runnable'))
+        ..createSync(recursive: true);
+      final src = File(p.join(tmp.path, 'unit'))..writeAsStringSync('x');
+      await stageExtraFiles(
+        root: root,
+        files: {src.path: 'share/app/unit'},
+        fileModes: const {},
+        run: noopRun,
+        fail: boom,
+      );
+      expect(
+        File(p.join(root.path, 'share', 'app', 'unit')).existsSync(),
+        isTrue,
+      );
+    });
+
+    test('a source already at its destination is skipped, not truncated', () {
+      // Only reachable now that the staging root can be a directory the source
+      // lives in. copySync onto itself empties the file.
+      final root = Directory(p.join(tmp.path, 'runnable', 'lib'))
+        ..createSync(recursive: true);
+      final src = File(p.join(root.path, 'libfoo.so'))
+        ..writeAsStringSync('ELF payload');
+      return expectLater(
+        stageExtraFiles(
+          root: root,
+          files: {src.path: 'libfoo.so'},
+          fileModes: const {},
+          run: noopRun,
+          fail: boom,
+        ).then((_) => src.readAsStringSync()),
+        completion('ELF payload'),
+      );
+    });
+
+    test('a dest with .. is refused', () async {
+      final root = Directory(p.join(tmp.path, 'runnable'))
+        ..createSync(recursive: true);
+      final victim = Directory(p.join(tmp.path, 'victim'))
+        ..createSync(recursive: true);
+      File(p.join(victim.path, 'keep.txt')).writeAsStringSync('precious');
+      final src = File(p.join(tmp.path, 'evil'))..writeAsStringSync('x');
+      await expectLater(
+        stageExtraFiles(
+          root: root,
+          files: {src.path: '/../victim/keep.txt'},
+          fileModes: const {},
+          run: noopRun,
+          fail: boom,
+        ),
+        throwsA(
+          isA<StateError>().having(
+            (e) => e.toString(),
+            'message',
+            contains('must not contain ".."'),
+          ),
+        ),
+      );
+      expect(
+        File(p.join(victim.path, 'keep.txt')).readAsStringSync(),
+        'precious',
+      );
+    });
+
+    test(
+      'an option-shaped mode is refused before anything is written',
+      () async {
+        final root = Directory(p.join(tmp.path, 'runnable'))
+          ..createSync(recursive: true);
+        final src = File(p.join(tmp.path, 'app.conf'))
+          ..writeAsStringSync('k=v');
+        await expectLater(
+          stageExtraFiles(
+            root: root,
+            files: {src.path: '/etc/app.conf'},
+            fileModes: {src.path: '--reference=/etc/shadow'},
+            run: noopRun,
+            fail: boom,
+          ),
+          throwsA(
+            isA<StateError>().having(
+              (e) => e.toString(),
+              'message',
+              contains('3-4 octal digits'),
+            ),
+          ),
+        );
+        expect(
+          File(p.join(root.path, 'etc', 'app.conf')).existsSync(),
+          isFalse,
+        );
+      },
+    );
+  });
 }

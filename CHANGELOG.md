@@ -59,6 +59,18 @@ field unchecked:
 
 **Cross.**
 
+- fix(cross): `--tar` and `--deploy` carry `cross.package.files`. The runnable
+  bundle was the app bundle plus the embedder binary plus its linked libraries,
+  and nothing read `spec.files` — so a config file or a systemd unit declared in
+  the manifest reached a `.deb` but never a deployed board, silently, with no
+  warning on either path. They stage under the bundle root: an absolute `to:`
+  loses its leading separator, a relative one lands as-is. A source already
+  inside the bundle is skipped, so the documented `${runnable}/lib/libfoo.so`
+  pattern does not ship the library twice. `--flatpak` is unaffected; it applies
+  `files:` itself at their `/app` paths, and now runs before the staging so it
+  cannot ship them twice. Part of #216 — the two-package model in that issue is
+  a separate change. **This changes what `--tar` produces and what `--deploy`
+  pushes** for any manifest that declares `package.files`.
 - feat(cross): `--deploy` and `--run` work without `--build`, shipping the bundle
   a previous build left behind — a redeploy after a failed transfer, a rerun to
   reproduce a crash, or pushing one build to a second board, none of which should

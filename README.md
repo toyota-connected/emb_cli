@@ -915,6 +915,17 @@ Each entry maps a host source (relative to the manifest) to an absolute target
 path. The value is either a bare destination or a map taking `to`, `mode`, and
 `requires_define` (alias `when`) to gate the file on an embedder define.
 
+**`--tar` and `--deploy` carry these too**, laid out under the bundle root: an
+absolute `to:` loses its leading separator, so `/etc/app.conf` lands at
+`<runnable>/etc/app.conf`, and a relative one lands as-is. A bundle is not an
+install — `--deploy` copies it to `--deploy-dir` on the board, so these files sit
+under that directory rather than at `/etc`. Putting them at their real paths is
+what `--deb`/`--ipk`/`--rpm`/`--targz` are for.
+
+A source already inside the bundle is skipped, so the `${runnable}/lib/libfoo.so`
+pattern below does not ship the library twice. The `--flatpak` path is unaffected:
+it applies `files:` itself, at their `/app` paths.
+
 **A source may name a directory**, in which case every file beneath it ships at
 `<to>/<path relative to the source>`. That is what lets a Flutter app bundle go
 into a `.deb`/`.ipk`/`.rpm`/`.tar.gz` at all: `data/flutter_assets` is hundreds

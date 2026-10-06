@@ -158,4 +158,32 @@ void main() {
       expect(r.files.values, ['/usr/share/app/a.bin']);
     });
   });
+
+  group('filesNotAlreadyIn', () {
+    test('drops a source inside the bundle, keeps one outside', () {
+      final bundle = Directory(p.join('/build', 'runnable'));
+      final kept = filesNotAlreadyIn(bundle, {
+        p.join('/build', 'runnable', 'lib', 'libfoo.so'): '/usr/lib/libfoo.so',
+        p.join('/proj', 'assets', 'app.conf'): '/etc/app.conf',
+      });
+      expect(kept, {p.join('/proj', 'assets', 'app.conf'): '/etc/app.conf'});
+    });
+
+    test('a sibling directory sharing the prefix is not inside it', () {
+      // `runnable-drm` starts with `runnable`, and a plain string prefix test
+      // would drop a multi-backend build's files from every other backend.
+      final bundle = Directory(p.join('/build', 'runnable'));
+      final src = p.join('/build', 'runnable-drm', 'lib', 'libfoo.so');
+      expect(filesNotAlreadyIn(bundle, {src: '/usr/lib/libfoo.so'}), {
+        src: '/usr/lib/libfoo.so',
+      });
+    });
+
+    test('an empty map stays empty', () {
+      expect(
+        filesNotAlreadyIn(Directory('/build/runnable'), const {}),
+        isEmpty,
+      );
+    });
+  });
 }

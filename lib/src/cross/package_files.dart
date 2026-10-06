@@ -122,3 +122,19 @@ List<File> _filesUnder(String root, List<String> warnings) {
   }
   return out;
 }
+
+/// [files] minus the entries whose source already lives under [bundleRoot].
+///
+/// Staging `package.files` into the runnable bundle makes a second copy of
+/// anything sourced from it. The documented `${runnable}/lib/libfoo.so` pattern
+/// names a file the bundle already carries, so copying it to a second path
+/// inside the same bundle only doubles what `--tar` archives and `--deploy`
+/// pushes. The package formats stage from the same map into their own root,
+/// where the entry is not redundant and is kept.
+Map<String, String> filesNotAlreadyIn(
+  Directory bundleRoot,
+  Map<String, String> files,
+) => {
+  for (final e in files.entries)
+    if (!p.isWithin(bundleRoot.path, e.key)) e.key: e.value,
+};
