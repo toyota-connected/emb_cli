@@ -1,3 +1,10 @@
+# Unreleased
+
+Nothing yet. New entries go here, not under the heading below — the pubspec reads
+`0.5.0-dev`, and work recorded under a published version is work no one can tell
+was shipped. That is how the `0.3.6` section ended up mixing a released tag with
+three blocks of later work, which 0.4.0 had to unpick.
+
 # 0.4.0
 
 Released from `main`, which is what CI validates: the full matrix builds example
