@@ -182,4 +182,32 @@ void main() {
       expect(a.archMismatches.single, startsWith('libfluorite_core_ffi.so:'));
     });
   });
+  test('#255: a staged sqlite3 code asset passes with the names supplied', () {
+    // The reported failure: `libsqlite3.so` is aarch64 and emb staged it from
+    // flutter_assets/native_assets, yet it was reported as a stray. 0.3.7
+    // carried this parameter but its caller passed nothing, so the names were
+    // always empty and the fix had no effect — hence this asserts the pairing,
+    // not just the parameter.
+    put('libapp.so');
+    put('libflutter_engine.so');
+    put('libsqlite3.so');
+
+    final withNames = auditBundleLib(
+      lib,
+      triple: triple,
+      moduleArtifacts: const [],
+      codeAssets: const ['libsqlite3.so'],
+    );
+    expect(withNames.ok, isTrue, reason: withNames.problems.join('; '));
+
+    // And the shape of the bug: no names, same bundle, rejected as a stray.
+    final withoutNames = auditBundleLib(
+      lib,
+      triple: triple,
+      moduleArtifacts: const [],
+    );
+    expect(withoutNames.ok, isFalse);
+    expect(withoutNames.problems.single.name, 'libsqlite3.so');
+    expect(withoutNames.problems.single.stray, isTrue);
+  });
 }

@@ -1,3 +1,15 @@
+# 0.3.8
+
+- fix(cross): pass the staged code-asset names to the bundle audit. 0.3.7
+  cherry-picked the audit's new `codeAssets` parameter but not the caller that
+  fills it, so it was always empty and a staged `libsqlite3.so` was still
+  reported as a stray — #239 was not fixed in that release. The helper lists the
+  bundle's `data/flutter_assets/native_assets/`; the arch check still applies, so
+  a host-built code asset is still refused. (#255, completing #239)
+
+For the next cherry-pick: the audit's tests supply `codeAssets` themselves, so
+they are green with no caller. Check the call site, not just the suite.
+
 # 0.3.7
 
 A patch release off the 0.3.6 tag, carrying only the bundle-audit fixes. The

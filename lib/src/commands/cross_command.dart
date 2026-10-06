@@ -1233,12 +1233,18 @@ class CrossCommand extends Command<int> {
     }
 
     // Verify the assembled bundle's lib/ holds only the engine, the app image,
-    // and the declared module artifacts, each built for the target — before it
-    // is copied to every runnable dir, tarball, flatpak, and deploy target.
+    // the declared module artifacts, and the code assets the bundler staged,
+    // each built for the target — before it is copied to every runnable dir,
+    // tarball, flatpak, and deploy target.
     final audit = auditBundleLib(
       Directory(p.join(appBundle.path, 'lib')),
       triple: profile.targetTriple,
       moduleArtifacts: target.modules.expand((m) => m.artifacts),
+      // What the stager copied in, read back from the same place it copied
+      // from, so the two cannot drift. Without this the audit rejects a file
+      // emb itself placed — 0.3.7 carried the audit's `codeAssets` parameter
+      // but nothing to put in it.
+      codeAssets: _stagedCodeAssetNames(appBundle),
     );
     if (!audit.ok) {
       // One line per file, not one per kind of fault: a host-built native asset
@@ -1360,6 +1366,28 @@ class CrossCommand extends Command<int> {
       }
     }
     return ExitCode.success.code;
+  }
+
+  /// Bare filenames of the code assets `flutter build bundle` produced for
+  /// this bundle — the set the bundler flattens into `lib/`.
+  ///
+  /// Read from the bundle rather than declared in the manifest: a code asset
+  /// comes from a dependency's Dart build hook, so the manifest does not know
+  /// the names, and reading the same directory the stager copied from keeps the
+  /// audit's idea of "allowed" from drifting from what was actually placed.
+  static List<String> _stagedCodeAssetNames(Directory appBundle) {
+    final dir = Directory(
+      p.join(appBundle.path, 'data', 'flutter_assets', 'native_assets'),
+    );
+    if (!dir.existsSync()) return const [];
+    try {
+      return [
+        for (final e in dir.listSync(recursive: true, followLinks: false))
+          if (e is File) p.basename(e.path),
+      ];
+    } on FileSystemException {
+      return const [];
+    }
   }
 
   /// scp a built `.deb` to [host] and install it with `apt-get`, which
