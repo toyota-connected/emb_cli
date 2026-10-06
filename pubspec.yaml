@@ -2,7 +2,7 @@ name: emb_cli
 description: >-
   Flutter Embedder CLI: provision an embedded-Linux Flutter workspace and build
   ivi-homescreen bundles (cross-compiled AOT for arm64/riscv64).
-version: 0.4.0
+version: 0.5.0-dev
 repository: https://github.com/toyota-connected/emb_cli
 issue_tracker: https://github.com/toyota-connected/emb_cli/issues
 topics:
@@ -36,6 +36,11 @@ dependencies:
   yaml: ^3.1.0
 
 dev_dependencies:
+  # Upper bound, not a preference: analyzer 14.5.0 removed
+  # AnalysisOptionsImpl.contextFeatures, which build_runner 2.16.1 — its latest —
+  # still sets, so a fresh resolution cannot run build_runner at all and
+  # `verify-version` fails. Drop this once build_runner ships a fix.
+  analyzer: ">=14.0.0 <14.5.0"
   build_runner: ^2.4.11
   build_verify: ^3.1.0
   build_version: ^2.1.1
