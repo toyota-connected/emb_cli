@@ -124,26 +124,40 @@ void main() {
   group('makeTimedProcessRunner', () {
     final run = makeTimedProcessRunner();
 
-    Future<int> aliveSleeps() async {
-      final r = await Process.run('pgrep', ['-cx', 'sleep']);
-      return int.tryParse((r.stdout as String).trim()) ?? 0;
+    // A duration no other process plausibly sleeps for, so the check below
+    // finds this test's own child and nothing else. Counting `sleep`
+    // processes, or diffing the set of them, both read the whole machine's
+    // process table — this suite runs its files concurrently and does not own
+    // it, so an unrelated `sleep` appearing or exiting mid-test moved either
+    // answer.
+    const sentinel = '31337';
+
+    /// Whether this test's own `sleep` is still running.
+    Future<bool> childAlive() async {
+      final r = await Process.run('pgrep', ['-fx', 'sleep $sentinel']);
+      return r.exitCode == 0;
     }
 
     test('kills the child and reports the limit', () async {
-      final before = await aliveSleeps();
       final sw = Stopwatch()..start();
-      final r = await run('sleep', ['30'], timeout: const Duration(seconds: 1));
+      final r = await run('sleep', const [
+        sentinel,
+      ], timeout: const Duration(seconds: 1));
       sw.stop();
 
       expect(r.exitCode, timedOutExitCode);
       expect(r.stderr, contains('timed out after 1s'));
-      expect(r.stderr, contains('sleep 30'));
+      expect(r.stderr, contains('sleep $sentinel'));
       // It returned on the limit, not after the sleep.
       expect(sw.elapsed, lessThan(const Duration(seconds: 10)));
       // And the child is gone: a `.timeout()` on the future would have left it
       // running, which is why the limit lives in the runner.
       await Future<void>.delayed(const Duration(milliseconds: 300));
-      expect(await aliveSleeps(), before);
+      expect(
+        await childAlive(),
+        isFalse,
+        reason: 'the timed-out child is still running',
+      );
     });
 
     test('escalates to SIGKILL when SIGTERM is ignored', () async {
