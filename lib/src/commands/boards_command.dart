@@ -226,10 +226,24 @@ class BoardsSyncCommand extends Command<int> {
       final refOverride = argResults?['ref'] as String?;
       final sourceFilter = argResults?['source'] as String?;
       final dest = resolveBoardsDir(environment: _environment);
+      final sourcesFile = resolveBoardSourcesFile(environment: _environment);
       final config = BoardSourceConfig.load(
-        resolveBoardSourcesFile(environment: _environment),
+        sourcesFile,
         onWarning: _logger.warn,
       );
+
+      // `load` repairs a pre-0.4.0 default path in memory on every read. Write
+      // it back here, and only here: this is the one command whose job is
+      // fixing up the board library. `droppedEntries` still vetoes the write —
+      // a file emb could not fully parse must not be replaced by whatever it
+      // managed to salvage.
+      if (config.repairedDefaultPath && !config.droppedEntries) {
+        config.save(sourcesFile);
+        _logger.detail(
+          '${sourcesFile.path}: corrected ${defaultSource.name} path to '
+          '"$defaultSourcePath" (boards moved there in 0.4.0)',
+        );
+      }
 
       if (sourceFilter != null && !config.contains(sourceFilter)) {
         _logger.err(
@@ -395,7 +409,12 @@ class BoardsSyncCommand extends Command<int> {
       return ExitCode.unavailable.code;
     }
     if (count == 0) {
-      progress.fail('No board files found for ${source.name} at $ref');
+      // Naming the path matters: #261 was a default pointing one directory too
+      // high, and "no board files found" sent people to look at the ref.
+      progress.fail(
+        'No board files found for ${source.name} at $ref '
+        'under "${source.path}" in ${source.repo}',
+      );
       return ExitCode.unavailable.code;
     }
 

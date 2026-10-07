@@ -108,15 +108,65 @@ class LocalBoardSource extends BoardSource {
 }
 
 /// The default source — matches the pre-multi-source behavior.
+/// The repo subdirectory holding this project's own board files.
+///
+/// Its own constant because two things must agree on it: [defaultSource], which
+/// a `boards sync` lists over the network, and [staleDefaultPath], which
+/// repairs a config written before the boards moved. A test pins it to the
+/// directory that actually holds `*.emb.yaml` in this checkout, so moving them
+/// again fails there rather than in a user's first sync.
+const defaultSourcePath = 'boards/emb-public';
+
+/// What [defaultSourcePath] was before the multi-source layout, when every
+/// board file sat directly in `boards/`.
+///
+/// 0.4.0 moved them into `boards/emb-public/` and left this default pointing
+/// at the parent, so a `boards sync` listed a directory holding no
+/// `*.emb.yaml`, found nothing, and failed — which is every pub.dev install,
+/// since `emb boards sync` is what the 0.4.0 upgrade notes say to run. #261.
+const staleDefaultPath = 'boards';
+
 const defaultSource = GithubBoardSource(
   name: 'emb-public',
   repo: 'toyota-connected/emb_cli',
+  path: defaultSourcePath,
   ref: 'auto',
 );
 
+/// [source] with a stale default path corrected, or [source] itself unchanged.
+///
+/// `GithubBoardSource.toMap` always writes `path`, so a user who ever ran
+/// `emb boards add` has the default serialized into their `boards.yaml` with
+/// the old `boards`. Fixing only the constant leaves them broken, and the
+/// symptom — a sync that finds nothing — gives no hint that a config file is
+/// the reason.
+///
+/// Matched on the full identity of the shipped default (name, repo, and the
+/// old path), so a source a user aimed at `boards` themselves, or any other
+/// repo, is left alone. Returns the same instance when nothing changed, which
+/// is how `load` detects a repair.
+BoardSource repairDefaultPath(BoardSource source) {
+  if (source is! GithubBoardSource) return source;
+  if (source.name != defaultSource.name) return source;
+  if (source.repo != defaultSource.repo) return source;
+  if (source.path != staleDefaultPath) return source;
+  return GithubBoardSource(
+    name: source.name,
+    repo: source.repo,
+    path: defaultSourcePath,
+    ref: source.ref,
+    tokenEnv: source.tokenEnv,
+    transport: source.transport,
+  );
+}
+
 /// Loaded board-sources config. Reads `boards.yaml` from the emb config dir.
 class BoardSourceConfig {
-  BoardSourceConfig(this.sources, {this.droppedEntries = false});
+  BoardSourceConfig(
+    this.sources, {
+    this.droppedEntries = false,
+    this.repairedDefaultPath = false,
+  });
 
   /// Load from [file], falling back to the single default source.
   ///
@@ -151,13 +201,21 @@ class BoardSourceConfig {
       if (list.isEmpty) return BoardSourceConfig([defaultSource]);
       final parsed = <BoardSource>[];
       var dropped = false;
+      var repaired = false;
       for (final e in list) {
         if (e is! Map) {
           dropped = true;
           continue;
         }
         try {
-          parsed.add(BoardSource.fromMap(Map<String, dynamic>.from(e)));
+          // Repaired silently: the stale path is one emb wrote itself, not a
+          // choice the user made, and this load runs on every `emb cross`.
+          // `boards sync` persists the correction, so the file self-heals on
+          // the command the 0.4.0 upgrade notes already say to run.
+          final source = BoardSource.fromMap(Map<String, dynamic>.from(e));
+          final fixed = repairDefaultPath(source);
+          if (!identical(fixed, source)) repaired = true;
+          parsed.add(fixed);
         } on Object catch (err) {
           dropped = true;
           onWarning?.call('Skipping invalid source in ${file.path}: $err');
@@ -166,7 +224,11 @@ class BoardSourceConfig {
       if (parsed.isEmpty) {
         return BoardSourceConfig([defaultSource], droppedEntries: dropped);
       }
-      return BoardSourceConfig(parsed, droppedEntries: dropped);
+      return BoardSourceConfig(
+        parsed,
+        droppedEntries: dropped,
+        repairedDefaultPath: repaired,
+      );
     } on Object catch (e) {
       onWarning?.call(
         'Failed to parse ${file.path}: $e — using defaults, not writing.',
@@ -181,6 +243,11 @@ class BoardSourceConfig {
   /// [sources] — a skipped entry, or a file it could not parse at all. A writer
   /// must refuse rather than persist the reduced list.
   final bool droppedEntries;
+
+  /// True when [repairDefaultPath] corrected a source on the way in, so the
+  /// file on disk still names the pre-0.4.0 `boards`. Lets `boards sync` write
+  /// the correction back instead of repairing it again on every load forever.
+  final bool repairedDefaultPath;
 
   /// Write the config to [file] as YAML. Uses temp+rename for atomicity.
   void save(File file) {
