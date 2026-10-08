@@ -4,3 +4,9 @@ tags:
   integration:
   version-verify:
     skip: "Should only be run during pull request. Verifies if version file is updated."
+  # Needs flatpak-builder plus an org.freedesktop.Platform/Sdk pair installed,
+  # so it is opt-in: `dart test -t flatpak`. The `flatpak` CI job installs them
+  # and asserts they are there before running, because a test that skips itself
+  # reports green with no coverage.
+  flatpak:
+    skip: "Needs flatpak-builder and a runtime; run with -t flatpak."

@@ -328,6 +328,80 @@ jobs:
   # loads, so the whole suite stays green while `extends:` is broken for every
   # user who installed emb the documented way. The failure is only reachable
   # from a compiled binary, which is what this installs.
+  # The flatpak packager and library vendoring are unit-tested with every
+  # process faked, which cannot tell you whether flatpak-builder accepts the
+  # generated manifest or whether the launcher is a script its shell will run.
+  # This job is the only place that finds out.
+  #
+  # Its own job rather than a step in `build`: it installs a runtime, which is
+  # the expensive part, and nothing else in the suite needs one.
+  flatpak:
+    name: flatpak packaging (real toolchain)
+    runs-on: ubuntu-latest
+    # freedesktop-sdk branch to test against. Not emb's default of 23.08, nor
+    # 24.08 — flatpak reports both end-of-life, and an EOL runtime can leave
+    # flathub. The tests read the installed branch rather than assuming one, so
+    # this moves without touching Dart; check `flatpak remote-ls flathub
+    # --runtime` when the install step starts warning again.
+    env:
+      FREEDESKTOP_BRANCH: "25.08"
+    steps:
+      - name: 📚 Git Checkout
+        uses: actions/checkout@v7
+
+      - name: 🎯 Setup Dart
+        uses: dart-lang/setup-dart@v1.8.1
+        with:
+          sdk: "stable"
+
+      - name: 🔧 Install native build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libsystemd-dev cmake ninja-build
+
+      - name: 📦 Install flatpak and flatpak-builder
+        run: |
+          # binutils for readelf: the vendoring tests read real ELF files, and
+          # a missing readelf fails them with a confusing ProcessException
+          # rather than a clear diagnostic.
+          sudo apt-get install -y -qq flatpak flatpak-builder binutils
+          flatpak --version
+          flatpak-builder --version
+          readelf --version | head -1
+
+      # A user install needs no root and keeps the runtime out of the image's
+      # system paths, which is also how a developer would have it.
+      - name: 🗃️ Install the freedesktop runtime and SDK
+        run: |
+          flatpak remote-add --if-not-exists --user \
+            flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user -y --noninteractive \
+            "flathub" \
+            "org.freedesktop.Platform/x86_64/$FREEDESKTOP_BRANCH" \
+            "org.freedesktop.Sdk/x86_64/$FREEDESKTOP_BRANCH"
+
+      # The tests skip themselves when no runtime is present, which on a
+      # developer machine is right and here would be a silently empty job —
+      # green, with nothing exercised. Fail before running them instead.
+      - name: ✅ Assert the toolchain is really there
+        run: |
+          installed=$(flatpak list --runtime --columns=application,branch)
+          echo "$installed"
+          for rt in org.freedesktop.Platform org.freedesktop.Sdk; do
+            echo "$installed" | grep -qE "^$rt\s+$FREEDESKTOP_BRANCH$" || {
+              echo "::error::$rt//$FREEDESKTOP_BRANCH is not installed, so the"\
+                   "flatpak tests would skip and this job would pass empty"
+              exit 1; }
+          done
+
+      - name: 📦 Install Dependencies
+        run: dart pub get
+
+      # `--run-skipped` because the tag carries a skip for everywhere else,
+      # the same shape as the version-verify job above.
+      - name: 🧪 Flatpak integration tests
+        run: dart test --run-skipped -t flatpak --reporter expanded
+
   board-library:
     name: board library (installed emb)
     runs-on: ubuntu-latest

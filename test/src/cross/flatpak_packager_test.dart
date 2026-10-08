@@ -398,6 +398,138 @@ void main() {
         r'exec /app/com.example.App/homescreen /app/com.example.App "$@"',
       );
     });
+
+    Future<String> launcherForRun(
+      List<String>? runCommand, {
+      List<String> args = const [],
+    }) async {
+      await FlatpakPackager(runProcess: fakeRun).build(
+        bundleDir: fakeBundle(),
+        outDir: Directory(p.join(tmp.path, 'dist')),
+        meta: FlatpakMetadata(
+          appId: 'com.example.App',
+          command: 'homescreen',
+          args: args,
+          runCommand: runCommand,
+        ),
+      );
+      return capturedLauncher!.trim().split('\n').last;
+    }
+
+    test('takes the bundle flag from cross.run.command', () async {
+      // #224: `-b` was written here as a literal, so an embedder spelling the
+      // flag differently worked under `--run` and was still handed `-b` inside
+      // the sandbox. One declaration now covers both.
+      expect(
+        await launcherForRun([
+          r'./${embedder}',
+          '--asset-dir',
+          r'${deploy_dir}',
+        ]),
+        'exec /app/com.example.App/homescreen --asset-dir '
+        r'/app/com.example.App "$@"',
+      );
+    });
+
+    test('a bundle path of "." becomes the absolute prefix', () async {
+      // Every other consumer cds into the bundle first, so the default spells
+      // the path `.`. The launcher execs from wherever flatpak leaves it.
+      expect(
+        await launcherForRun([r'./${embedder}', '--bundle', '.']),
+        'exec /app/com.example.App/homescreen --bundle /app/com.example.App '
+        r'"$@"',
+      );
+    });
+
+    test('a run command with no bundle flag adds none', () async {
+      expect(
+        await launcherForRun([r'./${embedder}']),
+        r'exec /app/com.example.App/homescreen "$@"',
+      );
+    });
+
+    test('flatpak args placing {bundle} win over run.command', () async {
+      // An explicit arg list is the more specific statement of the two.
+      expect(
+        await launcherForRun(
+          [r'./${embedder}', '--asset-dir', r'${deploy_dir}'],
+          args: ['--bundle={bundle}'],
+        ),
+        'exec /app/com.example.App/homescreen '
+        r'--bundle=/app/com.example.App "$@"',
+      );
+    });
+
+    test('a run command not starting with the embedder is refused', () async {
+      // Dropping the first token is only right when it is the embedder; a
+      // wrapper would be silently mangled otherwise.
+      await expectLater(
+        launcherForRun(['sh', '-c', r'./${embedder} -b .']),
+        throwsA(
+          isA<FlatpakPackageException>().having(
+            (e) => e.message,
+            'message',
+            allOf(contains('is not the embedder'), contains('{bundle}')),
+          ),
+        ),
+      );
+    });
+
+    test('a token needing quotes is quoted, not passed bare', () async {
+      // `;` would otherwise end the exec line and start a second command.
+      expect(
+        await launcherForRun([r'./${embedder}', '--title', 'a;b']),
+        'exec /app/com.example.App/homescreen --title '
+        r'"a;b" "$@"',
+      );
+    });
+
+    test('a run.command token that breaks out of the launcher is refused', () {
+      // `_validate` walks env and args and never saw these, and run.command
+      // can come from a board library YAML. `_shellWord` double-quotes, so
+      // $( ) would run at launch inside the sandbox.
+      for (final bad in [r'$(id)', '`id`', r'a\b', 'say "hi"']) {
+        expect(
+          launcherForRun([r'./${embedder}', '--flag', bad]),
+          throwsA(
+            isA<FlatpakPackageException>().having(
+              (e) => e.message,
+              'message',
+              contains('run.command token'),
+            ),
+          ),
+          reason: 'accepted $bad',
+        );
+      }
+    });
+
+    test('a run.command token with whitespace is refused', () {
+      // The launcher emits shell words, so one token would become several.
+      expect(
+        launcherForRun([r'./${embedder}', '--flag one two']),
+        throwsA(
+          isA<FlatpakPackageException>().having(
+            (e) => e.message,
+            'message',
+            contains('contains whitespace'),
+          ),
+        ),
+      );
+    });
+
+    test('an unexpanded variable in run.command is refused', () {
+      // Left in place it would expand in the sandbox, to nothing or worse.
+      expect(
+        launcherForRun([r'./${embedder}', '-b', r'${runnable}']),
+        throwsA(
+          isA<FlatpakPackageException>().having(
+            (e) => e.message,
+            'message',
+            contains('unexpanded variable'),
+          ),
+        ),
+      );
+    });
   });
   test('the module name is an identifier, not the display name', () async {
     await FlatpakPackager(runProcess: fakeRun).build(
