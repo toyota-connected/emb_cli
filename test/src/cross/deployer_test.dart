@@ -171,56 +171,30 @@ void main() {
   });
 
   group('adb transport', () {
-    test(
-      'push creates a tarball, pushes it, and untars on the device',
-      () async {
-        final rec = recorder();
-        final r = await Deployer(runProcess: rec.run).push(
-          tmp,
-          device: const DeployTarget.adb(serial: 'ABC123'),
-          destDir: '/usr/share/ivi-homescreen',
-        );
-        expect(r.success, isTrue);
-        expect(r.method, 'adb');
-        // No ssh/rsync anywhere on this path.
-        expect(
-          rec.calls.any((c) => c.first == 'ssh' || c.first == 'rsync'),
-          isFalse,
-        );
-
-        // Calls are: tar, adb mkdir, adb push, adb untar, adb rm.
-        expect(rec.calls.length, 5);
-
-        // First: tar -czf locally (creates temp tarball from bundle contents).
-        final tarCall = rec.calls[0];
-        expect(tarCall.first, 'tar');
-        expect(tarCall, containsAllInOrder(['tar', '-czf']));
-        expect(tarCall, contains('-C'));
-        expect(tarCall, contains('.'));
-
-        // Second: mkdir on device.
-        final mkdir = rec.calls[1];
-        expect(mkdir, containsAllInOrder(['adb', '-s', 'ABC123', 'shell']));
-        expect(mkdir.last, "mkdir -p '/usr/share/ivi-homescreen'");
-
-        // Third: adb push tarball.
-        final push = rec.calls[2];
-        expect(push, containsAllInOrder(['adb', '-s', 'ABC123', 'push']));
-        expect(push.last, startsWith('/tmp/bundle_'));
-
-        // Fourth: adb shell untar.
-        final untar = rec.calls[3];
-        expect(untar, containsAllInOrder(['adb', '-s', 'ABC123', 'shell']));
-        expect(untar.last, contains('tar -xzf'));
-        expect(untar.last, contains('/usr/share/ivi-homescreen'));
-
-        // Fifth: adb shell rm (cleanup).
-        final rm = rec.calls[4];
-        expect(rm, containsAllInOrder(['adb', '-s', 'ABC123', 'shell']));
-        expect(rm.last, contains('rm'));
-        expect(rm.last, contains('bundle_'));
-      },
-    );
+    test('push streams tar through adb shell to the device', () async {
+      final rec = recorder();
+      final r = await Deployer(runProcess: rec.run).push(
+        tmp,
+        device: const DeployTarget.adb(serial: 'ABC123'),
+        destDir: '/usr/share/ivi-homescreen',
+      );
+      expect(r.success, isTrue);
+      expect(r.method, 'adb');
+      // No ssh/rsync anywhere on this path.
+      expect(
+        rec.calls.any((c) => c.first == 'ssh' || c.first == 'rsync'),
+        isFalse,
+      );
+      // Single sh -c pipeline (mirrors the tar-over-ssh path).
+      expect(rec.calls.length, 1);
+      final sh = rec.calls.single;
+      expect(sh.first, 'sh');
+      expect(sh[1], '-c');
+      // Streams uncompressed tar into adb shell -T (no pty, binary-safe).
+      expect(sh[2], startsWith('tar -cf -'));
+      expect(sh[2], contains('adb -s ABC123 shell -T'));
+      expect(sh[2], contains(_shq(_adbRemoteFor('/usr/share/ivi-homescreen'))));
+    });
 
     test('no serial omits -s, leaving adb its single-device default', () async {
       final rec = recorder();
@@ -228,90 +202,75 @@ void main() {
         runProcess: rec.run,
       ).push(tmp, device: const DeployTarget.adb(), destDir: 'app');
       expect(r.method, 'adb');
-      // No -s flag in any adb invocations.
-      final adbCalls = rec.calls.where((c) => c.first == 'adb');
-      expect(adbCalls.every((c) => !c.contains('-s')), isTrue);
+      final pipeline = rec.calls.single[2];
+      expect(pipeline, isNot(contains('-s')));
+      expect(pipeline, contains('adb shell -T'));
     });
 
-    test('a failed tar creation reports tar stderr', () async {
-      Future<RunResult> run(
-        String exe,
-        List<String> args, {
-        String? workingDirectory,
-        Map<String, String>? environment,
-        bool includeParentEnvironment = true,
-        bool runInShell = false,
-        ProcessOutputMode output = ProcessOutputMode.capture,
-        String? label,
-      }) async => exe == 'tar'
-          ? const RunResult(1, '', 'tar: some files changed as we read them')
-          : const RunResult(0, '', '');
-
-      final r = await Deployer(
-        runProcess: run,
-      ).push(tmp, device: const DeployTarget.adb(), destDir: 'app');
-      expect(r.success, isFalse);
-      expect(r.message, contains('tar:'));
-    });
-
-    test('a failed adb push reports adb stdout when stderr is empty', () async {
-      // adb writes most failures to stdout and still exits non-zero.
-      Future<RunResult> run(
-        String exe,
-        List<String> args, {
-        String? workingDirectory,
-        Map<String, String>? environment,
-        bool includeParentEnvironment = true,
-        bool runInShell = false,
-        ProcessOutputMode output = ProcessOutputMode.capture,
-        String? label,
-      }) async => exe == 'adb' && args.contains('push')
-          ? const RunResult(1, 'adb: error: failed to stat remote', '')
-          : const RunResult(0, '', '');
-
-      final r = await Deployer(
-        runProcess: run,
-      ).push(tmp, device: const DeployTarget.adb(), destDir: 'app');
-      expect(r.success, isFalse);
-      expect(r.message, contains('failed to stat remote'));
-    });
-
-    test('a failed untar cleans up tarball and partial files', () async {
-      final calls = <List<String>>[];
-      Future<RunResult> run(
-        String exe,
-        List<String> args, {
-        String? workingDirectory,
-        Map<String, String>? environment,
-        bool includeParentEnvironment = true,
-        bool runInShell = false,
-        ProcessOutputMode output = ProcessOutputMode.capture,
-        String? label,
-      }) async {
-        calls.add([exe, ...args]);
-        // Untar fails.
-        if (exe == 'adb' && args.any((a) => a.contains('tar -xzf'))) {
-          return const RunResult(1, '', 'tar: cannot open for reading');
+    test(
+      'falls back to recursive push when tar is absent on the device',
+      () async {
+        final calls = <List<String>>[];
+        Future<RunResult> run(
+          String exe,
+          List<String> args, {
+          String? workingDirectory,
+          Map<String, String>? environment,
+          bool includeParentEnvironment = true,
+          bool runInShell = false,
+          ProcessOutputMode output = ProcessOutputMode.capture,
+          String? label,
+        }) async {
+          calls.add([exe, ...args]);
+          // Streaming pipeline fails (no tar on device).
+          if (exe == 'sh') return const RunResult(1, '', 'tar: not found');
+          return const RunResult(0, '', '');
         }
-        return const RunResult(0, '', '');
-      }
 
-      final r = await Deployer(
-        runProcess: run,
-      ).push(tmp, device: const DeployTarget.adb(), destDir: 'app');
-      expect(r.success, isFalse);
-      expect(r.message, contains('untar'));
-      // Verify untar, rm tarball, and rm destDir were all called.
-      expect(calls.any((c) => c.any((a) => a.contains('tar -xzf'))), isTrue);
-      final rmTarball = calls.any(
-        (c) =>
-            c.any((a) => a.contains('rm')) && !c.any((a) => a.contains('rf')),
-      );
-      expect(rmTarball, isTrue);
-      expect(calls.any((c) => c.any((a) => a.contains('rm -rf'))), isTrue);
-    });
+        final r = await Deployer(runProcess: run).push(
+          tmp,
+          device: const DeployTarget.adb(serial: 'X'),
+          destDir: 'app',
+        );
+        expect(r.success, isTrue);
+        expect(r.method, 'adb');
+        // sh pipeline attempted first, then adb mkdir + adb push.
+        expect(calls[0].first, 'sh');
+        expect(
+          calls.any((c) => c.first == 'adb' && c.contains('push')),
+          isTrue,
+        );
+        // No rm or rm -rf ever called.
+        expect(calls.any((c) => c.any((a) => a.startsWith('rm'))), isFalse);
+      },
+    );
+
+    test(
+      'reports an error when both pipeline and fallback push fail',
+      () async {
+        Future<RunResult> run(
+          String exe,
+          List<String> args, {
+          String? workingDirectory,
+          Map<String, String>? environment,
+          bool includeParentEnvironment = true,
+          bool runInShell = false,
+          ProcessOutputMode output = ProcessOutputMode.capture,
+          String? label,
+        }) async => const RunResult(1, '', 'error');
+
+        final r = await Deployer(
+          runProcess: run,
+        ).push(tmp, device: const DeployTarget.adb(), destDir: 'app');
+        expect(r.success, isFalse);
+        expect(r.method, 'adb');
+        expect(r.message, isNotEmpty);
+      },
+    );
 
     test('a missing adb binary is reported with a hint, not a crash', () async {
+      // sh exits 127 when adb is not on PATH; the ProcessException path covers
+      // the (theoretical) case where sh itself is missing.
       Future<RunResult> run(
         String exe,
         List<String> args, {
@@ -457,3 +416,7 @@ String _shq(String s) => "'${s.replaceAll("'", r"'\''")}'";
 /// The remote command `_pushTar` must build for [dest].
 String _remoteFor(String dest) =>
     'mkdir -p ${_shq(dest)} && tar -xzf - -C ${_shq(dest)}';
+
+/// The remote command `_pushAdb` must build for [dest] (no gzip).
+String _adbRemoteFor(String dest) =>
+    'mkdir -p ${_shq(dest)} && tar -xf - -C ${_shq(dest)}';
