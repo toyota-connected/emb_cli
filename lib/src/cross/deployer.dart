@@ -226,8 +226,18 @@ class Deployer {
       if (r.exitCode == 0) {
         return const DeployResult(success: true, method: 'adb');
       }
+      // Exit 127 = command not found: tar is absent on the device.
+      // Any other non-zero (write error, disk full) is a real failure — don't
+      // attempt a second push on top of a partially-extracted bundle.
+      if (r.exitCode != 127) {
+        return DeployResult(
+          success: false,
+          method: 'adb',
+          message: 'tar over adb: ${_adbErr(r)}',
+        );
+      }
 
-      // Fall back to recursive push (e.g. no tar on the device).
+      // Fall back to recursive push (tar absent on the device).
       final mk = await _run('adb', [
         ...args,
         'shell',

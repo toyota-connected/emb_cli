@@ -222,8 +222,8 @@ void main() {
           String? label,
         }) async {
           calls.add([exe, ...args]);
-          // Streaming pipeline fails (no tar on device).
-          if (exe == 'sh') return const RunResult(1, '', 'tar: not found');
+          // Exit 127 = command not found: tar absent on device.
+          if (exe == 'sh') return const RunResult(127, '', 'tar: not found');
           return const RunResult(0, '', '');
         }
 
@@ -246,8 +246,9 @@ void main() {
     );
 
     test(
-      'reports an error when both pipeline and fallback push fail',
+      'a non-127 pipeline failure is reported without attempting fallback',
       () async {
+        final calls = <List<String>>[];
         Future<RunResult> run(
           String exe,
           List<String> args, {
@@ -257,7 +258,11 @@ void main() {
           bool runInShell = false,
           ProcessOutputMode output = ProcessOutputMode.capture,
           String? label,
-        }) async => const RunResult(1, '', 'error');
+        }) async {
+          calls.add([exe, ...args]);
+          // Exit 1 = real failure (e.g. disk full), not "command not found".
+          return const RunResult(1, '', 'error');
+        }
 
         final r = await Deployer(
           runProcess: run,
@@ -265,8 +270,37 @@ void main() {
         expect(r.success, isFalse);
         expect(r.method, 'adb');
         expect(r.message, isNotEmpty);
+        // No adb push attempted — would overlay a partially-extracted bundle.
+        expect(calls.any((c) => c.first == 'adb'), isFalse);
       },
     );
+
+    test('a failed adb push reports stdout when stderr is empty', () async {
+      // adb writes most failures to stdout and still exits non-zero.
+      Future<RunResult> run(
+        String exe,
+        List<String> args, {
+        String? workingDirectory,
+        Map<String, String>? environment,
+        bool includeParentEnvironment = true,
+        bool runInShell = false,
+        ProcessOutputMode output = ProcessOutputMode.capture,
+        String? label,
+      }) async {
+        // tar pipeline: exit 127 → fallback.
+        if (exe == 'sh') return const RunResult(127, '', 'tar: not found');
+        if (args.contains('push')) {
+          return const RunResult(1, 'adb: error: failed to stat remote', '');
+        }
+        return const RunResult(0, '', '');
+      }
+
+      final r = await Deployer(
+        runProcess: run,
+      ).push(tmp, device: const DeployTarget.adb(), destDir: 'app');
+      expect(r.success, isFalse);
+      expect(r.message, contains('failed to stat remote'));
+    });
 
     test('a missing adb binary is reported with a hint, not a crash', () async {
       // sh exits 127 when adb is not on PATH; the ProcessException path covers
