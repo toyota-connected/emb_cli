@@ -359,9 +359,13 @@ jobs:
 
       - name: 📦 Install flatpak and flatpak-builder
         run: |
-          sudo apt-get install -y -qq flatpak flatpak-builder
+          # binutils for readelf: the vendoring tests read real ELF files, and
+          # a missing readelf fails them with a confusing ProcessException
+          # rather than a clear diagnostic.
+          sudo apt-get install -y -qq flatpak flatpak-builder binutils
           flatpak --version
           flatpak-builder --version
+          readelf --version | head -1
 
       # A user install needs no root and keeps the runtime out of the image's
       # system paths, which is also how a developer would have it.

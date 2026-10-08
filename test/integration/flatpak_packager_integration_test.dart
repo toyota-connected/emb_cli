@@ -88,13 +88,21 @@ void main() {
         final launcher = File(p.join(workingDirectory, 'launcher.sh'));
         if (launcher.existsSync()) captured.add(launcher.readAsStringSync());
       }
-      final r = await Process.run(
+      // Delegate, do not reimplement. A hand-rolled `Process.run` here drops
+      // whatever it forgets to pass on: it dropped `runInShell`, and
+      // `_which` resolves `flatpak-builder` with `command -v`, a shell
+      // builtin. Fedora happens to ship /usr/bin/command so it passed locally;
+      // Ubuntu does not, so CI failed with ENOENT on `command`.
+      return defaultProcessRunner(
         exe,
         args,
         workingDirectory: workingDirectory,
         environment: environment,
+        includeParentEnvironment: includeParentEnvironment,
+        runInShell: runInShell,
+        output: output,
+        label: label,
       );
-      return RunResult(r.exitCode, '${r.stdout}', '${r.stderr}');
     }
 
     return (run: run, captured: captured);
