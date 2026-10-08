@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:emb_cli/src/cross/process_runner.dart';
+import 'package:emb_cli/src/cross/run_command.dart';
 import 'package:path/path.dart' as p;
 
 /// Manifest metadata for a generated `.flatpak` bundle.
@@ -24,6 +25,7 @@ class FlatpakMetadata {
     this.env = const {},
     this.args = const [],
     this.libDirOnPath = false,
+    this.runCommand,
   });
 
   /// A reasonable sandbox for a Wayland Flutter shell: Wayland socket, GPU,
@@ -40,8 +42,18 @@ class FlatpakMetadata {
   /// the install prefix (`/app/<appId>`), `.desktop` basename, and icon name.
   final String appId;
 
-  /// The embedder binary (basename) the launcher wrapper execs with `-b`.
+  /// The embedder binary (basename) the launcher wrapper execs.
   final String command;
+
+  /// `cross.run.command` — how this embedder is told where its bundle is, as
+  /// `--run` spells it. The launcher takes its bundle flag from here, so a
+  /// manifest declares that once rather than once for `--run` and again as a
+  /// `flatpak.args` entry carrying `{bundle}`.
+  ///
+  /// Null falls back to [defaultRunTemplate], which is `-b`. Ignored when
+  /// `flatpak.args` places `{bundle}` itself — an explicit arg list is the more
+  /// specific statement of the two.
+  final List<String>? runCommand;
 
   final String branch;
   final String runtime;
@@ -247,12 +259,80 @@ class FlatpakPackager {
       _emitEnv(b, e.key, e.value);
     }
     final placed = m.args.any((a) => a.contains(_bundleToken));
-    final args = [
-      if (!placed) ...['-b', prefix],
+    final words = [
+      if (!placed) ..._bundleArgs(m, prefix),
       ...m.args.map((a) => _shellWord(a.replaceAll(_bundleToken, prefix))),
-    ].join(' ');
-    b.writeln('exec $prefix/${m.command} $args "\$@"');
+    ];
+    // Joined with the exec line rather than interpolated as one string: a
+    // `run.command` naming no bundle flag leaves this empty, and an empty
+    // interpolation put a double space in the generated script.
+    b.writeln(['exec $prefix/${m.command}', ...words, r'"$@"'].join(' '));
     return b.toString();
+  }
+
+  /// How to tell the embedder where its bundle is, taken from
+  /// `cross.run.command` so one declaration covers `--run` and this launcher.
+  ///
+  /// `-b` used to be written here as a literal, which meant an embedder
+  /// spelling it differently worked under `--run` (once `run.command` existed)
+  /// and was still handed `-b` inside the sandbox. The default template is
+  /// `-b`, so a manifest that says nothing is unaffected.
+  ///
+  /// The template describes a whole command line, of which this needs only the
+  /// part after the executable — the launcher execs `$prefix/<command>` itself.
+  /// Dropping the first token is only right when that token *is* the embedder,
+  /// so a template starting with anything else (a wrapper like `sh -c …`) is
+  /// refused rather than silently mangled: `flatpak.args` with `{bundle}` is
+  /// the way to express that, and it takes precedence anyway.
+  ///
+  /// The bundle path becomes absolute. Every other consumer of this template
+  /// runs *inside* the bundle — `--run` and the deploy transports all cd there
+  /// first — so the default spells the path `.`, and a relative path is right
+  /// for them. This launcher execs from wherever `flatpak run` leaves it, so a
+  /// lone `.` and `${deploy_dir}` both resolve to [prefix] here.
+  List<String> _bundleArgs(FlatpakMetadata m, String prefix) {
+    final template = m.runCommand ?? defaultRunTemplate;
+    if (template.isEmpty) return const [];
+    if (!template.first.contains(r'${embedder}')) {
+      throw FlatpakPackageException(
+        'cross.run.command starts with "${template.first}", which is not the '
+        'embedder, so the flatpak launcher cannot reuse it — it execs the '
+        'embedder itself. Give cross.package.flatpak.args the bundle flag '
+        'with {bundle} in it instead.',
+      );
+    }
+    final expanded = applyRunVars(template.sublist(1), {
+      'embedder': m.command,
+      'deploy_dir': prefix,
+    });
+    final out = <String>[];
+    for (final raw in expanded) {
+      final token = raw == '.' ? prefix : raw;
+      // `_validate` walks env and args; it never saw these, and `_shellWord`
+      // double-quotes on the assumption something already refused what a
+      // double-quoted word cannot hold. `run.command` can come from a board
+      // library YAML, so an unchecked token here is command execution inside
+      // the sandbox from a file the user did not write.
+      _rejectShellBreakout('run.command token', token);
+      if (_whitespace.hasMatch(token)) {
+        throw FlatpakPackageException(
+          'cross.run.command token "$token" contains whitespace; the launcher '
+          'passes tokens as shell words, so it would split into several '
+          'arguments. Split it into separate list entries.',
+        );
+      }
+      // A leftover `${…}` is a variable `applyRunVars` did not know. Inside the
+      // double quotes `_shellWord` may add, the shell would expand it — to
+      // nothing, or to something from the sandbox environment.
+      if (token.contains(r'${')) {
+        throw FlatpakPackageException(
+          'cross.run.command token "$token" has an unexpanded variable; the '
+          r'launcher knows ${embedder} and ${deploy_dir} only.',
+        );
+      }
+      out.add(_shellWord(token));
+    }
+    return out;
   }
 
   /// Reject anything the launcher cannot carry, before a line of it is written.
