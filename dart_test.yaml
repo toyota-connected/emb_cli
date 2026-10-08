@@ -4,9 +4,10 @@ tags:
   integration:
   version-verify:
     skip: "Should only be run during pull request. Verifies if version file is updated."
-  # Needs flatpak-builder plus an org.freedesktop.Platform/Sdk pair installed,
-  # so it is opt-in: `dart test -t flatpak`. The `flatpak` CI job installs them
-  # and asserts they are there before running, because a test that skips itself
-  # reports green with no coverage.
+  # Needs flatpak-builder, an org.freedesktop.Platform/Sdk pair, and binutils
+  # for readelf: the packager tests build a real bundle and the vendoring tests
+  # read real ELF files. Opt-in with `dart test --run-skipped -t flatpak`. The
+  # `flatpak` CI job installs all of it and asserts it is there before running,
+  # because a test that skips itself reports green with no coverage.
   flatpak:
-    skip: "Needs flatpak-builder and a runtime; run with -t flatpak."
+    skip: "Needs flatpak-builder, a runtime and readelf; -t flatpak to run."

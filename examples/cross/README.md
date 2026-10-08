@@ -413,6 +413,21 @@ cannot carry, and no unexpanded variable beyond `${embedder}`/`${deploy_dir}`.
 > flatpak's staged copy is touched; the runnable tree `--tar`, `--deploy` and
 > `--run` share is left alone.
 >
+> **Staged libraries are checked for symbol versions, not just architecture.** A
+> library can be the right machine and word size and still be refused at load
+> because it needs a versioned symbol — `GLIBC_2.38` — that the runtime's own
+> `libc.so.6` does not define. That is the same class of failure `vendor_libs`
+> exists to prevent, one layer down, and it is the ordinary case for a
+> `--target local` build, where the search root falls back to `/` and host
+> libraries are built against a newer glibc than the runtime ships. Each staged
+> library's requirements are compared by name against the definitions in the
+> runtime's copy of the library they are aimed at, and a missing one is warned
+> about. Warned, not failed: the comparison depends on a runtime that was
+> probed and a `readelf` that may not have read it, so a runtime library with no
+> version definitions at all is treated as unknown rather than as defining none.
+> The fix is to build the library against the runtime, or to choose a runtime
+> version that has the symbol.
+>
 > Vendoring copies libraries out of a sysroot into something you redistribute,
 > so what may be copied is your call, not emb's: LGPL terms expect relinking to
 > stay possible, and some libraries cannot be bundled at all. emb stages what

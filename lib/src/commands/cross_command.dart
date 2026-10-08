@@ -3449,6 +3449,25 @@ class CrossCommand extends Command<int> {
         'will fail to start if it is really needed',
       );
     }
+    // Same failure class one layer down: the library is present and the right
+    // arch, and the loader still refuses it because a versioned symbol it
+    // wants is missing. Grouped per staged lib so a glibc-too-new library
+    // reports once with its versions, not once per symbol version.
+    final byLib = <String, List<SymbolVersionGap>>{};
+    for (final gap in report.symbolGaps) {
+      byLib.putIfAbsent(gap.staged, () => []).add(gap);
+    }
+    for (final entry in byLib.entries) {
+      final versions = entry.value.map((g) => g.version).toSet().toList()
+        ..sort();
+      final from = entry.value.map((g) => g.from).toSet().toList()..sort();
+      _logger.warn(
+        '  $tag${entry.key}: needs ${versions.join(", ")} from '
+        '${from.join(", ")}, which the runtime does not provide — the app will '
+        'fail to start with "version not found". Build it against the '
+        'runtime, or pick a runtime version that has it',
+      );
+    }
   }
 
   /// Resolve [spec]'s `files:` against [manifestDir] into a (host source →

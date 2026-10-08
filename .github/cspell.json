@@ -20,6 +20,7 @@
   "useGitignore": true,
   "words": [
     "libsqlite",
+    "RELR",
     "matc",
     "resgen",
     "cmgen",

@@ -114,3 +114,77 @@ List<String> parseNeededSonames(String readelfOutput) {
   final re = RegExp(r'Shared library:\s*\[([^\]]+)\]');
   return [for (final m in re.allMatches(readelfOutput)) m.group(1)!];
 }
+
+/// Parse the symbol-version *requirements* out of `readelf -V` output: which
+/// versioned symbol names this object needs, grouped by the library expected to
+/// define them.
+///
+/// The `.gnu.version_r` section prints one group per library, each followed by
+/// its required version names:
+///
+/// ```text
+///   000000: Version: 1  File: libc.so.6  Cnt: 12
+///   0x0030:   Name: GLIBC_2.28  Flags: none  Version: 13
+///   0x0040:   Name: GLIBC_2.38  Flags: none  Version: 12
+/// ```
+///
+/// A `Name:` line is attributed to the most recent `File:`, which is how the
+/// format nests. Lines outside the needs section are ignored — `readelf -V`
+/// also prints `.gnu.version` (a per-symbol index table) and
+/// `.gnu.version_d` (definitions), and both carry `Name:` text that would
+/// otherwise be read as a requirement.
+Map<String, Set<String>> parseVersionNeeds(String readelfOutput) {
+  final needs = <String, Set<String>>{};
+  final file = RegExp(r'File:\s*(\S+)');
+  final name = RegExp(r'Name:\s*(\S+)');
+  var inNeeds = false;
+  String? current;
+  for (final line in readelfOutput.split('\n')) {
+    if (line.contains('section')) {
+      // A new section heading ends the previous one, so a `Name:` after the
+      // definitions heading is never credited to a file seen before it.
+      inNeeds = line.contains('.gnu.version_r');
+      current = null;
+      continue;
+    }
+    if (!inNeeds) continue;
+    final f = file.firstMatch(line);
+    if (f != null) {
+      current = f.group(1);
+      needs.putIfAbsent(current!, () => <String>{});
+      continue;
+    }
+    if (current == null) continue;
+    final n = name.firstMatch(line);
+    if (n != null) needs[current]!.add(n.group(1)!);
+  }
+  return needs;
+}
+
+/// Parse the symbol-version *definitions* out of `readelf -V` output: the
+/// version names this object provides.
+///
+/// The `.gnu.version_d` section prints one entry per version:
+///
+/// ```text
+///   000000: Rev: 1  Flags: BASE  Index: 1  Cnt: 1  Name: libc.so.6
+///   0x001c: Rev: 1  Flags: none  Index: 2  Cnt: 1  Name: GLIBC_2.2.5
+/// ```
+///
+/// The `BASE` entry names the library itself rather than a version, and
+/// `Parent N:` lines restate a name already listed, so both are skipped.
+Set<String> parseVersionDefs(String readelfOutput) {
+  final defs = <String>{};
+  final name = RegExp(r'Name:\s*(\S+)');
+  var inDefs = false;
+  for (final line in readelfOutput.split('\n')) {
+    if (line.contains('section')) {
+      inDefs = line.contains('.gnu.version_d');
+      continue;
+    }
+    if (!inDefs || line.contains('Flags: BASE')) continue;
+    final m = name.firstMatch(line);
+    if (m != null) defs.add(m.group(1)!);
+  }
+  return defs;
+}
