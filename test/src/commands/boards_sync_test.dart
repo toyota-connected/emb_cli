@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/commands/boards_command.dart';
+import 'package:emb_cli/src/cross/board_source.dart';
 import 'package:mason_logger/mason_logger.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:path/path.dart' as p;
@@ -37,7 +38,11 @@ class _FakeGitHub {
         return;
       }
 
-      if (req.uri.path.endsWith('/contents/boards')) {
+      // Derived from the constant, not spelled out: a fake that hardcodes the
+      // listing path answers whatever the default happens to be, so it stayed
+      // green when 0.4.0 moved the boards and the default did not follow.
+      // See #261.
+      if (req.uri.path.endsWith('/contents/$defaultSourcePath')) {
         if (failListing) {
           req.response.statusCode = HttpStatus.notFound;
           await req.response.close();
@@ -49,7 +54,7 @@ class _FakeGitHub {
               'type': 'file',
               'name': name,
               'download_url': '$origin/raw/$name',
-              'url': '$origin/repos/test/contents/boards/$name',
+              'url': '$origin/repos/test/contents/$defaultSourcePath/$name',
             },
           // A non-board entry the client must ignore.
           {'type': 'file', 'name': 'README.md', 'download_url': '$origin/x'},

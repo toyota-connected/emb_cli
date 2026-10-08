@@ -1,5 +1,35 @@
 # Unreleased
 
+**Boards.**
+
+- fix(boards): the default source pointed one directory too high, so
+  `emb boards sync` found nothing. 0.4.0 moved this repo's boards to
+  `boards/emb-public/` but left `defaultSource` taking the source class's
+  `path: 'boards'` default, which now holds only that subdirectory and no
+  `*.emb.yaml`. Every pub.dev install hit it, and `emb boards sync` is what the
+  0.4.0 upgrade notes say to run — so `extends:` resolved nothing and no build
+  worked. Reported in #261 with the diagnosis already done.
+
+  The path is now a named constant, `defaultSourcePath`, pinned by a test to the
+  directory that actually holds `*.emb.yaml` in the checkout: move the boards
+  again and that test fails instead of a user's first sync. The existing sync
+  test could not catch this — its fake GitHub served whatever path the default
+  asked for, so it stayed green while production broke. It derives the path from
+  the constant now.
+
+  A config written before the fix is repaired on load. `toMap` always writes
+  `path`, so anyone who ran `emb boards add` has the stale value in their
+  `boards.yaml`; correcting only the constant would leave them broken with no
+  hint that a file was the reason. The repair is silent (this load runs on every
+  `emb cross`, and emb wrote the bad value itself) and `boards sync` persists it,
+  so the file converges on the command people are already told to run. Only the
+  shipped default's full identity is touched — name, repo and the old path — so a
+  source you aimed at `boards` yourself is left alone.
+
+- fix(boards): a sync that finds no board files names the path and repo it
+  listed. "No board files found for emb-public at v0.4.0" sent people to check
+  the ref, which was fine.
+
 Nothing yet. New entries go here, not under the heading below — the pubspec reads
 `0.5.0-dev`, and work recorded under a published version is work no one can tell
 was shipped. That is how the `0.3.6` section ended up mixing a released tag with
