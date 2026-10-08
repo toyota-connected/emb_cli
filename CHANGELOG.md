@@ -2,6 +2,30 @@
 
 **Cross.**
 
+- fix(flatpak): the generated launcher takes its bundle flag from
+  `cross.run.command` instead of writing `-b` a second time. `--run` became
+  configurable in 0.4.0, but the flatpak packager kept its own literal, so an
+  embedder spelling the flag differently worked under `--run` and was still
+  handed `-b` inside the sandbox — one of the two gaps #224 named. A manifest
+  with no `run.command` is unaffected: the default is `-b`. `flatpak.args`
+  placing `{bundle}` still wins, being the more specific statement. The bundle
+  path is made absolute, because every other consumer of the template cds into
+  the bundle first (so the default spells it `.`) while the launcher execs from
+  wherever `flatpak run` leaves it. A `run.command` that does not start with
+  `${embedder}` cannot be reused this way and is refused with the alternative
+  named.
+
+- fix(flatpak): `cross.run.command` tokens reaching the launcher are validated.
+  `_validate` walked `env` and `args` only, and `_shellWord` double-quotes on
+  the assumption something already refused what a double-quoted word cannot
+  hold — so routing `run.command` through it would have let a `$(…)` token from
+  a manifest, or from a board library YAML, run at launch inside the sandbox.
+  Tokens now get the same treatment as `args`, plus a refusal for an unexpanded
+  `${…}` that the shell would otherwise expand.
+
+- fix(flatpak): a launcher with no bundle flag and no args no longer has a
+  double space in its exec line.
+
 - fix(flatpak): staged libraries are checked for symbol versions, not only
   architecture. `FlatpakLibVendor._resolve` gated on `verifyElfForTriple`, which
   compares `e_machine` and word size — a host library built against a newer
@@ -25,10 +49,6 @@
   does not turn every requirement into a warning. The arch check stays a hard
   skip, because a wrong-arch library is never usable.
 
-Nothing yet. New entries go here, not under the heading below — the pubspec reads
-`0.5.0-dev`, and work recorded under a published version is work no one can tell
-was shipped. That is how the `0.3.6` section ended up mixing a released tag with
-three blocks of later work, which 0.4.0 had to unpick.
 
 # 0.4.1
 
@@ -72,11 +92,6 @@ applies.
 - fix(boards): a sync that finds no board files names the path and repo it
   listed. "No board files found for emb-public at v0.4.0" sent people to check
   the ref, which was fine.
-
-Nothing yet. New entries go here, not under the heading below — the pubspec reads
-`0.5.0-dev`, and work recorded under a published version is work no one can tell
-was shipped. That is how the `0.3.6` section ended up mixing a released tag with
-three blocks of later work, which 0.4.0 had to unpick.
 
 # 0.4.0
 

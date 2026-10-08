@@ -3324,6 +3324,9 @@ class CrossCommand extends Command<int> {
       env: fp.env,
       args: fp.args,
       libDirOnPath: fp.vendorLibs,
+      // So the launcher's bundle flag matches what `--run` uses, instead of
+      // `-b` written a second time inside the packager.
+      runCommand: target.runCommand,
     );
     // Resolved up front so a missing runtime fails before any work, but
     // applied only to the packager's staged copy: the runnable is shared with

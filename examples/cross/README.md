@@ -373,9 +373,22 @@ package:
 the environment the embedder expects, and the flags describing *this* app,
 neither of which an invocation should have to repeat. Env names ending in
 `PATH`/`DIRS` prepend so the runtime's own entries survive; the rest are plain
-assignments. `args:` is appended after emb's default `-b <prefix>`, or replaces
-it when an arg contains `{bundle}`. The caller's own flags still come last, so
-`flatpak run <app> --flag` reaches the embedder.
+assignments.
+
+`args:` is appended after the bundle flag, or replaces it when an arg contains
+`{bundle}`. The caller's own flags still come last, so `flatpak run <app> --flag`
+reaches the embedder.
+
+**The bundle flag comes from `cross.run.command`**, so an embedder that does not
+spell it `-b` is told once rather than once for `--run` and again here. With no
+`run.command` the default applies and the launcher gets `-b <prefix>`, as before.
+The bundle path is made absolute: `--run` and the deploy transports all cd into
+the bundle first, so the default writes the path as `.`, but the launcher execs
+from wherever `flatpak run` leaves it. A `run.command` that does not start with
+`${embedder}` — a wrapper such as `sh -c …` — cannot be reused this way and is
+refused; give `args:` the flag with `{bundle}` in it instead. Tokens are held to
+the same rules as `args:`: no whitespace, nothing a double-quoted shell word
+cannot carry, and no unexpanded variable beyond `${embedder}`/`${deploy_dir}`.
 
 > **deb auto-`Depends` needs a sysroot.** The `.deb` field is derived by mapping
 > the binary's `DT_NEEDED` sonames to the packages that own them, looked up in
