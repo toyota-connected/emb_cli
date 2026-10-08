@@ -1,4 +1,15 @@
-# Unreleased
+# 0.4.1
+
+Released from `main`, which holds 0.4.0 plus this one fix and nothing else
+functional. Cut from the tree CI builds rather than cherry-picked onto the
+`v0.4.0` tag — that mechanism is what shipped 0.3.7 broken, and there is nothing
+to isolate here.
+
+Upgrading from 0.4.0 needs nothing beyond `emb boards sync`, which now works. If
+you applied the workaround from #261 — a second source named something else — you
+can drop it: `emb boards remove <name>` and let the repaired default serve again.
+Upgrading from 0.3.x: see the Upgrading section under 0.4.0 below, which still
+applies.
 
 **Boards.**
 
