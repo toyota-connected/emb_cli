@@ -123,4 +123,65 @@ Dynamic section at offset 0x2d88 contains 27 entries:
       expect(parseNeededSonames('no dynamic section here'), isEmpty);
     });
   });
+
+  group('parseVersionNeeds / parseVersionDefs', () {
+    // Trimmed from real `readelf -V` output. The .gnu.version table is kept
+    // because it also carries parenthesised version names, and an earlier
+    // version of the parser read those as requirements.
+    const needsOutput = '''
+Version symbols section '.gnu.version' contains 129 entries:
+ Addr: 0x000000000001a2a8  Offset: 0x0001a2a8  Link: 9 (.dynsym)
+  000:   0 (*local*)       2 (GLIBC_2.3)     3 (GLIBC_2.2.5)   0 (*local*)
+  04c:   c (GLIBC_2.38)    3 (GLIBC_2.2.5)   3 (GLIBC_2.2.5)   3 (GLIBC_2.2.5)
+
+Version needs section '.gnu.version_r' contains 2 entries:
+ Addr: 0x000000000001a3b0  Offset: 0x0001a3b0  Link: 10 (.dynstr)
+  000000: Version: 1  File: libselinux.so.1  Cnt: 1
+  0x0010:   Name: LIBSELINUX_1.0  Flags: none  Version: 8
+  0x0020: Version: 1  File: libc.so.6  Cnt: 3
+  0x0030:   Name: GLIBC_ABI_DT_RELR  Flags: none  Version: 14
+  0x0040:   Name: GLIBC_2.28  Flags: none  Version: 13
+  0x0050:   Name: GLIBC_2.38  Flags: none  Version: 12
+''';
+
+    const defsOutput = '''
+Version definition section '.gnu.version_d' contains 46 entries:
+ Addr: 0x0000000000198060  Offset: 0x00198060  Link: 8 (.dynstr)
+  000000: Rev: 1  Flags: BASE  Index: 1  Cnt: 1  Name: libc.so.6
+  0x001c: Rev: 1  Flags: none  Index: 2  Cnt: 1  Name: GLIBC_2.2.5
+  0x0038: Rev: 1  Flags: none  Index: 3  Cnt: 2  Name: GLIBC_2.2.6
+  0x0054: Parent 1: GLIBC_2.2.5
+''';
+
+    test('groups required versions under the library that defines them', () {
+      expect(parseVersionNeeds(needsOutput), {
+        'libselinux.so.1': {'LIBSELINUX_1.0'},
+        'libc.so.6': {'GLIBC_ABI_DT_RELR', 'GLIBC_2.28', 'GLIBC_2.38'},
+      });
+    });
+
+    test('ignores the per-symbol version table', () {
+      // Those lines name versions too, in parentheses, and belong to no File:.
+      final needs = parseVersionNeeds(needsOutput);
+      expect(needs.values.expand((v) => v), isNot(contains('GLIBC_2.2.5')));
+    });
+
+    test('an object with no version sections needs nothing', () {
+      expect(parseVersionNeeds('Dynamic section at offset 0x1\n'), isEmpty);
+    });
+
+    test('reads definitions, skipping BASE and Parent lines', () {
+      expect(parseVersionDefs(defsOutput), {'GLIBC_2.2.5', 'GLIBC_2.2.6'});
+    });
+
+    test('definitions do not leak in from a needs section', () {
+      // Both sections appear in one readelf run for a library; a `Name:` after
+      // the needs heading is a requirement, not a definition.
+      expect(parseVersionDefs(needsOutput), isEmpty);
+    });
+
+    test('needs do not leak in from a definitions section', () {
+      expect(parseVersionNeeds(defsOutput), isEmpty);
+    });
+  });
 }

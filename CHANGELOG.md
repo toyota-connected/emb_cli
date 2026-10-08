@@ -1,5 +1,30 @@
 # Unreleased
 
+**Cross.**
+
+- fix(flatpak): staged libraries are checked for symbol versions, not only
+  architecture. `FlatpakLibVendor._resolve` gated on `verifyElfForTriple`, which
+  compares `e_machine` and word size — a host library built against a newer
+  glibc passes it, stages cleanly, and then dies at startup inside the sandbox
+  with `version 'GLIBC_2.38' not found`. With `--target local` the search root
+  falls back to `/`, so that is the ordinary case rather than a contrived one.
+  The same class of failure `vendor_libs` exists to prevent, one layer down —
+  the third gap #224 named.
+
+  Each staged library's `readelf -V` requirements are compared against the
+  definitions in the runtime's own copy of the library they are aimed at.
+  Membership, not a numeric comparison: the loader resolves a version by name,
+  which is also what makes `GLIBC_ABI_DT_RELR` and friends fall out correctly.
+  Requirements aimed at a library the runtime does not ship are skipped — either
+  it was vendored alongside and carries its own definitions, or nothing provides
+  it and `unresolved` already reports it.
+
+  Warned, not failed, and deliberately quiet when it cannot tell: a runtime
+  library that `readelf` could not read, or that defines no versions at all, is
+  treated as unknown rather than as defining none, so an unversioned library
+  does not turn every requirement into a warning. The arch check stays a hard
+  skip, because a wrong-arch library is never usable.
+
 Nothing yet. New entries go here, not under the heading below — the pubspec reads
 `0.5.0-dev`, and work recorded under a published version is work no one can tell
 was shipped. That is how the `0.3.6` section ended up mixing a released tag with

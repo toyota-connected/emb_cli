@@ -13,12 +13,19 @@ class FlatpakVendorException implements Exception {
   String toString() => 'FlatpakVendorException: $message';
 }
 
+/// A staged library needing a symbol version that the runtime's own copy of the
+/// library named by `from` does not define — `libfoo.so.1` wanting
+/// `GLIBC_2.38` from a `libc.so.6` that stops at 2.36. The loader reports it as
+/// `version 'X' not found` and the app dies at startup inside the sandbox.
+typedef SymbolVersionGap = ({String staged, String from, String version});
+
 /// What a vendoring pass did, for the log and for tests.
 class VendorReport {
   const VendorReport({
     required this.staged,
     required this.provided,
     required this.unresolved,
+    this.symbolGaps = const [],
   });
 
   /// Sonames copied into the bundle's `lib/`, sorted.
@@ -29,6 +36,12 @@ class VendorReport {
 
   /// Sonames neither the runtime nor the search paths could account for.
   final List<String> unresolved;
+
+  /// Staged libraries whose symbol-version requirements the runtime cannot
+  /// satisfy. Sorted. Advisory: the arch check is a hard skip because a
+  /// wrong-arch library is never usable, while this one compares against a
+  /// runtime that was probed, with a `readelf` that may not have read it.
+  final List<SymbolVersionGap> symbolGaps;
 }
 
 /// Fills the gap between a sysroot and a flatpak runtime.
@@ -103,7 +116,7 @@ class FlatpakLibVendor {
         if (soname == _vdso || !seen.add(soname)) continue;
         // Bundle first: `$ORIGIN/lib` is searched ahead of the runtime's own paths.
         if (present.contains(soname)) continue;
-        if (runtimeIndex.contains(soname)) {
+        if (runtimeIndex.containsKey(soname)) {
           provided.add(soname);
           continue;
         }
@@ -127,7 +140,83 @@ class FlatpakLibVendor {
       staged: staged,
       provided: provided,
       unresolved: unresolved,
+      symbolGaps: await _symbolGaps(staged, libDir, runtimeIndex),
     );
+  }
+
+  /// Staged libraries asking the runtime for symbol versions it does not
+  /// define.
+  ///
+  /// The arch check in [_resolve] is the same class of problem one layer up: a
+  /// library that resolves, links and then fails at load. It compares
+  /// `e_machine` and word size, which a host library built against a newer
+  /// glibc passes — and with `--target local` the search root falls back to
+  /// `/`, so that is the ordinary case rather than a contrived one. The failure
+  /// lands inside the sandbox at startup, a long way from the build.
+  ///
+  /// Membership, not a version comparison: the loader resolves a version by
+  /// name, so a name the runtime's copy does not define is exactly what fails.
+  /// That also handles the names no ordering applies to, such as
+  /// `GLIBC_ABI_DT_RELR`.
+  ///
+  /// A runtime library that defines no versions at all is treated as unknown
+  /// rather than as defining none, so an unversioned library — or output this
+  /// did not parse — does not turn every requirement into a warning.
+  ///
+  /// Only requirements aimed at a library the *runtime* provides are checked. A
+  /// requirement on a library vendored alongside is satisfied by the copy that
+  /// shipped with it, and one on a library nothing provides is already reported
+  /// as unresolved.
+  Future<List<SymbolVersionGap>> _symbolGaps(
+    List<String> staged,
+    Directory libDir,
+    Map<String, File> runtimeIndex,
+  ) async {
+    final gaps = <SymbolVersionGap>[];
+    final defsCache = <String, Set<String>?>{};
+
+    Future<Set<String>?> definedBy(String soname) async {
+      if (defsCache.containsKey(soname)) return defsCache[soname];
+      final file = runtimeIndex[soname];
+      Set<String>? defs;
+      if (file != null) {
+        final r = await _run(readelf, ['-V', file.path], environment: _env);
+        // Two ways to learn nothing, both treated as nothing: a readelf that
+        // could not read the file, and a file with no version definitions at
+        // all. Comparing against an empty set would report every requirement
+        // as a gap — which is the wrong answer whether the library is
+        // genuinely unversioned or the output simply did not parse.
+        if (r.exitCode == 0) {
+          final parsed = parseVersionDefs(r.stdout);
+          if (parsed.isNotEmpty) defs = parsed;
+        }
+      }
+      return defsCache[soname] = defs;
+    }
+
+    for (final soname in staged) {
+      final file = File(p.join(libDir.path, soname));
+      final r = await _run(readelf, ['-V', file.path], environment: _env);
+      if (r.exitCode != 0) continue;
+      final needs = parseVersionNeeds(r.stdout);
+      for (final entry in needs.entries) {
+        if (!runtimeIndex.containsKey(entry.key)) continue;
+        final defs = await definedBy(entry.key);
+        if (defs == null) continue;
+        for (final version in entry.value) {
+          if (!defs.contains(version)) {
+            gaps.add((staged: soname, from: entry.key, version: version));
+          }
+        }
+      }
+    }
+    gaps.sort((a, b) {
+      final s = a.staged.compareTo(b.staged);
+      if (s != 0) return s;
+      final f = a.from.compareTo(b.from);
+      return f != 0 ? f : a.version.compareTo(b.version);
+    });
+    return gaps;
   }
 
   /// `DT_NEEDED` sonames of [elf], or null when readelf could not read it — a
@@ -140,19 +229,26 @@ class FlatpakLibVendor {
     return parseNeededSonames(r.stdout);
   }
 
-  /// Every library basename the runtime ships, so a soname lookup is a set hit
-  /// rather than a filesystem walk per query. Walks `lib`, `lib64` and
+  /// Every library the runtime ships, by basename, so a soname lookup is a map
+  /// hit rather than a filesystem walk per query. Walks `lib`, `lib64` and
   /// `usr/lib` recursively, which covers the multiarch subdirectory wherever a
   /// given runtime puts it.
-  Set<String> _indexRuntime(Directory runtimeFiles) {
-    final names = <String>{};
+  ///
+  /// The path is kept, not just the name: the symbol-version check has to read
+  /// the runtime's own copy of a library to learn which versions it defines.
+  Map<String, File> _indexRuntime(Directory runtimeFiles) {
+    final names = <String, File>{};
     for (final rel in ['lib', 'lib64', 'usr/lib']) {
       final d = Directory(p.join(runtimeFiles.path, rel));
       if (!d.existsSync()) continue;
       try {
         for (final e in d.listSync(recursive: true, followLinks: false)) {
           final base = p.basename(e.path);
-          if (_soName.hasMatch(base)) names.add(base);
+          // First wins: lib64 is commonly a symlink to lib, and either copy
+          // answers the same question.
+          if (e is File && _soName.hasMatch(base)) {
+            names.putIfAbsent(base, () => e);
+          }
         }
       } on FileSystemException {
         // Unreadable corner of the runtime tree: index what we can.
