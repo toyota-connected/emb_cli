@@ -4,3 +4,9 @@ tags:
   integration:
   version-verify:
     skip: "Should only be run during pull request. Verifies if version file is updated."
+  # Needs a real flatpak runtime installed plus the host binutils, so it is
+  # opt-in: `dart test --run-skipped -t flatpak`. The `flatpak` CI job installs
+  # a runtime and asserts it is there before running, because a test that skips
+  # itself reports green with no coverage.
+  flatpak:
+    skip: "Needs a flatpak runtime; run with --run-skipped -t flatpak."
