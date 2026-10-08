@@ -190,9 +190,9 @@ void main() {
       final sh = rec.calls.single;
       expect(sh.first, 'sh');
       expect(sh[1], '-c');
-      // Streams uncompressed tar into adb shell -T (no pty, binary-safe).
+      // Streams uncompressed tar into adb exec-in (no pty, binary-safe).
       expect(sh[2], startsWith('tar -cf -'));
-      expect(sh[2], contains('adb -s ABC123 shell -T'));
+      expect(sh[2], contains('adb -s ABC123 exec-in'));
       expect(sh[2], contains(_shq(_adbRemoteFor('/usr/share/ivi-homescreen'))));
     });
 
@@ -204,7 +204,7 @@ void main() {
       expect(r.method, 'adb');
       final pipeline = rec.calls.single[2];
       expect(pipeline, isNot(contains('-s')));
-      expect(pipeline, contains('adb shell -T'));
+      expect(pipeline, contains('adb exec-in'));
     });
 
     test(

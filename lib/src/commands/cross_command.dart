@@ -2663,10 +2663,10 @@ class CrossCommand extends Command<int> {
     progress.complete('Deployed → $label:$destDir (via ${res.method})');
     if (device.transport == DeviceTransport.adb) {
       // adb has no rsync --delete, so a file dropped from the bundle since the
-      // last push survives on the board. Say so rather than let it surface as
+      // last deploy survives on the board. Say so rather than let it surface as
       // a stale asset at run time.
       _logger.detail(
-        '  adb push overlays the destination (no --delete): use a fresh '
+        '  adb deploy overlays the destination (no --delete): use a fresh '
         '--deploy-dir if a removed file must not linger.',
       );
     }

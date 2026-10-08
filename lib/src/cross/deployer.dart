@@ -109,8 +109,8 @@ class Deployer {
   ///
   /// Over SSH this uses rsync (archive, compress, delete-extraneous) when the
   /// board has it, else a tar-over-SSH stream needing only `tar` + a shell.
-  /// Over adb it is `adb push`, which **overlays** rather than mirrors — see
-  /// [_pushAdb].
+  /// Over adb it streams tar via `exec-in` (falling back to `adb push` when
+  /// tar is absent), which **overlays** rather than mirrors — see [_pushAdb].
   Future<DeployResult> push(
     Directory localDir, {
     required DeployTarget device,
@@ -197,11 +197,11 @@ class Deployer {
     );
   }
 
-  /// Streams `tar -cf - | adb shell -T 'mkdir -p <dest> && tar -xf - -C
+  /// Streams `tar -cf - | adb exec-in 'mkdir -p <dest> && tar -xf - -C
   /// <dest>'`, falling back to `adb push` if tar is absent on the device.
   ///
   /// Mirrors `_pushTar`: one `sh -c` pipeline, no temp file, no device-side
-  /// cleanup. `-T` disables pty allocation so binary stdin is not mangled.
+  /// cleanup. `exec-in` bypasses pty allocation so binary stdin is not mangled.
   /// Plain `-cf`/`-xf` skips gzip overhead over USB.
   ///
   /// Unlike rsync this overlays (tar doesn't delete extraneous files), so a
@@ -217,7 +217,7 @@ class Deployer {
         'mkdir -p ${_shQuote(destDir)} && tar -xf - -C ${_shQuote(destDir)}';
     final pipeline =
         'tar -cf - -C ${_shQuote(localDir.path)} . '
-        '| $adb shell -T ${_shQuote(remote)}';
+        '| $adb exec-in ${_shQuote(remote)}';
     try {
       final r = await _run('sh', [
         '-c',
