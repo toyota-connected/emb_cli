@@ -197,72 +197,108 @@ class Deployer {
     );
   }
 
-  /// Streams `tar -cf - | adb exec-in 'mkdir -p <dest> && tar -xf - -C
-  /// <dest>'`, falling back to `adb push` if tar is absent on the device.
+  /// Archives the bundle locally, pushes it with [adb push] (binary-safe;
+  /// no shell/PTY), extracts on the device, then cleans up. Falls back to
+  /// `adb push` of individual files when tar is absent on the device.
   ///
-  /// Mirrors `_pushTar`: one `sh -c` pipeline, no temp file, no device-side
-  /// cleanup. `exec-in` bypasses pty allocation so binary stdin is not mangled.
-  /// Plain `-cf`/`-xf` skips gzip overhead over USB.
+  /// [adb push] bypasses the shell entirely so binary data is never mangled
+  /// by PTY CRLF conversion. The remote tar is staged at an absolute path
+  /// (/tmp) so that [adb push] and [adb shell] resolve it consistently.
   ///
   /// Unlike rsync this overlays (tar doesn't delete extraneous files), so a
-  /// file dropped from the bundle since the last push stays on the board.
+  /// file dropped from the bundle since the last deploy stays on the board.
   Future<DeployResult> _pushAdb(
     Directory localDir,
     DeployTarget device,
     String destDir,
   ) async {
     final args = _adbArgs(device);
-    final adb = ['adb', ...args].join(' ');
-    final remote =
-        'mkdir -p ${_shQuote(destDir)} && tar -xf - -C ${_shQuote(destDir)}';
-    final pipeline =
-        'tar -cf - -C ${_shQuote(localDir.path)} . '
-        '| $adb exec-in ${_shQuote(remote)}';
+    final tmpDir = await Directory.systemTemp.createTemp('emb-adb-');
+    final localTar = '${tmpDir.path}/bundle.tar';
+    // Absolute path: adb push and adb shell use different CWDs, so a relative
+    // destDir (e.g. "ivi-homescreen") would resolve differently for each.
+    const remoteTar = '/tmp/.emb-deploy.tar';
     try {
-      final r = await _run('sh', [
-        '-c',
-        pipeline,
-      ], output: ProcessOutputMode.stream);
-      if (r.exitCode == 0) {
-        return const DeployResult(success: true, method: 'adb');
-      }
-      // Exit 127 = command not found: tar is absent on the device.
-      // Any other non-zero (write error, disk full) is a real failure — don't
-      // attempt a second push on top of a partially-extracted bundle.
-      if (r.exitCode != 127) {
-        return DeployResult(
-          success: false,
-          method: 'adb',
-          message: 'tar over adb: ${_adbErr(r)}',
-        );
-      }
-
-      // Fall back to recursive push (tar absent on the device).
-      final mk = await _run('adb', [
-        ...args,
-        'shell',
-        'mkdir -p ${_shQuote(destDir)}',
+      final makeTar = await _run('tar', [
+        '-cf',
+        localTar,
+        '-C',
+        localDir.path,
+        '.',
       ]);
-      if (mk.exitCode != 0) {
+      if (makeTar.exitCode != 0) {
         return DeployResult(
           success: false,
           method: 'adb',
-          message: 'adb shell mkdir: ${_adbErr(mk)}',
+          message: 'tar: ${makeTar.stderr}',
         );
       }
-      final push = await _run('adb', [
-        ...args,
-        'push',
-        '${localDir.path}/.',
-        destDir,
-      ], output: ProcessOutputMode.stream);
-      return DeployResult(
-        success: push.exitCode == 0,
-        method: 'adb',
-        message: push.exitCode == 0 ? null : 'adb push: ${_adbErr(push)}',
-      );
-    } on ProcessException catch (e) {
-      return DeployResult(success: false, message: _adbMissing(e));
+      try {
+        final mk = await _run('adb', [
+          ...args,
+          'shell',
+          'mkdir -p ${_shQuote(destDir)}',
+        ]);
+        if (mk.exitCode != 0) {
+          return DeployResult(
+            success: false,
+            method: 'adb',
+            message: 'adb shell mkdir: ${_adbErr(mk)}',
+          );
+        }
+        final push = await _run('adb', [
+          ...args,
+          'push',
+          localTar,
+          remoteTar,
+        ], output: ProcessOutputMode.stream);
+        if (push.exitCode != 0) {
+          return DeployResult(
+            success: false,
+            method: 'adb',
+            message: 'adb push: ${_adbErr(push)}',
+          );
+        }
+        final extract = await _run('adb', [
+          ...args,
+          'shell',
+          'tar -xf ${_shQuote(remoteTar)} -C ${_shQuote(destDir)}',
+        ]);
+        // Always remove the remote tar — separate call so rm runs even if
+        // tar -xf fails.
+        await _run('adb', [
+          ...args,
+          'shell',
+          'rm -f ${_shQuote(remoteTar)}',
+        ]);
+        if (extract.exitCode == 0) {
+          return const DeployResult(success: true, method: 'adb');
+        }
+        // Exit 127 = tar not found on device: fall back to direct file push.
+        if (extract.exitCode != 127) {
+          return DeployResult(
+            success: false,
+            method: 'adb',
+            message: 'tar over adb: ${_adbErr(extract)}',
+          );
+        }
+        final fallback = await _run('adb', [
+          ...args,
+          'push',
+          '${localDir.path}/.',
+          destDir,
+        ], output: ProcessOutputMode.stream);
+        return DeployResult(
+          success: fallback.exitCode == 0,
+          method: 'adb',
+          message:
+              fallback.exitCode == 0 ? null : 'adb push: ${_adbErr(fallback)}',
+        );
+      } on ProcessException catch (e) {
+        return DeployResult(success: false, message: _adbMissing(e));
+      }
+    } finally {
+      tmpDir.deleteSync(recursive: true);
     }
   }
 

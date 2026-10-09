@@ -171,30 +171,58 @@ void main() {
   });
 
   group('adb transport', () {
-    test('push streams tar through adb shell to the device', () async {
-      final rec = recorder();
-      final r = await Deployer(runProcess: rec.run).push(
-        tmp,
-        device: const DeployTarget.adb(serial: 'ABC123'),
-        destDir: '/usr/share/ivi-homescreen',
-      );
-      expect(r.success, isTrue);
-      expect(r.method, 'adb');
-      // No ssh/rsync anywhere on this path.
-      expect(
-        rec.calls.any((c) => c.first == 'ssh' || c.first == 'rsync'),
-        isFalse,
-      );
-      // Single sh -c pipeline (mirrors the tar-over-ssh path).
-      expect(rec.calls.length, 1);
-      final sh = rec.calls.single;
-      expect(sh.first, 'sh');
-      expect(sh[1], '-c');
-      // Streams uncompressed tar into adb exec-in (no pty, binary-safe).
-      expect(sh[2], startsWith('tar -cf -'));
-      expect(sh[2], contains('adb -s ABC123 exec-in'));
-      expect(sh[2], contains(_shq(_adbRemoteFor('/usr/share/ivi-homescreen'))));
-    });
+    test(
+      'push archives locally, transfers via adb push (no shell/PTY), extracts on device',
+      () async {
+        final rec = recorder();
+        final r = await Deployer(runProcess: rec.run).push(
+          tmp,
+          device: const DeployTarget.adb(serial: 'ABC123'),
+          destDir: '/usr/share/ivi-homescreen',
+        );
+        expect(r.success, isTrue);
+        expect(r.method, 'adb');
+        expect(
+          rec.calls.any((c) => c.first == 'ssh' || c.first == 'rsync'),
+          isFalse,
+        );
+        // Local tar created first.
+        final tarCall = rec.calls.firstWhere((c) => c.first == 'tar');
+        expect(tarCall, containsAllInOrder(['-cf']));
+        expect(tarCall, contains('-C'));
+        // adb push of the tar file includes serial.
+        final pushCall = rec.calls.firstWhere(
+          (c) => c.first == 'adb' && c.contains('push'),
+        );
+        expect(pushCall, containsAllInOrder(['adb', '-s', 'ABC123', 'push']));
+        expect(pushCall.last, '/tmp/.emb-deploy.tar');
+        // adb shell extracts into destDir.
+        final extractCall = rec.calls.firstWhere(
+          (c) =>
+              c.first == 'adb' &&
+              c.contains('shell') &&
+              c.any((a) => a.startsWith('tar -xf')),
+        );
+        expect(
+          extractCall,
+          containsAllInOrder(['adb', '-s', 'ABC123', 'shell']),
+        );
+        expect(
+          extractCall.last,
+          contains(_shq('/usr/share/ivi-homescreen')),
+        );
+        // adb shell rm cleans up the remote tar.
+        expect(
+          rec.calls.any(
+            (c) =>
+                c.first == 'adb' &&
+                c.contains('shell') &&
+                c.any((a) => a.startsWith('rm -f')),
+          ),
+          isTrue,
+        );
+      },
+    );
 
     test('no serial omits -s, leaving adb its single-device default', () async {
       final rec = recorder();
@@ -202,9 +230,7 @@ void main() {
         runProcess: rec.run,
       ).push(tmp, device: const DeployTarget.adb(), destDir: 'app');
       expect(r.method, 'adb');
-      final pipeline = rec.calls.single[2];
-      expect(pipeline, isNot(contains('-s')));
-      expect(pipeline, contains('adb exec-in'));
+      expect(rec.calls.every((c) => !c.contains('-s')), isTrue);
     });
 
     test(
@@ -222,8 +248,12 @@ void main() {
           String? label,
         }) async {
           calls.add([exe, ...args]);
-          // Exit 127 = command not found: tar absent on device.
-          if (exe == 'sh') return const RunResult(127, '', 'tar: not found');
+          // adb shell tar -xf returns 127: tar absent on device.
+          if (exe == 'adb' &&
+              args.contains('shell') &&
+              args.any((a) => a.startsWith('tar '))) {
+            return const RunResult(127, '', 'tar: not found');
+          }
           return const RunResult(0, '', '');
         }
 
@@ -234,19 +264,30 @@ void main() {
         );
         expect(r.success, isTrue);
         expect(r.method, 'adb');
-        // sh pipeline attempted first, then adb mkdir + adb push.
-        expect(calls[0].first, 'sh');
+        // Local tar first.
+        expect(calls.first.first, 'tar');
+        // Two adb push calls: tar file, then fallback file push.
+        final pushCalls =
+            calls.where((c) => c.first == 'adb' && c.contains('push')).toList();
+        expect(pushCalls.length, 2);
+        // rm cleanup ran.
         expect(
-          calls.any((c) => c.first == 'adb' && c.contains('push')),
+          calls.any(
+            (c) =>
+                c.first == 'adb' && c.any((a) => a.startsWith('rm -f')),
+          ),
           isTrue,
         );
-        // No rm or rm -rf ever called.
-        expect(calls.any((c) => c.any((a) => a.startsWith('rm'))), isFalse);
+        // No rm -rf.
+        expect(
+          calls.any((c) => c.any((a) => a.contains('rm -rf'))),
+          isFalse,
+        );
       },
     );
 
     test(
-      'a non-127 pipeline failure is reported without attempting fallback',
+      'a non-127 extract failure is reported without attempting fallback',
       () async {
         final calls = <List<String>>[];
         Future<RunResult> run(
@@ -260,8 +301,13 @@ void main() {
           String? label,
         }) async {
           calls.add([exe, ...args]);
-          // Exit 1 = real failure (e.g. disk full), not "command not found".
-          return const RunResult(1, '', 'error');
+          // adb shell tar -xf fails with a real error (not 127).
+          if (exe == 'adb' &&
+              args.contains('shell') &&
+              args.any((a) => a.startsWith('tar '))) {
+            return const RunResult(1, '', 'error');
+          }
+          return const RunResult(0, '', '');
         }
 
         final r = await Deployer(
@@ -270,12 +316,29 @@ void main() {
         expect(r.success, isFalse);
         expect(r.method, 'adb');
         expect(r.message, isNotEmpty);
-        // No adb push attempted — would overlay a partially-extracted bundle.
-        expect(calls.any((c) => c.first == 'adb'), isFalse);
+        // rm still ran (cleanup on failure).
+        expect(
+          calls.any(
+            (c) =>
+                c.first == 'adb' && c.any((a) => a.startsWith('rm -f')),
+          ),
+          isTrue,
+        );
+        // No fallback adb push of the full directory.
+        expect(
+          calls.any(
+            (c) =>
+                c.first == 'adb' &&
+                c.contains('push') &&
+                c.any((a) => a.endsWith('/.')),
+          ),
+          isFalse,
+        );
       },
     );
 
-    test('a failed adb push reports stdout when stderr is empty', () async {
+    test('a failed adb push fallback reports stdout when stderr is empty',
+        () async {
       // adb writes most failures to stdout and still exits non-zero.
       Future<RunResult> run(
         String exe,
@@ -287,9 +350,16 @@ void main() {
         ProcessOutputMode output = ProcessOutputMode.capture,
         String? label,
       }) async {
-        // tar pipeline: exit 127 → fallback.
-        if (exe == 'sh') return const RunResult(127, '', 'tar: not found');
-        if (args.contains('push')) {
+        // tar absent on device → fallback.
+        if (exe == 'adb' &&
+            args.contains('shell') &&
+            args.any((a) => a.startsWith('tar '))) {
+          return const RunResult(127, '', 'tar: not found');
+        }
+        // Fallback adb push of individual files fails.
+        if (exe == 'adb' &&
+            args.contains('push') &&
+            args.any((a) => a.endsWith('/.'))) {
           return const RunResult(1, 'adb: error: failed to stat remote', '');
         }
         return const RunResult(0, '', '');
@@ -303,8 +373,6 @@ void main() {
     });
 
     test('a missing adb binary is reported with a hint, not a crash', () async {
-      // sh exits 127 when adb is not on PATH; the ProcessException path covers
-      // the (theoretical) case where sh itself is missing.
       Future<RunResult> run(
         String exe,
         List<String> args, {
@@ -314,7 +382,10 @@ void main() {
         bool runInShell = false,
         ProcessOutputMode output = ProcessOutputMode.capture,
         String? label,
-      }) async => throw const ProcessException('adb', [], 'No such file', 2);
+      }) async {
+        if (exe == 'tar') return const RunResult(0, '', '');
+        throw const ProcessException('adb', [], 'No such file', 2);
+      }
 
       final r = await Deployer(
         runProcess: run,
@@ -451,6 +522,3 @@ String _shq(String s) => "'${s.replaceAll("'", r"'\''")}'";
 String _remoteFor(String dest) =>
     'mkdir -p ${_shq(dest)} && tar -xzf - -C ${_shq(dest)}';
 
-/// The remote command `_pushAdb` must build for [dest] (no gzip).
-String _adbRemoteFor(String dest) =>
-    'mkdir -p ${_shq(dest)} && tar -xf - -C ${_shq(dest)}';
