@@ -215,8 +215,10 @@ class Deployer {
     final args = _adbArgs(device);
     final tmpDir = await Directory.systemTemp.createTemp('emb-adb-');
     final localTar = '${tmpDir.path}/bundle.tar';
-    // Absolute path: adb push and adb shell use different CWDs, so a relative
-    // destDir (e.g. "ivi-homescreen") would resolve differently for each.
+    // Absolute path on the target. adb push and adb shell have different CWDs
+    // so a relative destDir would resolve differently for each. /tmp is POSIX
+    // standard on embedded Linux; not intended for stock Android targets
+    // where /data/local/tmp is the conventional adb scratch space.
     const remoteTar = '/tmp/.emb-deploy.tar';
     try {
       final makeTar = await _run('tar', [
@@ -266,11 +268,7 @@ class Deployer {
         ]);
         // Always remove the remote tar — separate call so rm runs even if
         // tar -xf fails.
-        await _run('adb', [
-          ...args,
-          'shell',
-          'rm -f ${_shQuote(remoteTar)}',
-        ]);
+        await _run('adb', [...args, 'shell', 'rm -f ${_shQuote(remoteTar)}']);
         if (extract.exitCode == 0) {
           return const DeployResult(success: true, method: 'adb');
         }
@@ -291,11 +289,16 @@ class Deployer {
         return DeployResult(
           success: fallback.exitCode == 0,
           method: 'adb',
-          message:
-              fallback.exitCode == 0 ? null : 'adb push: ${_adbErr(fallback)}',
+          message: fallback.exitCode == 0
+              ? null
+              : 'adb push: ${_adbErr(fallback)}',
         );
       } on ProcessException catch (e) {
-        return DeployResult(success: false, message: _adbMissing(e));
+        return DeployResult(
+          success: false,
+          method: 'adb',
+          message: _adbMissing(e),
+        );
       }
     } finally {
       tmpDir.deleteSync(recursive: true);

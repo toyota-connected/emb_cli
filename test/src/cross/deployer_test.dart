@@ -207,10 +207,7 @@ void main() {
           extractCall,
           containsAllInOrder(['adb', '-s', 'ABC123', 'shell']),
         );
-        expect(
-          extractCall.last,
-          contains(_shq('/usr/share/ivi-homescreen')),
-        );
+        expect(extractCall.last, contains(_shq('/usr/share/ivi-homescreen')));
         // adb shell rm cleans up the remote tar.
         expect(
           rec.calls.any(
@@ -267,22 +264,19 @@ void main() {
         // Local tar first.
         expect(calls.first.first, 'tar');
         // Two adb push calls: tar file, then fallback file push.
-        final pushCalls =
-            calls.where((c) => c.first == 'adb' && c.contains('push')).toList();
+        final pushCalls = calls
+            .where((c) => c.first == 'adb' && c.contains('push'))
+            .toList();
         expect(pushCalls.length, 2);
         // rm cleanup ran.
         expect(
           calls.any(
-            (c) =>
-                c.first == 'adb' && c.any((a) => a.startsWith('rm -f')),
+            (c) => c.first == 'adb' && c.any((a) => a.startsWith('rm -f')),
           ),
           isTrue,
         );
         // No rm -rf.
-        expect(
-          calls.any((c) => c.any((a) => a.contains('rm -rf'))),
-          isFalse,
-        );
+        expect(calls.any((c) => c.any((a) => a.contains('rm -rf'))), isFalse);
       },
     );
 
@@ -319,8 +313,7 @@ void main() {
         // rm still ran (cleanup on failure).
         expect(
           calls.any(
-            (c) =>
-                c.first == 'adb' && c.any((a) => a.startsWith('rm -f')),
+            (c) => c.first == 'adb' && c.any((a) => a.startsWith('rm -f')),
           ),
           isTrue,
         );
@@ -337,40 +330,42 @@ void main() {
       },
     );
 
-    test('a failed adb push fallback reports stdout when stderr is empty',
-        () async {
-      // adb writes most failures to stdout and still exits non-zero.
-      Future<RunResult> run(
-        String exe,
-        List<String> args, {
-        String? workingDirectory,
-        Map<String, String>? environment,
-        bool includeParentEnvironment = true,
-        bool runInShell = false,
-        ProcessOutputMode output = ProcessOutputMode.capture,
-        String? label,
-      }) async {
-        // tar absent on device → fallback.
-        if (exe == 'adb' &&
-            args.contains('shell') &&
-            args.any((a) => a.startsWith('tar '))) {
-          return const RunResult(127, '', 'tar: not found');
+    test(
+      'a failed adb push fallback reports stdout when stderr is empty',
+      () async {
+        // adb writes most failures to stdout and still exits non-zero.
+        Future<RunResult> run(
+          String exe,
+          List<String> args, {
+          String? workingDirectory,
+          Map<String, String>? environment,
+          bool includeParentEnvironment = true,
+          bool runInShell = false,
+          ProcessOutputMode output = ProcessOutputMode.capture,
+          String? label,
+        }) async {
+          // tar absent on device → fallback.
+          if (exe == 'adb' &&
+              args.contains('shell') &&
+              args.any((a) => a.startsWith('tar '))) {
+            return const RunResult(127, '', 'tar: not found');
+          }
+          // Fallback adb push of individual files fails.
+          if (exe == 'adb' &&
+              args.contains('push') &&
+              args.any((a) => a.endsWith('/.'))) {
+            return const RunResult(1, 'adb: error: failed to stat remote', '');
+          }
+          return const RunResult(0, '', '');
         }
-        // Fallback adb push of individual files fails.
-        if (exe == 'adb' &&
-            args.contains('push') &&
-            args.any((a) => a.endsWith('/.'))) {
-          return const RunResult(1, 'adb: error: failed to stat remote', '');
-        }
-        return const RunResult(0, '', '');
-      }
 
-      final r = await Deployer(
-        runProcess: run,
-      ).push(tmp, device: const DeployTarget.adb(), destDir: 'app');
-      expect(r.success, isFalse);
-      expect(r.message, contains('failed to stat remote'));
-    });
+        final r = await Deployer(
+          runProcess: run,
+        ).push(tmp, device: const DeployTarget.adb(), destDir: 'app');
+        expect(r.success, isFalse);
+        expect(r.message, contains('failed to stat remote'));
+      },
+    );
 
     test('a missing adb binary is reported with a hint, not a crash', () async {
       Future<RunResult> run(
@@ -521,4 +516,3 @@ String _shq(String s) => "'${s.replaceAll("'", r"'\''")}'";
 /// The remote command `_pushTar` must build for [dest].
 String _remoteFor(String dest) =>
     'mkdir -p ${_shq(dest)} && tar -xzf - -C ${_shq(dest)}';
-
