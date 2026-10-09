@@ -221,13 +221,23 @@ class Deployer {
     // where /data/local/tmp is the conventional adb scratch space.
     const remoteTar = '/tmp/.emb-deploy.tar';
     try {
-      final makeTar = await _run('tar', [
-        '-cf',
-        localTar,
-        '-C',
-        localDir.path,
-        '.',
-      ]);
+      final RunResult makeTar;
+      try {
+        makeTar = await _run('tar', [
+          '-cf',
+          localTar,
+          '-C',
+          localDir.path,
+          '.',
+        ]);
+      } on ProcessException catch (e) {
+        return DeployResult(
+          success: false,
+          method: 'adb',
+          message:
+              'tar not found on PATH (${e.message}) — install tar on the host.',
+        );
+      }
       if (makeTar.exitCode != 0) {
         return DeployResult(
           success: false,

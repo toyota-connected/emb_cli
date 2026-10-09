@@ -367,6 +367,31 @@ void main() {
       },
     );
 
+    test('a missing tar binary is reported with a hint, not a crash', () async {
+      Future<RunResult> run(
+        String exe,
+        List<String> args, {
+        String? workingDirectory,
+        Map<String, String>? environment,
+        bool includeParentEnvironment = true,
+        bool runInShell = false,
+        ProcessOutputMode output = ProcessOutputMode.capture,
+        String? label,
+      }) async {
+        if (exe == 'tar') {
+          throw const ProcessException('tar', [], 'No such file', 2);
+        }
+        return const RunResult(0, '', '');
+      }
+
+      final r = await Deployer(
+        runProcess: run,
+      ).push(tmp, device: const DeployTarget.adb(), destDir: 'app');
+      expect(r.success, isFalse);
+      expect(r.method, 'adb');
+      expect(r.message, contains('tar not found on PATH'));
+    });
+
     test('a missing adb binary is reported with a hint, not a crash', () async {
       Future<RunResult> run(
         String exe,
