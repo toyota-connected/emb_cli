@@ -544,9 +544,7 @@ void main() {
 
     test('leaves absolute paths and preserves other augment fields', () {
       final abs = p.join(p.separator, 'etc', '0001.patch');
-      final a = target([
-        abs,
-      ]).withResolvedPaths('/ws/emb.yaml').augment.single;
+      final a = target([abs]).withResolvedPaths('/ws/emb.yaml').augment.single;
       expect(a.patches, [abs]);
       expect(a.pkg, 'filament');
       expect(a.minVersion, '1.74.0');
@@ -584,6 +582,71 @@ void main() {
       // must differ. Unresolved, both would hash the identical string.
       expect(sysrootKey(fromA), isNot(sysrootKey(fromB)));
       expect(augmentOverlayKey(fromA), isNot(augmentOverlayKey(fromB)));
+    });
+  });
+
+  group('sdk path resolution', () {
+    CrossTarget sdk(Map<String, dynamic> keys) =>
+        _t({'provider': 'yocto-sdk', 'triple': 'aarch64-linux-gnu', ...keys});
+
+    test('a relative sdk_path keys the same from any working directory', () {
+      // sdkPath is hashed into _sysrootParts, so an unresolved relative value
+      // would key as the literal string -- identical for two different boards
+      // that both spell it "sdk", which is what collapses matrix cache
+      // entries onto one another.
+      final target = sdk({'sdk_path': 'sdk'});
+      final fromA = target.withResolvedPaths('/ws/a/.emb/board.emb.yaml');
+      final fromB = target.withResolvedPaths('/ws/b/.emb/board.emb.yaml');
+      expect(fromA.sdkPath, p.normalize('/ws/a/.emb/sdk'));
+      expect(fromB.sdkPath, p.normalize('/ws/b/.emb/sdk'));
+      expect(sysrootKey(fromA), isNot(sysrootKey(fromB)));
+      // And resolving twice from the same manifest is stable.
+      expect(
+        sysrootKey(target.withResolvedPaths('/ws/a/.emb/board.emb.yaml')),
+        sysrootKey(fromA),
+      );
+    });
+
+    test('an absolute sdk_path keys exactly as before', () {
+      // The machine-install case (/opt/fsl-imx-wayland/6.6 in the docs): the
+      // value does not move, so neither does the key.
+      final abs = p.join(p.separator, 'opt', 'fsl-imx-wayland', '6.6');
+      final target = sdk({'sdk_path': abs});
+      final resolved = target.withResolvedPaths('/ws/.emb/imx.emb.yaml');
+      expect(resolved.sdkPath, abs);
+      expect(sysrootKey(resolved), sysrootKey(target));
+    });
+
+    test('sdk_env_setup resolves and sdk_url is left alone', () {
+      final target = sdk({
+        'sdk_env_setup': 'sdk/environment-setup-aarch64-board-linux',
+        'sdk_url': 'https://example.com/populate_sdk.sh',
+      });
+      final resolved = target.withResolvedPaths('/ws/.emb/board.emb.yaml');
+      expect(
+        resolved.sdkEnvSetup,
+        p.normalize('/ws/.emb/sdk/environment-setup-aarch64-board-linux'),
+      );
+      expect(resolved.sdkUrl, 'https://example.com/populate_sdk.sh');
+    });
+
+    test('resolves with no patches, modules or vars to carry it', () {
+      // The early exit returned `this` when nothing else needed resolving,
+      // which skipped sdk_path on exactly the targets that have neither --
+      // a yocto-sdk board with augment: [] is that shape.
+      final resolved = sdk({
+        'sdk_path': 'sdk',
+      }).withResolvedPaths('/ws/.emb/board.emb.yaml');
+      expect(resolved.sdkPath, p.normalize('/ws/.emb/sdk'));
+    });
+
+    test('is still a no-op with no declaring file and nothing to resolve', () {
+      final bare = sdk(const {});
+      expect(identical(bare.withResolvedPaths(null), bare), isTrue);
+      expect(
+        identical(bare.withResolvedPaths('/ws/.emb/board.emb.yaml'), bare),
+        isTrue,
+      );
     });
   });
 

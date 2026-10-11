@@ -1420,12 +1420,13 @@ class CrossTarget {
   }
 
   /// A copy whose manifest-relative paths resolve against the manifest at
-  /// [declaringFile]: augment patch and local paths, and module paths. See
+  /// [declaringFile]: augment patch and local paths, module paths, and the
+  /// SDK paths `sdk_path` / `sdk_env_setup`. See
   /// [AugmentLib.resolvePatchesAgainst].
   ///
   /// Named for paths rather than patches because it has not been only patches
-  /// for some time -- augment `path:` and `modules[].path` resolve here too,
-  /// and the old name described the first of the three.
+  /// for some time -- augment `path:`, `modules[].path` and the SDK paths
+  /// resolve here too, and the old name described the first of them.
   CrossTarget withResolvedPaths(
     String? declaringFile, {
     Map<String, String> vars = const {},
@@ -1436,7 +1437,44 @@ class CrossTarget {
         : null;
     final needsAugment = augment.any((a) => a.patches.isNotEmpty || a.isLocal);
     final needsModule = modules.isNotEmpty && vars.isNotEmpty;
-    if (!needsAugment && !needsModule && vars.isEmpty) return this;
+    final needsSdk = sdkPath != null || sdkEnvSetup != null;
+    if (!needsAugment && !needsModule && !needsSdk && vars.isEmpty) {
+      return this;
+    }
+
+    /// `sdk_path` / `sdk_env_setup` absolutized against [base], on the same
+    /// rule as augment patches and `modules[].path`: a value that is not
+    /// absolute is relative to the manifest that declared it.
+    ///
+    /// Without this the only workable value is an absolute path, because the
+    /// yocto-sdk provider tests it with `Directory(path).existsSync()` — which
+    /// resolves against the process's working directory, and a build does not
+    /// run emb from the manifest's directory. Worse, the failure is silent:
+    /// `_resolveEnvSetup` falls through sdk_env_setup → sdk_path → sdk_url and
+    /// reports "no environment-setup-* found", pointing at the SDK rather than
+    /// at the path. So a board whose environment-setup script is committed
+    /// beside its manifest had to name a path that exists on one machine;
+    /// `sdk_path: sa8155p` under `.emb/` now means `<project>/.emb/sa8155p`
+    /// wherever the repo is cloned.
+    ///
+    /// Deliberately no `expandManifestVars` here. These two values are hashed
+    /// into `_sysrootParts`, so an unexpanded `${app_root}` would reach
+    /// `sysrootKey` as a literal while `hasUnresolvedKeyPaths` — which does
+    /// not look at them — returned false, and `emb matrix` would emit a
+    /// `sysroot_key` that collapses different boards onto one cache entry.
+    /// That is the defect `hasUnresolvedKeyPaths` exists to prevent.
+    /// Variables here want that guard and the README's supported-fields table
+    /// in the same change, and nothing needs them yet.
+    ///
+    /// `sdk_url` is left alone: it is a URL, and joining it to a directory
+    /// would corrupt it.
+    String? resolvedSdk(String? value) {
+      if (value == null || base == null || p.isAbsolute(value)) {
+        return value;
+      }
+      return p.normalize(p.join(base, value));
+    }
+
     return CrossTarget(
       provider: provider,
       targetTriple: targetTriple,
@@ -1449,9 +1487,9 @@ class CrossTarget {
       yoctoBuild: yoctoBuild,
       machineTuple: machineTuple,
       recipe: recipe,
-      sdkPath: sdkPath,
+      sdkPath: resolvedSdk(sdkPath),
       sdkUrl: sdkUrl,
-      sdkEnvSetup: sdkEnvSetup,
+      sdkEnvSetup: resolvedSdk(sdkEnvSetup),
       augment: [
         for (final a in augment)
           a.resolvePatchesAgainst(declaringFile, vars: vars),

@@ -928,6 +928,81 @@ void main() {
       expect(resolved.augment.first.path, '/w/libfoo');
     });
 
+    test('a relative sdk_path resolves against the declaring manifest', () {
+      // The yocto-sdk provider tests sdk_path with
+      // Directory(path).existsSync(), which resolves against the process's
+      // working directory -- so before this the only workable value was an
+      // absolute path, and a board committing its environment-setup script
+      // beside its manifest had to name a path that exists on one machine.
+      final target = CrossTarget.fromMap({
+        'provider': 'yocto-sdk',
+        'triple': 'aarch64-linux-gnu',
+        'sdk_path': 'sa8155p',
+      });
+      final resolved = target.withResolvedPaths('/w/.emb/sa8155p.emb.yaml');
+      expect(resolved.sdkPath, '/w/.emb/sa8155p');
+    });
+
+    test('an absolute sdk_path is left alone', () {
+      final target = CrossTarget.fromMap({
+        'provider': 'yocto-sdk',
+        'triple': 'aarch64-linux-gnu',
+        'sdk_path': '/opt/fsl-imx-wayland/6.6',
+      });
+      expect(
+        target.withResolvedPaths('/w/.emb/imx.emb.yaml').sdkPath,
+        '/opt/fsl-imx-wayland/6.6',
+      );
+    });
+
+    test('a relative sdk_env_setup resolves, and sdk_url does not', () {
+      // sdk_url is a URL, not a path: joining it to a directory would corrupt
+      // it, which is why only the two path-valued keys are resolved.
+      final target = CrossTarget.fromMap({
+        'provider': 'yocto-sdk',
+        'triple': 'aarch64-linux-gnu',
+        'sdk_env_setup': 'sa8155p/environment-setup-aarch64-sa8155p-linux',
+        'sdk_url': 'https://example.com/populate_sdk.sh',
+      });
+      final resolved = target.withResolvedPaths('/w/.emb/sa8155p.emb.yaml');
+      expect(
+        resolved.sdkEnvSetup,
+        '/w/.emb/sa8155p/environment-setup-aarch64-sa8155p-linux',
+      );
+      expect(resolved.sdkUrl, 'https://example.com/populate_sdk.sh');
+    });
+
+    test(r'a ${var} in sdk_path is left verbatim, not expanded', () {
+      // Deliberate: these values are hashed into the sysroot key, and an
+      // unexpanded token would key as a literal while hasUnresolvedKeyPaths
+      // -- which does not inspect them -- reported nothing wrong. Variables
+      // here want that guard in the same change.
+      final target = CrossTarget.fromMap({
+        'provider': 'yocto-sdk',
+        'triple': 'aarch64-linux-gnu',
+        'sdk_path': r'${embedder_root}/.emb/sa8155p',
+      });
+      final resolved = target.withResolvedPaths(
+        '/w/.emb/sa8155p.emb.yaml',
+        vars: {'embedder_root': '/emb'},
+      );
+      expect(resolved.sdkPath, r'/w/.emb/${embedder_root}/.emb/sa8155p');
+    });
+
+    test('withResolvedPaths resolves sdk_path with no patches or vars', () {
+      // The early exit used to return `this` when nothing else needed
+      // resolving, which would have skipped the sdk_path above.
+      final target = CrossTarget.fromMap({
+        'provider': 'yocto-sdk',
+        'triple': 'aarch64-linux-gnu',
+        'sdk_path': 'sa8155p',
+      });
+      expect(
+        target.withResolvedPaths('/w/.emb/sa8155p.emb.yaml').sdkPath,
+        '/w/.emb/sa8155p',
+      );
+    });
+
     test('withResolvedPaths preserves customDevice', () {
       final target = CrossTarget.fromMap({
         'provider': 'arm-gnu',
