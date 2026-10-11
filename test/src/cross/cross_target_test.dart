@@ -713,12 +713,12 @@ void main() {
       expect(targetOf([42]).embedderExports, ['42']);
     });
 
-    test('survives withDefineOverrides and withResolvedPatches', () {
+    test('survives withDefineOverrides and withResolvedPaths', () {
       final t = targetOf(['shared']);
       expect(t.withDefineOverrides(const {'X': '1'}).embedderExports, [
         'shared',
       ]);
-      expect(t.withResolvedPatches('/tmp/board.emb.yaml').embedderExports, [
+      expect(t.withResolvedPaths('/tmp/board.emb.yaml').embedderExports, [
         'shared',
       ]);
     });
@@ -914,7 +914,7 @@ void main() {
       expect(a.patches, ['/emb/patches/fix.patch']);
     });
 
-    test('withResolvedPatches resolves local path even when no patches', () {
+    test('withResolvedPaths resolves local path even when no patches', () {
       // Previously the early exit `augment.every(a => a.patches.isEmpty)` would
       // skip absolutizing a local path when there were no patches.
       final target = CrossTarget.fromMap({
@@ -924,11 +924,11 @@ void main() {
           {'pkg': 'libfoo', 'path': '../libfoo'},
         ],
       });
-      final resolved = target.withResolvedPatches('/w/boards/pi5.emb.yaml');
+      final resolved = target.withResolvedPaths('/w/boards/pi5.emb.yaml');
       expect(resolved.augment.first.path, '/w/libfoo');
     });
 
-    test('withResolvedPatches preserves customDevice', () {
+    test('withResolvedPaths preserves customDevice', () {
       final target = CrossTarget.fromMap({
         'provider': 'arm-gnu',
         'triple': 'aarch64-none-linux-gnu',
@@ -937,11 +937,11 @@ void main() {
           {'pkg': 'libfoo', 'path': '../libfoo'},
         ],
       });
-      final resolved = target.withResolvedPatches('/w/boards/pi5.emb.yaml');
+      final resolved = target.withResolvedPaths('/w/boards/pi5.emb.yaml');
       expect(resolved.customDevice?.id, 'my-board');
     });
 
-    test('withResolvedPatches passes vars to augment resolution', () {
+    test('withResolvedPaths passes vars to augment resolution', () {
       final target = CrossTarget.fromMap({
         'provider': 'arm-gnu',
         'triple': 'aarch64-none-linux-gnu',
@@ -949,7 +949,7 @@ void main() {
           {'pkg': 'libfoo', 'path': r'${app_root}/native/libfoo'},
         ],
       });
-      final resolved = target.withResolvedPatches(
+      final resolved = target.withResolvedPaths(
         '/w/boards/pi5.emb.yaml',
         vars: {'embedder_root': '/emb', 'app_root': '/myapp'},
       );
@@ -978,7 +978,7 @@ void main() {
       expect(resolved.declaringFile, '/fallback/base.emb.yaml');
     });
 
-    test('withResolvedPatches expands module paths', () {
+    test('withResolvedPaths expands module paths', () {
       final target = CrossTarget.fromMap({
         'provider': 'arm-gnu',
         'triple': 'aarch64-none-linux-gnu',
@@ -991,14 +991,14 @@ void main() {
           },
         ],
       });
-      final resolved = target.withResolvedPatches(
+      final resolved = target.withResolvedPaths(
         '/w/boards/pi5.emb.yaml',
         vars: {'app_root': '/myapp'},
       );
       expect(resolved.modules.first.path, '/myapp/native/hello');
     });
 
-    test('withResolvedPatches with null declaringFile still expands vars', () {
+    test('withResolvedPaths with null declaringFile still expands vars', () {
       final target = CrossTarget.fromMap({
         'provider': 'arm-gnu',
         'triple': 'aarch64-none-linux-gnu',
@@ -1011,7 +1011,7 @@ void main() {
           },
         ],
       });
-      final resolved = target.withResolvedPatches(
+      final resolved = target.withResolvedPaths(
         null,
         vars: {'embedder_root': '/emb'},
       );

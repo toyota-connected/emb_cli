@@ -866,7 +866,7 @@ class OverlayBuilder {
     // at a new tag while `min:` stayed put re-downloaded the tarball and then
     // built the *old* tree — and that a tree unpacked from a substituted
     // tarball survived adding the correct pin afterwards.
-    // Patch paths are already absolute: CrossTarget.withResolvedPatches rebases
+    // Patch paths are already absolute: CrossTarget.withResolvedPaths rebases
     // them against the declaring manifest at load, so the paths hashed into the
     // cache keys and the paths applied here are the same files.
     // The stamp is written even when there are no patches, so a directory only

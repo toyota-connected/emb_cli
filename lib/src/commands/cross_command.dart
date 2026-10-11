@@ -672,7 +672,7 @@ class CrossCommand extends Command<int> {
           if (appDir != null) 'app_root': _appDir(appDir)!,
         };
         t = CrossTarget.fromMap(selected)
-            .withResolvedPatches(
+            .withResolvedPaths(
               appLayerSource ?? selection.sourcePath,
               vars: patchVars,
             )

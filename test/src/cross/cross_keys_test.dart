@@ -536,7 +536,7 @@ void main() {
     test('rebases relative paths onto the declaring manifest', () {
       final resolved = target([
         'patches/0007.patch',
-      ]).withResolvedPatches('/ws/app/fluorite/emb.yaml');
+      ]).withResolvedPaths('/ws/app/fluorite/emb.yaml');
       expect(resolved.augment.single.patches, [
         p.normalize('/ws/app/fluorite/patches/0007.patch'),
       ]);
@@ -546,7 +546,7 @@ void main() {
       final abs = p.join(p.separator, 'etc', '0001.patch');
       final a = target([
         abs,
-      ]).withResolvedPatches('/ws/emb.yaml').augment.single;
+      ]).withResolvedPaths('/ws/emb.yaml').augment.single;
       expect(a.patches, [abs]);
       expect(a.pkg, 'filament');
       expect(a.minVersion, '1.74.0');
@@ -555,9 +555,9 @@ void main() {
 
     test('is a no-op without a declaring file or without patches', () {
       final t = target(['a.patch']);
-      expect(identical(t.withResolvedPatches(null), t), isTrue);
+      expect(identical(t.withResolvedPaths(null), t), isTrue);
       final none = target(const []);
-      expect(identical(none.withResolvedPatches('/ws/emb.yaml'), none), isTrue);
+      expect(identical(none.withResolvedPaths('/ws/emb.yaml'), none), isTrue);
     });
 
     test('makes the key independent of the working directory', () {
@@ -575,10 +575,10 @@ void main() {
 
       final fromA = target([
         'patches/0007.patch',
-      ]).withResolvedPatches(p.join(tmp.path, 'a', 'emb.yaml'));
+      ]).withResolvedPaths(p.join(tmp.path, 'a', 'emb.yaml'));
       final fromB = target([
         'patches/0007.patch',
-      ]).withResolvedPatches(p.join(tmp.path, 'b', 'emb.yaml'));
+      ]).withResolvedPaths(p.join(tmp.path, 'b', 'emb.yaml'));
 
       // Same relative path, different manifests, different contents: the keys
       // must differ. Unresolved, both would hash the identical string.

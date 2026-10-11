@@ -533,7 +533,7 @@ class ModuleSpec {
   final String name;
 
   /// Source directory. Manifest-relative as written; absolute once
-  /// [CrossTarget.withResolvedPatches] has run [withExpandedPath], which is
+  /// [CrossTarget.withResolvedPaths] has run [withExpandedPath], which is
   /// what every key and build site sees.
   final String path;
 
@@ -1419,9 +1419,14 @@ class CrossTarget {
     );
   }
 
-  /// A copy whose augment patch/local paths and module paths resolve against
-  /// the manifest at [declaringFile]. See [AugmentLib.resolvePatchesAgainst].
-  CrossTarget withResolvedPatches(
+  /// A copy whose manifest-relative paths resolve against the manifest at
+  /// [declaringFile]: augment patch and local paths, and module paths. See
+  /// [AugmentLib.resolvePatchesAgainst].
+  ///
+  /// Named for paths rather than patches because it has not been only patches
+  /// for some time -- augment `path:` and `modules[].path` resolve here too,
+  /// and the old name described the first of the three.
+  CrossTarget withResolvedPaths(
     String? declaringFile, {
     Map<String, String> vars = const {},
   }) {

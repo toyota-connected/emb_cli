@@ -118,7 +118,7 @@ class MatrixCommand extends Command<int> {
             Map<String, dynamic>.from(entry.merged),
             file.path,
           );
-          target = CrossTarget.fromMap(resolved).withResolvedPatches(
+          target = CrossTarget.fromMap(resolved).withResolvedPaths(
             file.path,
             vars: {
               'embedder_root': p.normalize(p.dirname(p.absolute(file.path))),
