@@ -525,6 +525,20 @@ Terrific Trout (2025), Ultimate Unagi (latest, 2026).
    install. Re-runs are no-ops once the prefix is populated. `bash`, not `sh`:
    OE installers are bash scripts and fail silently under dash.
 
+`sdk_env_setup` and `sdk_path` may be written **relative to the manifest that
+declares them**, on the same rule `augment[].patches`, augment `path:` and
+`modules[].path` follow — so a board committing its `environment-setup-*` script
+beside its own manifest can name it without an absolute path that works on one
+machine. A value declared in a board library resolves against that board's file,
+not against the manifest that `extends:` it. Absolute values are untouched, and
+`sdk_url` is never resolved: it is a URL. Nothing expands `${…}` in these two,
+so a token in them is refused at load rather than reaching the SDK probe as a
+plausible-looking path.
+
+Both are hashed into the sysroot key, so a relative value ties that key to where
+the repo is checked out. That is fine for a single project; if you share
+`emb.lock` between machines at different paths, use an absolute path.
+
 In all three the script is sourced in a clean shell and the env read back, so
 `CC`/`CXX`/`CFLAGS`/`SDKTARGETSYSROOT`/`OECORE_NATIVE_SYSROOT`/
 `CMAKE_TOOLCHAIN_FILE` flow through verbatim.

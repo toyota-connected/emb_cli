@@ -1072,6 +1072,7 @@ class CrossTarget {
     this.sdkPath,
     this.sdkUrl,
     this.sdkEnvSetup,
+    this.sdkDeclaringFile,
     this.augment = const [],
     this.modules = const [],
     this.embedderExports = const [],
@@ -1115,9 +1116,10 @@ class CrossTarget {
       yoctoBuild: map['yocto_build']?.toString(),
       machineTuple: map['machine_tuple']?.toString(),
       recipe: (map['recipe'] ?? 'weston').toString(),
-      sdkPath: map['sdk_path']?.toString(),
+      sdkPath: _sdkPathOrNull(map['sdk_path'], 'sdk_path'),
       sdkUrl: map['sdk_url']?.toString(),
-      sdkEnvSetup: map['sdk_env_setup']?.toString(),
+      sdkEnvSetup: _sdkPathOrNull(map['sdk_env_setup'], 'sdk_env_setup'),
+      sdkDeclaringFile: map['_sdk_source']?.toString(),
       augment: (map['augment'] as List<dynamic>? ?? const [])
           .whereType<Map<dynamic, dynamic>>()
           .map(AugmentLib.fromMap)
@@ -1217,6 +1219,19 @@ class CrossTarget {
   /// resolved SDK root.
   final String? sdkEnvSetup;
 
+  /// The manifest that declared [sdkPath] / [sdkEnvSetup], when known.
+  ///
+  /// Set from `_sdk_source`, which `CrossProject` stamps onto a `cross:` map
+  /// it is about to hand to another layer. Without it an `extends:` would
+  /// resolve a board library's relative `sdk_path` against the *extending*
+  /// manifest: `_applyExtends` merges the board's `cross:` map into the
+  /// consuming target while the declaring file stays the consumer's, so
+  /// `sdk_path: sa8155p` in a board library would resolve under the app's
+  /// `.emb/` and fall through to "no environment-setup-* found". Same reason
+  /// [AugmentLib.declaringFile] exists, and [withResolvedPaths] prefers it the
+  /// same way.
+  final String? sdkDeclaringFile;
+
   /// Source-built libraries to stage into the overlay (libdisplay-info, …).
   final List<AugmentLib> augment;
 
@@ -1248,6 +1263,38 @@ class CrossTarget {
   /// `patches` counts: `patchSeriesDigest` hashes `<missing>` for a path that
   /// does not exist, so a literal `${app_root}/fix.patch` yields a stable but
   /// wrong digest rather than an obvious failure.
+  /// `sdk_path` / `sdk_env_setup` as stored: trimmed, empty read as absent, and
+  /// an unexpanded `${…}` refused.
+  ///
+  /// Empty is absent rather than "the manifest directory". A relative value is
+  /// joined onto that directory, so `sdk_path: ""` would resolve to the
+  /// directory itself — an existing directory, which makes the provider's
+  /// `existsSync` probe succeed and `emb doctor` report `sdkState: present` for
+  /// something that is not an SDK. Before the paths were manifest-relative an
+  /// empty value simply failed that probe and fell through.
+  ///
+  /// A `${…}` is refused for the reason `${host_build}` is refused in
+  /// [AugmentLib.fromMap]: nothing expands these two — they are hashed into
+  /// `_sysrootParts` and resolution happens before any key is computed, so
+  /// expansion would need `hasUnresolvedKeyPaths` to learn about them first.
+  /// Left alone, the literal is joined onto the manifest directory and hashed,
+  /// which reads as a plausible path and fails much later as "no
+  /// environment-setup-* found".
+  static String? _sdkPathOrNull(Object? raw, String field) {
+    if (raw == null) return null;
+    final value = raw.toString().trim();
+    if (value.isEmpty) return null;
+    final unexpanded = RegExp(r'\$\{[^}]*\}').firstMatch(value);
+    if (unexpanded != null) {
+      throw ArgumentError(
+        'cross.$field contains ${unexpanded.group(0)}, which nothing expands: '
+        'a relative value resolves against the manifest that declares it, so '
+        'write the path relative to that manifest (or an absolute path)',
+      );
+    }
+    return value;
+  }
+
   bool get hasUnresolvedKeyPaths =>
       augment.any(
         (a) =>
@@ -1397,6 +1444,7 @@ class CrossTarget {
       sdkPath: sdkPath,
       sdkUrl: sdkUrl,
       sdkEnvSetup: sdkEnvSetup,
+      sdkDeclaringFile: sdkDeclaringFile,
       augment: augment,
       modules: modules,
       embedderExports: embedderExports,
@@ -1431,7 +1479,12 @@ class CrossTarget {
     String? declaringFile, {
     Map<String, String> vars = const {},
   }) {
-    if (declaringFile == null && vars.isEmpty) return this;
+    // `sdkDeclaringFile` counts as a declaring file of its own: a stamped
+    // `cross:` map can reach a caller that has none to pass, and returning
+    // early there would leave the board's own relative `sdk_path` unresolved.
+    if (declaringFile == null && sdkDeclaringFile == null && vars.isEmpty) {
+      return this;
+    }
     final base = declaringFile != null
         ? p.dirname(p.absolute(declaringFile))
         : null;
@@ -1457,22 +1510,29 @@ class CrossTarget {
     /// `sdk_path: sa8155p` under `.emb/` now means `<project>/.emb/sa8155p`
     /// wherever the repo is cloned.
     ///
+    /// Resolved against [sdkDeclaringFile] when the manifest carried one, and
+    /// only otherwise against [declaringFile] — the same precedence
+    /// [AugmentLib.resolvePatchesAgainst] uses, and for the same reason. An
+    /// `extends:` hands a board library's `cross:` map to the consuming target
+    /// with the consumer as the declaring file, so without the stamp a board's
+    /// `sdk_path: sa8155p` would resolve under the app's `.emb/`.
+    ///
     /// Deliberately no `expandManifestVars` here. These two values are hashed
     /// into `_sysrootParts`, so an unexpanded `${app_root}` would reach
     /// `sysrootKey` as a literal while `hasUnresolvedKeyPaths` — which does
     /// not look at them — returned false, and `emb matrix` would emit a
     /// `sysroot_key` that collapses different boards onto one cache entry.
-    /// That is the defect `hasUnresolvedKeyPaths` exists to prevent.
-    /// Variables here want that guard and the README's supported-fields table
-    /// in the same change, and nothing needs them yet.
+    /// That is the defect `hasUnresolvedKeyPaths` exists to prevent. A `${…}`
+    /// is refused at load instead; see [_sdkPathOrNull].
     ///
     /// `sdk_url` is left alone: it is a URL, and joining it to a directory
     /// would corrupt it.
     String? resolvedSdk(String? value) {
-      if (value == null || base == null || p.isAbsolute(value)) {
+      final from = sdkDeclaringFile ?? declaringFile;
+      if (value == null || from == null || p.isAbsolute(value)) {
         return value;
       }
-      return p.normalize(p.join(base, value));
+      return p.normalize(p.join(p.dirname(p.absolute(from)), value));
     }
 
     return CrossTarget(
@@ -1490,6 +1550,7 @@ class CrossTarget {
       sdkPath: resolvedSdk(sdkPath),
       sdkUrl: sdkUrl,
       sdkEnvSetup: resolvedSdk(sdkEnvSetup),
+      sdkDeclaringFile: sdkDeclaringFile,
       augment: [
         for (final a in augment)
           a.resolvePatchesAgainst(declaringFile, vars: vars),

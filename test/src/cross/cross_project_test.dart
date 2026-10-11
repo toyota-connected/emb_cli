@@ -546,6 +546,61 @@ cross:
       ).resolve(f.path)!;
     }
 
+    test('a board sdk_path resolves against the board, not the consumer', () {
+      // The gap this closes: _applyExtends merges the board's cross: map into
+      // the consuming target while the declaring file stays the consumer's, so
+      // a relative sdk_path resolved under the app's directory instead of the
+      // board's. _resolveEnvSetup then falls through silently to "no
+      // environment-setup-* found" -- the failure manifest-relative paths exist
+      // to remove, relocated rather than fixed.
+      File(p.join(boards.path, 'sa8155p.emb.yaml')).writeAsStringSync('''
+id: sa8155p
+type: board
+cross:
+  provider: yocto-sdk
+  triple: aarch64-poky-linux
+  sdk_path: sa8155p-sdk
+''');
+      final project = resolveProject('''
+id: my-app
+cross:
+  targets:
+    sa8155p:
+      extends: sa8155p
+''');
+      final target = CrossTarget.fromMap(
+        project.targets['sa8155p']!.cross,
+      ).withResolvedPaths(project.targets['sa8155p']!.sourcePath);
+      expect(target.sdkPath, p.join(boards.path, 'sa8155p-sdk'));
+      expect(
+        target.sdkPath,
+        isNot(contains('proj')),
+        reason: 'resolved against the consuming manifest, not the board',
+      );
+    });
+
+    test(
+      'a consumer that declares its own sdk_path keeps its own directory',
+      () {
+        // The stamp is only applied to a block that carried the value, so a
+        // consumer naming its own SDK resolves against itself.
+        final project = resolveProject('''
+id: my-app
+cross:
+  targets:
+    rpi5-bookworm:
+      extends: rpi5-bookworm
+      provider: yocto-sdk
+      sdk_path: my-sdk
+''');
+        final ref = project.targets['rpi5-bookworm']!;
+        final target = CrossTarget.fromMap(
+          ref.cross,
+        ).withResolvedPaths(ref.sourcePath);
+        expect(target.sdkPath, p.join(tmp.path, 'my-sdk'));
+      },
+    );
+
     test('inherits the board hardware and overlays project backends', () {
       final project = resolveProject('''
 id: ivi-homescreen

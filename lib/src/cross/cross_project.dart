@@ -586,37 +586,48 @@ class CrossProjectResolver {
       }
       // Stamp augments with their declaring file so provenance survives
       // the union merge when an app extends this project.
-      return _stampAugments(target.cross, target.sourcePath);
+      return _stampDeclaringFile(target.cross, target.sourcePath);
     } finally {
       _resolvingProjects.remove(abs);
     }
   }
 
-  /// A copy of [cross] whose augment maps carry `_source: [source]`, so a
-  /// relative `path:`/`patches:` still resolves against the manifest that
-  /// declared it after an `extends:` union merge hands the entry to another
-  /// project (or app) layer. Entries already stamped keep their stamp — the
-  /// nearest declaring file wins — and an absent [source] is a no-op.
+  /// A copy of [cross] carrying the file that declared it, so a relative path
+  /// still resolves against that manifest after an `extends:` merge hands the
+  /// block to another project (or app) layer.
+  ///
+  /// Two stamps, same rule: `_source` on each augment map, for `path:` and
+  /// `patches:`, and `_sdk_source` on the block itself, for `sdk_path` and
+  /// `sdk_env_setup`. The sdk stamp sits on the block because those are scalars
+  /// on `cross:` rather than entries in a list. Anything already stamped keeps
+  /// its stamp — the nearest declaring file wins — and an absent [source] is a
+  /// no-op.
   ///
   /// Copies the list and each map rather than writing through: `deepMerge`
   /// assigns lists by reference, so the list reached here can be the one in a
   /// shared `.emb/base.emb.yaml` block, and stamping it in place would make the
   /// first target's provenance stick to its siblings.
-  Map<String, dynamic> _stampAugments(
+  Map<String, dynamic> _stampDeclaringFile(
     Map<String, dynamic> cross,
     String? source,
   ) {
+    if (source == null) return cross;
     final augments = cross['augment'];
-    if (source == null || augments is! List) return cross;
+    final needsSdk =
+        (cross.containsKey('sdk_path') || cross.containsKey('sdk_env_setup')) &&
+        !cross.containsKey('_sdk_source');
+    if (augments is! List && !needsSdk) return cross;
     return {
       ...cross,
-      'augment': [
-        for (final a in augments)
-          if (a is Map && !a.containsKey('_source'))
-            {...a, '_source': source}
-          else
-            a,
-      ],
+      if (needsSdk) '_sdk_source': source,
+      if (augments is List)
+        'augment': [
+          for (final a in augments)
+            if (a is Map && !a.containsKey('_source'))
+              {...a, '_source': source}
+            else
+              a,
+        ],
     };
   }
 
@@ -742,7 +753,7 @@ class CrossProjectResolver {
           final override = e.value is Map
               ? Map<String, dynamic>.from(e.value as Map)
               : const <String, dynamic>{};
-          out['$sourceName/${e.key}'] = _stampAugments(
+          out['$sourceName/${e.key}'] = _stampDeclaringFile(
             _mergeSharedOverride(shared, override),
             f.path,
           );
@@ -750,7 +761,7 @@ class CrossProjectResolver {
       } else {
         final name =
             (m['id'] as String?) ?? p.basename(f.path).split('.').first;
-        out['$sourceName/$name'] = _stampAugments(shared, f.path);
+        out['$sourceName/$name'] = _stampDeclaringFile(shared, f.path);
       }
     }
   }

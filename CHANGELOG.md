@@ -1,5 +1,29 @@
 # Unreleased
 
+## Upgrading
+
+**A relative `cross.sdk_path` or `cross.sdk_env_setup` changes your sysroot
+key.** `_sysrootParts` hashes these values as stored, so a relative one used to
+be hashed as the raw string and is now hashed as the resolved absolute path.
+The build that moves is the one that works today: a flat manifest with
+`sdk_path: sdk`, invoked from the project root, where the provider's
+`existsSync` probe already resolved against the right directory. The *path* it
+resolves to is unchanged; the *key* is not. Expect a one-time cold sysroot,
+overlay and build directory, `emb.lock` drift (`--update-lock` to re-pin), and
+one re-download for a `sdk_url` install, whose prefix is
+`yocto-sdk-<sysrootKey>`. Absolute values are unaffected.
+
+A consequence worth knowing: a relative value makes `sysroot_key` and
+`build_key` depend on where the repo is checked out, since the resolved path
+contains the clone directory. `augmentIdentity` already works this way
+deliberately, but `buildKey` otherwise keeps checkout location out on purpose —
+so a project sharing `emb.lock` between a developer and CI at different paths
+will see drift on yocto-sdk targets where a relative value previously hashed
+the same everywhere. Use an absolute path, or accept the per-clone key.
+
+An earlier version of this entry claimed no key moved. That was wrong: it
+conflated how the provider resolves the value with how the key hashes it.
+
 **Cross.**
 
 - feat(cross): `sdk_path` and `sdk_env_setup` may be written relative to the
@@ -18,10 +42,11 @@
   machine; `sdk_path: sa8155p` in a `.emb/sa8155p.emb.yaml` now means
   `<project>/.emb/sa8155p` wherever the repo is cloned. Both values are
   hashed into `sysrootKey`, so this resolution happens before keys are
-  computed, as it does for the other paths. Nobody's key moves: a relative
-  value today either fails outright or works only when emb is invoked from
-  the manifest's directory, in which case it already resolves to the path it
-  now resolves to.
+  computed, as it does for the other paths. A relative value declared in a
+  board library resolves against that board's file, not the manifest that
+  `extends:` it. An unexpanded `${…}` is refused at load, since nothing
+  expands these two; an empty value is read as absent rather than as the
+  manifest directory.
 - refactor(cross): `CrossTarget.withResolvedPatches` is now
   `withResolvedPaths`. It has resolved augment `path:` and `modules[].path`
   as well as patches for some time, and its own doc comment said so. Nothing
