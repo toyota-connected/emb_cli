@@ -713,12 +713,12 @@ void main() {
       expect(targetOf([42]).embedderExports, ['42']);
     });
 
-    test('survives withDefineOverrides and withResolvedPatches', () {
+    test('survives withDefineOverrides and withResolvedPaths', () {
       final t = targetOf(['shared']);
       expect(t.withDefineOverrides(const {'X': '1'}).embedderExports, [
         'shared',
       ]);
-      expect(t.withResolvedPatches('/tmp/board.emb.yaml').embedderExports, [
+      expect(t.withResolvedPaths('/tmp/board.emb.yaml').embedderExports, [
         'shared',
       ]);
     });
@@ -914,7 +914,7 @@ void main() {
       expect(a.patches, ['/emb/patches/fix.patch']);
     });
 
-    test('withResolvedPatches resolves local path even when no patches', () {
+    test('withResolvedPaths resolves local path even when no patches', () {
       // Previously the early exit `augment.every(a => a.patches.isEmpty)` would
       // skip absolutizing a local path when there were no patches.
       final target = CrossTarget.fromMap({
@@ -924,11 +924,86 @@ void main() {
           {'pkg': 'libfoo', 'path': '../libfoo'},
         ],
       });
-      final resolved = target.withResolvedPatches('/w/boards/pi5.emb.yaml');
+      final resolved = target.withResolvedPaths('/w/boards/pi5.emb.yaml');
       expect(resolved.augment.first.path, '/w/libfoo');
     });
 
-    test('withResolvedPatches preserves customDevice', () {
+    test('a relative sdk_path resolves against the declaring manifest', () {
+      // The yocto-sdk provider tests sdk_path with
+      // Directory(path).existsSync(), which resolves against the process's
+      // working directory -- so before this the only workable value was an
+      // absolute path, and a board committing its environment-setup script
+      // beside its manifest had to name a path that exists on one machine.
+      final target = CrossTarget.fromMap({
+        'provider': 'yocto-sdk',
+        'triple': 'aarch64-linux-gnu',
+        'sdk_path': 'sa8155p',
+      });
+      final resolved = target.withResolvedPaths('/w/.emb/sa8155p.emb.yaml');
+      expect(resolved.sdkPath, '/w/.emb/sa8155p');
+    });
+
+    test('an absolute sdk_path is left alone', () {
+      final target = CrossTarget.fromMap({
+        'provider': 'yocto-sdk',
+        'triple': 'aarch64-linux-gnu',
+        'sdk_path': '/opt/fsl-imx-wayland/6.6',
+      });
+      expect(
+        target.withResolvedPaths('/w/.emb/imx.emb.yaml').sdkPath,
+        '/opt/fsl-imx-wayland/6.6',
+      );
+    });
+
+    test('a relative sdk_env_setup resolves, and sdk_url does not', () {
+      // sdk_url is a URL, not a path: joining it to a directory would corrupt
+      // it, which is why only the two path-valued keys are resolved.
+      final target = CrossTarget.fromMap({
+        'provider': 'yocto-sdk',
+        'triple': 'aarch64-linux-gnu',
+        'sdk_env_setup': 'sa8155p/environment-setup-aarch64-sa8155p-linux',
+        'sdk_url': 'https://example.com/populate_sdk.sh',
+      });
+      final resolved = target.withResolvedPaths('/w/.emb/sa8155p.emb.yaml');
+      expect(
+        resolved.sdkEnvSetup,
+        '/w/.emb/sa8155p/environment-setup-aarch64-sa8155p-linux',
+      );
+      expect(resolved.sdkUrl, 'https://example.com/populate_sdk.sh');
+    });
+
+    test(r'a ${var} in sdk_path is left verbatim, not expanded', () {
+      // Deliberate: these values are hashed into the sysroot key, and an
+      // unexpanded token would key as a literal while hasUnresolvedKeyPaths
+      // -- which does not inspect them -- reported nothing wrong. Variables
+      // here want that guard in the same change.
+      final target = CrossTarget.fromMap({
+        'provider': 'yocto-sdk',
+        'triple': 'aarch64-linux-gnu',
+        'sdk_path': r'${embedder_root}/.emb/sa8155p',
+      });
+      final resolved = target.withResolvedPaths(
+        '/w/.emb/sa8155p.emb.yaml',
+        vars: {'embedder_root': '/emb'},
+      );
+      expect(resolved.sdkPath, r'/w/.emb/${embedder_root}/.emb/sa8155p');
+    });
+
+    test('withResolvedPaths resolves sdk_path with no patches or vars', () {
+      // The early exit used to return `this` when nothing else needed
+      // resolving, which would have skipped the sdk_path above.
+      final target = CrossTarget.fromMap({
+        'provider': 'yocto-sdk',
+        'triple': 'aarch64-linux-gnu',
+        'sdk_path': 'sa8155p',
+      });
+      expect(
+        target.withResolvedPaths('/w/.emb/sa8155p.emb.yaml').sdkPath,
+        '/w/.emb/sa8155p',
+      );
+    });
+
+    test('withResolvedPaths preserves customDevice', () {
       final target = CrossTarget.fromMap({
         'provider': 'arm-gnu',
         'triple': 'aarch64-none-linux-gnu',
@@ -937,11 +1012,11 @@ void main() {
           {'pkg': 'libfoo', 'path': '../libfoo'},
         ],
       });
-      final resolved = target.withResolvedPatches('/w/boards/pi5.emb.yaml');
+      final resolved = target.withResolvedPaths('/w/boards/pi5.emb.yaml');
       expect(resolved.customDevice?.id, 'my-board');
     });
 
-    test('withResolvedPatches passes vars to augment resolution', () {
+    test('withResolvedPaths passes vars to augment resolution', () {
       final target = CrossTarget.fromMap({
         'provider': 'arm-gnu',
         'triple': 'aarch64-none-linux-gnu',
@@ -949,7 +1024,7 @@ void main() {
           {'pkg': 'libfoo', 'path': r'${app_root}/native/libfoo'},
         ],
       });
-      final resolved = target.withResolvedPatches(
+      final resolved = target.withResolvedPaths(
         '/w/boards/pi5.emb.yaml',
         vars: {'embedder_root': '/emb', 'app_root': '/myapp'},
       );
@@ -978,7 +1053,7 @@ void main() {
       expect(resolved.declaringFile, '/fallback/base.emb.yaml');
     });
 
-    test('withResolvedPatches expands module paths', () {
+    test('withResolvedPaths expands module paths', () {
       final target = CrossTarget.fromMap({
         'provider': 'arm-gnu',
         'triple': 'aarch64-none-linux-gnu',
@@ -991,14 +1066,14 @@ void main() {
           },
         ],
       });
-      final resolved = target.withResolvedPatches(
+      final resolved = target.withResolvedPaths(
         '/w/boards/pi5.emb.yaml',
         vars: {'app_root': '/myapp'},
       );
       expect(resolved.modules.first.path, '/myapp/native/hello');
     });
 
-    test('withResolvedPatches with null declaringFile still expands vars', () {
+    test('withResolvedPaths with null declaringFile still expands vars', () {
       final target = CrossTarget.fromMap({
         'provider': 'arm-gnu',
         'triple': 'aarch64-none-linux-gnu',
@@ -1011,7 +1086,7 @@ void main() {
           },
         ],
       });
-      final resolved = target.withResolvedPatches(
+      final resolved = target.withResolvedPaths(
         null,
         vars: {'embedder_root': '/emb'},
       );

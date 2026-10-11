@@ -1177,7 +1177,7 @@ sources:
             ) ??
             declaring;
       }
-      return CrossTarget.fromMap(cross).withResolvedPatches(
+      return CrossTarget.fromMap(cross).withResolvedPaths(
         declaring,
         vars: {
           'embedder_root': p.join(tmp.path, 'embedder'),

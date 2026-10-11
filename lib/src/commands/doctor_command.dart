@@ -401,7 +401,7 @@ class DoctorCommand extends Command<int> {
         : p.absolute(inputPath);
     final CrossTarget target;
     try {
-      target = CrossTarget.fromMap(selected).withResolvedPatches(
+      target = CrossTarget.fromMap(selected).withResolvedPaths(
         selectedFrom,
         vars: {'embedder_root': p.normalize(embedderRoot)},
       );
@@ -521,7 +521,7 @@ class DoctorCommand extends Command<int> {
         : p.absolute(inputPath);
     final CrossTarget target;
     try {
-      target = CrossTarget.fromMap(selection.cross).withResolvedPatches(
+      target = CrossTarget.fromMap(selection.cross).withResolvedPaths(
         selection.sourcePath,
         vars: {'embedder_root': p.normalize(embedderRoot)},
       );

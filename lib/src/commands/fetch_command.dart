@@ -138,7 +138,7 @@ class FetchCommand extends Command<int> {
         : p.absolute(appArg);
     final CrossTarget target;
     try {
-      target = CrossTarget.fromMap(selection.cross).withResolvedPatches(
+      target = CrossTarget.fromMap(selection.cross).withResolvedPaths(
         selection.sourcePath,
         vars: {
           'embedder_root': embedderRoot,

@@ -2,6 +2,32 @@
 
 **Cross.**
 
+- feat(cross): `sdk_path` and `sdk_env_setup` may be written relative to the
+  manifest that declares them, on the same rule `augment[].patches`,
+  augment `path:` and `modules[].path` already follow. Absolute values are
+  untouched, so an SDK installed at a machine path (the
+  `/opt/fsl-imx-wayland/6.6` case in `examples/cross/README.md`) behaves
+  exactly as before, and `sdk_url` is left alone because it is a URL.
+  Previously only an absolute path resolved: the yocto-sdk provider tests the
+  value with `Directory(path).existsSync()`, which resolves against the
+  process's working directory, and a build does not run emb from the
+  manifest's directory. The failure was also silent -- `_resolveEnvSetup`
+  falls through to "no environment-setup-* found", which points at the SDK
+  rather than at the path. So a board whose environment-setup script is
+  committed beside its manifest had to name a path that exists on one
+  machine; `sdk_path: sa8155p` in a `.emb/sa8155p.emb.yaml` now means
+  `<project>/.emb/sa8155p` wherever the repo is cloned. Both values are
+  hashed into `sysrootKey`, so this resolution happens before keys are
+  computed, as it does for the other paths. Nobody's key moves: a relative
+  value today either fails outright or works only when emb is invoked from
+  the manifest's directory, in which case it already resolves to the path it
+  now resolves to.
+- refactor(cross): `CrossTarget.withResolvedPatches` is now
+  `withResolvedPaths`. It has resolved augment `path:` and `modules[].path`
+  as well as patches for some time, and its own doc comment said so. Nothing
+  under `lib/src/` is exported from `lib/emb_cli.dart`, so no public API
+  changes.
+
 - fix(flatpak): the generated launcher takes its bundle flag from
   `cross.run.command` instead of writing `-b` a second time. `--run` became
   configurable in 0.4.0, but the flatpak packager kept its own literal, so an
