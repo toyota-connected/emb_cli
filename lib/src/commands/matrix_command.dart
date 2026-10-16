@@ -145,6 +145,14 @@ class MatrixCommand extends Command<int> {
             ? file.path
             : '${file.path} --target ${entry.name}';
 
+        final declaredAppPath = manifest.build?.appPath;
+        if (declaredAppPath != null && declaredAppPath != '.') {
+          _logger.warn(
+            '${file.path}: build.app_path is deprecated and has no effect; '
+            'pass --app <path> on the command line instead.',
+          );
+        }
+
         if (target.hasUnresolvedKeyPaths) {
           _logger.warn(
             '${file.path}#${entry.name}: augment/module paths contain '
@@ -165,6 +173,8 @@ class MatrixCommand extends Command<int> {
             'provider': target.provider.token,
             'triple': target.triple ?? '',
             'preflight': provider.preflightTools.join(' '),
+            if (target.hostDevPackages.isNotEmpty)
+              'host_dev_packages': target.hostDevPackages.join(' '),
             if (!target.hasUnresolvedKeyPaths) ...{
               'sysroot_key': sysrootKey(target),
               'build_key': buildKey(target),

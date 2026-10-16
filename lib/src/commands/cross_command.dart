@@ -1511,10 +1511,18 @@ class CrossCommand extends Command<int> {
       return ExitCode.usage.code;
     }
     if (appPath == null && target.modules.isNotEmpty) {
-      _logger.warn(
-        '  modules       : ${target.modules.map((m) => m.name).join(", ")} '
-        'declared but no --app bundle to stage them into (add --app).',
+      final libDir = Directory(p.join(buildRoot.path, 'modules'))
+        ..createSync(recursive: true);
+      final ok = await _buildModules(
+        builder,
+        profile,
+        host,
+        target,
+        manifestDir,
+        buildRoot,
+        libDir,
       );
+      if (!ok) return ExitCode.software.code;
     }
     if (appPath != null) {
       final rc = await _runnable(
@@ -3663,10 +3671,10 @@ class CrossCommand extends Command<int> {
     return true;
   }
 
-  /// Build each app-owned [CrossTarget.modules] entry against the embedder's
-  /// cross toolchain ([builder]) and stage its declared `.so` artifacts into
-  /// [libDir] (the app bundle's `lib/`). Returns false — with an error logged —
-  /// on any build failure or missing declared artifact.
+  /// Build each [CrossTarget.modules] entry against the embedder's cross
+  /// toolchain ([builder]) and stage its declared `.so` artifacts into
+  /// [libDir]. Returns false — with an error logged — on any build failure or
+  /// missing declared artifact.
   Future<bool> _buildModules(
     CrossBuilder builder,
     CrossProfile profile,
