@@ -40,6 +40,7 @@ void main() {
       'nitrogen8mm.emb.yaml',
       'agl_sdk_local.emb.yaml',
       'agl_sdk_url.emb.yaml',
+      'pi5-modules.emb.yaml',
     ];
 
     test('every manifest parses with a known provider', () {
@@ -175,6 +176,21 @@ void main() {
       expect(t.backends['wayland-egl']!['BUILD_BACKEND_WAYLAND_EGL'], 'ON');
       expect(t.backends['wayland-egl']!['ENABLE_AGL_SHELL_CLIENT'], 'ON');
       expect(t.package?.bin, 'shell/homescreen');
+    });
+
+    test('pi5-modules — cargo, cmake and meson module types all present', () {
+      final t = _loadCross('pi5-modules.emb.yaml');
+      expect(t.provider, CrossProviderKind.armGnu);
+      expect(t.source?.uri, contains('ivi-homescreen'));
+      expect(t.modules, hasLength(3));
+      expect(
+        t.modules.map((m) => m.build),
+        containsAll([ModuleBuild.cargo, ModuleBuild.cmake, ModuleBuild.meson]),
+      );
+      expect(
+        t.modules.map((m) => m.artifacts).expand((a) => a),
+        containsAll(['librust_lib.so', 'libcmake_lib.so', 'libmeson_lib.so']),
+      );
     });
 
     test('unknown provider token throws ArgumentError', () {

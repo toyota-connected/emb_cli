@@ -152,5 +152,41 @@ jobs:
       - name: 🧰 Install preflight tools (dnf)
         if: ${{ matrix.container != '' && matrix.preflight != '' }}
         run: dnf -y install ${{ matrix.preflight }} qemu-user-static
+      - name: 🔬 Install host dev packages (apt)
+        if: ${{ matrix.container == '' && matrix.host_dev_packages != '' }}
+        run: sudo apt-get install -y ${{ matrix.host_dev_packages }}
+      - name: 🔬 Install host dev packages (dnf)
+        if: ${{ matrix.container != '' && matrix.host_dev_packages != '' }}
+        run: dnf -y install ${{ matrix.host_dev_packages }}
       - name: 🏗️ Build ${{ matrix.id }} / ${{ matrix.target }} on ${{ matrix.host }} (${{ matrix.provider }})
         run: dart run emb_cli:emb cross ${{ matrix.args }} --build
+
+  # ── Stage 3b (opt-in): app bundle exercise ───────────────────────────────
+  # Exercises the --app + bundle assembly code path (embedder + engine + AOT +
+  # module staging into a runnable bundle). Not in the matrix: this is one
+  # specific embedder+app pair whose only purpose is to cover that path in CI.
+  build-with-app:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.build }}
+    runs-on: ubuntu-latest
+    env:
+      FLUTTER_WORKSPACE: ${{ github.workspace }}/.ws
+    steps:
+      - name: 🔧 Install native build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libsystemd-dev cmake ninja-build
+      - uses: actions/checkout@v7
+      - uses: dart-lang/setup-dart@v1.8.1
+        with:
+          sdk: "stable"
+      - run: dart pub get
+      - name: 🧰 Install preflight tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tar xz-utils rsync qemu-user-static binfmt-support
+      - name: 🏗️ Build pi5-modules with --app (bundle assembly path)
+        run: >
+          dart run emb_cli:emb cross
+          examples/cross/pi5-modules.emb.yaml
+          --app examples/cross/modules/flutter_app
+          --build
