@@ -1053,6 +1053,21 @@ class CrossCommand extends Command<int> {
         selectedBackends: selectedBackends,
       );
       if (preparedEmbedder == null) return ExitCode.software.code;
+      if (target.modules.isNotEmpty) {
+        final libDir =
+            Directory(p.join(preparedEmbedder.buildRoot.path, 'modules'))
+              ..createSync(recursive: true);
+        final ok = await _buildModules(
+          preparedEmbedder.builder,
+          profile,
+          host,
+          target,
+          manifestDir,
+          preparedEmbedder.buildRoot,
+          libDir,
+        );
+        if (!ok) return ExitCode.software.code;
+      }
     }
 
     // --deploy/--run without --build: ship what is already built rather than
@@ -1510,7 +1525,12 @@ class CrossCommand extends Command<int> {
       );
       return ExitCode.usage.code;
     }
-    if (appPath == null && target.modules.isNotEmpty) {
+    // Build modules standalone when no app bundle is being assembled.
+    // Skipped when preparedEmbedder is non-null: --prepare already built them
+    // into <buildRoot>/modules/ in this invocation.
+    if (appPath == null &&
+        target.modules.isNotEmpty &&
+        preparedEmbedder == null) {
       final libDir = Directory(p.join(buildRoot.path, 'modules'))
         ..createSync(recursive: true);
       final ok = await _buildModules(
