@@ -107,6 +107,14 @@ class MatrixCommand extends Command<int> {
           : hostFilter.where(supported.contains).toList();
       if (hosts.isEmpty) continue;
 
+      final declaredAppPath = manifest.build?.appPath;
+      if (declaredAppPath != null && declaredAppPath != '.') {
+        _logger.warn(
+          '${file.path}: build.app_path is deprecated and has no effect; '
+          'pass --app <path> on the command line instead.',
+        );
+      }
+
       for (final entry in _targets(crossMap)) {
         if (targetFilter != null && entry.name != targetFilter) continue;
         final CrossTarget target;
@@ -144,14 +152,6 @@ class MatrixCommand extends Command<int> {
         final crossArgs = entry.name == 'default'
             ? file.path
             : '${file.path} --target ${entry.name}';
-
-        final declaredAppPath = manifest.build?.appPath;
-        if (declaredAppPath != null && declaredAppPath != '.') {
-          _logger.warn(
-            '${file.path}: build.app_path is deprecated and has no effect; '
-            'pass --app <path> on the command line instead.',
-          );
-        }
 
         if (target.hasUnresolvedKeyPaths) {
           _logger.warn(

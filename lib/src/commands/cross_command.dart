@@ -3710,16 +3710,15 @@ class CrossCommand extends Command<int> {
       if (appDir != null) 'app_root': appDir,
     };
     for (final m in target.modules) {
-      if (appDir == null && hasUnresolvedVars(m.path)) {
+      final expanded = expandManifestVars(m.path, moduleVars);
+      if (appDir == null && hasUnresolvedVars(expanded)) {
         _logger.info(
           '  module ${m.name}: skipped'
           r' (path has ${app_root} — pass --app to include)',
         );
         continue;
       }
-      final src = Directory(
-        p.join(manifestDir.path, expandManifestVars(m.path, moduleVars)),
-      );
+      final src = Directory(p.join(manifestDir.path, expanded));
       if (!src.existsSync()) {
         _logger.err('  module ${m.name}: source dir not found: ${src.path}');
         return false;
