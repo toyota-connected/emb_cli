@@ -100,6 +100,14 @@ conflated how the provider resolves the value with how the key hashes it.
   does not turn every requirement into a warning. The arch check stays a hard
   skip, because a wrong-arch library is never usable.
 
+**Docs.**
+
+- docs: the Flutter version named in examples rolls 3.44.2 -> 3.47.7. Docs,
+  the `Dockerfile.runtime` build-arg example and the test fixtures only; no
+  version is pinned in code, so `--flutter-version` and `globals.json`'s
+  `flutter_version` still decide what gets checked out.
+
+
 
 # 0.4.1
 

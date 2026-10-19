@@ -312,7 +312,7 @@ void main() {
     final ws = Directory(p.join(tmp.path, 'ws'))..createSync();
     final pkg = pkgWith(
       'offsdk',
-      'id: offsdk\ntype: app\nflutter_version: 3.44.2\n'
+      'id: offsdk\ntype: app\nflutter_version: 3.47.7\n'
           'cross:\n  provider: arm-gnu\n'
           '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n',
     );
