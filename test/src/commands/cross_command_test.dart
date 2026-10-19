@@ -732,6 +732,30 @@ void main() {
     );
   });
 
+  test('--dry-run plans a manifest with modules declared', () async {
+    final pkg = pkgWith(
+      'withmod',
+      'id: withmod\ntype: app\ncross:\n  provider: arm-gnu\n'
+          '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n'
+          '  modules:\n    - name: plugin_a\n      path: native/plugin_a\n'
+          '      artifacts: [libplugin_a.so]\n',
+    );
+    expect(await run(['cross', '--dry-run', pkg.path]), ExitCode.success.code);
+  });
+
+  test('--dry-run plans a manifest with app_root module paths', () async {
+    final pkg = pkgWith(
+      'withappmod',
+      'id: withappmod\ntype: app\ncross:\n  provider: arm-gnu\n'
+          '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n'
+          '  modules:\n'
+          '    - name: app_plugin\n'
+          '      path: \${app_root}/native/app_plugin\n'
+          '      artifacts: [libapp_plugin.so]\n',
+    );
+    expect(await run(['cross', '--dry-run', pkg.path]), ExitCode.success.code);
+  });
+
   test('--dry-run plans every target of the multi-platform example', () async {
     final example = p.join('examples', 'cross', 'raspberry-pi-family.emb.yaml');
     for (final t in [

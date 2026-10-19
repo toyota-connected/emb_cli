@@ -1054,9 +1054,9 @@ class CrossCommand extends Command<int> {
       );
       if (preparedEmbedder == null) return ExitCode.software.code;
       if (target.modules.isNotEmpty) {
-        final libDir =
-            Directory(p.join(preparedEmbedder.buildRoot.path, 'modules'))
-              ..createSync(recursive: true);
+        final libDir = Directory(
+          p.join(preparedEmbedder.buildRoot.path, 'modules'),
+        )..createSync(recursive: true);
         final ok = await _buildModules(
           preparedEmbedder.builder,
           profile,
@@ -3710,6 +3710,13 @@ class CrossCommand extends Command<int> {
       if (appDir != null) 'app_root': appDir,
     };
     for (final m in target.modules) {
+      if (appDir == null && hasUnresolvedVars(m.path)) {
+        _logger.info(
+          '  module ${m.name}: skipped'
+          r' (path has ${app_root} — pass --app to include)',
+        );
+        continue;
+      }
       final src = Directory(
         p.join(manifestDir.path, expandManifestVars(m.path, moduleVars)),
       );
