@@ -5,7 +5,7 @@
 # workspace, and cache are mounted at run time; only the toolchain is baked.
 #
 # podman build -f tool/engine/Dockerfile.runtime \
-# --build-arg FLUTTER_VERSION=3.44.2 -t emb-engine-runtime .
+# --build-arg FLUTTER_VERSION=3.47.7 -t emb-engine-runtime .
 # # emb routes to this image automatically on a non-Linux host; or:
 # podman run --rm -e EMB_IN_CONTAINER=1 \
 # -v "$PWD:$PWD" -v "$EMB_CACHE_DIR:$EMB_CACHE_DIR" -w "$PWD" \

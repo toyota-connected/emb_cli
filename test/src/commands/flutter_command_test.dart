@@ -60,7 +60,7 @@ void main() {
       '-w',
       ws,
       '--flutter-version',
-      '3.44.2',
+      '3.47.7',
     ]);
     expect(code, ExitCode.success.code);
 

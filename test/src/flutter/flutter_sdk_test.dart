@@ -26,7 +26,7 @@ void main() {
     final sdk = FlutterSdk(ws);
     final git = _FakeGit();
 
-    final result = await sdk.install('3.44.2', runner: git.run);
+    final result = await sdk.install('3.47.7', runner: git.run);
 
     expect(result.path, p.join(tmp.path, 'flutter'));
     // Clone with the version as branch/tag into the `flutter` dir.
@@ -35,9 +35,9 @@ void main() {
       FlutterSdk.repoUrl,
       'flutter',
       '-b',
-      '3.44.2',
+      '3.47.7',
     ]);
-    expect(git.calls, contains(equals(['checkout', '3.44.2'])));
+    expect(git.calls, contains(equals(['checkout', '3.47.7'])));
   });
 
   test('reads the engine commit after checkout', () async {
@@ -53,7 +53,7 @@ void main() {
 
     final result = await FlutterSdk(
       ws,
-    ).install('3.44.2', runner: _FakeGit().run);
+    ).install('3.47.7', runner: _FakeGit().run);
     expect(result.engineCommit, 'deadbeefcafe');
   });
 }

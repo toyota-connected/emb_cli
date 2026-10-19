@@ -92,11 +92,11 @@ cross:
       test('flutter_version: comes through beside it', () {
         final project = load('''
 id: x
-flutter_version: 3.44.2
+flutter_version: 3.47.7
 cross:
   provider: arm-gnu
 ''');
-        expect(project.flutterVersion, '3.44.2');
+        expect(project.flutterVersion, '3.47.7');
       });
     });
 

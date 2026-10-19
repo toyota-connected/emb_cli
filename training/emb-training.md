@@ -135,11 +135,11 @@ emb setup --config ../configs --skip-deps --skip-sync   # SDK + engine only
 |---|---|---|
 | **deps** | `emb deps --dry-run` / `--yes` / `--no-interactive` | Coalesce host deps across manifests, install the **missing** union in one transaction (`WhatProvides`-mapped). `--yes` skips emb's prompt; `--no-interactive` stops the package manager prompting for authorization (CI) |
 | **sync** | `emb sync -j 8` | Clone/update source repos into `<workspace>/app` (bounded concurrency) |
-| **flutter** | `emb flutter --flutter-version 3.44.2` | Git-clone the SDK into `<workspace>/flutter`; read engine commit |
+| **flutter** | `emb flutter --flutter-version 3.47.7` | Git-clone the SDK into `<workspace>/flutter`; read engine commit |
 | **engine** | `emb engine --arch arm64 --mode release` | Fetch prebuilt engine artifacts (auto fetch-else-build) |
 
 ```sh
-emb flutter -w /tmp/ws1 --flutter-version 3.44.2 && . /tmp/ws1/setup_env.sh
+emb flutter -w /tmp/ws1 --flutter-version 3.47.7 && . /tmp/ws1/setup_env.sh
 ```
 
 <div class="note">Version defaults come from <code>globals.json</code>'s <code>flutter_version</code>. Engine modes you skip are auto-fetched on demand by <code>bundle</code>/<code>build</code>.</div>

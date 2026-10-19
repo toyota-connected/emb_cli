@@ -561,7 +561,7 @@ Install the Flutter SDK into `<workspace>/flutter`, then emit
 | `--configure` | off | Run `flutter config` (desktop + custom devices) and `flutter doctor` after install. |
 
 ```sh
-emb flutter -w /tmp/ws1 --flutter-version 3.44.2
+emb flutter -w /tmp/ws1 --flutter-version 3.47.7
 . /tmp/ws1/setup_env.sh                   # FLUTTER_WORKSPACE=/tmp/ws1
 ```
 

@@ -114,7 +114,7 @@ plus its assets rather than a checkout with a staging script beside it:
 ```yaml
 id: my-app
 workspace: staging/emb-workspace     # relative to this file
-flutter_version: 3.44.2              # provisioned if the workspace has none
+flutter_version: 3.47.7              # provisioned if the workspace has none
 
 cross:
   provider: arm-gnu
