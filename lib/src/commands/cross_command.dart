@@ -3693,8 +3693,10 @@ class CrossCommand extends Command<int> {
 
   /// Build each [CrossTarget.modules] entry against the embedder's cross
   /// toolchain ([builder]) and stage its declared `.so` artifacts into
-  /// [libDir]. Returns false — with an error logged — on any build failure or
-  /// missing declared artifact.
+  /// [libDir]. Skips the compile step when the module source is unchanged
+  /// since the last successful build (stamp file matches source fingerprint).
+  /// Returns false — with an error logged — on any build failure or missing
+  /// declared artifact.
   Future<bool> _buildModules(
     CrossBuilder builder,
     CrossProfile profile,
@@ -3727,8 +3729,30 @@ class CrossCommand extends Command<int> {
       final sw = Stopwatch()..start();
 
       final gen = m.build.generator;
+
+      // Artifact dir a prior build would have produced — computed without
+      // running the build so we can short-circuit when source is unchanged.
+      final cachedArtifactDir = gen != null
+          ? buildDir
+          : Directory(
+              p.join(
+                buildDir.path,
+                rustTriple(profile.targetTriple),
+                'release',
+              ),
+            );
+
+      final stampFile = File(p.join(buildDir.path, '.module-stamp'));
+      final fingerprint = await _sourceFingerprint(src);
+      final upToDate =
+          stampFile.existsSync() &&
+          stampFile.readAsStringSync().trim() == fingerprint &&
+          cachedArtifactDir.existsSync();
+
       final Directory artifactDir;
-      if (gen != null) {
+      if (upToDate) {
+        artifactDir = cachedArtifactDir;
+      } else if (gen != null) {
         // cmake/meson: reuse the embedder's cross toolchain via CrossBuilder.
         final r = await builder.build(
           sourceDir: src,
@@ -3741,11 +3765,13 @@ class CrossCommand extends Command<int> {
           return false;
         }
         artifactDir = Directory(r.buildDir);
+        stampFile.writeAsStringSync(fingerprint);
       } else {
         // cargo: synthesize the cross env from the profile and run cargo.
         final dir = await _cargoModule(profile, host, m, src, buildDir);
         if (dir == null) return false;
         artifactDir = dir;
+        stampFile.writeAsStringSync(fingerprint);
       }
 
       for (final soname in m.artifacts) {
@@ -3768,7 +3794,10 @@ class CrossCommand extends Command<int> {
         }
       }
       _logger.info(
-        '  module ${m.name}: ${m.artifacts.join(", ")} → lib/ (${_secs(sw)})',
+        upToDate
+            ? '  module ${m.name}: up-to-date (cached)'
+            : '  module ${m.name}: ${m.artifacts.join(", ")} → lib/'
+                  ' (${_secs(sw)})',
       );
     }
     return true;
