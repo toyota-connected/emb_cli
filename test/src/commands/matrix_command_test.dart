@@ -202,7 +202,7 @@ cross:
     },
   );
 
-  test('host_dev_packages appears in the matrix cell when declared', () async {
+  test('host_dev_packages is not emitted in the matrix cell', () async {
     final f = write('hostdev.emb.yaml', '''
 id: ivi-homescreen
 type: app
@@ -217,7 +217,7 @@ cross:
     final include = await render([f.path, '--host', 'ubuntu']);
 
     expect(include, hasLength(1));
-    expect(include.single['host_dev_packages'], 'libpugixml-dev libssl-dev');
+    expect(include.single.containsKey('host_dev_packages'), isFalse);
   });
 
   test('non-default build.app_path emits a deprecation warning', () async {
@@ -248,7 +248,7 @@ cross:
   });
 
   test(
-    'default build.app_path (.) does not emit a deprecation warning',
+    'build.app_path: . still emits a deprecation warning (key presence)',
     () async {
       final f = write('apppathdot.emb.yaml', '''
 id: ivi-homescreen
@@ -264,6 +264,36 @@ cross:
 ''');
       final logger = _CapturingLogger();
       final outFile = p.join(tmp.path, 'matrix_apppathdot.json');
+      final runner = CommandRunner<int>('emb', 'test')
+        ..addCommand(MatrixCommand(logger: logger, host: _host));
+      expect(
+        await runner.run(['matrix', f.path, '-o', outFile]),
+        ExitCode.success.code,
+      );
+      expect(
+        logger.warnings.toString(),
+        contains('build.app_path is deprecated'),
+      );
+    },
+  );
+
+  test(
+    'build block without app_path key does not emit a deprecation warning',
+    () async {
+      final f = write('buildnoapppath.emb.yaml', '''
+id: ivi-homescreen
+type: app
+supported_host_types: [ubuntu]
+build:
+  archs: [arm64]
+cross:
+  provider: arm-gnu
+  triple: aarch64-none-linux-gnu
+  toolchain_version: 12.3.rel1
+  image_url: https://example.com/os.img.xz
+''');
+      final logger = _CapturingLogger();
+      final outFile = p.join(tmp.path, 'matrix_buildnoapp.json');
       final runner = CommandRunner<int>('emb', 'test')
         ..addCommand(MatrixCommand(logger: logger, host: _host));
       expect(

@@ -174,6 +174,7 @@ class CrossCommand extends Command<int> {
   }) : _logger = logger,
        _environment = environment ?? Platform.environment,
        _host = host,
+       _loader = loader,
        _project = CrossProjectResolver(loader),
        _aotFactoryInjected = aotFactory,
        _bundleFactory = bundleFactory ?? BundleBuilder.new,
@@ -470,6 +471,7 @@ class CrossCommand extends Command<int> {
   final Logger _logger;
   final Map<String, String> _environment;
   final HostInfo? _host;
+  final ManifestLoader _loader;
   final CrossProjectResolver _project;
   final AotBuilder Function(Workspace ws, HostInfo host)? _aotFactoryInjected;
   final BundleBuilder Function(Workspace ws) _bundleFactory;
@@ -704,6 +706,19 @@ class CrossCommand extends Command<int> {
     // merges.
     var resolved = resolveTarget();
     if (resolved == null) return ExitCode.usage.code;
+
+    if (building && selection.sourcePath != null) {
+      final raw = _loader.loadManifestFile(File(selection.sourcePath!))?.raw;
+      final buildMap = raw?['build'];
+      if (buildMap is Map &&
+          (buildMap.containsKey('app_path') ||
+              buildMap.containsKey('appPath'))) {
+        _logger.warn(
+          '${selection.sourcePath}: build.app_path is deprecated and has no '
+          'effect; pass --app <path> on the command line instead.',
+        );
+      }
+    }
 
     if (building &&
         args['flatpak'] == true &&
@@ -1065,6 +1080,7 @@ class CrossCommand extends Command<int> {
           manifestDir,
           preparedEmbedder.buildRoot,
           libDir,
+          appDir: _appDir(appDirArg),
         );
         if (!ok) return ExitCode.software.code;
       }
@@ -3796,8 +3812,8 @@ class CrossCommand extends Command<int> {
       _logger.info(
         upToDate
             ? '  module ${m.name}: up-to-date (cached)'
-            : '  module ${m.name}: ${m.artifacts.join(", ")} → lib/'
-                  ' (${_secs(sw)})',
+            : '  module ${m.name}: ${m.artifacts.join(", ")} '
+                  '→ ${p.basename(libDir.path)}/ (${_secs(sw)})',
       );
     }
     return true;

@@ -176,8 +176,10 @@ cross:
   tree. Versioned outputs (`libhello.so.1.2.3` with `libhello.so` / `.so.1`
   symlinks) are staged whole — the real file plus every soname link — so both
   the bare name and any `DT_NEEDED` SONAME resolve at load time.
-- Modules build (and stage) only when a runnable bundle is produced — i.e. with
-  `--app`. Declared without `--app`, they are skipped with a warning.
+- Without `--app`, modules whose path does not reference `${app_root}` are
+  still built and staged into `<buildRoot>/modules/`. Modules whose path
+  contains `${app_root}` require `--app` to resolve that variable and are
+  skipped with an informational message when `--app` is absent.
 - `build: cargo` cross-compiles a Rust crate: emb derives the Rust target from
   the GNU triple, synthesizes the cargo/cc-rs env from the profile (target-
   scoped `CC_<triple>` / `CARGO_TARGET_<TRIPLE>_LINKER` / `CFLAGS_<triple>` /
@@ -186,11 +188,13 @@ cross:
   `cargo` on `PATH`; targets the `arm-gnu` provider (the compiler is a real
   cross `gcc`). `features:` map to `--features`.
 
-**Where modules ship.** They land in the app bundle's `lib/`, so the runnable
-bundle (`--app`, `--tar`, `--deploy`) and the flatpak packager carry them
-automatically. The deb/ipk/rpm/targz packagers package the *embedder binary*
-plus `cross.package.files:` — not the app bundle — so a module reaches those
-only if the bundle tree is listed under `files:` (the same as `libapp.so`).
+**Where modules ship.** With `--app` they land in the app bundle's `lib/`,
+so the runnable bundle (`--app`, `--tar`, `--deploy`) and the flatpak packager
+carry them automatically. Without `--app` (standalone or `--prepare` build)
+they are staged into `<buildRoot>/modules/` for use by downstream tooling.
+The deb/ipk/rpm/targz packagers package the *embedder binary* plus
+`cross.package.files:` — not the app bundle — so a module reaches those only
+if the bundle tree is listed under `files:` (the same as `libapp.so`).
 
 ## Local augment sources (`path:`)
 

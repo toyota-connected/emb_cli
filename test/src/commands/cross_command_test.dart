@@ -756,6 +756,82 @@ void main() {
     expect(await run(['cross', '--dry-run', pkg.path]), ExitCode.success.code);
   });
 
+  test(
+    r'--build --target local skips ${app_root} modules without --app',
+    () async {
+      final ws = Directory(p.join(tmp.path, 'ws'))..createSync();
+      // Use arm-gnu manifest; --target local selects the native build path,
+      // which uses LocalCrossProvider (no toolchain download).
+      final pkg = pkgWith(
+        'appmod',
+        'id: appmod\ntype: app\ncross:\n  provider: arm-gnu\n'
+            '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n'
+            '  modules:\n'
+            '    - name: app_plugin\n'
+            r'      path: ${app_root}/native/app_plugin'
+            '\n'
+            '      artifacts: [libapp_plugin.so]\n',
+      );
+
+      // CrossCommand uses LocalCrossProvider for --target local, which sets
+      // targetTriple = machineArch-linux-gnu.  The target itself comes from
+      // the manifest's cross: block (nativeCross), so provider stays arm-gnu
+      // for buildKey computation purposes.
+      final rawCross = {
+        'provider': 'arm-gnu',
+        'toolchain_version': '12.3.rel1',
+        'image_url': 'https://x/y.img.xz',
+        'modules': [
+          {
+            'name': 'app_plugin',
+            'path': r'${app_root}/native/app_plugin',
+            'artifacts': ['libapp_plugin.so'],
+          },
+        ],
+      };
+      final sourcePath = p.join(pkg.path, 'emb.yaml');
+      final target = CrossTarget.fromMap(rawCross).withResolvedPaths(
+        sourcePath,
+        vars: {'embedder_root': p.normalize(pkg.path)},
+      );
+      final triple = '${_host.machineArch}-linux-gnu';
+      final buildRootName =
+          'cross-build-$triple-${buildKey(target)}-${projectKey(pkg.path)}';
+      final buildRoot = Directory(
+        p.join(ws.path, '.config', 'flutter_workspace', buildRootName),
+      )..createSync(recursive: true);
+
+      // Pre-seed stamp so _buildEmbedder's skipIfBuilt path exits early
+      // without running a real cmake/ninja build.
+      final fingerprint = await sourceFingerprint(pkg);
+      File(
+        p.join(buildRoot.path, '.emb-source-stamp'),
+      ).writeAsStringSync(fingerprint);
+
+      // Fake ELF binary (with execute bit) so _artifactFor returns it.
+      final buildDir = Directory(p.join(buildRoot.path, 'build'))..createSync();
+      final bin = File(p.join(buildDir.path, 'embedder'))
+        ..writeAsBytesSync([0x7f, 0x45, 0x4c, 0x46, 0, 0, 0, 0]);
+      await Process.run('chmod', ['+x', bin.path]);
+
+      final logger = _CaptureLogger();
+      final runner = CommandRunner<int>('emb', 'test')
+        ..addCommand(CrossCommand(logger: logger, host: _host));
+      final code = await runner.run([
+        'cross',
+        '--build',
+        '--target',
+        'local',
+        '-w',
+        ws.path,
+        pkg.path,
+      ]);
+
+      expect(code, ExitCode.success.code);
+      expect(logger.buffer.toString(), contains(r'${app_root}'));
+    },
+  );
+
   test('--dry-run plans every target of the multi-platform example', () async {
     final example = p.join('examples', 'cross', 'raspberry-pi-family.emb.yaml');
     for (final t in [

@@ -107,8 +107,10 @@ class MatrixCommand extends Command<int> {
           : hostFilter.where(supported.contains).toList();
       if (hosts.isEmpty) continue;
 
-      final declaredAppPath = manifest.build?.appPath;
-      if (declaredAppPath != null && declaredAppPath != '.') {
+      final buildMap = manifest.raw['build'];
+      if (buildMap is Map &&
+          (buildMap.containsKey('app_path') ||
+              buildMap.containsKey('appPath'))) {
         _logger.warn(
           '${file.path}: build.app_path is deprecated and has no effect; '
           'pass --app <path> on the command line instead.',
@@ -173,8 +175,6 @@ class MatrixCommand extends Command<int> {
             'provider': target.provider.token,
             'triple': target.triple ?? '',
             'preflight': provider.preflightTools.join(' '),
-            if (target.hostDevPackages.isNotEmpty)
-              'host_dev_packages': target.hostDevPackages.join(' '),
             if (!target.hasUnresolvedKeyPaths) ...{
               'sysroot_key': sysrootKey(target),
               'build_key': buildKey(target),
