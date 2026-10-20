@@ -25,12 +25,6 @@ type: app
 supported_archs: [arm64]
 supported_host_types: [ubuntu, fedora]
 
-build:
-  app_path: .
-  archs: [arm64]
-  modes: [release]
-  output: bundles
-
 cross:
   # Merged into every backend (a backend's own key wins on a clash).
   defines:
