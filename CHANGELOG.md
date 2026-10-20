@@ -107,6 +107,19 @@ conflated how the provider resolves the value with how the key hashes it.
   version is pinned in code, so `--flutter-version` and `globals.json`'s
   `flutter_version` still decide what gets checked out.
 
+- docs: `extends:` is documented unqualified-first. The multi-source section
+  presented `<source>/<target>` as how `extends:` resolves, without saying that
+  an unqualified name resolves across every source and that a source name is a
+  local choice in `boards.yaml` — so a manifest written from the docs only
+  resolved for someone who picked the same name. The same paragraph claimed
+  names never collide; board files do not, board names do, which is what the
+  ambiguity error is for. #273.
+
+- docs: the cross examples no longer carry a `build:` block. `emb cross` and
+  `emb matrix` never read it — `build.app_path` is parsed by `BuildConfig` and
+  consumed only by `emb build` — so eight example manifests declared a field
+  with no effect on the command they demonstrate. #272.
+
 
 
 # 0.4.1

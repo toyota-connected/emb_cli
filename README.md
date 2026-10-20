@@ -1283,8 +1283,15 @@ shows every path that was tried.
 ##### Multiple board sources
 
 Board files can come from more than one repository. Each source is named and
-installed into its own subdirectory, so names never collide. `extends:` resolves
-as `<source>/<target>` (e.g. `extends: raspi-emb/my-board`).
+installed into its own subdirectory, so board *files* never collide on disk.
+Board *names* still can — that is what the qualified form below is for.
+
+`extends:` takes an unqualified board name (`extends: my-board`) and resolves it
+against every configured source. **Prefer that form in a manifest**: a source
+name is a local choice recorded in `boards.yaml`, so a manifest that embeds one
+only resolves for someone who happened to choose the same name. A name found in
+more than one source is a hard error listing the qualified alternatives — reach
+for `extends: <source>/<target>` there, and only there.
 
 ```sh
 # Add a source (GitHub, HTTPS transport — uses the contents API + a PAT):
@@ -1319,7 +1326,7 @@ sources:
 
 | Field | Default | Description |
 |---|---|---|
-| `name` | — | Unique name; used in `extends: <name>/<target>` and on disk. |
+| `name` | — | Unique name: the install subdirectory, and the prefix in a qualified `extends: <name>/<target>`. Local to this machine, so prefer unqualified board names in manifests. |
 | `repo` | — | GitHub `owner/repo`. |
 | `path` | `boards` | Subdirectory containing `*.emb.yaml` board files. |
 | `ref` | `main` | Git ref to fetch. `auto` resolves to the tag matching this emb (`v<version>`). |

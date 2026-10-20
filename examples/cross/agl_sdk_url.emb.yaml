@@ -24,12 +24,6 @@ type: app
 supported_archs: [arm64]
 supported_host_types: [ubuntu, fedora]
 
-build:
-  app_path: .
-  archs: [arm64]
-  modes: [release]
-  output: bundles
-
 cross:
   provider: yocto-sdk
   triple: aarch64-agl-linux           # AGL distro triple; do not omit
