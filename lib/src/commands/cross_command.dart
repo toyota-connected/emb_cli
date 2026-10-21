@@ -47,6 +47,7 @@ import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/host/interactivity.dart';
 import 'package:emb_cli/src/host/preflight.dart';
 import 'package:emb_cli/src/json_output.dart';
+import 'package:emb_cli/src/manifest/build_config.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
 import 'package:emb_cli/src/manifest/source_repo.dart';
 import 'package:emb_cli/src/repo/git_repo.dart';
@@ -174,6 +175,7 @@ class CrossCommand extends Command<int> {
   }) : _logger = logger,
        _environment = environment ?? Platform.environment,
        _host = host,
+       _loader = loader,
        _project = CrossProjectResolver(loader),
        _aotFactoryInjected = aotFactory,
        _bundleFactory = bundleFactory ?? BundleBuilder.new,
@@ -470,6 +472,7 @@ class CrossCommand extends Command<int> {
   final Logger _logger;
   final Map<String, String> _environment;
   final HostInfo? _host;
+  final ManifestLoader _loader;
   final CrossProjectResolver _project;
   final AotBuilder Function(Workspace ws, HostInfo host)? _aotFactoryInjected;
   final BundleBuilder Function(Workspace ws) _bundleFactory;
@@ -704,6 +707,26 @@ class CrossCommand extends Command<int> {
     // merges.
     var resolved = resolveTarget();
     if (resolved == null) return ExitCode.usage.code;
+
+    // `build.app_path` has no effect here: BuildConfig is read by `emb build`.
+    // Checked in both manifests this build read, because a `.emb/` project can
+    // declare a shared `build:` block in its base while the selected target
+    // comes from a sibling file — the two are the same path for a flat
+    // manifest, which the set collapses.
+    if (building) {
+      for (final path in {
+        selection.sourcePath,
+        project.nativeSourcePath,
+      }.whereType<String>()) {
+        final raw = _loader.loadManifestFile(File(path))?.raw;
+        if (declaresAppPath(raw?['build'])) {
+          _logger.warn(
+            '$path: build.app_path is deprecated and has no effect; '
+            'pass --app <path> on the command line instead.',
+          );
+        }
+      }
+    }
 
     if (building &&
         args['flatpak'] == true &&
@@ -1053,6 +1076,22 @@ class CrossCommand extends Command<int> {
         selectedBackends: selectedBackends,
       );
       if (preparedEmbedder == null) return ExitCode.software.code;
+      if (target.modules.isNotEmpty) {
+        final libDir = Directory(
+          p.join(preparedEmbedder.buildRoot.path, 'modules'),
+        )..createSync(recursive: true);
+        final ok = await _buildModules(
+          preparedEmbedder.builder,
+          profile,
+          host,
+          target,
+          manifestDir,
+          preparedEmbedder.buildRoot,
+          libDir,
+          appDir: _appDir(appDirArg),
+        );
+        if (!ok) return ExitCode.software.code;
+      }
     }
 
     // --deploy/--run without --build: ship what is already built rather than
@@ -1510,11 +1549,24 @@ class CrossCommand extends Command<int> {
       );
       return ExitCode.usage.code;
     }
-    if (appPath == null && target.modules.isNotEmpty) {
-      _logger.warn(
-        '  modules       : ${target.modules.map((m) => m.name).join(", ")} '
-        'declared but no --app bundle to stage them into (add --app).',
+    // Build modules standalone when no app bundle is being assembled.
+    // Skipped when preparedEmbedder is non-null: --prepare already built them
+    // into <buildRoot>/modules/ in this invocation.
+    if (appPath == null &&
+        target.modules.isNotEmpty &&
+        preparedEmbedder == null) {
+      final libDir = Directory(p.join(buildRoot.path, 'modules'))
+        ..createSync(recursive: true);
+      final ok = await _buildModules(
+        builder,
+        profile,
+        host,
+        target,
+        manifestDir,
+        buildRoot,
+        libDir,
       );
+      if (!ok) return ExitCode.software.code;
     }
     if (appPath != null) {
       final rc = await _runnable(
@@ -3663,10 +3715,12 @@ class CrossCommand extends Command<int> {
     return true;
   }
 
-  /// Build each app-owned [CrossTarget.modules] entry against the embedder's
-  /// cross toolchain ([builder]) and stage its declared `.so` artifacts into
-  /// [libDir] (the app bundle's `lib/`). Returns false — with an error logged —
-  /// on any build failure or missing declared artifact.
+  /// Build each [CrossTarget.modules] entry against the embedder's cross
+  /// toolchain ([builder]) and stage its declared `.so` artifacts into
+  /// [libDir]. Skips the compile step when the module source is unchanged
+  /// since the last successful build (stamp file matches source fingerprint).
+  /// Returns false — with an error logged — on any build failure or missing
+  /// declared artifact.
   Future<bool> _buildModules(
     CrossBuilder builder,
     CrossProfile profile,
@@ -3682,9 +3736,15 @@ class CrossCommand extends Command<int> {
       if (appDir != null) 'app_root': appDir,
     };
     for (final m in target.modules) {
-      final src = Directory(
-        p.join(manifestDir.path, expandManifestVars(m.path, moduleVars)),
-      );
+      final expanded = expandManifestVars(m.path, moduleVars);
+      if (appDir == null && hasUnresolvedVars(expanded)) {
+        _logger.info(
+          '  module ${m.name}: skipped'
+          r' (path has ${app_root} — pass --app to include)',
+        );
+        continue;
+      }
+      final src = Directory(p.join(manifestDir.path, expanded));
       if (!src.existsSync()) {
         _logger.err('  module ${m.name}: source dir not found: ${src.path}');
         return false;
@@ -3693,8 +3753,30 @@ class CrossCommand extends Command<int> {
       final sw = Stopwatch()..start();
 
       final gen = m.build.generator;
+
+      // Artifact dir a prior build would have produced — computed without
+      // running the build so we can short-circuit when source is unchanged.
+      final cachedArtifactDir = gen != null
+          ? buildDir
+          : Directory(
+              p.join(
+                buildDir.path,
+                rustTriple(profile.targetTriple),
+                'release',
+              ),
+            );
+
+      final stampFile = File(p.join(buildDir.path, '.module-stamp'));
+      final fingerprint = await _sourceFingerprint(src);
+      final upToDate =
+          stampFile.existsSync() &&
+          stampFile.readAsStringSync().trim() == fingerprint &&
+          cachedArtifactDir.existsSync();
+
       final Directory artifactDir;
-      if (gen != null) {
+      if (upToDate) {
+        artifactDir = cachedArtifactDir;
+      } else if (gen != null) {
         // cmake/meson: reuse the embedder's cross toolchain via CrossBuilder.
         final r = await builder.build(
           sourceDir: src,
@@ -3707,11 +3789,13 @@ class CrossCommand extends Command<int> {
           return false;
         }
         artifactDir = Directory(r.buildDir);
+        stampFile.writeAsStringSync(fingerprint);
       } else {
         // cargo: synthesize the cross env from the profile and run cargo.
         final dir = await _cargoModule(profile, host, m, src, buildDir);
         if (dir == null) return false;
         artifactDir = dir;
+        stampFile.writeAsStringSync(fingerprint);
       }
 
       for (final soname in m.artifacts) {
@@ -3734,7 +3818,10 @@ class CrossCommand extends Command<int> {
         }
       }
       _logger.info(
-        '  module ${m.name}: ${m.artifacts.join(", ")} → lib/ (${_secs(sw)})',
+        upToDate
+            ? '  module ${m.name}: up-to-date (cached)'
+            : '  module ${m.name}: ${m.artifacts.join(", ")} '
+                  '→ ${p.basename(libDir.path)}/ (${_secs(sw)})',
       );
     }
     return true;

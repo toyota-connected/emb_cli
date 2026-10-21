@@ -10,6 +10,13 @@ import 'package:mason_logger/mason_logger.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
+class _CapturingLogger extends Logger {
+  final StringBuffer warnings = StringBuffer();
+  @override
+  void warn(String? message, {String tag = 'WARN', LogStyle? style}) =>
+      warnings.writeln(message);
+}
+
 const _host = HostInfo(
   os: HostOs.linux,
   machineArch: 'x86_64',
@@ -192,6 +199,108 @@ cross:
       expect(cell['provider'], 'arm-gnu');
       expect(cell['triple'], 'aarch64-none-linux-gnu');
       expect(cell['args'], '${f.path} --target rpi5-bookworm');
+    },
+  );
+
+  test('host_dev_packages is not emitted in the matrix cell', () async {
+    final f = write('hostdev.emb.yaml', '''
+id: ivi-homescreen
+type: app
+supported_host_types: [ubuntu]
+cross:
+  provider: arm-gnu
+  triple: aarch64-none-linux-gnu
+  toolchain_version: 12.3.rel1
+  image_url: https://example.com/os.img.xz
+  host_dev_packages: [libpugixml-dev, libssl-dev]
+''');
+    final include = await render([f.path, '--host', 'ubuntu']);
+
+    expect(include, hasLength(1));
+    expect(include.single.containsKey('host_dev_packages'), isFalse);
+  });
+
+  test('non-default build.app_path emits a deprecation warning', () async {
+    final f = write('apppath.emb.yaml', '''
+id: ivi-homescreen
+type: app
+supported_host_types: [ubuntu]
+build:
+  app_path: ../flutter_app
+cross:
+  provider: arm-gnu
+  triple: aarch64-none-linux-gnu
+  toolchain_version: 12.3.rel1
+  image_url: https://example.com/os.img.xz
+''');
+    final logger = _CapturingLogger();
+    final outFile = p.join(tmp.path, 'matrix_apppath.json');
+    final runner = CommandRunner<int>('emb', 'test')
+      ..addCommand(MatrixCommand(logger: logger, host: _host));
+    expect(
+      await runner.run(['matrix', f.path, '-o', outFile]),
+      ExitCode.success.code,
+    );
+    expect(
+      logger.warnings.toString(),
+      contains('build.app_path is deprecated'),
+    );
+  });
+
+  test(
+    'build.app_path: . still emits a deprecation warning (key presence)',
+    () async {
+      final f = write('apppathdot.emb.yaml', '''
+id: ivi-homescreen
+type: app
+supported_host_types: [ubuntu]
+build:
+  app_path: .
+cross:
+  provider: arm-gnu
+  triple: aarch64-none-linux-gnu
+  toolchain_version: 12.3.rel1
+  image_url: https://example.com/os.img.xz
+''');
+      final logger = _CapturingLogger();
+      final outFile = p.join(tmp.path, 'matrix_apppathdot.json');
+      final runner = CommandRunner<int>('emb', 'test')
+        ..addCommand(MatrixCommand(logger: logger, host: _host));
+      expect(
+        await runner.run(['matrix', f.path, '-o', outFile]),
+        ExitCode.success.code,
+      );
+      expect(
+        logger.warnings.toString(),
+        contains('build.app_path is deprecated'),
+      );
+    },
+  );
+
+  test(
+    'build block without app_path key does not emit a deprecation warning',
+    () async {
+      final f = write('buildnoapppath.emb.yaml', '''
+id: ivi-homescreen
+type: app
+supported_host_types: [ubuntu]
+build:
+  archs: [arm64]
+cross:
+  provider: arm-gnu
+  triple: aarch64-none-linux-gnu
+  toolchain_version: 12.3.rel1
+  image_url: https://example.com/os.img.xz
+''');
+      final logger = _CapturingLogger();
+      final outFile = p.join(tmp.path, 'matrix_buildnoapp.json');
+      final runner = CommandRunner<int>('emb', 'test')
+        ..addCommand(MatrixCommand(logger: logger, host: _host));
+      expect(
+        await runner.run(['matrix', f.path, '-o', outFile]),
+        ExitCode.success.code,
+      );
+      expect(logger.warnings.toString(), isEmpty);
     },
   );
 }

@@ -7,6 +7,7 @@ import 'package:emb_cli/src/cross/cross_project.dart';
 import 'package:emb_cli/src/cross/cross_provider.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/host/host_info.dart';
+import 'package:emb_cli/src/manifest/build_config.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
 import 'package:mason_logger/mason_logger.dart';
@@ -106,6 +107,13 @@ class MatrixCommand extends Command<int> {
           ? supported
           : hostFilter.where(supported.contains).toList();
       if (hosts.isEmpty) continue;
+
+      if (declaresAppPath(manifest.raw['build'])) {
+        _logger.warn(
+          '${file.path}: build.app_path is deprecated and has no effect; '
+          'pass --app <path> on the command line instead.',
+        );
+      }
 
       for (final entry in _targets(crossMap)) {
         if (targetFilter != null && entry.name != targetFilter) continue;

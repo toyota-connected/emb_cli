@@ -26,6 +26,12 @@ conflated how the provider resolves the value with how the key hashes it.
 
 **Cross.**
 
+- feat(cross): modules are now built during `--prepare` (staged into
+  `<buildRoot>/modules/`) and during `--build` without `--app` (standalone
+  module build). Modules whose path references `${app_root}` are skipped with
+  an informational message when `--app` is absent. `build.app_path` is
+  deprecated; pass `--app` on the command line instead.
+
 - feat(cross): `sdk_path` and `sdk_env_setup` may be written relative to the
   manifest that declares them, on the same rule `augment[].patches`,
   augment `path:` and `modules[].path` already follow. Absolute values are
