@@ -47,6 +47,7 @@ import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/host/interactivity.dart';
 import 'package:emb_cli/src/host/preflight.dart';
 import 'package:emb_cli/src/json_output.dart';
+import 'package:emb_cli/src/manifest/build_config.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
 import 'package:emb_cli/src/manifest/source_repo.dart';
 import 'package:emb_cli/src/repo/git_repo.dart';
@@ -707,16 +708,23 @@ class CrossCommand extends Command<int> {
     var resolved = resolveTarget();
     if (resolved == null) return ExitCode.usage.code;
 
-    if (building && selection.sourcePath != null) {
-      final raw = _loader.loadManifestFile(File(selection.sourcePath!))?.raw;
-      final buildMap = raw?['build'];
-      if (buildMap is Map &&
-          (buildMap.containsKey('app_path') ||
-              buildMap.containsKey('appPath'))) {
-        _logger.warn(
-          '${selection.sourcePath}: build.app_path is deprecated and has no '
-          'effect; pass --app <path> on the command line instead.',
-        );
+    // `build.app_path` has no effect here: BuildConfig is read by `emb build`.
+    // Checked in both manifests this build read, because a `.emb/` project can
+    // declare a shared `build:` block in its base while the selected target
+    // comes from a sibling file — the two are the same path for a flat
+    // manifest, which the set collapses.
+    if (building) {
+      for (final path in {
+        selection.sourcePath,
+        project.nativeSourcePath,
+      }.whereType<String>()) {
+        final raw = _loader.loadManifestFile(File(path))?.raw;
+        if (declaresAppPath(raw?['build'])) {
+          _logger.warn(
+            '$path: build.app_path is deprecated and has no effect; '
+            'pass --app <path> on the command line instead.',
+          );
+        }
       }
     }
 

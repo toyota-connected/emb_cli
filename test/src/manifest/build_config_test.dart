@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:emb_cli/src/manifest/build_config.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
@@ -48,5 +49,27 @@ build: {}
     final pkg = Directory(p.join(tmp.path, 'app'))..createSync();
     File(p.join(pkg.path, 'emb.yaml')).writeAsStringSync('id: x\ntype: app\n');
     expect(loader.loadPackageDir(pkg)!.build, isNull);
+  });
+
+  group('declaresAppPath', () {
+    test('true for either spelling, whatever the value', () {
+      expect(declaresAppPath({'app_path': '.'}), isTrue);
+      expect(declaresAppPath({'app_path': '../flutter_app'}), isTrue);
+      expect(declaresAppPath({'appPath': '.'}), isTrue);
+      // Declared but empty still counts: the key is what is deprecated.
+      expect(declaresAppPath({'app_path': null}), isTrue);
+    });
+
+    test('false without the key, and for a non-map build:', () {
+      expect(
+        declaresAppPath({
+          'archs': ['arm64'],
+        }),
+        isFalse,
+      );
+      expect(declaresAppPath(const <String, Object?>{}), isFalse);
+      expect(declaresAppPath(null), isFalse);
+      expect(declaresAppPath('nonsense'), isFalse);
+    });
   });
 }

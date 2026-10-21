@@ -51,3 +51,13 @@ class BuildConfig {
   String toString() =>
       'BuildConfig(app: $appPath, archs: $archs, modes: $modes)';
 }
+
+/// True when a manifest's raw `build:` block declares `app_path`.
+///
+/// Presence, not value: [BuildConfig.appPath] defaults to `.`, so once parsed a
+/// manifest that wrote the default is indistinguishable from one that omitted
+/// the key. The cross commands warn on the former, so they have to ask the raw
+/// map.
+bool declaresAppPath(Object? buildBlock) =>
+    buildBlock is Map &&
+    (buildBlock.containsKey('app_path') || buildBlock.containsKey('appPath'));

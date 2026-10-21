@@ -191,7 +191,10 @@ cross:
 **Where modules ship.** With `--app` they land in the app bundle's `lib/`,
 so the runnable bundle (`--app`, `--tar`, `--deploy`) and the flatpak packager
 carry them automatically. Without `--app` (standalone or `--prepare` build)
-they are staged into `<buildRoot>/modules/` for use by downstream tooling.
+they are staged into `<buildRoot>/modules/`. Nothing in a manifest reaches that
+directory — the path variables are `${embedder_root}`, `${app_root}` and
+`${runnable}`, none of which names the build root — so those artifacts are for
+tooling outside emb, not for `files:` to pick up.
 The deb/ipk/rpm/targz packagers package the *embedder binary* plus
 `cross.package.files:` — not the app bundle — so a module reaches those only
 if the bundle tree is listed under `files:` (the same as `libapp.so`).
