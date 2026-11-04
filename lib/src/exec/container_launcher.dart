@@ -64,6 +64,10 @@ class ContainerLauncher {
   /// Streams the container's stdout/stderr to [onOutput]/[onError] when
   /// provided, so callers (and ultimately users) can see what happened
   /// inside the container or why it failed to start.
+  ///
+  /// Returns 127 (command-not-found convention) when the container tool
+  /// binary is absent, instead of letting the [ProcessException] propagate
+  /// unhandled.
   Future<int> run({
     required String image,
     required List<String> embArgs,
@@ -72,10 +76,17 @@ class ContainerLauncher {
     void Function(String line)? onOutput,
     void Function(String line)? onError,
   }) async {
-    final result = await _run(
-      _tool,
-      argv(image: image, embArgs: embArgs, mounts: mounts, workdir: workdir),
-    );
+    final ProcessResult result;
+    try {
+      result = await _run(
+        _tool,
+        argv(image: image, embArgs: embArgs, mounts: mounts, workdir: workdir),
+      );
+    } on ProcessException catch (e) {
+      // docker/podman binary not found or not executable.
+      onError?.call('$_tool: ${e.message}');
+      return 127; // shell convention: command not found
+    }
     if (onOutput != null) {
       final out = result.stdout as String;
       if (out.isNotEmpty) {

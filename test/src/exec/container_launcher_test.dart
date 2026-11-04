@@ -48,6 +48,28 @@ void main() {
     },
   );
 
+  test('run returns 127 and reports via onError when tool is missing',
+      () async {
+    final launcher = ContainerLauncher(
+      run: (exe, args, {environment}) async =>
+          throw ProcessException(
+            exe,
+            args,
+            'No such file or directory',
+            2,
+          ),
+    );
+    final errLines = <String>[];
+    final code = await launcher.run(
+      image: 'img',
+      embArgs: const ['aot'],
+      onError: errLines.add,
+    );
+    expect(code, 127);
+    expect(errLines, hasLength(1));
+    expect(errLines.first, contains('docker'));
+  });
+
   test('run surfaces stdout and stderr via callbacks', () async {
     final launcher = ContainerLauncher(
       run: (exe, args, {environment}) async =>
