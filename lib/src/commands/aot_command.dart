@@ -146,8 +146,18 @@ class AotCommand extends Command<int> {
           '--no-obfuscate',
         if (args['strip'] as bool == false) '--no-strip',
       ],
+      onOutput: _logger.info,
+      onError: _logger.err,
     );
-    if (routed != null) return routed;
+    if (routed != null) {
+      if (routed != 0) {
+        _logger.err(
+          'Container exited with code $routed. '
+          'Is Docker running? Try: docker info',
+        );
+      }
+      return routed;
+    }
 
     final builder = _builderFactory(
       workspace,

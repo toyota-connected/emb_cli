@@ -358,6 +358,8 @@ class EngineCommand extends Command<int> {
       ],
       mounts: [Mount(workspace.root.path), Mount(cache.path)],
       workdir: workspace.root.path,
+      onOutput: _logger.info,
+      onError: _logger.err,
     );
     if (code == 0) {
       progress.complete('Engine $mode built in ${env.image}');

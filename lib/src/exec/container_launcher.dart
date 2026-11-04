@@ -60,16 +60,38 @@ class ContainerLauncher {
   }
 
   /// Run [embArgs] inside [image]; returns the inner emb's exit code.
+  ///
+  /// Streams the container's stdout/stderr to [onOutput]/[onError] when
+  /// provided, so callers (and ultimately users) can see what happened
+  /// inside the container or why it failed to start.
   Future<int> run({
     required String image,
     required List<String> embArgs,
     List<Mount> mounts = const [],
     String? workdir,
+    void Function(String line)? onOutput,
+    void Function(String line)? onError,
   }) async {
     final result = await _run(
       _tool,
       argv(image: image, embArgs: embArgs, mounts: mounts, workdir: workdir),
     );
+    if (onOutput != null) {
+      final out = result.stdout as String;
+      if (out.isNotEmpty) {
+        for (final line in out.split('\n')) {
+          if (line.isNotEmpty) onOutput(line);
+        }
+      }
+    }
+    if (onError != null) {
+      final err = result.stderr as String;
+      if (err.isNotEmpty) {
+        for (final line in err.split('\n')) {
+          if (line.isNotEmpty) onError(line);
+        }
+      }
+    }
     return result.exitCode;
   }
 }

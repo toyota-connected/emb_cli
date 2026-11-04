@@ -159,8 +159,18 @@ class BuildCommand extends Command<int> {
         for (final m in args['mode'] as List<String>) ...['--mode', m],
         if (args['no-build'] as bool) '--no-build',
       ],
+      onOutput: _logger.info,
+      onError: _logger.err,
     );
-    if (routed != null) return routed;
+    if (routed != null) {
+      if (routed != 0) {
+        _logger.err(
+          'Container exited with code $routed. '
+          'Is Docker running? Try: docker info',
+        );
+      }
+      return routed;
+    }
 
     _logger.info(
       styleBold.wrap(

@@ -42,4 +42,3 @@ deps:
       - libudev-dev
   macos:
     - pkg-config
-    - wayland

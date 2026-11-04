@@ -42,11 +42,15 @@ class ContainerReentry {
   /// Run [embArgs] in the container when routing is needed; returns the inner
   /// exit code, or null to proceed natively. [forceNative] (`--exec-native`)
   /// and being [inContainer] both short-circuit to native.
+  ///
+  /// Pass [onOutput]/[onError] to surface the container's stdout/stderr.
   Future<int?> maybeRun({
     required List<String> embArgs,
     required List<Mount> mounts,
     String? workdir,
     bool forceNative = false,
+    void Function(String line)? onOutput,
+    void Function(String line)? onError,
   }) async {
     final env = resolveExecEnv(
       host,
@@ -61,6 +65,8 @@ class ContainerReentry {
       embArgs: embArgs,
       mounts: mounts,
       workdir: workdir,
+      onOutput: onOutput,
+      onError: onError,
     );
   }
 
