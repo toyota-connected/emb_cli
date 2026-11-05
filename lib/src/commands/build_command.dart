@@ -144,17 +144,15 @@ class BuildCommand extends Command<int> {
     final reentry = _reentry ?? ContainerReentry(host: host);
     final routed = await reentry.maybeRun(
       forceNative: args['exec-native'] as bool,
-      workdir: workspace.root.path,
       mounts: ContainerReentry.mountsFor([
-        workspace.root.path,
         pkgDir.absolute.path,
         ensureCacheDir().path,
       ]),
       embArgs: [
         'build',
         pkgDir.absolute.path,
-        '-w',
-        workspace.root.path,
+        // Do not pass -w: the container's $FLUTTER_WORKSPACE points at its
+        // own Linux Flutter SDK.
         for (final a in args['arch'] as List<String>) ...['--arch', a],
         for (final m in args['mode'] as List<String>) ...['--mode', m],
         if (args['no-build'] as bool) '--no-build',

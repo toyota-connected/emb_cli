@@ -4,7 +4,6 @@ import 'package:emb_cli/src/command_runner.dart';
 import 'package:emb_cli/src/pkg/native_lib.dart';
 
 Future<void> main(List<String> args) async {
-  stderr.writeln('[emb] main entered, args=$args'); // TODO: remove diagnostic
   // Locate the PackageKit native library before any backend use (Linux).
   await configurePackageKitLibrary();
   await _flushThenExit(await EmbCliCommandRunner().run(args));

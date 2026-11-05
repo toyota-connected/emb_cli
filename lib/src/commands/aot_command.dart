@@ -106,11 +106,9 @@ class AotCommand extends Command<int> {
     rejectPositionals(this);
     final args = argResults!;
     final host = _host ?? HostInfo.detect();
-    stderr.writeln('[aot] host=${host.os.name}/${host.machineArch}'); // TODO: remove diagnostic
     final workspace = Workspace.resolve(override: args['workspace'] as String?);
     final appPath = args['app-path'] as String;
     final arch = args['arch'] as String?;
-    stderr.writeln('[aot] appPath=$appPath arch=$arch'); // TODO: remove diagnostic
 
     if (!Directory(appPath).existsSync()) {
       _logger.err('App path not found: $appPath');
@@ -124,9 +122,7 @@ class AotCommand extends Command<int> {
     final reentry = _reentry ?? ContainerReentry(host: host);
     final routed = await reentry.maybeRun(
       forceNative: args['exec-native'] as bool,
-      workdir: workspace.root.path,
       mounts: ContainerReentry.mountsFor([
-        workspace.root.path,
         Directory(appPath).absolute.path,
         ensureCacheDir().path,
         if (genSnapshot != null) File(genSnapshot).parent.path,
@@ -136,8 +132,9 @@ class AotCommand extends Command<int> {
         'aot',
         '--app-path',
         Directory(appPath).absolute.path,
-        '-w',
-        workspace.root.path,
+        // Do not pass -w: the container's $FLUTTER_WORKSPACE points at its
+        // own Linux Flutter SDK. Overriding it with the host workspace would
+        // use the macOS binaries, which can't execute inside Linux.
         for (final m in args['mode'] as List<String>) ...['--mode', m],
         if (arch != null) ...['--arch', arch],
         if (genSnapshot != null) ...['--gen-snapshot', genSnapshot],
