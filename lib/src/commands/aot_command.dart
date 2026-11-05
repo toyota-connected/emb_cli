@@ -123,6 +123,10 @@ class AotCommand extends Command<int> {
     final routed = await reentry.maybeRun(
       forceNative: args['exec-native'] as bool,
       mounts: ContainerReentry.mountsFor([
+        // Mount the host workspace for source access (Dart pub workspace
+        // resolution walks up from the app), but don't pass -w so the
+        // container's $FLUTTER_WORKSPACE selects its own Linux Flutter SDK.
+        workspace.root.path,
         Directory(appPath).absolute.path,
         ensureCacheDir().path,
         if (genSnapshot != null) File(genSnapshot).parent.path,

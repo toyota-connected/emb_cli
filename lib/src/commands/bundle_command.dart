@@ -126,6 +126,7 @@ class BundleCommand extends Command<int> {
     final routed = await reentry.maybeRun(
       forceNative: args['exec-native'] as bool,
       mounts: ContainerReentry.mountsFor([
+        workspace.root.path,
         Directory(appPath).absolute.path,
         ensureCacheDir().path,
         if (explicitOutput != null) Directory(explicitOutput).parent.path,

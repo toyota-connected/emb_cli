@@ -145,6 +145,7 @@ class BuildCommand extends Command<int> {
     final routed = await reentry.maybeRun(
       forceNative: args['exec-native'] as bool,
       mounts: ContainerReentry.mountsFor([
+        workspace.root.path,
         pkgDir.absolute.path,
         ensureCacheDir().path,
       ]),
