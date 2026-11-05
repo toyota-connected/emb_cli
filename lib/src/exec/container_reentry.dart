@@ -66,12 +66,35 @@ class ContainerReentry {
     onRouting?.call(
       'Routing through container (${env.reason}): ${env.image}',
     );
+    // Forward credentials so git/pub inside the container can reach private
+    // repos. SSH agent for git+ssh deps; GH_TOKEN / GITHUB_TOKEN for HTTPS
+    // (via git's env-based config to rewrite URLs with the token embedded).
+    final sshSock = Platform.environment['SSH_AUTH_SOCK'];
+    final hostEnv = Platform.environment;
+    final ghToken = hostEnv['GH_TOKEN'] ?? hostEnv['GITHUB_TOKEN'];
+    final authMounts = <Mount>[
+      if (sshSock != null && File(sshSock).existsSync()) Mount(sshSock),
+    ];
+    final authEnv = <String, String>{
+      if (sshSock != null) 'SSH_AUTH_SOCK': sshSock,
+      // Inject git config via environment so HTTPS clones of private GitHub
+      // repos embed the token. GIT_CONFIG_COUNT + KEY/VALUE pairs are the
+      // env-only equivalent of `git config url.<token-url>.insteadOf <url>`.
+      if (ghToken != null) ...{
+        'GIT_CONFIG_COUNT': '1',
+        'GIT_CONFIG_KEY_0':
+            'url.https://$ghToken@github.com/.insteadOf',
+        'GIT_CONFIG_VALUE_0': 'https://github.com/',
+      },
+    };
+
     final launcher = _launcher ?? ContainerLauncher(tool: _tool);
     return launcher.run(
       image: env.image,
       embArgs: embArgs,
-      mounts: mounts,
+      mounts: [...mounts, ...authMounts],
       workdir: workdir,
+      env: authEnv,
       onOutput: onOutput,
       onError: onError,
     );

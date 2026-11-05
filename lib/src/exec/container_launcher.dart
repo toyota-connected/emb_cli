@@ -43,6 +43,7 @@ class ContainerLauncher {
     required List<String> embArgs,
     List<Mount> mounts = const [],
     String? workdir,
+    Map<String, String> env = const {},
   }) {
     return [
       'run',
@@ -51,6 +52,7 @@ class ContainerLauncher {
       if (workdir != null) ...['-w', workdir],
       '-e',
       'EMB_IN_CONTAINER=1',
+      for (final e in env.entries) ...['-e', '${e.key}=${e.value}'],
       image,
       'emb',
       ...embArgs,
@@ -73,6 +75,7 @@ class ContainerLauncher {
     required List<String> embArgs,
     List<Mount> mounts = const [],
     String? workdir,
+    Map<String, String> env = const {},
     void Function(String line)? onOutput,
     void Function(String line)? onError,
   }) async {
@@ -81,6 +84,7 @@ class ContainerLauncher {
       embArgs: embArgs,
       mounts: mounts,
       workdir: workdir,
+      env: env,
     );
 
     // Test path: injected runner, buffered output.
