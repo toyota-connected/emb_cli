@@ -43,7 +43,10 @@ class ContainerReentry {
   /// exit code, or null to proceed natively. [forceNative] (`--exec-native`)
   /// and being [inContainer] both short-circuit to native.
   ///
-  /// Pass [onOutput]/[onError] to surface the container's stdout/stderr.
+  /// [onOutput]/[onError] surface the container's stdout/stderr (used only in
+  /// the buffered test path; the production path inherits stdio directly).
+  /// [onRouting] is called with a human-readable reason before the container
+  /// starts, so the user sees feedback immediately.
   Future<int?> maybeRun({
     required List<String> embArgs,
     required List<Mount> mounts,
@@ -51,6 +54,7 @@ class ContainerReentry {
     bool forceNative = false,
     void Function(String line)? onOutput,
     void Function(String line)? onError,
+    void Function(String message)? onRouting,
   }) async {
     final env = resolveExecEnv(
       host,
@@ -59,6 +63,9 @@ class ContainerReentry {
       forceNative: forceNative,
     );
     if (env is! ContainerExec) return null;
+    onRouting?.call(
+      'Routing through container (${env.reason}): ${env.image}',
+    );
     final launcher = _launcher ?? ContainerLauncher(tool: _tool);
     return launcher.run(
       image: env.image,

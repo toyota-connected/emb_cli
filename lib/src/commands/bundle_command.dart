@@ -150,6 +150,7 @@ class BundleCommand extends Command<int> {
       ],
       onOutput: _logger.info,
       onError: _logger.err,
+      onRouting: _logger.info,
     );
     if (routed != null) {
       if (routed != 0) {
