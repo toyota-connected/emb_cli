@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:emb_cli/src/exec/container_launcher.dart';
 import 'package:emb_cli/src/exec/exec_env.dart';
 import 'package:emb_cli/src/host/host_info.dart';
+import 'package:emb_cli/src/verbosity.dart';
 
 /// Routes a Linux-x86_64 emb operation into a glibc Linux container when the
 /// host can't run it natively (non-Linux / non-x86_64), re-entering emb with
@@ -75,7 +76,10 @@ class ContainerReentry {
     final authMounts = <Mount>[
       if (sshSock != null && File(sshSock).existsSync()) Mount(sshSock),
     ];
+    // Forward verbosity so the inner emb streams Flutter/toolchain output.
+    final verbosityIndex = embVerbosity.index;
     final authEnv = <String, String>{
+      if (verbosityIndex > 0) 'EMB_VERBOSITY': '$verbosityIndex',
       if (sshSock != null) 'SSH_AUTH_SOCK': sshSock,
       // Inject git config via environment so HTTPS clones of private GitHub
       // repos embed the token. GIT_CONFIG_COUNT + KEY/VALUE pairs are the
