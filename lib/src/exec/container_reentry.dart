@@ -83,7 +83,7 @@ class ContainerReentry {
       if (ghToken != null) ...{
         'GIT_CONFIG_COUNT': '1',
         'GIT_CONFIG_KEY_0':
-            'url.https://$ghToken@github.com/.insteadOf',
+            'url.https://x-access-token:$ghToken@github.com/.insteadOf',
         'GIT_CONFIG_VALUE_0': 'https://github.com/',
       },
     };
