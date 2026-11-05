@@ -106,9 +106,11 @@ class AotCommand extends Command<int> {
     rejectPositionals(this);
     final args = argResults!;
     final host = _host ?? HostInfo.detect();
+    stderr.writeln('[aot] host=${host.os.name}/${host.machineArch}'); // TODO: remove diagnostic
     final workspace = Workspace.resolve(override: args['workspace'] as String?);
     final appPath = args['app-path'] as String;
     final arch = args['arch'] as String?;
+    stderr.writeln('[aot] appPath=$appPath arch=$arch'); // TODO: remove diagnostic
 
     if (!Directory(appPath).existsSync()) {
       _logger.err('App path not found: $appPath');
