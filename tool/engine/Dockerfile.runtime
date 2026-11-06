@@ -33,6 +33,7 @@ RUN git clone --depth 1 --branch "${EMB_REF}" "${EMB_REPO}" /opt/emb_cli \
 # A Linux Flutter SDK at /emb/flutter — the workspace's own SDK is host-arch on
 # a Mac/Windows host, so a Linux frontend_server/dart must live in the image.
 ENV FLUTTER_WORKSPACE=/emb
-RUN emb flutter -w /emb --flutter-version "${FLUTTER_VERSION}"
+RUN emb flutter -w /emb --flutter-version "${FLUTTER_VERSION}" \
+ && /emb/flutter/bin/flutter --version
 
 WORKDIR /emb
