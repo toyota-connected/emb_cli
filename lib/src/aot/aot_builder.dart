@@ -285,7 +285,6 @@ class AotBuilder {
       ]);
     }
 
-    final newScheme = File(_frontendServerAot).existsSync();
     final targetArch = arch ?? host.machineArch;
     final gen = genSnapshot ?? await _resolveGenSnapshot(targetArch, modes);
 
@@ -370,6 +369,12 @@ class AotBuilder {
       }
 
       onStep?.call('[$mode] kernel snapshot');
+      // Checked here (not before the loop) because `flutter build bundle`
+      // above may have just downloaded the Dart SDK for the first time — in a
+      // fresh container the snapshot doesn't exist until that download
+      // finishes. Checking before the loop returns false and falls back to the
+      // old engine-artifact path, which modern Flutter no longer ships.
+      final newScheme = File(_frontendServerAot).existsSync();
       final kernel = await _kernelSnapshot(
         app: app,
         appName: appName,
