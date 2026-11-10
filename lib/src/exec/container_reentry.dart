@@ -129,16 +129,28 @@ class ContainerReentry {
       }
     }
 
+    // Git HTTPS auth: prefer the host's ~/.netrc (read-only mount keeps the
+    // token off the docker CLI). Fall back to GIT_CONFIG env vars when no
+    // .netrc exists but GH_TOKEN / GITHUB_TOKEN is set (typical in CI).
+    final credMounts = <Mount>[];
+    final home = env['HOME'];
+    final netrc = home != null ? File('$home/.netrc') : null;
+    final hasNetrc = netrc != null && netrc.existsSync();
+    if (hasNetrc) {
+      credMounts.add(
+        Mount(netrc.path, containerPath: '/root/.netrc', readOnly: true),
+      );
+    }
+
     return ContainerAuthContext(
-      mounts: sshMounts,
+      mounts: [...sshMounts, ...credMounts],
       env: {
         if (verbosityIndex > 0) 'EMB_VERBOSITY': '$verbosityIndex',
         if (containerSshSock != null) 'SSH_AUTH_SOCK': containerSshSock,
-        // Inject git config via environment so HTTPS clones of private
-        // GitHub repos embed the token. GIT_CONFIG_COUNT + KEY/VALUE
-        // pairs are the env-only equivalent of
-        // `git config url.<token-url>.insteadOf <url>`.
-        if (ghToken != null) ...{
+        // Fall back to env-var git config only when there's no .netrc to
+        // mount. The token is visible in `ps aux` via docker's -e flag,
+        // which is acceptable on isolated CI runners.
+        if (!hasNetrc && ghToken != null) ...{
           'GIT_CONFIG_COUNT': '1',
           'GIT_CONFIG_KEY_0':
               'url.https://x-access-token:$ghToken@github.com/.insteadOf',
