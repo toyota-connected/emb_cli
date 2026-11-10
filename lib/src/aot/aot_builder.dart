@@ -285,7 +285,6 @@ class AotBuilder {
       ]);
     }
 
-    final newScheme = File(_frontendServerAot).existsSync();
     final targetArch = arch ?? host.machineArch;
     final gen = genSnapshot ?? await _resolveGenSnapshot(targetArch, modes);
 
@@ -370,6 +369,12 @@ class AotBuilder {
       }
 
       onStep?.call('[$mode] kernel snapshot');
+      // Checked here (not before the loop) because `flutter build bundle`
+      // above may have just downloaded the Dart SDK for the first time — in a
+      // fresh container the snapshot doesn't exist until that download
+      // finishes. Checking before the loop returns false and falls back to the
+      // old engine-artifact path, which modern Flutter no longer ships.
+      final newScheme = File(_frontendServerAot).existsSync();
       final kernel = await _kernelSnapshot(
         app: app,
         appName: appName,
@@ -655,26 +660,59 @@ class AotBuilder {
 
     final commit = workspace.engineCommit();
     if (commit != null) {
-      for (final mode in [...modes, 'release', 'profile', 'debug']) {
-        final dir = Directory(
-          p.join(
-            workspace.platformDir('flutter-engine').path,
-            commit,
-            'engine-sdk-$mode-$targetToken',
-          ),
-        );
-        if (!dir.existsSync()) continue;
-        for (final e in dir.listSync(recursive: true, followLinks: false)) {
-          if (e is! File || p.basename(e.path) != 'gen_snapshot') continue;
-          // cross → the clang_<host> simulator; native → the plain bin/ build.
-          if (cross == e.path.contains('${p.separator}clang_')) return e.path;
+      final found = _scanEngineGenSnapshot(
+        commit, targetToken, cross, modes,
+      );
+      if (found != null) return found;
+
+      // The engine SDK may be in the shared cache but not materialized into
+      // this workspace — common in container re-entry where a prior container
+      // cached the download but workspace symlinks were ephemeral. Fetching
+      // re-materializes from the store (no re-download when cached) or
+      // downloads when absent.
+      final engine = EngineArtifacts(workspace);
+      try {
+        for (final mode in modes) {
+          await engine.fetch(runtime: mode, arch: arch, commit: commit);
         }
+      } finally {
+        engine.close();
       }
+      final restored = _scanEngineGenSnapshot(
+        commit, targetToken, cross, modes,
+      );
+      if (restored != null) return restored;
     }
 
     if (!cross) {
       final hostGen = p.join(_hostEngine.path, 'gen_snapshot');
       if (File(hostGen).existsSync()) return hostGen;
+    }
+    return null;
+  }
+
+  /// Scan workspace engine-sdk directories for a gen_snapshot binary matching
+  /// [cross] (clang_ variant) or native (plain bin/).
+  String? _scanEngineGenSnapshot(
+    String commit,
+    String targetToken,
+    bool cross,
+    List<String> modes,
+  ) {
+    for (final mode in [...modes, 'release', 'profile', 'debug']) {
+      final dir = Directory(
+        p.join(
+          workspace.platformDir('flutter-engine').path,
+          commit,
+          'engine-sdk-$mode-$targetToken',
+        ),
+      );
+      if (!dir.existsSync()) continue;
+      for (final e in dir.listSync(recursive: true, followLinks: false)) {
+        if (e is! File || p.basename(e.path) != 'gen_snapshot') continue;
+        // cross → the clang_<host> simulator; native → the plain bin/ build.
+        if (cross == e.path.contains('${p.separator}clang_')) return e.path;
+      }
     }
     return null;
   }
