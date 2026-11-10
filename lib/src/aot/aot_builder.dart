@@ -286,9 +286,11 @@ class AotBuilder {
     }
 
     final targetArch = arch ?? host.machineArch;
-    final gen = genSnapshot ?? await _resolveGenSnapshot(targetArch, modes);
+    final gen = genSnapshot ??
+        await _resolveGenSnapshot(targetArch, modes, onStep: onStep);
 
     final results = <AotModeResult>[];
+    bool? newScheme;
     for (final mode in modes) {
       // gen_snapshot leaves the DWARF unobfuscated when it is not stripping,
       // so this pair yields an image that still carries the identifiers
@@ -369,12 +371,11 @@ class AotBuilder {
       }
 
       onStep?.call('[$mode] kernel snapshot');
-      // Checked here (not before the loop) because `flutter build bundle`
-      // above may have just downloaded the Dart SDK for the first time — in a
+      // Checked after the first `flutter build bundle` (not before the loop)
+      // because that step may download the Dart SDK for the first time — in a
       // fresh container the snapshot doesn't exist until that download
-      // finishes. Checking before the loop returns false and falls back to the
-      // old engine-artifact path, which modern Flutter no longer ships.
-      final newScheme = File(_frontendServerAot).existsSync();
+      // finishes. Cached after the first check: it won't change between modes.
+      newScheme ??= File(_frontendServerAot).existsSync();
       final kernel = await _kernelSnapshot(
         app: app,
         appName: appName,
@@ -653,7 +654,11 @@ class AotBuilder {
   ///
   /// No implicit `$GEN_SNAPSHOT` (it caused stale/arch-mismatched picks); use
   /// the explicit `--gen-snapshot` override for that.
-  Future<String?> _resolveGenSnapshot(String arch, List<String> modes) async {
+  Future<String?> _resolveGenSnapshot(
+    String arch,
+    List<String> modes, {
+    void Function(String)? onStep,
+  }) async {
     final targetToken = EngineArtifacts.engineArch(arch);
     final hostToken = EngineArtifacts.engineArch(host.machineArch);
     final cross = targetToken != hostToken;
@@ -670,6 +675,7 @@ class AotBuilder {
       // cached the download but workspace symlinks were ephemeral. Fetching
       // re-materializes from the store (no re-download when cached) or
       // downloads when absent.
+      onStep?.call('Fetching engine SDK for gen_snapshot');
       final engine = EngineArtifacts(workspace);
       try {
         for (final mode in modes) {
@@ -699,7 +705,7 @@ class AotBuilder {
     bool cross,
     List<String> modes,
   ) {
-    for (final mode in [...modes, 'release', 'profile', 'debug']) {
+    for (final mode in {...modes, 'release', 'profile', 'debug'}) {
       final dir = Directory(
         p.join(
           workspace.platformDir('flutter-engine').path,
