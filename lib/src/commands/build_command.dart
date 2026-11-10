@@ -157,17 +157,24 @@ class BuildCommand extends Command<int> {
         for (final a in args['arch'] as List<String>) ...['--arch', a],
         for (final m in args['mode'] as List<String>) ...['--mode', m],
         if (args['no-build'] as bool) '--no-build',
+        if (args.wasParsed('obfuscate') && args['obfuscate'] as bool)
+          '--obfuscate',
+        if (args.wasParsed('obfuscate') && args['obfuscate'] as bool == false)
+          '--no-obfuscate',
+        if (args['strip'] as bool == false) '--no-strip',
       ],
       onOutput: _logger.info,
       onError: _logger.err,
       onRouting: _logger.info,
     );
     if (routed != null) {
-      if (routed != 0) {
+      if (routed == 127) {
         _logger.err(
-          'Container exited with code $routed. '
-          'Is Docker running? Try: docker info',
+          'Container tool not found. '
+          'Is Docker installed and running? Try: docker info',
         );
+      } else if (routed != 0) {
+        _logger.err('Container exited with code $routed.');
       }
       return routed;
     }

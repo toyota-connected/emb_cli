@@ -142,6 +142,11 @@ class BundleCommand extends Command<int> {
         '--arch',
         arch,
         if (args['build'] as bool) '--build',
+        if (args.wasParsed('obfuscate') && args['obfuscate'] as bool)
+          '--obfuscate',
+        if (args.wasParsed('obfuscate') && args['obfuscate'] as bool == false)
+          '--no-obfuscate',
+        if (args['strip'] as bool == false) '--no-strip',
         if (explicitOutput != null) ...[
           '--output',
           Directory(explicitOutput).absolute.path,
@@ -152,11 +157,13 @@ class BundleCommand extends Command<int> {
       onRouting: _logger.info,
     );
     if (routed != null) {
-      if (routed != 0) {
+      if (routed == 127) {
         _logger.err(
-          'Container exited with code $routed. '
-          'Is Docker running? Try: docker info',
+          'Container tool not found. '
+          'Is Docker installed and running? Try: docker info',
         );
+      } else if (routed != 0) {
+        _logger.err('Container exited with code $routed.');
       }
       return routed;
     }

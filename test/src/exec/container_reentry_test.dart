@@ -17,7 +17,7 @@ HostInfo _host(HostOs os, String arch) => HostInfo(
 
 ContainerLauncher _fakeLauncher(void Function(String, List<String>) capture) =>
     ContainerLauncher(
-      run: (exe, args, {environment}) async {
+      run: (exe, args) async {
         capture(exe, args);
         return ProcessResult(0, 0, '', '');
       },
@@ -43,7 +43,7 @@ void main() {
       host: _host(HostOs.macos, 'arm64'),
       launcher: ContainerLauncher(
         tool: 'podman',
-        run: (exe, args, {environment}) async {
+        run: (exe, args) async {
           seenTool = exe;
           seenArgs = args;
           return ProcessResult(0, 3, '', '');
@@ -167,7 +167,7 @@ void main() {
       expect(auth.env['SSH_AUTH_SOCK'], magic);
       expect(auth.mounts, hasLength(1));
       expect(auth.mounts.first.path, magic);
-      expect(auth.mounts.first.containerPath, magic);
+      expect(auth.mounts.first.containerPath, isNull);
     });
 
     test('on macOS, omits SSH when SSH_AUTH_SOCK unset', () {

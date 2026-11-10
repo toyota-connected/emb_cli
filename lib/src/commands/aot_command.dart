@@ -154,11 +154,13 @@ class AotCommand extends Command<int> {
       onRouting: _logger.info,
     );
     if (routed != null) {
-      if (routed != 0) {
+      if (routed == 127) {
         _logger.err(
-          'Container exited with code $routed. '
-          'Is Docker running? Try: docker info',
+          'Container tool not found. '
+          'Is Docker installed and running? Try: docker info',
         );
+      } else if (routed != 0) {
+        _logger.err('Container exited with code $routed.');
       }
       return routed;
     }

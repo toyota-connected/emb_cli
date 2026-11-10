@@ -29,7 +29,7 @@ void main() {
       host: _mac(),
       image: 'ghcr.io/x/runtime:latest',
       launcher: ContainerLauncher(
-        run: (exe, args, {environment}) async {
+        run: (exe, args) async {
           launched = true;
           seenArgs = args;
           return ProcessResult(0, 0, '', '');

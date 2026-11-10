@@ -8,9 +8,8 @@ import 'dart:io';
 typedef ContainerRunner =
     Future<ProcessResult> Function(
       String executable,
-      List<String> args, {
-      Map<String, String>? environment,
-    });
+      List<String> args,
+    );
 
 /// A host bind-mount, exposed at the same path inside the container.
 class Mount {

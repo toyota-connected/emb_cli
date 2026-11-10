@@ -116,12 +116,7 @@ class ContainerReentry {
     String? containerSshSock;
     if (sshSock != null) {
       if (isDesktopHost) {
-        sshMounts.add(
-          const Mount(
-            _dockerDesktopSshSock,
-            containerPath: _dockerDesktopSshSock,
-          ),
-        );
+        sshMounts.add(const Mount(_dockerDesktopSshSock));
         containerSshSock = _dockerDesktopSshSock;
       } else if (File(sshSock).existsSync()) {
         sshMounts.add(Mount(sshSock));

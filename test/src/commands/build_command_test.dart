@@ -37,7 +37,7 @@ build:
       host: _mac(),
       image: 'ghcr.io/x/runtime:latest',
       launcher: ContainerLauncher(
-        run: (exe, args, {environment}) async {
+        run: (exe, args) async {
           seenArgs = args;
           return ProcessResult(0, 0, '', '');
         },
