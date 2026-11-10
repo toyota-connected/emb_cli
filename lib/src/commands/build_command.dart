@@ -144,7 +144,6 @@ class BuildCommand extends Command<int> {
     final reentry = _reentry ?? ContainerReentry(host: host);
     final routed = await reentry.maybeRun(
       forceNative: args['exec-native'] as bool,
-      workdir: workspace.root.path,
       mounts: ContainerReentry.mountsFor([
         workspace.root.path,
         pkgDir.absolute.path,
@@ -153,14 +152,25 @@ class BuildCommand extends Command<int> {
       embArgs: [
         'build',
         pkgDir.absolute.path,
-        '-w',
-        workspace.root.path,
+        // Do not pass -w: the container's $FLUTTER_WORKSPACE points at its
+        // own Linux Flutter SDK.
         for (final a in args['arch'] as List<String>) ...['--arch', a],
         for (final m in args['mode'] as List<String>) ...['--mode', m],
         if (args['no-build'] as bool) '--no-build',
       ],
+      onOutput: _logger.info,
+      onError: _logger.err,
+      onRouting: _logger.info,
     );
-    if (routed != null) return routed;
+    if (routed != null) {
+      if (routed != 0) {
+        _logger.err(
+          'Container exited with code $routed. '
+          'Is Docker running? Try: docker info',
+        );
+      }
+      return routed;
+    }
 
     _logger.info(
       styleBold.wrap(

@@ -125,7 +125,6 @@ class BundleCommand extends Command<int> {
     final reentry = _reentry ?? ContainerReentry(host: host);
     final routed = await reentry.maybeRun(
       forceNative: args['exec-native'] as bool,
-      workdir: workspace.root.path,
       mounts: ContainerReentry.mountsFor([
         workspace.root.path,
         Directory(appPath).absolute.path,
@@ -136,8 +135,8 @@ class BundleCommand extends Command<int> {
         'bundle',
         '--app-path',
         Directory(appPath).absolute.path,
-        '-w',
-        workspace.root.path,
+        // Do not pass -w: the container's $FLUTTER_WORKSPACE points at its
+        // own Linux Flutter SDK.
         '--mode',
         mode,
         '--arch',
@@ -148,8 +147,19 @@ class BundleCommand extends Command<int> {
           Directory(explicitOutput).absolute.path,
         ],
       ],
+      onOutput: _logger.info,
+      onError: _logger.err,
+      onRouting: _logger.info,
     );
-    if (routed != null) return routed;
+    if (routed != null) {
+      if (routed != 0) {
+        _logger.err(
+          'Container exited with code $routed. '
+          'Is Docker running? Try: docker info',
+        );
+      }
+      return routed;
+    }
 
     final output =
         explicitOutput ?? defaultBundleOutput(workspace, appPath, mode, arch);
