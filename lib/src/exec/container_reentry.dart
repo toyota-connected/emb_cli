@@ -67,40 +67,84 @@ class ContainerReentry {
     onRouting?.call(
       'Routing through container (${env.reason}): ${env.image}',
     );
-    // Forward credentials so git/pub inside the container can reach private
-    // repos. SSH agent for git+ssh deps; GH_TOKEN / GITHUB_TOKEN for HTTPS
-    // (via git's env-based config to rewrite URLs with the token embedded).
-    final sshSock = Platform.environment['SSH_AUTH_SOCK'];
-    final hostEnv = Platform.environment;
-    final ghToken = hostEnv['GH_TOKEN'] ?? hostEnv['GITHUB_TOKEN'];
-    final authMounts = <Mount>[
-      if (sshSock != null && File(sshSock).existsSync()) Mount(sshSock),
-    ];
-    // Forward verbosity so the inner emb streams Flutter/toolchain output.
-    final verbosityIndex = embVerbosity.index;
-    final authEnv = <String, String>{
-      if (verbosityIndex > 0) 'EMB_VERBOSITY': '$verbosityIndex',
-      if (sshSock != null) 'SSH_AUTH_SOCK': sshSock,
-      // Inject git config via environment so HTTPS clones of private GitHub
-      // repos embed the token. GIT_CONFIG_COUNT + KEY/VALUE pairs are the
-      // env-only equivalent of `git config url.<token-url>.insteadOf <url>`.
-      if (ghToken != null) ...{
-        'GIT_CONFIG_COUNT': '1',
-        'GIT_CONFIG_KEY_0':
-            'url.https://x-access-token:$ghToken@github.com/.insteadOf',
-        'GIT_CONFIG_VALUE_0': 'https://github.com/',
-      },
-    };
-
+    final auth = containerAuthContext();
     final launcher = _launcher ?? ContainerLauncher(tool: _tool);
     return launcher.run(
       image: env.image,
       embArgs: embArgs,
-      mounts: [...mounts, ...authMounts],
+      mounts: [...mounts, ...auth.mounts],
       workdir: workdir,
-      env: authEnv,
+      env: auth.env,
       onOutput: onOutput,
       onError: onError,
+    );
+  }
+
+  /// Docker Desktop's built-in SSH agent socket, available inside the Linux
+  /// VM on macOS/Windows. Bind-mounting the host's `$SSH_AUTH_SOCK` directly
+  /// fails because Docker Desktop can't reach host-side Unix sockets.
+  static const _dockerDesktopSshSock =
+      '/run/host-services/ssh-auth.sock';
+
+  /// Credentials and verbosity to forward into any container re-entry.
+  ///
+  /// Extracted so both [maybeRun] and direct [ContainerLauncher.run] callers
+  /// (e.g. `engine_command`) share the same forwarding logic. Reads
+  /// `SSH_AUTH_SOCK`, `GH_TOKEN`/`GITHUB_TOKEN`, and [embVerbosity] from
+  /// the host environment.
+  ///
+  /// On macOS (and Windows), the host's SSH agent socket can't be
+  /// bind-mounted directly — Docker Desktop exposes it at a magic path
+  /// inside the VM instead. When `SSH_AUTH_SOCK` is set on a non-Linux
+  /// host, we mount that magic path and point the container's
+  /// `SSH_AUTH_SOCK` at it.
+  static ContainerAuthContext containerAuthContext({
+    Map<String, String>? hostEnv,
+    bool? isMacOrWin,
+  }) {
+    final env = hostEnv ?? Platform.environment;
+    final sshSock = env['SSH_AUTH_SOCK'];
+    final isDesktopHost =
+        isMacOrWin ?? (Platform.isMacOS || Platform.isWindows);
+    final ghToken = env['GH_TOKEN'] ?? env['GITHUB_TOKEN'];
+    final verbosityIndex = embVerbosity.index;
+
+    // SSH agent forwarding: on Linux, bind-mount the host socket directly.
+    // On macOS/Windows, Docker Desktop provides a VM-side socket at a
+    // well-known path — mount that instead.
+    final sshMounts = <Mount>[];
+    String? containerSshSock;
+    if (sshSock != null) {
+      if (isDesktopHost) {
+        sshMounts.add(
+          const Mount(
+            _dockerDesktopSshSock,
+            containerPath: _dockerDesktopSshSock,
+          ),
+        );
+        containerSshSock = _dockerDesktopSshSock;
+      } else if (File(sshSock).existsSync()) {
+        sshMounts.add(Mount(sshSock));
+        containerSshSock = sshSock;
+      }
+    }
+
+    return ContainerAuthContext(
+      mounts: sshMounts,
+      env: {
+        if (verbosityIndex > 0) 'EMB_VERBOSITY': '$verbosityIndex',
+        if (containerSshSock != null) 'SSH_AUTH_SOCK': containerSshSock,
+        // Inject git config via environment so HTTPS clones of private
+        // GitHub repos embed the token. GIT_CONFIG_COUNT + KEY/VALUE
+        // pairs are the env-only equivalent of
+        // `git config url.<token-url>.insteadOf <url>`.
+        if (ghToken != null) ...{
+          'GIT_CONFIG_COUNT': '1',
+          'GIT_CONFIG_KEY_0':
+              'url.https://x-access-token:$ghToken@github.com/.insteadOf',
+          'GIT_CONFIG_VALUE_0': 'https://github.com/',
+        },
+      },
     );
   }
 
@@ -116,4 +160,19 @@ class ContainerReentry {
     }
     return mounts;
   }
+}
+
+/// Mounts and environment variables for forwarding host credentials into a
+/// container (SSH agent socket, GitHub token, verbosity).
+class ContainerAuthContext {
+  const ContainerAuthContext({
+    required this.mounts,
+    required this.env,
+  });
+
+  /// Bind-mounts for credential sockets (e.g. SSH agent).
+  final List<Mount> mounts;
+
+  /// Environment variables to pass with `-e` (auth + verbosity).
+  final Map<String, String> env;
 }

@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:io';
 
 /// A container runtime invoker (`docker` / `podman`), injectable for tests.
@@ -15,12 +14,18 @@ typedef ContainerRunner =
 
 /// A host bind-mount, exposed at the same path inside the container.
 class Mount {
-  const Mount(this.path, {this.readOnly = false});
+  const Mount(this.path, {this.containerPath, this.readOnly = false});
 
   final String path;
+
+  /// Path inside the container. Defaults to [path] (same as host).
+  final String? containerPath;
   final bool readOnly;
 
-  String get spec => readOnly ? '$path:$path:ro' : '$path:$path';
+  String get spec {
+    final dst = containerPath ?? path;
+    return readOnly ? '$path:$dst:ro' : '$path:$dst';
+  }
 }
 
 /// Re-enters emb inside a glibc Linux container to run a Linux-x86_64 operation
