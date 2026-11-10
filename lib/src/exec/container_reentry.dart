@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:emb_cli/src/exec/container_launcher.dart';
 import 'package:emb_cli/src/exec/exec_env.dart';
 import 'package:emb_cli/src/host/host_info.dart';
+import 'package:emb_cli/src/verbosity.dart';
 
 /// Routes a Linux-x86_64 emb operation into a glibc Linux container when the
 /// host can't run it natively (non-Linux / non-x86_64), re-entering emb with
@@ -42,11 +43,19 @@ class ContainerReentry {
   /// Run [embArgs] in the container when routing is needed; returns the inner
   /// exit code, or null to proceed natively. [forceNative] (`--exec-native`)
   /// and being [inContainer] both short-circuit to native.
+  ///
+  /// [onOutput]/[onError] surface the container's stdout/stderr (used only in
+  /// the buffered test path; the production path inherits stdio directly).
+  /// [onRouting] is called with a human-readable reason before the container
+  /// starts, so the user sees feedback immediately.
   Future<int?> maybeRun({
     required List<String> embArgs,
     required List<Mount> mounts,
     String? workdir,
     bool forceNative = false,
+    void Function(String line)? onOutput,
+    void Function(String line)? onError,
+    void Function(String message)? onRouting,
   }) async {
     final env = resolveExecEnv(
       host,
@@ -55,12 +64,43 @@ class ContainerReentry {
       forceNative: forceNative,
     );
     if (env is! ContainerExec) return null;
+    onRouting?.call(
+      'Routing through container (${env.reason}): ${env.image}',
+    );
+    // Forward credentials so git/pub inside the container can reach private
+    // repos. SSH agent for git+ssh deps; GH_TOKEN / GITHUB_TOKEN for HTTPS
+    // (via git's env-based config to rewrite URLs with the token embedded).
+    final sshSock = Platform.environment['SSH_AUTH_SOCK'];
+    final hostEnv = Platform.environment;
+    final ghToken = hostEnv['GH_TOKEN'] ?? hostEnv['GITHUB_TOKEN'];
+    final authMounts = <Mount>[
+      if (sshSock != null && File(sshSock).existsSync()) Mount(sshSock),
+    ];
+    // Forward verbosity so the inner emb streams Flutter/toolchain output.
+    final verbosityIndex = embVerbosity.index;
+    final authEnv = <String, String>{
+      if (verbosityIndex > 0) 'EMB_VERBOSITY': '$verbosityIndex',
+      if (sshSock != null) 'SSH_AUTH_SOCK': sshSock,
+      // Inject git config via environment so HTTPS clones of private GitHub
+      // repos embed the token. GIT_CONFIG_COUNT + KEY/VALUE pairs are the
+      // env-only equivalent of `git config url.<token-url>.insteadOf <url>`.
+      if (ghToken != null) ...{
+        'GIT_CONFIG_COUNT': '1',
+        'GIT_CONFIG_KEY_0':
+            'url.https://x-access-token:$ghToken@github.com/.insteadOf',
+        'GIT_CONFIG_VALUE_0': 'https://github.com/',
+      },
+    };
+
     final launcher = _launcher ?? ContainerLauncher(tool: _tool);
     return launcher.run(
       image: env.image,
       embArgs: embArgs,
-      mounts: mounts,
+      mounts: [...mounts, ...authMounts],
       workdir: workdir,
+      env: authEnv,
+      onOutput: onOutput,
+      onError: onError,
     );
   }
 
