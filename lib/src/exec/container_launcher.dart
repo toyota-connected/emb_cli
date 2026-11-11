@@ -94,11 +94,7 @@ class ContainerLauncher {
 
     // Test path: injected runner, buffered output.
     if (_run != null) {
-      return _runBuffered(
-        args,
-        onOutput: onOutput,
-        onError: onError,
-      );
+      return _runBuffered(args, onOutput: onOutput, onError: onError);
     }
 
     // Production path: inherited stdio, real-time output.
