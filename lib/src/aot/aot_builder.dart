@@ -286,7 +286,8 @@ class AotBuilder {
     }
 
     final targetArch = arch ?? host.machineArch;
-    final gen = genSnapshot ??
+    final gen =
+        genSnapshot ??
         await _resolveGenSnapshot(targetArch, modes, onStep: onStep);
 
     final results = <AotModeResult>[];
@@ -665,9 +666,7 @@ class AotBuilder {
 
     final commit = workspace.engineCommit();
     if (commit != null) {
-      final found = _scanEngineGenSnapshot(
-        commit, targetToken, cross, modes,
-      );
+      final found = _scanEngineGenSnapshot(commit, targetToken, cross, modes);
       if (found != null) return found;
 
       // The engine SDK may be in the shared cache but not materialized into
@@ -685,7 +684,10 @@ class AotBuilder {
         engine.close();
       }
       final restored = _scanEngineGenSnapshot(
-        commit, targetToken, cross, modes,
+        commit,
+        targetToken,
+        cross,
+        modes,
       );
       if (restored != null) return restored;
     }

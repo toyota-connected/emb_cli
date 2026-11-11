@@ -7,10 +7,7 @@ import 'dart:io';
 /// streams in real-time. Tests inject a [ContainerRunner] that returns a
 /// [ProcessResult] synchronously.
 typedef ContainerRunner =
-    Future<ProcessResult> Function(
-      String executable,
-      List<String> args,
-    );
+    Future<ProcessResult> Function(String executable, List<String> args);
 
 /// A host bind-mount, exposed at the same path inside the container.
 class Mount {
@@ -94,11 +91,7 @@ class ContainerLauncher {
 
     // Test path: injected runner, buffered output.
     if (_run != null) {
-      return _runBuffered(
-        args,
-        onOutput: onOutput,
-        onError: onError,
-      );
+      return _runBuffered(args, onOutput: onOutput, onError: onError);
     }
 
     // Production path: pipe through callbacks when provided so callers get
