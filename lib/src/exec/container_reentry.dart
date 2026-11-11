@@ -64,9 +64,7 @@ class ContainerReentry {
       forceNative: forceNative,
     );
     if (env is! ContainerExec) return null;
-    onRouting?.call(
-      'Routing through container (${env.reason}): ${env.image}',
-    );
+    onRouting?.call('Routing through container (${env.reason}): ${env.image}');
     final auth = containerAuthContext();
     final launcher = _launcher ?? ContainerLauncher(tool: _tool);
     return launcher.run(
@@ -83,8 +81,7 @@ class ContainerReentry {
   /// Docker Desktop's built-in SSH agent socket, available inside the Linux
   /// VM on macOS/Windows. Bind-mounting the host's `$SSH_AUTH_SOCK` directly
   /// fails because Docker Desktop can't reach host-side Unix sockets.
-  static const _dockerDesktopSshSock =
-      '/run/host-services/ssh-auth.sock';
+  static const _dockerDesktopSshSock = '/run/host-services/ssh-auth.sock';
 
   /// Credentials and verbosity to forward into any container re-entry.
   ///
@@ -172,10 +169,7 @@ class ContainerReentry {
 /// Mounts and environment variables for forwarding host credentials into a
 /// container (SSH agent socket, GitHub token, verbosity).
 class ContainerAuthContext {
-  const ContainerAuthContext({
-    required this.mounts,
-    required this.env,
-  });
+  const ContainerAuthContext({required this.mounts, required this.env});
 
   /// Bind-mounts for credential sockets (e.g. SSH agent).
   final List<Mount> mounts;
