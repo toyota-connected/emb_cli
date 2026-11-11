@@ -24,6 +24,20 @@ the same everywhere. Use an absolute path, or accept the per-clone key.
 An earlier version of this entry claimed no key moved. That was wrong: it
 conflated how the provider resolves the value with how the key hashes it.
 
+**Container re-entry.**
+
+- fix(exec): Forward host credentials (SSH agent, `~/.netrc`, `GH_TOKEN`) into
+  Docker/Podman containers so authenticated artifact fetches work on container
+  re-entry. On macOS/Windows with Docker Desktop, the SSH agent socket is
+  forwarded via Docker Desktop's VM-side socket.
+
+- fix(exec): Use Docker Desktop's `/run/host-services/ssh-auth.sock` only when
+  running Docker; Podman on macOS falls back to direct socket bind-mount.
+
+- feat(exec): Set `EMB_FORWARD_TOKEN=0` to suppress forwarding `GH_TOKEN` /
+  `GITHUB_TOKEN` via Docker `-e` flags (visible in `ps aux` on shared
+  workstations). Prefer `~/.netrc` when possible.
+
 **Cross.**
 
 - feat(cross): modules are now built during `--prepare` (staged into

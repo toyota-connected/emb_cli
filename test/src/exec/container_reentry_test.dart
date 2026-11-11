@@ -133,6 +133,14 @@ void main() {
       expect(auth.env, isNot(contains('GIT_CONFIG_COUNT')));
     });
 
+    test('EMB_FORWARD_TOKEN=0 suppresses git config env vars', () {
+      final auth = ContainerReentry.containerAuthContext(
+        hostEnv: {'GH_TOKEN': 'ghp_secret', 'EMB_FORWARD_TOKEN': '0'},
+        isMacOrWin: false,
+      );
+      expect(auth.env, isNot(contains('GIT_CONFIG_COUNT')));
+    });
+
     test('on Linux, omits SSH when socket does not exist', () {
       final auth = ContainerReentry.containerAuthContext(
         hostEnv: {'SSH_AUTH_SOCK': '/tmp/no-such-socket-ever'},
@@ -158,7 +166,7 @@ void main() {
       expect(auth.mounts.first.containerPath, isNull);
     });
 
-    test('on macOS, uses Docker Desktop magic socket path', () {
+    test('on macOS with docker, uses Docker Desktop magic socket path', () {
       final auth = ContainerReentry.containerAuthContext(
         hostEnv: {'SSH_AUTH_SOCK': '/some/mac/agent.sock'},
         isMacOrWin: true,
@@ -168,6 +176,23 @@ void main() {
       expect(auth.mounts, hasLength(1));
       expect(auth.mounts.first.path, magic);
       expect(auth.mounts.first.containerPath, magic);
+    });
+
+    test('on macOS with podman, falls back to direct socket mount', () {
+      final tmp = File(
+        '${Directory.systemTemp.path}/emb-test-podman-ssh-${DateTime.now().millisecondsSinceEpoch}',
+      )..writeAsStringSync('');
+      addTearDown(tmp.deleteSync);
+
+      final auth = ContainerReentry.containerAuthContext(
+        hostEnv: {'SSH_AUTH_SOCK': tmp.path},
+        isMacOrWin: true,
+        tool: 'podman',
+      );
+      expect(auth.env['SSH_AUTH_SOCK'], tmp.path);
+      expect(auth.mounts, hasLength(1));
+      expect(auth.mounts.first.path, tmp.path);
+      expect(auth.mounts.first.containerPath, isNull);
     });
 
     test('on macOS, omits SSH when SSH_AUTH_SOCK unset', () {
