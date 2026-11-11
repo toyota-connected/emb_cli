@@ -217,6 +217,7 @@
     "libunwind",
     "softfp",
     "libmymodule",
-    "myapp"
+    "myapp",
+    "netrc"
   ]
 }
