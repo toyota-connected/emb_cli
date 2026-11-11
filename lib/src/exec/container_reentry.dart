@@ -140,7 +140,8 @@ class ContainerReentry {
     return ContainerAuthContext(
       mounts: [...sshMounts, ...credMounts],
       env: {
-        if (verbosityIndex > 0) 'EMB_VERBOSITY': '$verbosityIndex',
+        if (verbosityIndex > Verbosity.normal.index)
+          'EMB_VERBOSITY': '$verbosityIndex',
         if (containerSshSock != null) 'SSH_AUTH_SOCK': containerSshSock,
         // Fall back to env-var git config only when there's no .netrc to
         // mount. The token is visible in `ps aux` via docker's -e flag,
