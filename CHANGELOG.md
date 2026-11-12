@@ -1,8 +1,18 @@
 # Unreleased
 
-Nothing yet. New entries go here, not under the heading below. The pubspec
-reads `0.6.0-dev`, and nobody can tell whether work recorded under a published
+New entries go here, not under the heading below. The pubspec reads
+`0.6.0-dev`, and nobody can tell whether work recorded under a published
 version shipped.
+
+- fix(flatpak): `vendor_libs` copied the build host's copy of nearly every
+  library the runtime ships into the bundle. It indexed only the runtime's
+  regular files, and a soname is nearly always a symlink to the versioned
+  file (`libEGL.so.1 -> libEGL.so.1.0.0`), so those libraries counted as
+  missing. The copies come first on the launcher's `LD_LIBRARY_PATH` and
+  shadow the runtime's: a bundle for `org.freedesktop.Platform//25.08` carried
+  the host's libEGL, libGLESv2, libgbm and libwayland-client, and aborted on a
+  Raspberry Pi 5 with `Failed to choose EGL config`. Soname links now count as
+  provided; that bundle vendors 22 libraries instead of 72.
 
 # 0.5.0
 

@@ -245,9 +245,10 @@ class FlatpakLibVendor {
         for (final e in d.listSync(recursive: true, followLinks: false)) {
           final base = p.basename(e.path);
           // First wins: lib64 is commonly a symlink to lib, and either copy
-          // answers the same question.
-          if (e is File && _soName.hasMatch(base)) {
-            names.putIfAbsent(base, () => e);
+          // answers the same question. Sonames are usually symlinks
+          // (libEGL.so.1 -> libEGL.so.1.0.0), so count links too.
+          if ((e is File || e is Link) && _soName.hasMatch(base)) {
+            names.putIfAbsent(base, () => File(e.path));
           }
         }
       } on FileSystemException {

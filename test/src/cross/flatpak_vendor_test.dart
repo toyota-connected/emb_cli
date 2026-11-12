@@ -91,6 +91,46 @@ void main() {
     expect(File(p.join(bundle.path, 'lib', 'libc.so.6')).existsSync(), isFalse);
   });
 
+  test(
+    'a soname that is a symlink in the runtime counts as provided',
+    () async {
+      final bundle = dir('runnable');
+      elf('runnable/homescreen');
+      Directory(p.join(bundle.path, 'lib')).createSync();
+
+      // A real runtime ships the versioned file and a soname link beside it:
+      // libEGL.so.1 -> libEGL.so.1.0.0. DT_NEEDED asks for the link's name.
+      elf('runtime/files/lib/libEGL.so.1.0.0');
+      Link(
+        p.join(tmp.path, 'runtime/files/lib/libEGL.so.1'),
+      ).createSync('libEGL.so.1.0.0');
+      // The sysroot has its own, as a build host does.
+      elf('sysroot/usr/lib/aarch64-linux-gnu/libEGL.so.1');
+
+      final report =
+          await FlatpakLibVendor(
+            readelf: 'readelf',
+            triple: triple,
+            runProcess: readelfReturning({
+              'homescreen': ['libEGL.so.1'],
+            }),
+          ).vendor(
+            bundleDir: bundle,
+            command: 'homescreen',
+            runtimeFiles: Directory(p.join(tmp.path, 'runtime/files')),
+            searchPaths: [Directory(p.join(tmp.path, 'sysroot/usr/lib'))],
+          );
+
+      expect(report.provided, ['libEGL.so.1']);
+      expect(report.staged, isEmpty);
+      // A host copy in the bundle would shadow the runtime's.
+      expect(
+        File(p.join(bundle.path, 'lib', 'libEGL.so.1')).existsSync(),
+        isFalse,
+      );
+    },
+  );
+
   test('follows a vendored library into its own dependencies', () async {
     final bundle = dir('runnable');
     elf('runnable/homescreen');
