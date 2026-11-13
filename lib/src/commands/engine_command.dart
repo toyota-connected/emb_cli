@@ -12,6 +12,7 @@ import 'package:emb_cli/src/exec/container_launcher.dart';
 import 'package:emb_cli/src/exec/container_reentry.dart';
 import 'package:emb_cli/src/exec/exec_env.dart';
 import 'package:emb_cli/src/host/host_info.dart';
+import 'package:emb_cli/src/step_reporter.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
 import 'package:mason_logger/mason_logger.dart';
 import 'package:path/path.dart' as p;
@@ -190,7 +191,8 @@ class EngineCommand extends Command<int> {
           continue;
         }
 
-        final progress = _logger.progress('Engine $mode');
+        final steps = StepReporter(_logger);
+        final step = steps.start('Engine $mode');
         final result = await engine.fetch(
           runtime: mode,
           arch: arch,
@@ -199,9 +201,9 @@ class EngineCommand extends Command<int> {
         );
         switch (result.status) {
           case EngineFetchStatus.fetched:
-            progress.complete('Engine $mode → ${result.bundleDir}');
+            step.complete('Engine $mode → ${result.bundleDir}');
           case EngineFetchStatus.upToDate:
-            progress.complete('Engine $mode already up to date');
+            step.complete('Engine $mode already up to date');
           case EngineFetchStatus.unavailable:
             final built =
                 buildEngine &&
@@ -211,7 +213,7 @@ class EngineCommand extends Command<int> {
                   commit: commit,
                   arch: arch,
                   mode: mode,
-                  progress: progress,
+                  step: step,
                   verifyAbi: verifyAbi,
                   inContainer: inContainer,
                   offline: offline,
@@ -220,14 +222,14 @@ class EngineCommand extends Command<int> {
                 );
             if (!built) {
               if (!buildEngine) {
-                progress.fail(
+                step.fail(
                   'Engine $mode: no prebuilt — source build required',
                 );
               }
               anyBuildNeeded = true;
             }
           case EngineFetchStatus.failed:
-            progress.fail('Engine $mode: ${result.message}');
+            step.fail('Engine $mode: ${result.message}');
             anyFailed = true;
         }
       }
@@ -252,14 +254,14 @@ class EngineCommand extends Command<int> {
   }
 
   /// Attempt a source build for one [mode]. Returns true when the artifact is
-  /// now present (built or cached); completes/fails [progress] accordingly.
+  /// now present (built or cached); completes/fails [step] accordingly.
   Future<bool> _tryBuild({
     required HostInfo host,
     required Workspace workspace,
     required String commit,
     required String arch,
     required String mode,
-    required Progress progress,
+    required StepHandle step,
     required bool verifyAbi,
     required bool inContainer,
     required bool offline,
@@ -278,7 +280,7 @@ class EngineCommand extends Command<int> {
         commit: commit,
         arch: arch,
         mode: mode,
-        progress: progress,
+        step: step,
         offline: offline,
         strict: strict,
         profile: profile,
@@ -296,7 +298,7 @@ class EngineCommand extends Command<int> {
     );
     switch (result.status) {
       case EngineBuildStatus.cached:
-        progress.complete(
+        step.complete(
           'Engine $mode (cached build) → ${result.storeRoot?.path}',
         );
         return true;
@@ -304,20 +306,20 @@ class EngineCommand extends Command<int> {
         if (verifyAbi && result.storeRoot != null) {
           final violations = await _verifyAbi(result.storeRoot!, arch, profile);
           if (violations.isNotEmpty) {
-            progress.fail('Engine $mode: ABI gate failed');
+            step.fail('Engine $mode: ABI gate failed');
             for (final v in violations) {
               _logger.err(' $v');
             }
             return false;
           }
         }
-        progress.complete(
+        step.complete(
           'Engine $mode built from source → ${result.storeRoot?.path}',
         );
         return true;
       case EngineBuildStatus.unsupported:
       case EngineBuildStatus.failed:
-        progress.fail('Engine $mode: ${result.message ?? "build failed"}');
+        step.fail('Engine $mode: ${result.message ?? "build failed"}');
         return false;
     }
   }
@@ -330,16 +332,18 @@ class EngineCommand extends Command<int> {
     required String commit,
     required String arch,
     required String mode,
-    required Progress progress,
+    required StepHandle step,
     required bool offline,
     required bool strict,
     required ToolchainProfile profile,
   }) async {
-    progress.update('Engine $mode: building in ${env.image} (${env.reason})');
+    step.update('Engine $mode: building in ${env.image} (${env.reason})');
     final cache = ensureCacheDir();
     final tool = _containerTool();
     final auth = ContainerReentry.containerAuthContext(tool: tool);
     final launcher = _containerLauncher ?? ContainerLauncher(tool: tool);
+    // Container output streams directly via inherited stdio; don't pass
+    // onOutput/onError (the production runner returns empty strings).
     final code = await launcher.run(
       image: env.image,
       embArgs: [
@@ -355,20 +359,19 @@ class EngineCommand extends Command<int> {
         profile.libc.token,
         if (profile.sysrootId != null) ...['--sysroot-id', profile.sysrootId!],
         if (strict) '--offline-strict' else if (offline) '--offline',
-        '-w',
-        workspace.root.path,
+        // Do not pass -w: the builder image sets FLUTTER_WORKSPACE=/emb.
+        // Overriding it with the host workspace would resolve macOS binaries
+        // inside the Linux container.
       ],
       mounts: [Mount(workspace.root.path), Mount(cache.path), ...auth.mounts],
       workdir: workspace.root.path,
       env: auth.env,
-      onOutput: _logger.info,
-      onError: _logger.err,
     );
     if (code == 0) {
-      progress.complete('Engine $mode built in ${env.image}');
+      step.complete('Engine $mode built in ${env.image}');
       return true;
     }
-    progress.fail('Engine $mode: container build failed (exit $code)');
+    step.fail('Engine $mode: container build failed (exit $code)');
     return false;
   }
 

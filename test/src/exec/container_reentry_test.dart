@@ -62,6 +62,60 @@ void main() {
     expect(seenArgs!.last, '--exec-native');
   });
 
+  test('maybeRun calls onError for exit 127 (tool not found)', () async {
+    String? errorMsg;
+    final r = ContainerReentry(
+      host: _host(HostOs.macos, 'arm64'),
+      launcher: ContainerLauncher(
+        run: (exe, args) async => ProcessResult(0, 127, '', ''),
+      ),
+      image: 'img',
+    );
+    final code = await r.maybeRun(
+      embArgs: const ['aot'],
+      mounts: const [],
+      onError: (msg) => errorMsg = msg,
+    );
+    expect(code, 127);
+    expect(errorMsg, contains('Container tool not found'));
+  });
+
+  test('maybeRun calls onError for non-zero exit', () async {
+    String? errorMsg;
+    final r = ContainerReentry(
+      host: _host(HostOs.macos, 'arm64'),
+      launcher: ContainerLauncher(
+        run: (exe, args) async => ProcessResult(0, 42, '', ''),
+      ),
+      image: 'img',
+    );
+    final code = await r.maybeRun(
+      embArgs: const ['aot'],
+      mounts: const [],
+      onError: (msg) => errorMsg = msg,
+    );
+    expect(code, 42);
+    expect(errorMsg, contains('42'));
+  });
+
+  test('maybeRun does not call onError for exit 0', () async {
+    String? errorMsg;
+    final r = ContainerReentry(
+      host: _host(HostOs.macos, 'arm64'),
+      launcher: ContainerLauncher(
+        run: (exe, args) async => ProcessResult(0, 0, '', ''),
+      ),
+      image: 'img',
+    );
+    final code = await r.maybeRun(
+      embArgs: const ['aot'],
+      mounts: const [],
+      onError: (msg) => errorMsg = msg,
+    );
+    expect(code, 0);
+    expect(errorMsg, isNull);
+  });
+
   test('forceNative and inContainer short-circuit to native', () async {
     final mac = ContainerReentry(
       host: _host(HostOs.macos, 'arm64'),

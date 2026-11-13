@@ -56,5 +56,55 @@ build:
     expect(seenArgs, contains(pkg.absolute.path));
     expect(seenArgs!.first, 'run'); // docker/podman argv
     expect(seenArgs!.last, '--exec-native');
+    // Must NOT forward -w: the container's $FLUTTER_WORKSPACE resolves the
+    // Linux Flutter SDK; the host workspace would resolve macOS binaries.
+    final embArgStart = seenArgs!.indexOf('emb');
+    final embArgs = seenArgs!.sublist(embArgStart + 1);
+    expect(embArgs, isNot(contains('-w')));
+  });
+
+  test('container re-entry forwards --no-strip when explicitly passed',
+      () async {
+    final tmp = Directory.systemTemp.createTempSync('emb-build-flags-');
+    addTearDown(() => tmp.deleteSync(recursive: true));
+    final pkg = Directory(p.join(tmp.path, 'my_app'))..createSync();
+    File(p.join(pkg.path, 'emb.yaml')).writeAsStringSync('''
+id: my_app
+type: app
+build:
+  app_path: .
+  archs: [arm64]
+  modes: [release]
+''');
+
+    List<String>? seenArgs;
+    final reentry = ContainerReentry(
+      host: _mac(),
+      image: 'ghcr.io/x/runtime:latest',
+      launcher: ContainerLauncher(
+        run: (exe, args) async {
+          seenArgs = args;
+          return ProcessResult(0, 0, '', '');
+        },
+      ),
+    );
+
+    final runner = CommandRunner<int>('emb', 'test')
+      ..addCommand(
+        BuildCommand(logger: Logger(), host: _mac(), reentry: reentry),
+      );
+
+    final code = await runner.run([
+      'build',
+      pkg.path,
+      '-w',
+      tmp.path,
+      '--no-strip',
+    ]);
+
+    expect(code, ExitCode.success.code);
+    final embArgStart = seenArgs!.indexOf('emb');
+    final embArgs = seenArgs!.sublist(embArgStart + 1);
+    expect(embArgs, contains('--no-strip'));
   });
 }
