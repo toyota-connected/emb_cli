@@ -147,23 +147,14 @@ class AotCommand extends Command<int> {
           '--obfuscate',
         if (args.wasParsed('obfuscate') && args['obfuscate'] as bool == false)
           '--no-obfuscate',
-        if (args['strip'] as bool == false) '--no-strip',
+        if (args.wasParsed('strip') && args['strip'] as bool == false)
+          '--no-strip',
       ],
-      onOutput: _logger.info,
+      // Container output streams directly via inherited stdio.
       onError: _logger.err,
       onRouting: _logger.info,
     );
-    if (routed != null) {
-      if (routed == 127) {
-        _logger.err(
-          'Container tool not found. '
-          'Is Docker installed and running? Try: docker info',
-        );
-      } else if (routed != 0) {
-        _logger.err('Container exited with code $routed.');
-      }
-      return routed;
-    }
+    if (routed != null) return routed;
 
     final builder = _builderFactory(
       workspace,

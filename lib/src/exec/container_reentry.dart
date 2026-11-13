@@ -44,16 +44,15 @@ class ContainerReentry {
   /// exit code, or null to proceed natively. [forceNative] (`--exec-native`)
   /// and being [inContainer] both short-circuit to native.
   ///
-  /// [onOutput]/[onError] surface the container's stdout/stderr (used only in
-  /// the buffered test path; the production path inherits stdio directly).
   /// [onRouting] is called with a human-readable reason before the container
-  /// starts, so the user sees feedback immediately.
+  /// starts, so the user sees feedback immediately. [onError] is called only
+  /// for the container-tool-not-found case (exit 127) and non-zero exits;
+  /// container build output streams directly via inherited stdio.
   Future<int?> maybeRun({
     required List<String> embArgs,
     required List<Mount> mounts,
     String? workdir,
     bool forceNative = false,
-    void Function(String line)? onOutput,
     void Function(String line)? onError,
     void Function(String message)? onRouting,
   }) async {
@@ -65,17 +64,24 @@ class ContainerReentry {
     );
     if (env is! ContainerExec) return null;
     onRouting?.call('Routing through container (${env.reason}): ${env.image}');
-    final auth = containerAuthContext();
+    final auth = containerAuthContext(tool: _tool);
     final launcher = _launcher ?? ContainerLauncher(tool: _tool);
-    return launcher.run(
+    final code = await launcher.run(
       image: env.image,
       embArgs: embArgs,
       mounts: [...mounts, ...auth.mounts],
       workdir: workdir,
       env: auth.env,
-      onOutput: onOutput,
-      onError: onError,
     );
+    if (code == 127) {
+      onError?.call(
+        'Container tool not found. '
+        'Is Docker installed and running? Try: docker info',
+      );
+    } else if (code != 0) {
+      onError?.call('Container exited with code $code.');
+    }
+    return code;
   }
 
   /// Docker Desktop's built-in SSH agent socket, available inside the Linux
@@ -90,14 +96,17 @@ class ContainerReentry {
   /// `SSH_AUTH_SOCK`, `GH_TOKEN`/`GITHUB_TOKEN`, and [embVerbosity] from
   /// the host environment.
   ///
-  /// On macOS (and Windows), the host's SSH agent socket can't be
-  /// bind-mounted directly — Docker Desktop exposes it at a magic path
-  /// inside the VM instead. When `SSH_AUTH_SOCK` is set on a non-Linux
-  /// host, we mount that magic path and point the container's
-  /// `SSH_AUTH_SOCK` at it.
+  /// On macOS (and Windows) with Docker Desktop, the host's SSH agent socket
+  /// can't be bind-mounted directly — Docker Desktop exposes it at a magic
+  /// path inside the VM instead. When `SSH_AUTH_SOCK` is set on a non-Linux
+  /// host using Docker, we mount that magic path and point the container's
+  /// `SSH_AUTH_SOCK` at it. Podman on macOS does not provide this path, so
+  /// we fall back to the direct bind-mount (which may or may not work
+  /// depending on the VM configuration).
   static ContainerAuthContext containerAuthContext({
     Map<String, String>? hostEnv,
     bool? isMacOrWin,
+    String tool = 'docker',
   }) {
     final env = hostEnv ?? Platform.environment;
     final sshSock = env['SSH_AUTH_SOCK'];
@@ -107,12 +116,12 @@ class ContainerReentry {
     final verbosityIndex = embVerbosity.index;
 
     // SSH agent forwarding: on Linux, bind-mount the host socket directly.
-    // On macOS/Windows, Docker Desktop provides a VM-side socket at a
-    // well-known path — mount that instead.
+    // On macOS/Windows with Docker Desktop, a VM-side socket at a well-known
+    // path replaces the host socket. Podman does not provide this path.
     final sshMounts = <Mount>[];
     String? containerSshSock;
     if (sshSock != null) {
-      if (isDesktopHost) {
+      if (isDesktopHost && tool == 'docker') {
         sshMounts.add(const Mount(_dockerDesktopSshSock));
         containerSshSock = _dockerDesktopSshSock;
       } else if (File(sshSock).existsSync()) {
@@ -129,6 +138,8 @@ class ContainerReentry {
     final netrc = home != null ? File('$home/.netrc') : null;
     final hasNetrc = netrc != null && netrc.existsSync();
     if (hasNetrc) {
+      // Assumes the container runs as root (Dockerfile.runtime sets no USER).
+      // If a non-root user is added, change to ~container_user/.netrc.
       credMounts.add(
         Mount(netrc.path, containerPath: '/root/.netrc', readOnly: true),
       );
@@ -142,8 +153,12 @@ class ContainerReentry {
         if (containerSshSock != null) 'SSH_AUTH_SOCK': containerSshSock,
         // Fall back to env-var git config only when there's no .netrc to
         // mount. The token is visible in `ps aux` via docker's -e flag,
-        // which is acceptable on isolated CI runners.
-        if (!hasNetrc && ghToken != null) ...{
+        // which is acceptable on isolated CI runners but exposes the token
+        // to other local users on a shared workstation. Prefer ~/.netrc
+        // when possible; set EMB_FORWARD_TOKEN=0 to suppress this fallback.
+        if (!hasNetrc &&
+            ghToken != null &&
+            env['EMB_FORWARD_TOKEN'] != '0') ...{
           'GIT_CONFIG_COUNT': '1',
           'GIT_CONFIG_KEY_0':
               'url.https://x-access-token:$ghToken@github.com/.insteadOf',

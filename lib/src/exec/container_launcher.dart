@@ -3,11 +3,24 @@ import 'dart:io';
 
 /// A container runtime invoker (`docker` / `podman`), injectable for tests.
 ///
-/// The default runner inherits the parent process's stdio so container output
-/// streams in real-time. Tests inject a [ContainerRunner] that returns a
-/// [ProcessResult] synchronously.
+/// Returns a [ProcessResult] with the container's exit code, stdout, and
+/// stderr. The default production runner uses [Process.start] with inherited
+/// stdio (stdout/stderr are empty strings, exit code is real). Tests inject a
+/// runner that returns buffered output.
 typedef ContainerRunner =
     Future<ProcessResult> Function(String executable, List<String> args);
+
+/// The default production runner: inherits the parent's stdio so container
+/// output (image pulls, build logs, errors) streams in real-time.
+ContainerRunner _defaultRunner(String tool) =>
+    (executable, args, {environment}) async {
+      final process = await Process.start(
+        executable,
+        args,
+        mode: ProcessStartMode.inheritStdio,
+      );
+      return ProcessResult(process.pid, await process.exitCode, '', '');
+    };
 
 /// A host bind-mount, exposed at the same path inside the container.
 class Mount {
@@ -31,10 +44,10 @@ class Mount {
 /// guard).
 class ContainerLauncher {
   ContainerLauncher({ContainerRunner? run, String tool = 'docker'})
-    : _run = run,
+    : _run = run ?? _defaultRunner(tool),
       _tool = tool;
 
-  final ContainerRunner? _run;
+  final ContainerRunner _run;
   final String _tool;
 
   /// The container runtime argv (everything after the executable):
@@ -64,10 +77,10 @@ class ContainerLauncher {
 
   /// Run [embArgs] inside [image]; returns the inner emb's exit code.
   ///
-  /// When no test [ContainerRunner] was injected, uses [Process.start] with
-  /// inherited stdio so the user sees container output in real-time (image
-  /// pulls, build logs, errors). When a runner is injected (tests), falls
-  /// back to the buffered path and routes output through [onOutput]/[onError].
+  /// The injected [ContainerRunner] (or the default inherited-stdio runner)
+  /// handles process spawning. Output from the [ProcessResult] is routed
+  /// through [onOutput]/[onError] when present and non-empty (the default
+  /// production runner returns empty strings since stdio is inherited).
   ///
   /// Returns 127 (command-not-found convention) when the container tool
   /// binary is absent, instead of letting the [ProcessException] propagate
@@ -130,7 +143,7 @@ class ContainerLauncher {
   }) async {
     final ProcessResult result;
     try {
-      result = await _run!(_tool, args);
+      result = await _run(_tool, args);
     } on ProcessException catch (e) {
       onError?.call('$_tool: ${e.message}');
       return 127;

@@ -62,6 +62,60 @@ void main() {
     expect(seenArgs!.last, '--exec-native');
   });
 
+  test('maybeRun calls onError for exit 127 (tool not found)', () async {
+    String? errorMsg;
+    final r = ContainerReentry(
+      host: _host(HostOs.macos, 'arm64'),
+      launcher: ContainerLauncher(
+        run: (exe, args) async => ProcessResult(0, 127, '', ''),
+      ),
+      image: 'img',
+    );
+    final code = await r.maybeRun(
+      embArgs: const ['aot'],
+      mounts: const [],
+      onError: (msg) => errorMsg = msg,
+    );
+    expect(code, 127);
+    expect(errorMsg, contains('Container tool not found'));
+  });
+
+  test('maybeRun calls onError for non-zero exit', () async {
+    String? errorMsg;
+    final r = ContainerReentry(
+      host: _host(HostOs.macos, 'arm64'),
+      launcher: ContainerLauncher(
+        run: (exe, args) async => ProcessResult(0, 42, '', ''),
+      ),
+      image: 'img',
+    );
+    final code = await r.maybeRun(
+      embArgs: const ['aot'],
+      mounts: const [],
+      onError: (msg) => errorMsg = msg,
+    );
+    expect(code, 42);
+    expect(errorMsg, contains('42'));
+  });
+
+  test('maybeRun does not call onError for exit 0', () async {
+    String? errorMsg;
+    final r = ContainerReentry(
+      host: _host(HostOs.macos, 'arm64'),
+      launcher: ContainerLauncher(
+        run: (exe, args) async => ProcessResult(0, 0, '', ''),
+      ),
+      image: 'img',
+    );
+    final code = await r.maybeRun(
+      embArgs: const ['aot'],
+      mounts: const [],
+      onError: (msg) => errorMsg = msg,
+    );
+    expect(code, 0);
+    expect(errorMsg, isNull);
+  });
+
   test('forceNative and inContainer short-circuit to native', () async {
     final mac = ContainerReentry(
       host: _host(HostOs.macos, 'arm64'),
@@ -133,6 +187,14 @@ void main() {
       expect(auth.env, isNot(contains('GIT_CONFIG_COUNT')));
     });
 
+    test('EMB_FORWARD_TOKEN=0 suppresses git config env vars', () {
+      final auth = ContainerReentry.containerAuthContext(
+        hostEnv: {'GH_TOKEN': 'ghp_secret', 'EMB_FORWARD_TOKEN': '0'},
+        isMacOrWin: false,
+      );
+      expect(auth.env, isNot(contains('GIT_CONFIG_COUNT')));
+    });
+
     test('on Linux, omits SSH when socket does not exist', () {
       final auth = ContainerReentry.containerAuthContext(
         hostEnv: {'SSH_AUTH_SOCK': '/tmp/no-such-socket-ever'},
@@ -158,7 +220,7 @@ void main() {
       expect(auth.mounts.first.containerPath, isNull);
     });
 
-    test('on macOS, uses Docker Desktop magic socket path', () {
+    test('on macOS with docker, uses Docker Desktop magic socket path', () {
       final auth = ContainerReentry.containerAuthContext(
         hostEnv: {'SSH_AUTH_SOCK': '/some/mac/agent.sock'},
         isMacOrWin: true,
@@ -167,6 +229,23 @@ void main() {
       expect(auth.env['SSH_AUTH_SOCK'], magic);
       expect(auth.mounts, hasLength(1));
       expect(auth.mounts.first.path, magic);
+      expect(auth.mounts.first.containerPath, isNull);
+    });
+
+    test('on macOS with podman, falls back to direct socket mount', () {
+      final tmp = File(
+        '${Directory.systemTemp.path}/emb-test-podman-ssh-${DateTime.now().millisecondsSinceEpoch}',
+      )..writeAsStringSync('');
+      addTearDown(tmp.deleteSync);
+
+      final auth = ContainerReentry.containerAuthContext(
+        hostEnv: {'SSH_AUTH_SOCK': tmp.path},
+        isMacOrWin: true,
+        tool: 'podman',
+      );
+      expect(auth.env['SSH_AUTH_SOCK'], tmp.path);
+      expect(auth.mounts, hasLength(1));
+      expect(auth.mounts.first.path, tmp.path);
       expect(auth.mounts.first.containerPath, isNull);
     });
 
