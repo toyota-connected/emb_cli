@@ -337,9 +337,9 @@ class EngineCommand extends Command<int> {
   }) async {
     progress.update('Engine $mode: building in ${env.image} (${env.reason})');
     final cache = ensureCacheDir();
-    final auth = ContainerReentry.containerAuthContext();
-    final launcher =
-        _containerLauncher ?? ContainerLauncher(tool: _containerTool());
+    final tool = _containerTool();
+    final auth = ContainerReentry.containerAuthContext(tool: tool);
+    final launcher = _containerLauncher ?? ContainerLauncher(tool: tool);
     final code = await launcher.run(
       image: env.image,
       embArgs: [
