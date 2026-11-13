@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:io';
 
 /// A container runtime invoker (`docker` / `podman`), injectable for tests.
@@ -102,45 +101,6 @@ class ContainerLauncher {
       env: env,
     );
 
-    // Test path: injected runner, buffered output.
-    if (_run != null) {
-      return _runBuffered(args, onOutput: onOutput, onError: onError);
-    }
-
-    // Production path: pipe through callbacks when provided so callers get
-    // structured output; fall back to inherited stdio for zero-overhead
-    // passthrough when no callbacks are wired.
-    try {
-      if (onOutput != null || onError != null) {
-        final process = await Process.start(_tool, args);
-        process.stdout
-            .transform(utf8.decoder)
-            .transform(const LineSplitter())
-            .listen((line) => onOutput?.call(line));
-        process.stderr
-            .transform(utf8.decoder)
-            .transform(const LineSplitter())
-            .listen((line) => onError?.call(line));
-        return await process.exitCode;
-      }
-      final process = await Process.start(
-        _tool,
-        args,
-        mode: ProcessStartMode.inheritStdio,
-      );
-      return await process.exitCode;
-    } on ProcessException catch (e) {
-      onError?.call('$_tool: ${e.message}');
-      return 127;
-    }
-  }
-
-  /// Buffered fallback used when a [ContainerRunner] is injected (tests).
-  Future<int> _runBuffered(
-    List<String> args, {
-    void Function(String line)? onOutput,
-    void Function(String line)? onError,
-  }) async {
     final ProcessResult result;
     try {
       result = await _run(_tool, args);
