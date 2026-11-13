@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:emb_cli/src/exec/container_launcher.dart';
 import 'package:emb_cli/src/exec/exec_env.dart';
 import 'package:emb_cli/src/host/host_info.dart';
+import 'package:emb_cli/src/verbosity.dart';
 
 /// Routes a Linux-x86_64 emb operation into a glibc Linux container when the
 /// host can't run it natively (non-Linux / non-x86_64), re-entering emb with
@@ -42,11 +43,19 @@ class ContainerReentry {
   /// Run [embArgs] in the container when routing is needed; returns the inner
   /// exit code, or null to proceed natively. [forceNative] (`--exec-native`)
   /// and being [inContainer] both short-circuit to native.
+  ///
+  /// [onOutput]/[onError] surface the container's stdout/stderr (used only in
+  /// the buffered test path; the production path inherits stdio directly).
+  /// [onRouting] is called with a human-readable reason before the container
+  /// starts, so the user sees feedback immediately.
   Future<int?> maybeRun({
     required List<String> embArgs,
     required List<Mount> mounts,
     String? workdir,
     bool forceNative = false,
+    void Function(String line)? onOutput,
+    void Function(String line)? onError,
+    void Function(String message)? onRouting,
   }) async {
     final env = resolveExecEnv(
       host,
@@ -55,12 +64,106 @@ class ContainerReentry {
       forceNative: forceNative,
     );
     if (env is! ContainerExec) return null;
+    onRouting?.call('Routing through container (${env.reason}): ${env.image}');
+    final auth = containerAuthContext(tool: _tool);
     final launcher = _launcher ?? ContainerLauncher(tool: _tool);
     return launcher.run(
       image: env.image,
       embArgs: embArgs,
-      mounts: mounts,
+      mounts: [...mounts, ...auth.mounts],
       workdir: workdir,
+      env: auth.env,
+      onOutput: onOutput,
+      onError: onError,
+    );
+  }
+
+  /// Docker Desktop's built-in SSH agent socket, available inside the Linux
+  /// VM on macOS/Windows. Bind-mounting the host's `$SSH_AUTH_SOCK` directly
+  /// fails because Docker Desktop can't reach host-side Unix sockets.
+  static const _dockerDesktopSshSock = '/run/host-services/ssh-auth.sock';
+
+  /// Credentials and verbosity to forward into any container re-entry.
+  ///
+  /// Extracted so both [maybeRun] and direct [ContainerLauncher.run] callers
+  /// (e.g. `engine_command`) share the same forwarding logic. Reads
+  /// `SSH_AUTH_SOCK`, `GH_TOKEN`/`GITHUB_TOKEN`, and [embVerbosity] from
+  /// the host environment.
+  ///
+  /// On macOS (and Windows) with Docker Desktop, the host's SSH agent socket
+  /// can't be bind-mounted directly — Docker Desktop exposes it at a magic
+  /// path inside the VM instead. When `SSH_AUTH_SOCK` is set on a non-Linux
+  /// host using Docker, we mount that magic path and point the container's
+  /// `SSH_AUTH_SOCK` at it. Podman on macOS does not provide this path, so
+  /// we fall back to the direct bind-mount (which may or may not work
+  /// depending on the VM configuration).
+  static ContainerAuthContext containerAuthContext({
+    Map<String, String>? hostEnv,
+    bool? isMacOrWin,
+    String tool = 'docker',
+  }) {
+    final env = hostEnv ?? Platform.environment;
+    final sshSock = env['SSH_AUTH_SOCK'];
+    final isDesktopHost =
+        isMacOrWin ?? (Platform.isMacOS || Platform.isWindows);
+    final ghToken = env['GH_TOKEN'] ?? env['GITHUB_TOKEN'];
+    final verbosityIndex = embVerbosity.index;
+
+    // SSH agent forwarding: on Linux, bind-mount the host socket directly.
+    // On macOS/Windows with Docker Desktop, a VM-side socket at a well-known
+    // path replaces the host socket. Podman does not provide this path.
+    final sshMounts = <Mount>[];
+    String? containerSshSock;
+    if (sshSock != null) {
+      if (isDesktopHost && tool == 'docker') {
+        sshMounts.add(
+          const Mount(
+            _dockerDesktopSshSock,
+            containerPath: _dockerDesktopSshSock,
+          ),
+        );
+        containerSshSock = _dockerDesktopSshSock;
+      } else if (File(sshSock).existsSync()) {
+        sshMounts.add(Mount(sshSock));
+        containerSshSock = sshSock;
+      }
+    }
+
+    // Git HTTPS auth: prefer the host's ~/.netrc (read-only mount keeps the
+    // token off the docker CLI). Fall back to GIT_CONFIG env vars when no
+    // .netrc exists but GH_TOKEN / GITHUB_TOKEN is set (typical in CI).
+    final credMounts = <Mount>[];
+    final home = env['HOME'];
+    final netrc = home != null ? File('$home/.netrc') : null;
+    final hasNetrc = netrc != null && netrc.existsSync();
+    if (hasNetrc) {
+      // Assumes the container runs as root (Dockerfile.runtime sets no USER).
+      // If a non-root user is added, change to ~container_user/.netrc.
+      credMounts.add(
+        Mount(netrc.path, containerPath: '/root/.netrc', readOnly: true),
+      );
+    }
+
+    return ContainerAuthContext(
+      mounts: [...sshMounts, ...credMounts],
+      env: {
+        if (verbosityIndex > Verbosity.normal.index)
+          'EMB_VERBOSITY': '$verbosityIndex',
+        if (containerSshSock != null) 'SSH_AUTH_SOCK': containerSshSock,
+        // Fall back to env-var git config only when there's no .netrc to
+        // mount. The token is visible in `ps aux` via docker's -e flag,
+        // which is acceptable on isolated CI runners but exposes the token
+        // to other local users on a shared workstation. Prefer ~/.netrc
+        // when possible; set EMB_FORWARD_TOKEN=0 to suppress this fallback.
+        if (!hasNetrc &&
+            ghToken != null &&
+            env['EMB_FORWARD_TOKEN'] != '0') ...{
+          'GIT_CONFIG_COUNT': '1',
+          'GIT_CONFIG_KEY_0':
+              'url.https://x-access-token:$ghToken@github.com/.insteadOf',
+          'GIT_CONFIG_VALUE_0': 'https://github.com/',
+        },
+      },
     );
   }
 
@@ -76,4 +179,16 @@ class ContainerReentry {
     }
     return mounts;
   }
+}
+
+/// Mounts and environment variables for forwarding host credentials into a
+/// container (SSH agent socket, GitHub token, verbosity).
+class ContainerAuthContext {
+  const ContainerAuthContext({required this.mounts, required this.env});
+
+  /// Bind-mounts for credential sockets (e.g. SSH agent).
+  final List<Mount> mounts;
+
+  /// Environment variables to pass with `-e` (auth + verbosity).
+  final Map<String, String> env;
 }

@@ -9,6 +9,7 @@ import 'package:emb_cli/src/engine/engine_artifacts.dart';
 import 'package:emb_cli/src/engine/engine_builder.dart';
 import 'package:emb_cli/src/engine/engine_toolchain.dart';
 import 'package:emb_cli/src/exec/container_launcher.dart';
+import 'package:emb_cli/src/exec/container_reentry.dart';
 import 'package:emb_cli/src/exec/exec_env.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
@@ -336,8 +337,9 @@ class EngineCommand extends Command<int> {
   }) async {
     progress.update('Engine $mode: building in ${env.image} (${env.reason})');
     final cache = ensureCacheDir();
-    final launcher =
-        _containerLauncher ?? ContainerLauncher(tool: _containerTool());
+    final tool = _containerTool();
+    final auth = ContainerReentry.containerAuthContext(tool: tool);
+    final launcher = _containerLauncher ?? ContainerLauncher(tool: tool);
     final code = await launcher.run(
       image: env.image,
       embArgs: [
@@ -356,8 +358,9 @@ class EngineCommand extends Command<int> {
         '-w',
         workspace.root.path,
       ],
-      mounts: [Mount(workspace.root.path), Mount(cache.path)],
+      mounts: [Mount(workspace.root.path), Mount(cache.path), ...auth.mounts],
       workdir: workspace.root.path,
+      env: auth.env,
     );
     if (code == 0) {
       progress.complete('Engine $mode built in ${env.image}');
