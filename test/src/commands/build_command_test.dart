@@ -63,12 +63,13 @@ build:
     expect(embArgs, isNot(contains('-w')));
   });
 
-  test('container re-entry forwards --no-strip when explicitly passed',
-      () async {
-    final tmp = Directory.systemTemp.createTempSync('emb-build-flags-');
-    addTearDown(() => tmp.deleteSync(recursive: true));
-    final pkg = Directory(p.join(tmp.path, 'my_app'))..createSync();
-    File(p.join(pkg.path, 'emb.yaml')).writeAsStringSync('''
+  test(
+    'container re-entry forwards --no-strip when explicitly passed',
+    () async {
+      final tmp = Directory.systemTemp.createTempSync('emb-build-flags-');
+      addTearDown(() => tmp.deleteSync(recursive: true));
+      final pkg = Directory(p.join(tmp.path, 'my_app'))..createSync();
+      File(p.join(pkg.path, 'emb.yaml')).writeAsStringSync('''
 id: my_app
 type: app
 build:
@@ -77,34 +78,35 @@ build:
   modes: [release]
 ''');
 
-    List<String>? seenArgs;
-    final reentry = ContainerReentry(
-      host: _mac(),
-      image: 'ghcr.io/x/runtime:latest',
-      launcher: ContainerLauncher(
-        run: (exe, args) async {
-          seenArgs = args;
-          return ProcessResult(0, 0, '', '');
-        },
-      ),
-    );
-
-    final runner = CommandRunner<int>('emb', 'test')
-      ..addCommand(
-        BuildCommand(logger: Logger(), host: _mac(), reentry: reentry),
+      List<String>? seenArgs;
+      final reentry = ContainerReentry(
+        host: _mac(),
+        image: 'ghcr.io/x/runtime:latest',
+        launcher: ContainerLauncher(
+          run: (exe, args) async {
+            seenArgs = args;
+            return ProcessResult(0, 0, '', '');
+          },
+        ),
       );
 
-    final code = await runner.run([
-      'build',
-      pkg.path,
-      '-w',
-      tmp.path,
-      '--no-strip',
-    ]);
+      final runner = CommandRunner<int>('emb', 'test')
+        ..addCommand(
+          BuildCommand(logger: Logger(), host: _mac(), reentry: reentry),
+        );
 
-    expect(code, ExitCode.success.code);
-    final embArgStart = seenArgs!.indexOf('emb');
-    final embArgs = seenArgs!.sublist(embArgStart + 1);
-    expect(embArgs, contains('--no-strip'));
-  });
+      final code = await runner.run([
+        'build',
+        pkg.path,
+        '-w',
+        tmp.path,
+        '--no-strip',
+      ]);
+
+      expect(code, ExitCode.success.code);
+      final embArgStart = seenArgs!.indexOf('emb');
+      final embArgs = seenArgs!.sublist(embArgStart + 1);
+      expect(embArgs, contains('--no-strip'));
+    },
+  );
 }

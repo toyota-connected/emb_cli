@@ -79,50 +79,52 @@ void main() {
     expect(embArgs, isNot(contains('-w')));
   });
 
-  test('container re-entry forwards --no-strip when explicitly passed',
-      () async {
-    final tmp = Directory.systemTemp.createTempSync('emb-bundle-flags-');
-    addTearDown(() => tmp.deleteSync(recursive: true));
-    final app = Directory(p.join(tmp.path, 'app'))..createSync();
+  test(
+    'container re-entry forwards --no-strip when explicitly passed',
+    () async {
+      final tmp = Directory.systemTemp.createTempSync('emb-bundle-flags-');
+      addTearDown(() => tmp.deleteSync(recursive: true));
+      final app = Directory(p.join(tmp.path, 'app'))..createSync();
 
-    List<String>? seenArgs;
-    final reentry = ContainerReentry(
-      host: _mac(),
-      image: 'ghcr.io/x/runtime:latest',
-      launcher: ContainerLauncher(
-        run: (exe, args) async {
-          seenArgs = args;
-          return ProcessResult(0, 0, '', '');
-        },
-      ),
-    );
-
-    final runner = CommandRunner<int>('emb', 'test')
-      ..addCommand(
-        BundleCommand(
-          logger: Logger(),
-          host: _mac(),
-          reentry: reentry,
-          bundleFactory: (_) => throw StateError('must not build natively'),
-          aotFactory: (_, _) => throw StateError('must not build natively'),
+      List<String>? seenArgs;
+      final reentry = ContainerReentry(
+        host: _mac(),
+        image: 'ghcr.io/x/runtime:latest',
+        launcher: ContainerLauncher(
+          run: (exe, args) async {
+            seenArgs = args;
+            return ProcessResult(0, 0, '', '');
+          },
         ),
       );
 
-    final code = await runner.run([
-      'bundle',
-      '--app-path',
-      app.path,
-      '-w',
-      tmp.path,
-      '--arch',
-      'arm64',
-      '--build',
-      '--no-strip',
-    ]);
+      final runner = CommandRunner<int>('emb', 'test')
+        ..addCommand(
+          BundleCommand(
+            logger: Logger(),
+            host: _mac(),
+            reentry: reentry,
+            bundleFactory: (_) => throw StateError('must not build natively'),
+            aotFactory: (_, _) => throw StateError('must not build natively'),
+          ),
+        );
 
-    expect(code, ExitCode.success.code);
-    final embArgStart = seenArgs!.indexOf('emb');
-    final embArgs = seenArgs!.sublist(embArgStart + 1);
-    expect(embArgs, contains('--no-strip'));
-  });
+      final code = await runner.run([
+        'bundle',
+        '--app-path',
+        app.path,
+        '-w',
+        tmp.path,
+        '--arch',
+        'arm64',
+        '--build',
+        '--no-strip',
+      ]);
+
+      expect(code, ExitCode.success.code);
+      final embArgStart = seenArgs!.indexOf('emb');
+      final embArgs = seenArgs!.sublist(embArgStart + 1);
+      expect(embArgs, contains('--no-strip'));
+    },
+  );
 }
