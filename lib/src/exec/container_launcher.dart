@@ -1,25 +1,29 @@
+import 'dart:async';
 import 'dart:io';
 
 /// A container runtime invoker (`docker` / `podman`), injectable for tests.
 ///
 /// Returns a [ProcessResult] with the container's exit code, stdout, and
-/// stderr. The default production runner uses [Process.start] with inherited
-/// stdio (stdout/stderr are empty strings, exit code is real). Tests inject a
-/// runner that returns buffered output.
+/// stderr. The default production runner pipes output and forwards it to the
+/// terminal in real-time (stdout/stderr in the result are empty). Tests inject
+/// a runner that returns buffered output for assertion.
 typedef ContainerRunner =
     Future<ProcessResult> Function(String executable, List<String> args);
 
-/// The default production runner: inherits the parent's stdio so container
-/// output (image pulls, build logs, errors) streams in real-time.
-ContainerRunner _defaultRunner(String tool) =>
-    (executable, args, {environment}) async {
-      final process = await Process.start(
-        executable,
-        args,
-        mode: ProcessStartMode.inheritStdio,
-      );
-      return ProcessResult(process.pid, await process.exitCode, '', '');
-    };
+/// The default production runner: pipes stdout/stderr and forwards raw bytes
+/// to the terminal in real-time, draining both streams before returning so no
+/// output is lost.
+ContainerRunner _defaultRunner(String tool) => (executable, args) async {
+  final process = await Process.start(executable, args);
+  final out = process.stdout.listen(stdout.add);
+  final err = process.stderr.listen(stderr.add);
+  final code = await process.exitCode;
+  await out.asFuture<void>();
+  await err.asFuture<void>();
+  unawaited(out.cancel());
+  unawaited(err.cancel());
+  return ProcessResult(process.pid, code, '', '');
+};
 
 /// A host bind-mount, exposed at the same path inside the container.
 class Mount {
@@ -41,6 +45,11 @@ class Mount {
 /// on a non-Linux / non-x86_64 host. The re-entry always carries `--exec-native`
 /// and sets `EMB_IN_CONTAINER=1` so the inner emb runs directly (recursion
 /// guard).
+///
+/// The default [ContainerRunner] pipes stdout/stderr and forwards raw bytes to
+/// the terminal, draining both streams before returning so no output is lost.
+/// Test runners return buffered output in [ProcessResult]; `run()` routes it
+/// through callbacks or falls back to [stdout]/[stderr].
 class ContainerLauncher {
   ContainerLauncher({ContainerRunner? run, String tool = 'docker'})
     : _run = run ?? _defaultRunner(tool),
@@ -76,10 +85,11 @@ class ContainerLauncher {
 
   /// Run [embArgs] inside [image]; returns the inner emb's exit code.
   ///
-  /// The injected [ContainerRunner] (or the default inherited-stdio runner)
-  /// handles process spawning. Output from the [ProcessResult] is routed
-  /// through [onOutput]/[onError] when present and non-empty (the default
-  /// production runner returns empty strings since stdio is inherited).
+  /// The default production runner pipes stdout/stderr to the terminal in
+  /// real-time and returns empty strings. Test runners return buffered output
+  /// which is routed through [onOutput]/[onError]; when either callback is
+  /// null the corresponding stream is forwarded to [stdout]/[stderr] so
+  /// output is never silently discarded.
   ///
   /// Returns 127 (command-not-found convention) when the container tool
   /// binary is absent, instead of letting the [ProcessException] propagate
@@ -105,25 +115,19 @@ class ContainerLauncher {
     try {
       result = await _run(_tool, args);
     } on ProcessException catch (e) {
-      onError?.call('$_tool: ${e.message}');
+      final errSink = onError ?? (String s) => stderr.writeln(s);
+      errSink('$_tool: ${e.message}');
       return 127;
     }
-    if (onOutput != null) {
-      final out = result.stdout as String;
-      if (out.isNotEmpty) {
-        for (final line in out.split('\n')) {
-          if (line.isNotEmpty) onOutput(line);
-        }
-      }
-    }
-    if (onError != null) {
-      final err = result.stderr as String;
-      if (err.isNotEmpty) {
-        for (final line in err.split('\n')) {
-          if (line.isNotEmpty) onError(line);
-        }
-      }
-    }
+    _forwardLines(result.stdout as String, onOutput ?? stdout.writeln);
+    _forwardLines(result.stderr as String, onError ?? stderr.writeln);
     return result.exitCode;
+  }
+
+  static void _forwardLines(String text, void Function(String) sink) {
+    if (text.isEmpty) return;
+    for (final line in text.split('\n')) {
+      if (line.isNotEmpty) sink(line);
+    }
   }
 }
