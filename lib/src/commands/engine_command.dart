@@ -222,9 +222,7 @@ class EngineCommand extends Command<int> {
                 );
             if (!built) {
               if (!buildEngine) {
-                step.fail(
-                  'Engine $mode: no prebuilt — source build required',
-                );
+                step.fail('Engine $mode: no prebuilt — source build required');
               }
               anyBuildNeeded = true;
             }
