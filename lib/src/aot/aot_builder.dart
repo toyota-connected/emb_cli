@@ -372,10 +372,12 @@ class AotBuilder {
       }
 
       onStep?.call('[$mode] kernel snapshot');
-      // Checked after the first `flutter build bundle` (not before the loop)
-      // because that step may download the Dart SDK for the first time — in a
-      // fresh container the snapshot doesn't exist until that download
-      // finishes. Cached after the first check: it won't change between modes.
+      // Checked after `flutter build bundle` (not before the loop) because
+      // that step may download the Dart SDK for the first time — in a fresh
+      // container the snapshot doesn't exist until that download finishes.
+      // Cached with ??= so the first successful check wins; if a mode fails
+      // before reaching this point, newScheme stays null and the next
+      // iteration re-checks, which is still correct.
       newScheme ??= File(_frontendServerAot).existsSync();
       final kernel = await _kernelSnapshot(
         app: app,

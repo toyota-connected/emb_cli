@@ -222,9 +222,7 @@ class EngineCommand extends Command<int> {
                 );
             if (!built) {
               if (!buildEngine) {
-                step.fail(
-                  'Engine $mode: no prebuilt — source build required',
-                );
+                step.fail('Engine $mode: no prebuilt — source build required');
               }
               anyBuildNeeded = true;
             }
@@ -342,8 +340,7 @@ class EngineCommand extends Command<int> {
     final tool = _containerTool();
     final auth = ContainerReentry.containerAuthContext(tool: tool);
     final launcher = _containerLauncher ?? ContainerLauncher(tool: tool);
-    // Container output streams directly via inherited stdio; don't pass
-    // onOutput/onError (the production runner returns empty strings).
+    // The default runner pipes output to the terminal; no callbacks needed.
     final code = await launcher.run(
       image: env.image,
       embArgs: [
