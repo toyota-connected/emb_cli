@@ -7,11 +7,7 @@ import 'dart:io';
 /// stdio (stdout/stderr are empty strings, exit code is real). Tests inject a
 /// runner that returns buffered output.
 typedef ContainerRunner =
-    Future<ProcessResult> Function(
-      String executable,
-      List<String> args, {
-      Map<String, String>? environment,
-    });
+    Future<ProcessResult> Function(String executable, List<String> args);
 
 /// The default production runner: inherits the parent's stdio so container
 /// output (image pulls, build logs, errors) streams in real-time.

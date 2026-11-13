@@ -125,7 +125,6 @@ class BundleCommand extends Command<int> {
     final reentry = _reentry ?? ContainerReentry(host: host);
     final routed = await reentry.maybeRun(
       forceNative: args['exec-native'] as bool,
-      workdir: workspace.root.path,
       mounts: ContainerReentry.mountsFor([
         workspace.root.path,
         Directory(appPath).absolute.path,
@@ -136,18 +135,27 @@ class BundleCommand extends Command<int> {
         'bundle',
         '--app-path',
         Directory(appPath).absolute.path,
-        '-w',
-        workspace.root.path,
+        // Do not pass -w: the container's $FLUTTER_WORKSPACE points at its
+        // own Linux Flutter SDK.
         '--mode',
         mode,
         '--arch',
         arch,
         if (args['build'] as bool) '--build',
+        if (args.wasParsed('obfuscate') && args['obfuscate'] as bool)
+          '--obfuscate',
+        if (args.wasParsed('obfuscate') && args['obfuscate'] as bool == false)
+          '--no-obfuscate',
+        if (args.wasParsed('strip') && args['strip'] as bool == false)
+          '--no-strip',
         if (explicitOutput != null) ...[
           '--output',
           Directory(explicitOutput).absolute.path,
         ],
       ],
+      // Container output streams directly via inherited stdio.
+      onError: _logger.err,
+      onRouting: _logger.info,
     );
     if (routed != null) return routed;
 

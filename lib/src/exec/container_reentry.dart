@@ -44,16 +44,15 @@ class ContainerReentry {
   /// exit code, or null to proceed natively. [forceNative] (`--exec-native`)
   /// and being [inContainer] both short-circuit to native.
   ///
-  /// [onOutput]/[onError] surface the container's stdout/stderr (used only in
-  /// the buffered test path; the production path inherits stdio directly).
   /// [onRouting] is called with a human-readable reason before the container
-  /// starts, so the user sees feedback immediately.
+  /// starts, so the user sees feedback immediately. [onError] is called only
+  /// for the container-tool-not-found case (exit 127) and non-zero exits;
+  /// container build output streams directly via inherited stdio.
   Future<int?> maybeRun({
     required List<String> embArgs,
     required List<Mount> mounts,
     String? workdir,
     bool forceNative = false,
-    void Function(String line)? onOutput,
     void Function(String line)? onError,
     void Function(String message)? onRouting,
   }) async {
@@ -67,15 +66,22 @@ class ContainerReentry {
     onRouting?.call('Routing through container (${env.reason}): ${env.image}');
     final auth = containerAuthContext(tool: _tool);
     final launcher = _launcher ?? ContainerLauncher(tool: _tool);
-    return launcher.run(
+    final code = await launcher.run(
       image: env.image,
       embArgs: embArgs,
       mounts: [...mounts, ...auth.mounts],
       workdir: workdir,
       env: auth.env,
-      onOutput: onOutput,
-      onError: onError,
     );
+    if (code == 127) {
+      onError?.call(
+        'Container tool not found. '
+        'Is Docker installed and running? Try: docker info',
+      );
+    } else if (code != 0) {
+      onError?.call('Container exited with code $code.');
+    }
+    return code;
   }
 
   /// Docker Desktop's built-in SSH agent socket, available inside the Linux
@@ -116,12 +122,7 @@ class ContainerReentry {
     String? containerSshSock;
     if (sshSock != null) {
       if (isDesktopHost && tool == 'docker') {
-        sshMounts.add(
-          const Mount(
-            _dockerDesktopSshSock,
-            containerPath: _dockerDesktopSshSock,
-          ),
-        );
+        sshMounts.add(const Mount(_dockerDesktopSshSock));
         containerSshSock = _dockerDesktopSshSock;
       } else if (File(sshSock).existsSync()) {
         sshMounts.add(Mount(sshSock));

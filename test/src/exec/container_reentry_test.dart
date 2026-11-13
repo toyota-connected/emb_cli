@@ -17,7 +17,7 @@ HostInfo _host(HostOs os, String arch) => HostInfo(
 
 ContainerLauncher _fakeLauncher(void Function(String, List<String>) capture) =>
     ContainerLauncher(
-      run: (exe, args, {environment}) async {
+      run: (exe, args) async {
         capture(exe, args);
         return ProcessResult(0, 0, '', '');
       },
@@ -43,7 +43,7 @@ void main() {
       host: _host(HostOs.macos, 'arm64'),
       launcher: ContainerLauncher(
         tool: 'podman',
-        run: (exe, args, {environment}) async {
+        run: (exe, args) async {
           seenTool = exe;
           seenArgs = args;
           return ProcessResult(0, 3, '', '');
@@ -60,6 +60,60 @@ void main() {
     expect(seenTool, 'podman');
     expect(seenArgs, contains('ghcr.io/x/runtime:latest'));
     expect(seenArgs!.last, '--exec-native');
+  });
+
+  test('maybeRun calls onError for exit 127 (tool not found)', () async {
+    String? errorMsg;
+    final r = ContainerReentry(
+      host: _host(HostOs.macos, 'arm64'),
+      launcher: ContainerLauncher(
+        run: (exe, args) async => ProcessResult(0, 127, '', ''),
+      ),
+      image: 'img',
+    );
+    final code = await r.maybeRun(
+      embArgs: const ['aot'],
+      mounts: const [],
+      onError: (msg) => errorMsg = msg,
+    );
+    expect(code, 127);
+    expect(errorMsg, contains('Container tool not found'));
+  });
+
+  test('maybeRun calls onError for non-zero exit', () async {
+    String? errorMsg;
+    final r = ContainerReentry(
+      host: _host(HostOs.macos, 'arm64'),
+      launcher: ContainerLauncher(
+        run: (exe, args) async => ProcessResult(0, 42, '', ''),
+      ),
+      image: 'img',
+    );
+    final code = await r.maybeRun(
+      embArgs: const ['aot'],
+      mounts: const [],
+      onError: (msg) => errorMsg = msg,
+    );
+    expect(code, 42);
+    expect(errorMsg, contains('42'));
+  });
+
+  test('maybeRun does not call onError for exit 0', () async {
+    String? errorMsg;
+    final r = ContainerReentry(
+      host: _host(HostOs.macos, 'arm64'),
+      launcher: ContainerLauncher(
+        run: (exe, args) async => ProcessResult(0, 0, '', ''),
+      ),
+      image: 'img',
+    );
+    final code = await r.maybeRun(
+      embArgs: const ['aot'],
+      mounts: const [],
+      onError: (msg) => errorMsg = msg,
+    );
+    expect(code, 0);
+    expect(errorMsg, isNull);
   });
 
   test('forceNative and inContainer short-circuit to native', () async {
@@ -175,7 +229,7 @@ void main() {
       expect(auth.env['SSH_AUTH_SOCK'], magic);
       expect(auth.mounts, hasLength(1));
       expect(auth.mounts.first.path, magic);
-      expect(auth.mounts.first.containerPath, magic);
+      expect(auth.mounts.first.containerPath, isNull);
     });
 
     test('on macOS with podman, falls back to direct socket mount', () {

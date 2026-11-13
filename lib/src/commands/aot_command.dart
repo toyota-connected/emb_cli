@@ -122,8 +122,10 @@ class AotCommand extends Command<int> {
     final reentry = _reentry ?? ContainerReentry(host: host);
     final routed = await reentry.maybeRun(
       forceNative: args['exec-native'] as bool,
-      workdir: workspace.root.path,
       mounts: ContainerReentry.mountsFor([
+        // Mount the host workspace for source access (Dart pub workspace
+        // resolution walks up from the app), but don't pass -w so the
+        // container's $FLUTTER_WORKSPACE selects its own Linux Flutter SDK.
         workspace.root.path,
         Directory(appPath).absolute.path,
         ensureCacheDir().path,
@@ -134,8 +136,9 @@ class AotCommand extends Command<int> {
         'aot',
         '--app-path',
         Directory(appPath).absolute.path,
-        '-w',
-        workspace.root.path,
+        // Do not pass -w: the container's $FLUTTER_WORKSPACE points at its
+        // own Linux Flutter SDK. Overriding it with the host workspace would
+        // use the macOS binaries, which can't execute inside Linux.
         for (final m in args['mode'] as List<String>) ...['--mode', m],
         if (arch != null) ...['--arch', arch],
         if (genSnapshot != null) ...['--gen-snapshot', genSnapshot],
@@ -144,8 +147,12 @@ class AotCommand extends Command<int> {
           '--obfuscate',
         if (args.wasParsed('obfuscate') && args['obfuscate'] as bool == false)
           '--no-obfuscate',
-        if (args['strip'] as bool == false) '--no-strip',
+        if (args.wasParsed('strip') && args['strip'] as bool == false)
+          '--no-strip',
       ],
+      // Container output streams directly via inherited stdio.
+      onError: _logger.err,
+      onRouting: _logger.info,
     );
     if (routed != null) return routed;
 

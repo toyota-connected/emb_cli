@@ -31,7 +31,7 @@ void main() {
       List<String>? seenArgs;
       final launcher = ContainerLauncher(
         tool: 'podman',
-        run: (exe, args, {environment}) async {
+        run: (exe, args) async {
           seenTool = exe;
           seenArgs = args;
           return ProcessResult(0, 7, '', '');
@@ -52,7 +52,7 @@ void main() {
     'run returns 127 and reports via onError when tool is missing',
     () async {
       final launcher = ContainerLauncher(
-        run: (exe, args, {environment}) async =>
+        run: (exe, args) async =>
             throw ProcessException(exe, args, 'No such file or directory', 2),
       );
       final errLines = <String>[];
@@ -69,7 +69,7 @@ void main() {
 
   test('run surfaces stdout and stderr via callbacks', () async {
     final launcher = ContainerLauncher(
-      run: (exe, args, {environment}) async =>
+      run: (exe, args) async =>
           ProcessResult(0, 1, 'line1\nline2\n', 'err1\nerr2\n'),
     );
     final outLines = <String>[];
