@@ -1,26 +1,31 @@
+import 'dart:async';
 import 'dart:io';
 
 /// A container runtime invoker (`docker` / `podman`), injectable for tests.
 ///
 /// Returns a [ProcessResult] with the container's exit code, stdout, and
-/// stderr. The default production runner uses [Process.start] with inherited
-/// stdio (stdout/stderr are empty strings, exit code is real). Tests inject a
-/// runner that returns buffered output.
+/// stderr. The default production runner pipes output and forwards it to the
+/// terminal in real-time (stdout/stderr in the result are empty). Tests inject
+/// a runner that returns buffered output for assertion.
 typedef ContainerRunner =
     Future<ProcessResult> Function(String executable, List<String> args);
 
-/// The default production runner: inherits the parent's stdio so container
-/// output (image pulls, build logs, errors) streams in real-time.
+/// The default production runner: pipes stdout/stderr and forwards raw bytes
+/// to the terminal in real-time, draining both streams before returning so no
+/// output is lost.
 Future<ProcessResult> _defaultRunner(
   String executable,
   List<String> args,
 ) async {
-  final process = await Process.start(
-    executable,
-    args,
-    mode: ProcessStartMode.inheritStdio,
-  );
-  return ProcessResult(process.pid, await process.exitCode, '', '');
+  final process = await Process.start(executable, args);
+  final out = process.stdout.listen(stdout.add);
+  final err = process.stderr.listen(stderr.add);
+  final code = await process.exitCode;
+  await out.asFuture<void>();
+  await err.asFuture<void>();
+  unawaited(out.cancel());
+  unawaited(err.cancel());
+  return ProcessResult(process.pid, code, '', '');
 }
 
 /// Thrown when the container tool binary (docker / podman) is not found on
@@ -56,6 +61,9 @@ class Mount {
 /// on a non-Linux / non-x86_64 host. The re-entry always carries `--exec-native`
 /// and sets `EMB_IN_CONTAINER=1` so the inner emb runs directly (recursion
 /// guard).
+///
+/// The default [ContainerRunner] pipes stdout/stderr and forwards raw bytes to
+/// the terminal, draining both streams before returning so no output is lost.
 class ContainerLauncher {
   ContainerLauncher({ContainerRunner? run, String tool = 'docker'})
     : _run = run ?? _defaultRunner,
@@ -91,9 +99,9 @@ class ContainerLauncher {
 
   /// Run [embArgs] inside [image]; returns the inner emb's exit code.
   ///
-  /// The injected [ContainerRunner] (or the default inherited-stdio runner)
-  /// handles process spawning. Container output streams directly to the
-  /// terminal via inherited stdio.
+  /// The default production runner pipes stdout/stderr to the terminal in
+  /// real-time and returns empty strings. Test runners return buffered output
+  /// in the [ProcessResult].
   ///
   /// Throws [ContainerToolNotFound] when the container tool binary is absent,
   /// so callers can distinguish "docker not installed" from "command inside the
