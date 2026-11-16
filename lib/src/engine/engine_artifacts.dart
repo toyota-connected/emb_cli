@@ -143,6 +143,14 @@ class EngineArtifacts {
     }
   }
 
+  /// Whether the engine SDK for [runtime]/[arch]/[commit] is already in the
+  /// shared store, so [fetch] would only re-link it and download nothing.
+  bool isCached({
+    required String runtime,
+    required String arch,
+    required String commit,
+  }) => _store.has('engine', engineKey(runtime, arch, commit));
+
   /// Fetch and stage the engine artifact for one [runtime] mode.
   ///
   /// The extracted engine SDK is sourced from the shared store (downloaded once

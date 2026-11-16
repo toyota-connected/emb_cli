@@ -1,7 +1,10 @@
 import 'dart:io';
 
 import 'package:emb_cli/src/aot/aot_builder.dart';
+import 'package:emb_cli/src/cache/cas.dart';
+import 'package:emb_cli/src/cache/store.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
+import 'package:emb_cli/src/engine/engine_artifacts.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
 import 'package:path/path.dart' as p;
@@ -38,6 +41,10 @@ class _Recorder {
   final String app;
   final List<({String exe, List<String> args})> calls = [];
 
+  /// Every executable and argument seen, unshortened, for tests that care
+  /// which copy of a tool ran.
+  final List<String> paths = [];
+
   Future<RunResult> run(
     String exe,
     List<String> args, {
@@ -49,6 +56,7 @@ class _Recorder {
     String? label,
   }) async {
     calls.add((exe: p.basename(exe), args: args));
+    paths.addAll([exe, ...args]);
     if (args.isNotEmpty && args.first == 'build') {
       // Materialise .dart_tool/flutter_build/<hash>/ as flutter would.
       Directory(
@@ -56,6 +64,90 @@ class _Recorder {
       ).createSync(recursive: true);
     }
     return const RunResult(0, '', '');
+  }
+}
+
+/// A [Cas] that hands back one local tarball and counts the downloads it stood
+/// in for.
+class _FakeCas extends Cas {
+  _FakeCas(super.root, this.blob);
+  final File blob;
+  int calls = 0;
+  @override
+  Future<File> ensure(String url, {String? expectedSha}) async {
+    calls++;
+    return blob;
+  }
+}
+
+/// An [EngineArtifacts] that never touches the network: records each fetch and
+/// "materializes" an engine SDK holding [genRel] for the modes in [publishes].
+class _FakeEngine extends EngineArtifacts {
+  _FakeEngine(
+    super.workspace, {
+    required this.genRel,
+    this.publishes = const {'release', 'profile'},
+    this.cached = const {},
+  });
+
+  /// gen_snapshot path inside the SDK: `clang_x64/bin/…` (cross) or `bin/…`.
+  final String genRel;
+  final Set<String> publishes;
+
+  /// Modes whose SDK is already in the store (a fetch only re-links it).
+  final Set<String> cached;
+  final List<String> cacheProbes = [];
+  final List<({String runtime, String arch})> fetches = [];
+  bool closed = false;
+
+  @override
+  bool isCached({
+    required String runtime,
+    required String arch,
+    required String commit,
+  }) {
+    cacheProbes.add(runtime);
+    return cached.contains(runtime);
+  }
+
+  @override
+  Future<EngineFetchResult> fetch({
+    required String runtime,
+    required String arch,
+    required String commit,
+    bool clean = false,
+  }) async {
+    fetches.add((runtime: runtime, arch: arch));
+    if (!publishes.contains(runtime)) {
+      return EngineFetchResult(
+        runtime: runtime,
+        arch: arch,
+        status: EngineFetchStatus.unavailable,
+        message: 'No published prebuilt for $runtime/$arch@$commit',
+      );
+    }
+    File(
+        p.join(
+          workspace.platformDir('flutter-engine').path,
+          commit,
+          'engine-sdk-$runtime-$arch',
+          'engine-sdk',
+          genRel,
+        ),
+      )
+      ..createSync(recursive: true)
+      ..writeAsStringSync('x');
+    return EngineFetchResult(
+      runtime: runtime,
+      arch: arch,
+      status: EngineFetchStatus.fetched,
+    );
+  }
+
+  @override
+  void close() {
+    closed = true;
+    super.close();
   }
 }
 
@@ -205,6 +297,364 @@ void main() {
       expect(frontend, isNot(contains(p.join('artifacts', 'engine'))));
     });
   }
+
+  group('gen_snapshot fetch fallback', () {
+    const commit = 'abc123';
+    const bothModes = ['release', 'profile'];
+
+    /// A workspace that knows its engine commit and has no engine SDK staged.
+    Directory workspaceAt(String name, {bool hostGen = true}) {
+      final ws = Directory(p.join(tmp.path, name))..createSync();
+      writeSdk(ws);
+      File(p.join(ws.path, 'flutter', 'bin', 'internal', 'engine.version'))
+        ..createSync(recursive: true)
+        ..writeAsStringSync('$commit\n');
+      if (!hostGen) {
+        File(
+          p.join(
+            ws.path,
+            'flutter',
+            'bin',
+            'cache',
+            'artifacts',
+            'engine',
+            'linux-x64',
+            'gen_snapshot',
+          ),
+        ).deleteSync();
+      }
+      return ws;
+    }
+
+    /// Every gen_snapshot path the build invoked, relative to [ws].
+    Set<String> gensUsed(_Recorder rec, Directory ws) => {
+      for (final c in rec.paths)
+        if (p.basename(c) == 'gen_snapshot') p.relative(c, from: ws.path),
+    };
+
+    // The Flutter SDK's gen_snapshot is already on disk, so a native build
+    // must not download one. It used to fetch every mode first.
+    test('a native build with a host gen_snapshot downloads nothing', () async {
+      final ws = workspaceAt('ws');
+      final app = Directory(p.join(tmp.path, 'app'));
+      writeApp(app);
+      final rec = _Recorder(app.path);
+      late _FakeEngine engine;
+      final steps = <String>[];
+
+      final result = await AotBuilder(
+        Workspace(ws),
+        host: _host,
+        runProcess: rec.run,
+        engineFactory: (w) => engine = _FakeEngine(w, genRel: 'bin/x'),
+      ).build(appPath: app.path, onStep: steps.add);
+
+      expect(result.success, isTrue);
+      expect(engine.cacheProbes, bothModes);
+      expect(engine.fetches, isEmpty);
+      expect(engine.closed, isTrue);
+      expect(steps, isNot(contains('Fetching engine SDK for gen_snapshot')));
+      expect(gensUsed(rec, ws), {
+        p.join(
+          'flutter',
+          'bin',
+          'cache',
+          'artifacts',
+          'engine',
+          'linux-x64',
+          'gen_snapshot',
+        ),
+      });
+    });
+
+    // Container re-entry: `emb engine` ran in an earlier container, so the SDK
+    // is in the mounted store and only the workspace link is gone. The build
+    // must pick the same gen_snapshot it would with the link in place, not
+    // drift to the host copy because a symlink was ephemeral.
+    test('a native build re-links a cached SDK over the host copy', () async {
+      final ws = workspaceAt('ws');
+      final app = Directory(p.join(tmp.path, 'app'));
+      writeApp(app);
+      final rec = _Recorder(app.path);
+      late _FakeEngine engine;
+
+      final result = await AotBuilder(
+        Workspace(ws),
+        host: _host,
+        runProcess: rec.run,
+        engineFactory: (w) => engine = _FakeEngine(
+          w,
+          genRel: p.join('bin', 'gen_snapshot'),
+          // Only profile is cached: release is skipped, not downloaded.
+          cached: const {'profile'},
+        ),
+      ).build(appPath: app.path);
+
+      expect(result.success, isTrue);
+      expect(engine.fetches, [(runtime: 'profile', arch: 'x86_64')]);
+      expect(gensUsed(rec, ws), {
+        p.join(
+          '.config',
+          'flutter_workspace',
+          'flutter-engine',
+          commit,
+          'engine-sdk-profile-x86_64',
+          'engine-sdk',
+          'bin',
+          'gen_snapshot',
+        ),
+      });
+    });
+
+    // One gen_snapshot serves every mode: the first SDK that yields one ends
+    // the search, so profile is never fetched.
+    test('a cross build fetches until the scan hits, then stops', () async {
+      final ws = workspaceAt('ws');
+      final app = Directory(p.join(tmp.path, 'app'));
+      writeApp(app);
+      final rec = _Recorder(app.path);
+      late _FakeEngine engine;
+
+      final result =
+          await AotBuilder(
+            Workspace(ws),
+            host: _host,
+            runProcess: rec.run,
+            engineFactory: (w) => engine = _FakeEngine(
+              w,
+              genRel: p.join('clang_x64', 'bin', 'gen_snapshot'),
+            ),
+          ).build(
+            appPath: app.path,
+            // An alias: the fetch and the scan must agree on the token.
+            arch: 'aarch64',
+          );
+
+      expect(result.success, isTrue);
+      expect(engine.fetches, [(runtime: 'release', arch: 'arm64')]);
+      // Cross has no host copy to fall back on: it fetches whether or not the
+      // store has the SDK, so the cache is never even asked.
+      expect(engine.cacheProbes, isEmpty);
+      expect(engine.closed, isTrue);
+      expect(gensUsed(rec, ws), {
+        p.join(
+          '.config',
+          'flutter_workspace',
+          'flutter-engine',
+          commit,
+          'engine-sdk-release-arm64',
+          'engine-sdk',
+          'clang_x64',
+          'bin',
+          'gen_snapshot',
+        ),
+      });
+    });
+
+    test('a mode with no prebuilt is reported and the next is tried', () async {
+      final ws = workspaceAt('ws');
+      final app = Directory(p.join(tmp.path, 'app'));
+      writeApp(app);
+      final rec = _Recorder(app.path);
+      late _FakeEngine engine;
+      final steps = <String>[];
+
+      final result = await AotBuilder(
+        Workspace(ws),
+        host: _host,
+        runProcess: rec.run,
+        engineFactory: (w) => engine = _FakeEngine(
+          w,
+          genRel: p.join('clang_x64', 'bin', 'gen_snapshot'),
+          publishes: const {'profile'},
+        ),
+      ).build(appPath: app.path, arch: 'arm64', onStep: steps.add);
+
+      expect(result.success, isTrue);
+      expect(engine.fetches.map((f) => f.runtime), bothModes);
+      expect(
+        steps,
+        contains(
+          'engine SDK release/arm64: '
+          'No published prebuilt for release/arm64@$commit',
+        ),
+      );
+    });
+
+    // Nothing published and no host copy that can target arm64: the build
+    // fails, and every failed fetch is named on the way.
+    test('a cross build with nothing published fails, loudly', () async {
+      final ws = workspaceAt('ws');
+      final app = Directory(p.join(tmp.path, 'app'));
+      writeApp(app);
+      final rec = _Recorder(app.path);
+      late _FakeEngine engine;
+      final steps = <String>[];
+
+      final result = await AotBuilder(
+        Workspace(ws),
+        host: _host,
+        runProcess: rec.run,
+        engineFactory: (w) =>
+            engine = _FakeEngine(w, genRel: 'x', publishes: const {}),
+      ).build(appPath: app.path, arch: 'arm64', onStep: steps.add);
+
+      expect(result.success, isFalse);
+      expect(engine.fetches.map((f) => f.runtime), bothModes);
+      expect(engine.closed, isTrue);
+      expect(steps.where((s) => s.startsWith('engine SDK ')), hasLength(2));
+      expect(gensUsed(rec, ws), isEmpty);
+    });
+
+    // No host copy either (a fresh container before the Flutter cache is
+    // warm): now the fetch is the only source, native or not.
+    test('a native build with no host gen_snapshot fetches one', () async {
+      final ws = workspaceAt('ws', hostGen: false);
+      final app = Directory(p.join(tmp.path, 'app'));
+      writeApp(app);
+      final rec = _Recorder(app.path);
+      late _FakeEngine engine;
+
+      final result = await AotBuilder(
+        Workspace(ws),
+        host: _host,
+        runProcess: rec.run,
+        engineFactory: (w) =>
+            engine = _FakeEngine(w, genRel: p.join('bin', 'gen_snapshot')),
+      ).build(appPath: app.path);
+
+      expect(result.success, isTrue);
+      expect(engine.fetches, [(runtime: 'release', arch: 'x86_64')]);
+      expect(gensUsed(rec, ws).single, contains('engine-sdk-release-x86_64'));
+    });
+  });
+
+  // The same paths through the real EngineArtifacts and Store, with only the
+  // download faked: the fake above cannot show that fetch, the link name and
+  // the scan agree with each other.
+  group('gen_snapshot fetch fallback, real store', () {
+    const commit = 'abc123';
+    late Directory cache;
+    late _FakeCas cas;
+    late Directory ws;
+    late Directory app;
+    late _Recorder rec;
+
+    setUp(() async {
+      cache = Directory(p.join(tmp.path, 'cache'))..createSync();
+      // An engine SDK tarball laid out as the published ones are: a native
+      // bin/gen_snapshot and the clang_x64 cross one side by side.
+      final src = Directory(p.join(tmp.path, 'sdk'))..createSync();
+      for (final rel in [
+        'data/icudtl.dat',
+        'lib/libflutter_engine.so',
+        'bin/gen_snapshot',
+        'clang_x64/bin/gen_snapshot',
+      ]) {
+        File(p.join(src.path, 'engine-sdk', rel))
+          ..createSync(recursive: true)
+          ..writeAsStringSync('x');
+      }
+      final blob = File(p.join(tmp.path, 'engine.tar.gz'));
+      final rc = await Process.run('tar', [
+        '-czf',
+        blob.path,
+        '-C',
+        src.path,
+        'engine-sdk',
+      ]);
+      expect(rc.exitCode, 0, reason: '${rc.stderr}');
+      cas = _FakeCas(cache, blob);
+
+      ws = Directory(p.join(tmp.path, 'ws'))..createSync();
+      writeSdk(ws);
+      File(p.join(ws.path, 'flutter', 'bin', 'internal', 'engine.version'))
+        ..createSync(recursive: true)
+        ..writeAsStringSync('$commit\n');
+      app = Directory(p.join(tmp.path, 'app'));
+      writeApp(app);
+      rec = _Recorder(app.path);
+    });
+
+    EngineArtifacts engine(Workspace w) =>
+        EngineArtifacts(w, cas: cas, store: Store(cache));
+
+    AotBuilder aot() => AotBuilder(
+      Workspace(ws),
+      host: _host,
+      runProcess: rec.run,
+      engineFactory: engine,
+    );
+
+    String sdkGen(String mode, String token, String rel) => p.join(
+      '.config',
+      'flutter_workspace',
+      'flutter-engine',
+      commit,
+      'engine-sdk-$mode-$token',
+      'engine-sdk',
+      rel,
+    );
+
+    Set<String> gensUsed() => {
+      for (final c in rec.paths)
+        if (p.basename(c) == 'gen_snapshot') p.relative(c, from: ws.path),
+    };
+
+    test('cross, cold store: one download, the clang_x64 copy', () async {
+      final result = await aot().build(appPath: app.path, arch: 'aarch64');
+
+      expect(result.success, isTrue);
+      expect(cas.calls, 1, reason: 'release only; profile is not needed');
+      expect(gensUsed(), {
+        sdkGen('release', 'arm64', p.join('clang_x64', 'bin', 'gen_snapshot')),
+      });
+    });
+
+    test('cross, warm store, link gone: re-linked, no download', () async {
+      final seed = engine(Workspace(ws));
+      await seed.fetch(runtime: 'release', arch: 'arm64', commit: commit);
+      seed.close();
+      Directory(
+        p.join(Workspace(ws).platformDir('flutter-engine').path, commit),
+      ).deleteSync(recursive: true);
+      cas.calls = 0;
+
+      final result = await aot().build(appPath: app.path, arch: 'arm64');
+
+      expect(result.success, isTrue);
+      expect(cas.calls, 0);
+      expect(gensUsed(), {
+        sdkGen('release', 'arm64', p.join('clang_x64', 'bin', 'gen_snapshot')),
+      });
+    });
+
+    test('native, cold store: host copy, no download', () async {
+      final result = await aot().build(appPath: app.path);
+
+      expect(result.success, isTrue);
+      expect(cas.calls, 0);
+      expect(gensUsed().single, contains(p.join('engine', 'linux-x64')));
+    });
+
+    test('native, warm store, link gone: the SDK copy, no download', () async {
+      final seed = engine(Workspace(ws));
+      await seed.fetch(runtime: 'release', arch: 'x86_64', commit: commit);
+      seed.close();
+      Directory(
+        p.join(Workspace(ws).platformDir('flutter-engine').path, commit),
+      ).deleteSync(recursive: true);
+      cas.calls = 0;
+
+      final result = await aot().build(appPath: app.path);
+
+      expect(result.success, isTrue);
+      expect(cas.calls, 0);
+      expect(gensUsed(), {
+        sdkGen('release', 'x86_64', p.join('bin', 'gen_snapshot')),
+      });
+    });
+  });
 
   // `flutter build bundle` defaults --target-platform to android-arm whatever
   // the host is. For an app with code assets that means the build hooks run for

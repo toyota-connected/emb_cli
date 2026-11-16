@@ -83,6 +83,10 @@ class Store {
   Directory _refsDir(String kind, String key) =>
       Directory(p.join(entryDir(kind, key).path, 'refs'));
 
+  /// Whether a complete entry for ([kind], [key]) is already in the store, i.e.
+  /// [ensure] would return it without calling `fetch`.
+  bool has(String kind, String key) => _isComplete(kind, key);
+
   /// Ensure the extracted tree for ([kind], [key]) exists and return its root.
   ///
   /// [fetch] returns the source blob (typically `Cas.ensure`); [stage] extracts

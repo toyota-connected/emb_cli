@@ -192,6 +192,31 @@ void main() {
       expect(p.basename(r.bundleDir!), 'bundle-release-x86_64');
     });
 
+    test(
+      'isCached is false until fetched, and ignores arch spelling',
+      () async {
+        final ws = Directory(p.join(tmp.path, 'ws'))..createSync();
+        final engine = EngineArtifacts(
+          Workspace(ws),
+          cas: _FakeCas(cache, await seedSdk('sdk', 'x')),
+          store: Store(cache),
+        );
+        bool cached(String arch, {String runtime = 'release'}) =>
+            engine.isCached(runtime: runtime, arch: arch, commit: 'aaa111');
+
+        expect(cached('x86_64'), isFalse);
+        await engine.fetch(
+          runtime: 'release',
+          arch: 'x86_64',
+          commit: 'aaa111',
+        );
+        expect(cached('x86_64'), isTrue);
+        expect(cached('x64'), isTrue);
+        expect(cached('x86_64', runtime: 'profile'), isFalse);
+        expect(cached('arm64'), isFalse);
+      },
+    );
+
     // AotBuilder's gen_snapshot scan reads engine-sdk-<mode>-<engineArch>.
     // Linked under the raw arch, a fetch for 'x64' / 'aarch64' / 'arm'
     // succeeds and the rescan still misses.
