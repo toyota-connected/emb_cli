@@ -107,13 +107,21 @@ void main() {
       final dir = Directory.systemTemp.createTempSync('emb_test_');
       addTearDown(() => dir.deleteSync(recursive: true));
       final out = File('${dir.path}/fds');
-      // Written through fd 3, so the redirect leaves 0, 1 and 2 as inherited.
+      // Read into variables first and write once at the end. Any redirect on
+      // the readlink itself shows up in the answer: dash applies a simple
+      // command's redirects in the parent shell before it forks, so
+      // `readlink /proc/$$/fd/1 > file` reports the file.
       final script = File('${dir.path}/fixture.sh')
         ..writeAsStringSync(
           '#!/bin/sh\n'
-          'exec 3> "${out.path}"\n'
-          r'for fd in 0 1 2; do readlink /proc/$$/fd/$fd >&3; done'
-          '\n',
+          r'a=$(readlink /proc/$$/fd/0)'
+          '\n'
+          r'b=$(readlink /proc/$$/fd/1)'
+          '\n'
+          r'c=$(readlink /proc/$$/fd/2)'
+          '\n'
+          r'printf "%s\n" "$a" "$b" "$c"'
+          ' > "${out.path}"\n',
         );
       Process.runSync('chmod', ['+x', script.path]);
 
