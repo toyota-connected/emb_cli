@@ -4,8 +4,9 @@
 # depot_tools + gn/ninja/vpython prereqs + a Dart SDK + emb, at a fixed /emb.
 #
 # podman build -f tool/engine/Dockerfile.builder -t emb-engine-builder .
-# podman run --rm -v "$EMB_CACHE_DIR:$EMB_CACHE_DIR" -w /emb emb-engine-builder \
-# emb engine --build --arch arm64 --mode release --exec-native -w /emb
+# podman run --rm -v "$EMB_CACHE_DIR:$EMB_CACHE_DIR" \
+#   -e "EMB_CACHE_DIR=$EMB_CACHE_DIR" emb-engine-builder \
+#   emb engine --build-engine --arch arm64 --mode release --exec-native
 FROM debian:bookworm-slim
 
 ARG EMB_REPO=https://github.com/toyota-connected/emb_cli.git
