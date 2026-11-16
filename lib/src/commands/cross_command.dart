@@ -1074,8 +1074,10 @@ class CrossCommand extends Command<int> {
         launcher: launcher,
         hostTools: target.hostTools || args['host-tools'] == true,
         selectedBackends: selectedBackends,
-        // --build needs an embedder; --prepare alone does not.
-        allowNoSource: !doBuild,
+        // --build needs an embedder; --prepare alone does not. A declared
+        // cross.source is a claim that there is one, so a checkout with
+        // nothing to configure stays an error rather than a quiet skip.
+        allowNoSource: !doBuild && _sourceOverride == null,
       );
       if (preparedEmbedder == null) return ExitCode.software.code;
       if (target.modules.isNotEmpty) {
@@ -1363,6 +1365,28 @@ class CrossCommand extends Command<int> {
       overlay: overlayPaths,
     );
 
+    // A manifest with augments and no embedder beside it: an app manifest
+    // prepared on its own, whose embedder comes from the project it is later
+    // composed into with --app. The augments above are everything --prepare
+    // can do for it, so stop here rather than fail a configure that has
+    // nothing to read. --build still fails, because it has nothing to bundle.
+    //
+    // Before the fingerprint, which hashes every file under the source and
+    // would be thrown away.
+    if (allowNoSource && !_hasBuildFile(source, target.generator)) {
+      _logger.info(
+        '  embedder      : nothing to configure in '
+        '${p.normalize(source.path)} (skipped)',
+      );
+      return _EmbedderResult(
+        results: const [],
+        buildRoot: buildRoot,
+        builder: builder,
+        stageDir: stageDir,
+        overlayPaths: overlayPaths,
+      );
+    }
+
     // Fingerprint the embedder source tree so a subsequent --build detects
     // edits. Computed unconditionally: the skip check reads it, and a
     // successful build writes it.
@@ -1417,25 +1441,6 @@ class CrossCommand extends Command<int> {
           );
         }
       }
-    }
-
-    // A manifest with augments and no embedder beside it: an app manifest
-    // prepared on its own, whose embedder comes from the project it is later
-    // composed into with --app. The augments above are everything --prepare
-    // can do for it, so stop here rather than fail a configure that has
-    // nothing to read. --build still fails, because it has nothing to bundle.
-    if (allowNoSource && !_hasBuildFile(source, target.generator)) {
-      _logger.info(
-        '  embedder      : nothing to configure in '
-        '${p.normalize(source.path)} (skipped)',
-      );
-      return _EmbedderResult(
-        results: const [],
-        buildRoot: buildRoot,
-        builder: builder,
-        stageDir: stageDir,
-        overlayPaths: overlayPaths,
-      );
     }
 
     final buildSw = Stopwatch()..start();

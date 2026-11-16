@@ -432,7 +432,7 @@ void main() {
       logger = _CaptureLogger();
     });
 
-    Future<int?> run(List<String> flags) async {
+    Future<int?> run(List<String> flags, {Directory? manifest}) async {
       Future<RunResult> runner(
         String exe,
         List<String> args, {
@@ -444,7 +444,10 @@ void main() {
         String? label,
       }) async {
         calls.add([exe, ...args]);
-        throw const _Stop();
+        // Stop at the configure. Anything earlier is a probe (--offline asks
+        // `unshare` whether isolation is available) and reports failure.
+        if (exe.endsWith('cmake') || exe.endsWith('meson')) throw const _Stop();
+        return const RunResult(1, '', '');
       }
 
       final crossRunner = CommandRunner<int>('emb', 'test')
@@ -458,11 +461,12 @@ void main() {
         'local',
         '-w',
         ws.path,
-        pkg.path,
+        (manifest ?? pkg).path,
       ]);
     }
 
-    bool ranCmake() => calls.any((c) => c.first.endsWith('cmake'));
+    bool ran(String tool) => calls.any((c) => c.first.endsWith(tool));
+    bool ranCmake() => ran('cmake');
 
     test('stops after the augments', () async {
       expect(await run(['--prepare']), ExitCode.success.code);
@@ -474,6 +478,47 @@ void main() {
       File(p.join(pkg.path, 'CMakeLists.txt')).writeAsStringSync('');
       await expectLater(run(['--prepare']), throwsA(isA<_Stop>()));
       expect(ranCmake(), isTrue);
+    });
+
+    test('a meson project is recognized by its meson.build', () async {
+      final meson = pkgWith(
+        'mesonapp',
+        'id: mesonapp\ntype: app\ncross:\n  provider: arm-gnu\n'
+            '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n'
+            '  generator: meson\n',
+      );
+      // A CMakeLists.txt is not what a meson project configures from.
+      File(p.join(meson.path, 'CMakeLists.txt')).writeAsStringSync('');
+      expect(await run(['--prepare'], manifest: meson), ExitCode.success.code);
+      expect(ran('meson'), isFalse);
+      expect(logger.buffer.toString(), contains('nothing to configure'));
+
+      File(p.join(meson.path, 'meson.build')).writeAsStringSync('');
+      await expectLater(
+        run(['--prepare'], manifest: meson),
+        throwsA(isA<_Stop>()),
+      );
+      expect(ran('meson'), isTrue);
+    });
+
+    // A declared cross.source says where the embedder is. A checkout with
+    // nothing to configure is a wrong URI or subdirectory, not an app-only
+    // manifest, and has to fail where it always did.
+    test('a declared cross.source is still configured', () async {
+      final declared = pkgWith(
+        'declared',
+        'id: declared\ntype: app\ncross:\n  provider: arm-gnu\n'
+            '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n'
+            '  source: { uri: https://invalid.example/nope.git }\n',
+      );
+      // --offline reuses an existing checkout rather than fetching.
+      Directory(p.join(ws.path, 'app', 'nope')).createSync(recursive: true);
+      await expectLater(
+        run(['--prepare', '--offline'], manifest: declared),
+        throwsA(isA<_Stop>()),
+      );
+      expect(ranCmake(), isTrue);
+      expect(logger.buffer.toString(), isNot(contains('nothing to configure')));
     });
 
     test('--build still needs an embedder', () async {
