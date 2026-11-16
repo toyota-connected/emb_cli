@@ -679,23 +679,36 @@ class AotBuilder {
       final found = _scanEngineGenSnapshot(commit, targetToken, cross, modes);
       if (found != null) return found;
 
-      // A native build with the Flutter SDK's own gen_snapshot needs nothing
-      // fetched; going to the network first cost a download per mode for a
-      // binary that was already on disk.
-      if (haveHostGen) return hostGen;
-
       // The engine SDK may be in the shared cache but not materialized into
       // this workspace — common in container re-entry where a prior container
       // cached the download but workspace symlinks were ephemeral. Fetching
       // re-materializes from the store (no re-download when cached) or
       // downloads when absent.
       //
+      // A native build with the Flutter SDK's own gen_snapshot on disk goes
+      // as far as the store and no further: an SDK already cached is linked
+      // back and used, so the pick does not depend on whether the workspace
+      // links survived, but nothing is downloaded for a binary the host
+      // already has.
+      //
       // One gen_snapshot serves every mode, so stop at the first mode whose
       // SDK yields one rather than fetching them all.
-      onStep?.call('Fetching engine SDK for gen_snapshot');
       final engine = _engineFactory(workspace);
       try {
+        var announced = false;
         for (final mode in modes) {
+          if (haveHostGen &&
+              !engine.isCached(
+                runtime: mode,
+                arch: targetToken,
+                commit: commit,
+              )) {
+            continue;
+          }
+          if (!announced) {
+            onStep?.call('Fetching engine SDK for gen_snapshot');
+            announced = true;
+          }
           final r = await engine.fetch(
             runtime: mode,
             arch: targetToken,
