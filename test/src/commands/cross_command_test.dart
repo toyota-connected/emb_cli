@@ -412,6 +412,121 @@ void main() {
     });
   });
 
+  // An app manifest prepared on its own has no embedder beside it. --prepare
+  // builds the embedder since #195, and used to fail the configure on a
+  // directory with no CMakeLists.txt after the augments had already built.
+  group('--prepare without an embedder', () {
+    late Directory ws;
+    late Directory pkg;
+    late List<List<String>> calls;
+    late _CaptureLogger logger;
+
+    setUp(() {
+      ws = Directory(p.join(tmp.path, 'ws'))..createSync();
+      pkg = pkgWith(
+        'apponly',
+        'id: apponly\ntype: app\ncross:\n  provider: arm-gnu\n'
+            '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n',
+      );
+      calls = [];
+      logger = _CaptureLogger();
+    });
+
+    Future<int?> run(List<String> flags, {Directory? manifest}) async {
+      Future<RunResult> runner(
+        String exe,
+        List<String> args, {
+        String? workingDirectory,
+        Map<String, String>? environment,
+        bool includeParentEnvironment = true,
+        bool runInShell = false,
+        ProcessOutputMode output = ProcessOutputMode.capture,
+        String? label,
+      }) async {
+        calls.add([exe, ...args]);
+        // Stop at the configure. Anything earlier is a probe (--offline asks
+        // `unshare` whether isolation is available) and reports failure.
+        if (exe.endsWith('cmake') || exe.endsWith('meson')) throw const _Stop();
+        return const RunResult(1, '', '');
+      }
+
+      final crossRunner = CommandRunner<int>('emb', 'test')
+        ..addCommand(
+          CrossCommand(logger: logger, host: _host, processRunner: runner),
+        );
+      return crossRunner.run([
+        'cross',
+        ...flags,
+        '-t',
+        'local',
+        '-w',
+        ws.path,
+        (manifest ?? pkg).path,
+      ]);
+    }
+
+    bool ran(String tool) => calls.any((c) => c.first.endsWith(tool));
+    bool ranCmake() => ran('cmake');
+
+    test('stops after the augments', () async {
+      expect(await run(['--prepare']), ExitCode.success.code);
+      expect(ranCmake(), isFalse);
+      expect(logger.buffer.toString(), contains('nothing to configure'));
+    });
+
+    test('configures when the source has a CMakeLists.txt', () async {
+      File(p.join(pkg.path, 'CMakeLists.txt')).writeAsStringSync('');
+      await expectLater(run(['--prepare']), throwsA(isA<_Stop>()));
+      expect(ranCmake(), isTrue);
+    });
+
+    test('a meson project is recognized by its meson.build', () async {
+      final meson = pkgWith(
+        'mesonapp',
+        'id: mesonapp\ntype: app\ncross:\n  provider: arm-gnu\n'
+            '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n'
+            '  generator: meson\n',
+      );
+      // A CMakeLists.txt is not what a meson project configures from.
+      File(p.join(meson.path, 'CMakeLists.txt')).writeAsStringSync('');
+      expect(await run(['--prepare'], manifest: meson), ExitCode.success.code);
+      expect(ran('meson'), isFalse);
+      expect(logger.buffer.toString(), contains('nothing to configure'));
+
+      File(p.join(meson.path, 'meson.build')).writeAsStringSync('');
+      await expectLater(
+        run(['--prepare'], manifest: meson),
+        throwsA(isA<_Stop>()),
+      );
+      expect(ran('meson'), isTrue);
+    });
+
+    // A declared cross.source says where the embedder is. A checkout with
+    // nothing to configure is a wrong URI or subdirectory, not an app-only
+    // manifest, and has to fail where it always did.
+    test('a declared cross.source is still configured', () async {
+      final declared = pkgWith(
+        'declared',
+        'id: declared\ntype: app\ncross:\n  provider: arm-gnu\n'
+            '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n'
+            '  source: { uri: https://invalid.example/nope.git }\n',
+      );
+      // --offline reuses an existing checkout rather than fetching.
+      Directory(p.join(ws.path, 'app', 'nope')).createSync(recursive: true);
+      await expectLater(
+        run(['--prepare', '--offline'], manifest: declared),
+        throwsA(isA<_Stop>()),
+      );
+      expect(ranCmake(), isTrue);
+      expect(logger.buffer.toString(), isNot(contains('nothing to configure')));
+    });
+
+    test('--build still needs an embedder', () async {
+      await expectLater(run(['--prepare', '--build']), throwsA(isA<_Stop>()));
+      expect(ranCmake(), isTrue);
+    });
+  });
+
   // --dry-run/--json promise to report the plan without touching the network.
   // cross.source:/cross.app: would otherwise clone on the way past.
   test('--json does not fetch a declared cross.source', () async {
