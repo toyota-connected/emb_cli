@@ -843,6 +843,11 @@ filesystems with coarse timestamps do not produce false hits.
 Combining them in one invocation (`--prepare --build`) builds the embedder once,
 not twice.
 
+A manifest with no embedder beside it — an app manifest that is later composed
+into an embedder's project with `--app` — has nothing to configure. `--prepare`
+on its own builds that manifest's augments and stops; `--build` still needs the
+embedder.
+
 > **If you use `--prepare` as a container/CI cache layer**, note it now does the
 > embedder build as well as the augments. That is the point — the layer carries
 > more, and the build stage that consumes it does less — but the layer is bigger

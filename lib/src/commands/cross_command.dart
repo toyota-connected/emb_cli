@@ -1074,6 +1074,8 @@ class CrossCommand extends Command<int> {
         launcher: launcher,
         hostTools: target.hostTools || args['host-tools'] == true,
         selectedBackends: selectedBackends,
+        // --build needs an embedder; --prepare alone does not.
+        allowNoSource: !doBuild,
       );
       if (preparedEmbedder == null) return ExitCode.software.code;
       if (target.modules.isNotEmpty) {
@@ -1260,6 +1262,7 @@ class CrossCommand extends Command<int> {
     required bool hostTools,
     List<String> selectedBackends = const [],
     bool skipIfBuilt = false,
+    bool allowNoSource = false,
   }) async {
     // A native `local` build: no sysroot; host toolchain; augments stage into
     // a separate overlay rather than the sysroot.
@@ -1416,6 +1419,25 @@ class CrossCommand extends Command<int> {
       }
     }
 
+    // A manifest with augments and no embedder beside it: an app manifest
+    // prepared on its own, whose embedder comes from the project it is later
+    // composed into with --app. The augments above are everything --prepare
+    // can do for it, so stop here rather than fail a configure that has
+    // nothing to read. --build still fails, because it has nothing to bundle.
+    if (allowNoSource && !_hasBuildFile(source, target.generator)) {
+      _logger.info(
+        '  embedder      : nothing to configure in '
+        '${p.normalize(source.path)} (skipped)',
+      );
+      return _EmbedderResult(
+        results: const [],
+        buildRoot: buildRoot,
+        builder: builder,
+        stageDir: stageDir,
+        overlayPaths: overlayPaths,
+      );
+    }
+
     final buildSw = Stopwatch()..start();
     final results = backends.isEmpty
         ? [
@@ -1462,6 +1484,14 @@ class CrossCommand extends Command<int> {
       overlayPaths: overlayPaths,
     );
   }
+
+  /// Whether [source] has the top-level file [generator] configures from.
+  static bool _hasBuildFile(Directory source, CrossGenerator generator) => File(
+    p.join(source.path, switch (generator) {
+      CrossGenerator.cmake => 'CMakeLists.txt',
+      CrossGenerator.meson => 'meson.build',
+    }),
+  ).existsSync();
 
   /// Build the app bundle and assemble runnable output. Delegates augment +
   /// embedder compilation to [_buildEmbedder] (which skips the cmake/meson
