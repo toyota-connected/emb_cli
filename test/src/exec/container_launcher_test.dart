@@ -76,4 +76,23 @@ void main() {
       expect(code, 127);
     },
   );
+
+  test('default runner completes and does not hang', () async {
+    // A fixture script that prints lines and exits — exercises the real
+    // _defaultRunner without needing a container runtime.
+    final dir = Directory.systemTemp.createTempSync('emb_test_');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final script = File('${dir.path}/fixture.sh')
+      ..writeAsStringSync(
+        '#!/bin/sh\nfor i in \$(seq 1 200); do echo "line \$i"; done\n',
+      );
+    Process.runSync('chmod', ['+x', script.path]);
+
+    final launcher = ContainerLauncher(tool: script.path);
+    // The script ignores argv, so the container args are harmless noise.
+    final code = await launcher
+        .run(image: 'unused', embArgs: const [])
+        .timeout(const Duration(seconds: 5));
+    expect(code, 0);
+  }, tags: 'integration');
 }
