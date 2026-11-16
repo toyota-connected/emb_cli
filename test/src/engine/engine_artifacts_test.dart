@@ -192,6 +192,30 @@ void main() {
       expect(p.basename(r.bundleDir!), 'bundle-release-x86_64');
     });
 
+    // AotBuilder's gen_snapshot scan reads engine-sdk-<mode>-<engineArch>.
+    // Linked under the raw arch, a fetch for 'x64' / 'aarch64' / 'arm'
+    // succeeds and the rescan still misses.
+    for (final (arch, token) in [
+      ('x64', 'x86_64'),
+      ('aarch64', 'arm64'),
+      ('arm', 'armv7hf'),
+    ]) {
+      test('the engine SDK link for $arch uses the normalized token', () async {
+        final ws = Directory(p.join(tmp.path, 'ws'))..createSync();
+        final blob = await seedSdk('sdk', 'x');
+        final r = await EngineArtifacts(
+          Workspace(ws),
+          cas: _FakeCas(cache, blob),
+          store: Store(cache),
+        ).fetch(runtime: 'release', arch: arch, commit: 'aaa111');
+        expect(r.ok, isTrue, reason: r.message);
+        final links = Directory(
+          p.join(Workspace(ws).platformDir('flutter-engine').path, 'aaa111'),
+        ).listSync().map((e) => p.basename(e.path));
+        expect(links, ['engine-sdk-release-$token']);
+      });
+    }
+
     test('stores the SDK once and symlinks it into each workspace', () async {
       // A tiny engine SDK tarball with the gen_snapshot clang sibling layout.
       final src = Directory(p.join(tmp.path, 'sdk'))..createSync();
