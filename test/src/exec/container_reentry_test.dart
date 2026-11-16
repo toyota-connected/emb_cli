@@ -62,7 +62,29 @@ void main() {
     expect(seenArgs!.last, '--exec-native');
   });
 
-  test('maybeRun calls onError for exit 127 (tool not found)', () async {
+  test(
+    'maybeRun calls onError for tool-not-found (ProcessException)',
+    () async {
+      String? errorMsg;
+      final r = ContainerReentry(
+        host: _host(HostOs.macos, 'arm64'),
+        launcher: ContainerLauncher(
+          run: (exe, args) async =>
+              throw ProcessException(exe, args, 'No such file or directory', 2),
+        ),
+        image: 'img',
+      );
+      final code = await r.maybeRun(
+        embArgs: const ['aot'],
+        mounts: const [],
+        onError: (msg) => errorMsg = msg,
+      );
+      expect(code, 127);
+      expect(errorMsg, contains('Container tool not found'));
+    },
+  );
+
+  test('maybeRun reports generic message for container exit 127', () async {
     String? errorMsg;
     final r = ContainerReentry(
       host: _host(HostOs.macos, 'arm64'),
@@ -77,7 +99,7 @@ void main() {
       onError: (msg) => errorMsg = msg,
     );
     expect(code, 127);
-    expect(errorMsg, contains('Container tool not found'));
+    expect(errorMsg, contains('exited with code 127'));
   });
 
   test('maybeRun calls onError for non-zero exit', () async {

@@ -146,8 +146,7 @@ class BundleCommand extends Command<int> {
           '--obfuscate',
         if (args.wasParsed('obfuscate') && args['obfuscate'] as bool == false)
           '--no-obfuscate',
-        if (args.wasParsed('strip') && args['strip'] as bool == false)
-          '--no-strip',
+        if (args['strip'] as bool == false) '--no-strip',
         if (explicitOutput != null) ...[
           '--output',
           Directory(explicitOutput).absolute.path,

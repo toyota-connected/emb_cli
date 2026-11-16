@@ -340,31 +340,41 @@ class EngineCommand extends Command<int> {
     final tool = _containerTool();
     final auth = ContainerReentry.containerAuthContext(tool: tool);
     final launcher = _containerLauncher ?? ContainerLauncher(tool: tool);
-    // Container output streams directly via inherited stdio; don't pass
-    // onOutput/onError (the production runner returns empty strings).
-    final code = await launcher.run(
-      image: env.image,
-      embArgs: [
-        'engine',
-        '--build-engine',
-        '--commit',
-        commit,
-        '--arch',
-        arch,
-        '--mode',
-        mode,
-        '--libc',
-        profile.libc.token,
-        if (profile.sysrootId != null) ...['--sysroot-id', profile.sysrootId!],
-        if (strict) '--offline-strict' else if (offline) '--offline',
-        // Do not pass -w: the builder image sets FLUTTER_WORKSPACE=/emb.
-        // Overriding it with the host workspace would resolve macOS binaries
-        // inside the Linux container.
-      ],
-      mounts: [Mount(workspace.root.path), Mount(cache.path), ...auth.mounts],
-      workdir: workspace.root.path,
-      env: auth.env,
-    );
+    final int code;
+    try {
+      code = await launcher.run(
+        image: env.image,
+        embArgs: [
+          'engine',
+          '--build-engine',
+          '--commit',
+          commit,
+          '--arch',
+          arch,
+          '--mode',
+          mode,
+          '--libc',
+          profile.libc.token,
+          if (profile.sysrootId != null) ...[
+            '--sysroot-id',
+            profile.sysrootId!,
+          ],
+          if (strict) '--offline-strict' else if (offline) '--offline',
+          // Do not pass -w: the builder image sets FLUTTER_WORKSPACE=/emb.
+          // Overriding it with the host workspace would resolve macOS binaries
+          // inside the Linux container.
+        ],
+        mounts: [Mount(workspace.root.path), Mount(cache.path), ...auth.mounts],
+        workdir: workspace.root.path,
+        env: {...auth.env, 'EMB_CACHE_DIR': cache.path},
+      );
+    } on ContainerToolNotFound catch (e) {
+      step.fail(
+        'Engine $mode: ${e.tool} not found (${e.message}). '
+        'Is Docker installed and running?',
+      );
+      return false;
+    }
     if (code == 0) {
       step.complete('Engine $mode built in ${env.image}');
       return true;

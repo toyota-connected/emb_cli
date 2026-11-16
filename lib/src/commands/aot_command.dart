@@ -147,8 +147,8 @@ class AotCommand extends Command<int> {
           '--obfuscate',
         if (args.wasParsed('obfuscate') && args['obfuscate'] as bool == false)
           '--no-obfuscate',
-        if (args.wasParsed('strip') && args['strip'] as bool == false)
-          '--no-strip',
+        // strip defaults to true — false implies explicit --no-strip.
+        if (args['strip'] as bool == false) '--no-strip',
       ],
       // Container output streams directly via inherited stdio.
       onError: _logger.err,

@@ -49,38 +49,31 @@ void main() {
   );
 
   test(
-    'run returns 127 and reports via onError when tool is missing',
+    'run throws ContainerToolNotFound when tool binary is missing',
     () async {
       final launcher = ContainerLauncher(
         run: (exe, args) async =>
             throw ProcessException(exe, args, 'No such file or directory', 2),
       );
-      final errLines = <String>[];
-      final code = await launcher.run(
-        image: 'img',
-        embArgs: const ['aot'],
-        onError: errLines.add,
+      expect(
+        () => launcher.run(image: 'img', embArgs: const ['aot']),
+        throwsA(
+          isA<ContainerToolNotFound>()
+              .having((e) => e.tool, 'tool', 'docker')
+              .having((e) => e.message, 'message', contains('No such file')),
+        ),
       );
-      expect(code, 127);
-      expect(errLines, hasLength(1));
-      expect(errLines.first, contains('docker'));
     },
   );
 
-  test('run surfaces stdout and stderr via callbacks', () async {
-    final launcher = ContainerLauncher(
-      run: (exe, args) async =>
-          ProcessResult(0, 1, 'line1\nline2\n', 'err1\nerr2\n'),
-    );
-    final outLines = <String>[];
-    final errLines = <String>[];
-    await launcher.run(
-      image: 'img',
-      embArgs: const ['aot'],
-      onOutput: outLines.add,
-      onError: errLines.add,
-    );
-    expect(outLines, ['line1', 'line2']);
-    expect(errLines, ['err1', 'err2']);
-  });
+  test(
+    'run returns exit code 127 from the container without throwing',
+    () async {
+      final launcher = ContainerLauncher(
+        run: (exe, args) async => ProcessResult(0, 127, '', ''),
+      );
+      final code = await launcher.run(image: 'img', embArgs: const ['aot']);
+      expect(code, 127);
+    },
+  );
 }

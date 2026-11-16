@@ -11,15 +11,30 @@ typedef ContainerRunner =
 
 /// The default production runner: inherits the parent's stdio so container
 /// output (image pulls, build logs, errors) streams in real-time.
-ContainerRunner _defaultRunner(String tool) =>
-    (executable, args, {environment}) async {
-      final process = await Process.start(
-        executable,
-        args,
-        mode: ProcessStartMode.inheritStdio,
-      );
-      return ProcessResult(process.pid, await process.exitCode, '', '');
-    };
+Future<ProcessResult> _defaultRunner(
+  String executable,
+  List<String> args,
+) async {
+  final process = await Process.start(
+    executable,
+    args,
+    mode: ProcessStartMode.inheritStdio,
+  );
+  return ProcessResult(process.pid, await process.exitCode, '', '');
+}
+
+/// Thrown when the container tool binary (docker / podman) is not found on
+/// `PATH`. Callers can distinguish this from a container that ran but exited
+/// with 127 (missing command *inside* the image).
+class ContainerToolNotFound implements Exception {
+  ContainerToolNotFound(this.tool, this.message);
+
+  final String tool;
+  final String message;
+
+  @override
+  String toString() => '$tool: $message';
+}
 
 /// A host bind-mount, exposed at the same path inside the container.
 class Mount {
@@ -43,7 +58,7 @@ class Mount {
 /// guard).
 class ContainerLauncher {
   ContainerLauncher({ContainerRunner? run, String tool = 'docker'})
-    : _run = run ?? _defaultRunner(tool),
+    : _run = run ?? _defaultRunner,
       _tool = tool;
 
   final ContainerRunner _run;
@@ -77,21 +92,18 @@ class ContainerLauncher {
   /// Run [embArgs] inside [image]; returns the inner emb's exit code.
   ///
   /// The injected [ContainerRunner] (or the default inherited-stdio runner)
-  /// handles process spawning. Output from the [ProcessResult] is routed
-  /// through [onOutput]/[onError] when present and non-empty (the default
-  /// production runner returns empty strings since stdio is inherited).
+  /// handles process spawning. Container output streams directly to the
+  /// terminal via inherited stdio.
   ///
-  /// Returns 127 (command-not-found convention) when the container tool
-  /// binary is absent, instead of letting the [ProcessException] propagate
-  /// unhandled.
+  /// Throws [ContainerToolNotFound] when the container tool binary is absent,
+  /// so callers can distinguish "docker not installed" from "command inside the
+  /// container exited 127".
   Future<int> run({
     required String image,
     required List<String> embArgs,
     List<Mount> mounts = const [],
     String? workdir,
     Map<String, String> env = const {},
-    void Function(String line)? onOutput,
-    void Function(String line)? onError,
   }) async {
     final args = argv(
       image: image,
@@ -105,24 +117,7 @@ class ContainerLauncher {
     try {
       result = await _run(_tool, args);
     } on ProcessException catch (e) {
-      onError?.call('$_tool: ${e.message}');
-      return 127;
-    }
-    if (onOutput != null) {
-      final out = result.stdout as String;
-      if (out.isNotEmpty) {
-        for (final line in out.split('\n')) {
-          if (line.isNotEmpty) onOutput(line);
-        }
-      }
-    }
-    if (onError != null) {
-      final err = result.stderr as String;
-      if (err.isNotEmpty) {
-        for (final line in err.split('\n')) {
-          if (line.isNotEmpty) onError(line);
-        }
-      }
+      throw ContainerToolNotFound(_tool, e.message);
     }
     return result.exitCode;
   }

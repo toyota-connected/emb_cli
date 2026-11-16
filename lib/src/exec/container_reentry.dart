@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:emb_cli/src/cache/cache_dir.dart';
 import 'package:emb_cli/src/exec/container_launcher.dart';
 import 'package:emb_cli/src/exec/exec_env.dart';
 import 'package:emb_cli/src/host/host_info.dart';
@@ -66,19 +67,23 @@ class ContainerReentry {
     onRouting?.call('Routing through container (${env.reason}): ${env.image}');
     final auth = containerAuthContext(tool: _tool);
     final launcher = _launcher ?? ContainerLauncher(tool: _tool);
-    final code = await launcher.run(
-      image: env.image,
-      embArgs: embArgs,
-      mounts: [...mounts, ...auth.mounts],
-      workdir: workdir,
-      env: auth.env,
-    );
-    if (code == 127) {
+    final int code;
+    try {
+      code = await launcher.run(
+        image: env.image,
+        embArgs: embArgs,
+        mounts: [...mounts, ...auth.mounts],
+        workdir: workdir,
+        env: {...auth.env, 'EMB_CACHE_DIR': resolveCacheDir().path},
+      );
+    } on ContainerToolNotFound catch (e) {
       onError?.call(
-        'Container tool not found. '
+        'Container tool not found (${e.tool}: ${e.message}). '
         'Is Docker installed and running? Try: docker info',
       );
-    } else if (code != 0) {
+      return 127;
+    }
+    if (code != 0) {
       onError?.call('Container exited with code $code.');
     }
     return code;

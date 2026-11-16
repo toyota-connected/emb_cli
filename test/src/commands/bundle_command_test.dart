@@ -77,6 +77,9 @@ void main() {
     final embArgStart = seenArgs!.indexOf('emb');
     final embArgs = seenArgs!.sublist(embArgStart + 1);
     expect(embArgs, isNot(contains('-w')));
+    // Neither obfuscate flag should appear when the user didn't pass one.
+    expect(embArgs, isNot(contains('--obfuscate')));
+    expect(embArgs, isNot(contains('--no-obfuscate')));
   });
 
   test(
@@ -119,12 +122,14 @@ void main() {
         'arm64',
         '--build',
         '--no-strip',
+        '--no-obfuscate',
       ]);
 
       expect(code, ExitCode.success.code);
       final embArgStart = seenArgs!.indexOf('emb');
       final embArgs = seenArgs!.sublist(embArgStart + 1);
       expect(embArgs, contains('--no-strip'));
+      expect(embArgs, contains('--no-obfuscate'));
     },
   );
 }
