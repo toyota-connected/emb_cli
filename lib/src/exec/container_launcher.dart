@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:io';
 
 /// A container runtime invoker (`docker` / `podman`), injectable for tests.
@@ -18,13 +17,11 @@ Future<ProcessResult> _defaultRunner(
   List<String> args,
 ) async {
   final process = await Process.start(executable, args);
-  final out = process.stdout.listen(stdout.add);
-  final err = process.stderr.listen(stderr.add);
+  final out = process.stdout.forEach(stdout.add);
+  final err = process.stderr.forEach(stderr.add);
   final code = await process.exitCode;
-  await out.asFuture<void>();
-  await err.asFuture<void>();
-  unawaited(out.cancel());
-  unawaited(err.cancel());
+  await out;
+  await err;
   return ProcessResult(process.pid, code, '', '');
 }
 
