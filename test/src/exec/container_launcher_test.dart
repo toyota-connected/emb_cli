@@ -81,6 +81,7 @@ void main() {
     // A fixture script that prints lines and exits — exercises the real
     // _defaultRunner without needing a container runtime.
     final dir = Directory.systemTemp.createTempSync('emb_test_');
+    addTearDown(() => dir.deleteSync(recursive: true));
     final script = File('${dir.path}/fixture.sh')
       ..writeAsStringSync(
         '#!/bin/sh\nfor i in \$(seq 1 200); do echo "line \$i"; done\n',
@@ -93,7 +94,5 @@ void main() {
         .run(image: 'unused', embArgs: const [])
         .timeout(const Duration(seconds: 5));
     expect(code, 0);
-
-    dir.deleteSync(recursive: true);
   }, tags: 'integration');
 }

@@ -3,25 +3,26 @@ import 'dart:io';
 /// A container runtime invoker (`docker` / `podman`), injectable for tests.
 ///
 /// Returns a [ProcessResult] with the container's exit code, stdout, and
-/// stderr. The default production runner pipes output and forwards it to the
-/// terminal in real-time (stdout/stderr in the result are empty). Tests inject
-/// a runner that returns buffered output for assertion.
+/// stderr. The default production runner inherits the parent's stdio so the
+/// child writes directly to the terminal (stdout/stderr in the result are
+/// empty). Tests inject a runner that returns buffered output for assertion.
 typedef ContainerRunner =
     Future<ProcessResult> Function(String executable, List<String> args);
 
-/// The default production runner: pipes stdout/stderr and forwards raw bytes
-/// to the terminal in real-time, draining both streams before returning so no
-/// output is lost.
+/// The default production runner: inherits the parent's stdio so the child
+/// writes directly to the terminal fds. This preserves TTY detection (color,
+/// progress rendering) and allows interactive stdin (e.g. git credential
+/// prompts) without any drain-timing concerns.
 Future<ProcessResult> _defaultRunner(
   String executable,
   List<String> args,
 ) async {
-  final process = await Process.start(executable, args);
-  final out = process.stdout.forEach(stdout.add);
-  final err = process.stderr.forEach(stderr.add);
+  final process = await Process.start(
+    executable,
+    args,
+    mode: ProcessStartMode.inheritStdio,
+  );
   final code = await process.exitCode;
-  await out;
-  await err;
   return ProcessResult(process.pid, code, '', '');
 }
 
@@ -59,8 +60,9 @@ class Mount {
 /// and sets `EMB_IN_CONTAINER=1` so the inner emb runs directly (recursion
 /// guard).
 ///
-/// The default [ContainerRunner] pipes stdout/stderr and forwards raw bytes to
-/// the terminal, draining both streams before returning so no output is lost.
+/// The default [ContainerRunner] inherits the parent's stdio so the child
+/// writes directly to the terminal, preserving TTY detection and interactive
+/// stdin.
 class ContainerLauncher {
   ContainerLauncher({ContainerRunner? run, String tool = 'docker'})
     : _run = run ?? _defaultRunner,
