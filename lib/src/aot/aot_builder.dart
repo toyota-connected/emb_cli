@@ -53,7 +53,9 @@ class AotBuilder {
     HostInfo? host,
     this.runProcess = defaultProcessRunner,
     this.glibcSysroot,
-  }) : host = host ?? HostInfo.detect();
+    EngineArtifacts Function(Workspace ws)? engineFactory,
+  }) : host = host ?? HostInfo.detect(),
+       _engineFactory = engineFactory ?? EngineArtifacts.new;
 
   final Workspace workspace;
   final HostInfo host;
@@ -68,6 +70,10 @@ class AotBuilder {
   /// pass `ProcessOutputMode.inherit`, wiring child stdio to the parent TTY
   /// (as before). Injectable for tests.
   final ProcessRunner runProcess;
+
+  /// Builds the fetcher [_resolveGenSnapshot] falls back to. Injectable so the
+  /// fallback is testable without the network.
+  final EngineArtifacts Function(Workspace ws) _engineFactory;
 
   String get _flutterBin => FlutterSdk(workspace).flutterBin;
   Directory get _hostEngine => Directory(
@@ -667,38 +673,57 @@ class AotBuilder {
     final cross = targetToken != hostToken;
 
     final commit = workspace.engineCommit();
+    final hostGen = p.join(_hostEngine.path, 'gen_snapshot');
+    final haveHostGen = !cross && File(hostGen).existsSync();
     if (commit != null) {
       final found = _scanEngineGenSnapshot(commit, targetToken, cross, modes);
       if (found != null) return found;
+
+      // A native build with the Flutter SDK's own gen_snapshot needs nothing
+      // fetched; going to the network first cost a download per mode for a
+      // binary that was already on disk.
+      if (haveHostGen) return hostGen;
 
       // The engine SDK may be in the shared cache but not materialized into
       // this workspace — common in container re-entry where a prior container
       // cached the download but workspace symlinks were ephemeral. Fetching
       // re-materializes from the store (no re-download when cached) or
       // downloads when absent.
+      //
+      // One gen_snapshot serves every mode, so stop at the first mode whose
+      // SDK yields one rather than fetching them all.
       onStep?.call('Fetching engine SDK for gen_snapshot');
-      final engine = EngineArtifacts(workspace);
+      final engine = _engineFactory(workspace);
       try {
         for (final mode in modes) {
-          await engine.fetch(runtime: mode, arch: arch, commit: commit);
+          final r = await engine.fetch(
+            runtime: mode,
+            arch: targetToken,
+            commit: commit,
+          );
+          if (!r.ok) {
+            // Otherwise the build ends at "No gen_snapshot" with nothing
+            // naming the fetch that failed.
+            onStep?.call(
+              'engine SDK $mode/$targetToken: '
+              '${r.message ?? r.status.name}',
+            );
+            continue;
+          }
+          final restored = _scanEngineGenSnapshot(
+            commit,
+            targetToken,
+            cross,
+            modes,
+          );
+          if (restored != null) return restored;
         }
       } finally {
         engine.close();
       }
-      final restored = _scanEngineGenSnapshot(
-        commit,
-        targetToken,
-        cross,
-        modes,
-      );
-      if (restored != null) return restored;
     }
 
-    if (!cross) {
-      final hostGen = p.join(_hostEngine.path, 'gen_snapshot');
-      if (File(hostGen).existsSync()) return hostGen;
-    }
-    return null;
+    return haveHostGen ? hostGen : null;
   }
 
   /// Scan workspace engine-sdk directories for a gen_snapshot binary matching
