@@ -168,7 +168,13 @@ class EngineArtifacts {
     final bundleDir = Directory(
       p.join(engineDir.path, 'bundle-$runtime-${engineArch(arch)}'),
     );
-    final restoreLink = p.join(cwdEngine.path, 'engine-sdk-$runtime-$arch');
+    // Same token for the SDK link: AotBuilder scans for
+    // `engine-sdk-<mode>-<engineArch>`, so a link named from a raw `x64` /
+    // `aarch64` / `arm` is fetched and then never found.
+    final restoreLink = p.join(
+      cwdEngine.path,
+      'engine-sdk-$runtime-${engineArch(arch)}',
+    );
     final key = engineKey(runtime, arch, commit);
 
     // Ensure the extracted engine SDK is in the shared store, then symlink the
