@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:emb_cli/src/cache/cache_dir.dart';
 import 'package:emb_cli/src/exec/container_launcher.dart';
 import 'package:emb_cli/src/exec/container_reentry.dart';
 import 'package:emb_cli/src/host/host_info.dart';
@@ -60,6 +61,26 @@ void main() {
     expect(seenTool, 'podman');
     expect(seenArgs, contains('ghcr.io/x/runtime:latest'));
     expect(seenArgs!.last, '--exec-native');
+  });
+
+  // Without it the inner emb resolves its own $HOME/.cache/emb, which no
+  // mount exposes: every run starts from a cold cache and what it writes is
+  // discarded with the container.
+  test('maybeRun forwards the host cache path as EMB_CACHE_DIR', () async {
+    List<String>? seenArgs;
+    final r = ContainerReentry(
+      host: _host(HostOs.macos, 'arm64'),
+      launcher: _fakeLauncher((_, args) => seenArgs = args),
+      image: 'img',
+      inContainer: false,
+    );
+    await r.maybeRun(embArgs: const ['aot'], mounts: const []);
+
+    final runtime = seenArgs!.sublist(0, seenArgs!.indexOf('img'));
+    expect(
+      runtime,
+      containsAllInOrder(['-e', 'EMB_CACHE_DIR=${resolveCacheDir().path}']),
+    );
   });
 
   test(

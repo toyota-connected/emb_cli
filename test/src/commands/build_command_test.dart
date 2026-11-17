@@ -56,6 +56,15 @@ build:
     expect(seenArgs, contains(pkg.absolute.path));
     expect(seenArgs!.first, 'run'); // docker/podman argv
     expect(seenArgs!.last, '--exec-native');
+    // EMB_CACHE_DIR must name a path a mount exposes, or the inner emb
+    // fills a cache that dies with the container.
+    final cacheDir = [
+      for (var i = 0; i < seenArgs!.length - 1; i++)
+        if (seenArgs![i] == '-e' &&
+            seenArgs![i + 1].startsWith('EMB_CACHE_DIR='))
+          seenArgs![i + 1].substring(14),
+    ].single;
+    expect(seenArgs, containsAllInOrder(['-v', '$cacheDir:$cacheDir']));
     // Must NOT forward -w: the container's $FLUTTER_WORKSPACE resolves the
     // Linux Flutter SDK; the host workspace would resolve macOS binaries.
     final embArgStart = seenArgs!.indexOf('emb');
