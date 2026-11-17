@@ -185,6 +185,22 @@ void main() {
       }
     });
 
+    // The forwarded cache path is only good if a mount exposes it; at any
+    // other path the inner emb would fill a cache that dies with the
+    // container.
+    test('EMB_CACHE_DIR names a mounted path', () async {
+      final h = _Harness();
+      await h.run();
+      final argv = h.launches.single;
+      final forwarded = [
+        for (var i = 0; i < argv.length - 1; i++)
+          if (argv[i] == '-e' && argv[i + 1].startsWith('EMB_CACHE_DIR='))
+            argv[i + 1].substring(14),
+      ];
+      expect(forwarded, hasLength(1));
+      expect(h.volumes, contains('${forwarded.single}:${forwarded.single}'));
+    });
+
     test('forwards --mode and --arch', () async {
       final h = _Harness();
       await h.run([
