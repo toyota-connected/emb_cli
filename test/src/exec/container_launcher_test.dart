@@ -77,6 +77,57 @@ void main() {
     },
   );
 
+  group('-i / -t', () {
+    List<String> flags(List<String> argv) => [
+      for (final a in argv.takeWhile((a) => a != 'img'))
+        if (a == '-i' || a == '-t') a,
+    ];
+
+    test('argv emits neither by default', () {
+      final argv = ContainerLauncher.argv(image: 'img', embArgs: const []);
+      expect(flags(argv), isEmpty);
+    });
+
+    // Runtime options, so they sit before the image: after it they would be
+    // arguments to emb.
+    test('argv puts them right after --rm', () {
+      final argv = ContainerLauncher.argv(
+        image: 'img',
+        embArgs: const ['aot'],
+        mounts: const [Mount('/ws')],
+        interactive: true,
+        tty: true,
+      );
+      expect(argv.take(4), ['run', '--rm', '-i', '-t']);
+      expect(argv.skipWhile((a) => a != 'img').skip(1), [
+        'emb',
+        'aot',
+        '--exec-native',
+      ]);
+    });
+
+    for (final (interactive, tty, want) in [
+      (false, false, <String>[]),
+      (true, false, ['-i']),
+      (false, true, ['-t']),
+      (true, true, ['-i', '-t']),
+    ]) {
+      test('run passes interactive=$interactive tty=$tty through', () async {
+        List<String>? seen;
+        final launcher = ContainerLauncher(
+          run: (exe, args) async {
+            seen = args;
+            return ProcessResult(0, 0, '', '');
+          },
+          interactive: interactive,
+          tty: tty,
+        );
+        await launcher.run(image: 'img', embArgs: const []);
+        expect(flags(seen!), want);
+      });
+    }
+  });
+
   test('default runner completes and does not hang', () async {
     // A fixture script that prints lines and exits — exercises the real
     // _defaultRunner without needing a container runtime.
