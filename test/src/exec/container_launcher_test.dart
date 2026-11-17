@@ -128,6 +128,44 @@ void main() {
     }
   });
 
+  group('foregroundFromStat', () {
+    // pid (comm) state ppid pgrp session tty_nr tpgid flags …
+    test('true when pgrp is the terminal foreground group', () {
+      expect(
+        foregroundFromStat('42 (emb) R 7 42 7 34816 42 4194304 0'),
+        isTrue,
+      );
+    });
+
+    test('false for a background job', () {
+      expect(
+        foregroundFromStat('42 (emb) R 7 42 7 34816 99 4194304 0'),
+        isFalse,
+      );
+    });
+
+    test('false with no controlling terminal (tpgid -1)', () {
+      expect(foregroundFromStat('42 (emb) R 7 42 7 0 -1 4194304 0'), isFalse);
+    });
+
+    test('counts fields from the last ")" of the command name', () {
+      expect(
+        foregroundFromStat('42 (a) b (1 2 3 4 5 6) S 7 42 7 34816 42 0'),
+        isTrue,
+      );
+      expect(
+        foregroundFromStat('42 (a) b (1 2 3 4 5 6) S 7 42 7 34816 99 0'),
+        isFalse,
+      );
+    });
+
+    test('false for unparseable input', () {
+      expect(foregroundFromStat(''), isFalse);
+      expect(foregroundFromStat('42 (emb) R 7'), isFalse);
+      expect(foregroundFromStat('42 (emb) R 7 x 7 0 x 0'), isFalse);
+    });
+  });
+
   test('default runner completes and does not hang', () async {
     // A fixture script that prints lines and exits — exercises the real
     // _defaultRunner without needing a container runtime.

@@ -1,5 +1,7 @@
 import 'dart:io';
 
+import 'package:meta/meta.dart';
+
 /// A container runtime invoker (`docker` / `podman`), injectable for tests.
 ///
 /// Returns a [ProcessResult] with the container's exit code, stdout, and
@@ -44,6 +46,45 @@ bool _stdinIsTerminal() {
   }
 }
 
+/// Whether a process with this `/proc/<pid>/stat` line is in its terminal's
+/// foreground process group: field 5 (`pgrp`) equals field 8 (`tpgid`).
+///
+/// The command name (field 2) may hold spaces and parentheses, so the fields
+/// are counted from the last `)`. False for anything unparseable.
+@visibleForTesting
+bool foregroundFromStat(String stat) {
+  final close = stat.lastIndexOf(')');
+  if (close < 0) return false;
+  // After the name: state ppid pgrp session tty_nr tpgid …
+  final f = stat.substring(close + 1).trim().split(RegExp(r'\s+'));
+  if (f.length < 6) return false;
+  final pgrp = int.tryParse(f[2]);
+  return pgrp != null && pgrp == int.tryParse(f[5]);
+}
+
+/// Whether emb is in the terminal's foreground process group.
+///
+/// `emb … &` still has the terminal on every fd, but a runtime client given
+/// `-i -t` then reads and reconfigures it from a background job, and the shell
+/// stops the job (SIGTTIN / SIGTTOU) until it is brought forward. When the
+/// answer cannot be had the result is false: a plain run always completes.
+bool _inForeground() {
+  if (Platform.isWindows) return true; // no job control
+  try {
+    if (Platform.isLinux) {
+      return foregroundFromStat(File('/proc/self/stat').readAsStringSync());
+    }
+    final r = Process.runSync('ps', ['-o', 'pgid=,tpgid=', '-p', '$pid']);
+    if (r.exitCode != 0) return false;
+    final f = (r.stdout as String).trim().split(RegExp(r'\s+'));
+    if (f.length != 2) return false;
+    final pgid = int.tryParse(f[0]);
+    return pgid != null && pgid == int.tryParse(f[1]);
+  } on Object {
+    return false;
+  }
+}
+
 /// Thrown when the container tool binary (docker / podman) is not found on
 /// `PATH`. Callers can distinguish this from a container that ran but exited
 /// with 127 (missing command *inside* the image).
@@ -79,10 +120,10 @@ class Mount {
 /// guard).
 ///
 /// The default [ContainerRunner] inherits the parent's stdio. The container
-/// gets an open stdin (`-i`) when emb's own stdin is a terminal, and a TTY
-/// (`-t`) when stdin, stdout and stderr all are, so the inner emb, flutter,
-/// ninja and git color and prompt as they would natively, and a piped,
-/// redirected or CI run stays plain.
+/// gets an open stdin and a TTY (`-i -t`) when emb's stdin, stdout and stderr
+/// are all terminals and emb is the foreground job, so the inner emb, flutter,
+/// ninja and git color and prompt as they would natively. A piped, redirected,
+/// backgrounded or CI run gets neither and stays plain.
 class ContainerLauncher {
   /// [interactive] and [tty] override the terminal detection; null (the
   /// default) asks the process's own stdio at [run] time.
@@ -154,21 +195,30 @@ class ContainerLauncher {
     String? workdir,
     Map<String, String> env = const {},
   }) async {
-    // `-t` only when all three are terminals:
-    //  * stdin, because a TTY with no `-i` gives the container a stdin that is
-    //    open and never written to. A read inside blocks forever, where
-    //    without `-t` it got EOF.
-    //  * stdout and stderr, because `-t` merges them, and `emb … 2>err.log`
-    //    on a terminal would leave the log empty.
-    final interactive = _interactive ?? _stdinIsTerminal();
+    // `-i -t` together or not at all, and only when all of these hold:
+    //  * stdin is a terminal. A TTY with no `-i` gives the container a stdin
+    //    that is open and never written to: a read inside blocks forever,
+    //    where without `-t` it got EOF.
+    //  * stdout and stderr are terminals. `-t` merges them, so
+    //    `emb … 2>err.log` would leave the log empty. `-i` alone is no
+    //    fallback: on Ctrl-C the terminal signals emb and the client but not
+    //    the container, and a client that outlives emb keeps reading the
+    //    terminal out from under the shell. With `-t` Ctrl-C is a byte the
+    //    container's own TTY turns into SIGINT.
+    //  * emb is the foreground job, see [_inForeground].
+    final attach =
+        _stdinIsTerminal() &&
+        stdout.hasTerminal &&
+        stderr.hasTerminal &&
+        _inForeground();
     final args = argv(
       image: image,
       embArgs: embArgs,
       mounts: mounts,
       workdir: workdir,
       env: env,
-      interactive: interactive,
-      tty: _tty ?? (interactive && stdout.hasTerminal && stderr.hasTerminal),
+      interactive: _interactive ?? attach,
+      tty: _tty ?? attach,
     );
 
     final ProcessResult result;
