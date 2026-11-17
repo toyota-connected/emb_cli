@@ -1,5 +1,7 @@
 import 'dart:io';
 
+import 'package:meta/meta.dart';
+
 /// A container runtime invoker (`docker` / `podman`), injectable for tests.
 ///
 /// Returns a [ProcessResult] with the container's exit code, stdout, and
@@ -9,10 +11,12 @@ import 'dart:io';
 typedef ContainerRunner =
     Future<ProcessResult> Function(String executable, List<String> args);
 
-/// The default production runner: inherits the parent's stdio so the child
-/// writes directly to the terminal fds. This preserves TTY detection (color,
-/// progress rendering) and allows interactive stdin (e.g. git credential
-/// prompts) without any drain-timing concerns.
+/// The default production runner: inherits the parent's stdio so the runtime
+/// client (`docker` / `podman`) reads and writes the terminal fds directly,
+/// with no drain timing to get wrong.
+///
+/// That gets the terminal as far as the client. Whether the container sees
+/// one is up to the `-i` / `-t` flags [ContainerLauncher.argv] emits.
 Future<ProcessResult> _defaultRunner(
   String executable,
   List<String> args,
@@ -24,6 +28,61 @@ Future<ProcessResult> _defaultRunner(
   );
   final code = await process.exitCode;
   return ProcessResult(process.pid, code, '', '');
+}
+
+/// Whether stdin is a real terminal.
+///
+/// `stdin.hasTerminal` is not that test: it is true for any character device,
+/// `/dev/null` included, so `emb … </dev/null` would be handed `-i -t` and
+/// then either hang (podman) or be refused (docker). Reading the echo mode is
+/// a `tcgetattr`, which only a terminal answers.
+bool _stdinIsTerminal() {
+  if (!stdin.hasTerminal) return false;
+  try {
+    stdin.echoMode;
+    return true;
+  } on StdinException {
+    return false;
+  }
+}
+
+/// Whether a process with this `/proc/<pid>/stat` line is in its terminal's
+/// foreground process group: field 5 (`pgrp`) equals field 8 (`tpgid`).
+///
+/// The command name (field 2) may hold spaces and parentheses, so the fields
+/// are counted from the last `)`. False for anything unparseable.
+@visibleForTesting
+bool foregroundFromStat(String stat) {
+  final close = stat.lastIndexOf(')');
+  if (close < 0) return false;
+  // After the name: state ppid pgrp session tty_nr tpgid …
+  final f = stat.substring(close + 1).trim().split(RegExp(r'\s+'));
+  if (f.length < 6) return false;
+  final pgrp = int.tryParse(f[2]);
+  return pgrp != null && pgrp == int.tryParse(f[5]);
+}
+
+/// Whether emb is in the terminal's foreground process group.
+///
+/// `emb … &` still has the terminal on every fd, but a runtime client given
+/// `-i -t` then reads and reconfigures it from a background job, and the shell
+/// stops the job (SIGTTIN / SIGTTOU) until it is brought forward. When the
+/// answer cannot be had the result is false: a plain run always completes.
+bool _inForeground() {
+  if (Platform.isWindows) return true; // no job control
+  try {
+    if (Platform.isLinux) {
+      return foregroundFromStat(File('/proc/self/stat').readAsStringSync());
+    }
+    final r = Process.runSync('ps', ['-o', 'pgid=,tpgid=', '-p', '$pid']);
+    if (r.exitCode != 0) return false;
+    final f = (r.stdout as String).trim().split(RegExp(r'\s+'));
+    if (f.length != 2) return false;
+    final pgid = int.tryParse(f[0]);
+    return pgid != null && pgid == int.tryParse(f[1]);
+  } on Object {
+    return false;
+  }
 }
 
 /// Thrown when the container tool binary (docker / podman) is not found on
@@ -60,30 +119,54 @@ class Mount {
 /// and sets `EMB_IN_CONTAINER=1` so the inner emb runs directly (recursion
 /// guard).
 ///
-/// The default [ContainerRunner] inherits the parent's stdio so the child
-/// writes directly to the terminal, preserving TTY detection and interactive
-/// stdin.
+/// The default [ContainerRunner] inherits the parent's stdio. The container
+/// gets an open stdin and a TTY (`-i -t`) when emb's stdin, stdout and stderr
+/// are all terminals and emb is the foreground job, so the inner emb, flutter,
+/// ninja and git color and prompt as they would natively. A piped, redirected,
+/// backgrounded or CI run gets neither and stays plain.
 class ContainerLauncher {
-  ContainerLauncher({ContainerRunner? run, String tool = 'docker'})
-    : _run = run ?? _defaultRunner,
-      _tool = tool;
+  /// [interactive] and [tty] override the terminal detection; null (the
+  /// default) asks the process's own stdio at [run] time.
+  ContainerLauncher({
+    ContainerRunner? run,
+    String tool = 'docker',
+    bool? interactive,
+    bool? tty,
+  }) : _run = run ?? _defaultRunner,
+       _tool = tool,
+       _interactive = interactive,
+       _tty = tty;
 
   final ContainerRunner _run;
   final String _tool;
+  final bool? _interactive;
+  final bool? _tty;
 
   /// The container runtime argv (everything after the executable):
-  /// `run --rm [-v mount…] [-w workdir] -e EMB_IN_CONTAINER=1 <image>
-  /// emb <embArgs> --exec-native`.
+  /// `run --rm [-i] [-t] [-v mount…] [-w workdir] -e EMB_IN_CONTAINER=1
+  /// <image> emb <embArgs> --exec-native`.
+  ///
+  /// [interactive] keeps the container's stdin open (`-i`); without it a read
+  /// inside the container gets EOF. [tty] allocates a pseudo-terminal (`-t`);
+  /// without it the container's stdout is a pipe whatever the host's is. Both
+  /// default off, which is what a non-terminal caller needs: `-t` folds stderr
+  /// into stdout, `-t` without `-i` leaves a read inside the container
+  /// blocked forever, and `-i -t` with no terminal on stdin makes docker
+  /// refuse to start ("the input device is not a TTY").
   static List<String> argv({
     required String image,
     required List<String> embArgs,
     List<Mount> mounts = const [],
     String? workdir,
     Map<String, String> env = const {},
+    bool interactive = false,
+    bool tty = false,
   }) {
     return [
       'run',
       '--rm',
+      if (interactive) '-i',
+      if (tty) '-t',
       for (final m in mounts) ...['-v', m.spec],
       if (workdir != null) ...['-w', workdir],
       '-e',
@@ -98,9 +181,9 @@ class ContainerLauncher {
 
   /// Run [embArgs] inside [image]; returns the inner emb's exit code.
   ///
-  /// The default production runner pipes stdout/stderr to the terminal in
-  /// real-time and returns empty strings. Test runners return buffered output
-  /// in the [ProcessResult].
+  /// The default production runner inherits stdio, so container output goes
+  /// straight to the terminal and the [ProcessResult] strings are empty. Test
+  /// runners return buffered output there.
   ///
   /// Throws [ContainerToolNotFound] when the container tool binary is absent,
   /// so callers can distinguish "docker not installed" from "command inside the
@@ -112,12 +195,30 @@ class ContainerLauncher {
     String? workdir,
     Map<String, String> env = const {},
   }) async {
+    // `-i -t` together or not at all, and only when all of these hold:
+    //  * stdin is a terminal. A TTY with no `-i` gives the container a stdin
+    //    that is open and never written to: a read inside blocks forever,
+    //    where without `-t` it got EOF.
+    //  * stdout and stderr are terminals. `-t` merges them, so
+    //    `emb … 2>err.log` would leave the log empty. `-i` alone is no
+    //    fallback: on Ctrl-C the terminal signals emb and the client but not
+    //    the container, and a client that outlives emb keeps reading the
+    //    terminal out from under the shell. With `-t` Ctrl-C is a byte the
+    //    container's own TTY turns into SIGINT.
+    //  * emb is the foreground job, see [_inForeground].
+    final attach =
+        _stdinIsTerminal() &&
+        stdout.hasTerminal &&
+        stderr.hasTerminal &&
+        _inForeground();
     final args = argv(
       image: image,
       embArgs: embArgs,
       mounts: mounts,
       workdir: workdir,
       env: env,
+      interactive: _interactive ?? attach,
+      tty: _tty ?? attach,
     );
 
     final ProcessResult result;
