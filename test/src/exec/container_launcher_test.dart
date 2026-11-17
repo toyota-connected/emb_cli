@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:emb_cli/src/exec/container_launcher.dart';
+import 'package:emb_cli/src/exec/termination_signals.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -226,5 +228,75 @@ void main() {
     },
     tags: 'integration',
     testOn: 'linux',
+  );
+
+  // The signals come from injected streams, so nothing is sent to the test
+  // process itself.
+  group(
+    'default runner and termination signals',
+    () {
+      late Directory dir;
+      late File ready;
+      late Map<ProcessSignal, StreamController<ProcessSignal>> ctl;
+
+      setUp(() {
+        dir = Directory.systemTemp.createTempSync('emb_test_');
+        ready = File('${dir.path}/ready');
+        ctl = {
+          for (final s in terminationSignals)
+            s: StreamController<ProcessSignal>(),
+        };
+      });
+      tearDown(() => dir.deleteSync(recursive: true));
+
+      // A stand-in client that runs [trap] and then spins until signaled. The
+      // loop is bounded so a regression fails the test, not hangs the run on a
+      // fixture that outlived it holding the runner's stdio.
+      Future<ProcessResult> start(String trap) {
+        final script = File('${dir.path}/fixture.sh')
+          ..writeAsStringSync(
+            '#!/bin/sh\n$trap\n: > "${ready.path}"\n'
+            'i=0; while [ \$i -lt 100 ]; do sleep 0.05; i=\$((i+1)); done\n',
+          );
+        Process.runSync('chmod', ['+x', script.path]);
+        return containerRunner(watch: (s) => ctl[s]!.stream)(
+          script.path,
+          const [],
+        ).timeout(const Duration(seconds: 10));
+      }
+
+      Future<void> untilReady() async {
+        while (!ready.existsSync()) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+        }
+      }
+
+      test('forwards the signal and returns the client exit code', () async {
+        final result = start("trap 'exit 42' TERM");
+        await untilReady();
+        ctl[ProcessSignal.sigterm]!.add(ProcessSignal.sigterm);
+        expect((await result).exitCode, 42);
+        // Nothing is left listening once the client is gone.
+        expect(ctl.values.any((c) => c.hasListener), isFalse);
+      });
+
+      test('a client killed by the signal reports 128 + n', () async {
+        final result = start(':');
+        await untilReady();
+        ctl[ProcessSignal.sigterm]!.add(ProcessSignal.sigterm);
+        expect((await result).exitCode, 143);
+      });
+
+      test('a second signal kills a client that ignored the first', () async {
+        final result = start("trap '' TERM INT");
+        await untilReady();
+        ctl[ProcessSignal.sigint]!.add(ProcessSignal.sigint);
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+        ctl[ProcessSignal.sigint]!.add(ProcessSignal.sigint);
+        expect((await result).exitCode, 137);
+      });
+    },
+    tags: 'integration',
+    testOn: '!windows',
   );
 }

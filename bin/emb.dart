@@ -1,9 +1,12 @@
 import 'dart:io';
 
 import 'package:emb_cli/src/command_runner.dart';
+import 'package:emb_cli/src/exec/termination_signals.dart';
 import 'package:emb_cli/src/pkg/native_lib.dart';
 
 Future<void> main(List<String> args) async {
+  // As a container's PID 1, emb must handle Ctrl-C itself.
+  exitOnTerminationWhenInit();
   // Locate the PackageKit native library before any backend use (Linux).
   await configurePackageKitLibrary();
   await _flushThenExit(await EmbCliCommandRunner().run(args));
