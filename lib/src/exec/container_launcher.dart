@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:io';
 
+import 'package:emb_cli/src/exec/termination_signals.dart';
 import 'package:meta/meta.dart';
 
 /// A container runtime invoker (`docker` / `podman`), injectable for tests.
@@ -17,18 +19,52 @@ typedef ContainerRunner =
 ///
 /// That gets the terminal as far as the client. Whether the container sees
 /// one is up to the `-i` / `-t` flags [ContainerLauncher.argv] emits.
-Future<ProcessResult> _defaultRunner(
-  String executable,
-  List<String> args,
-) async {
-  final process = await Process.start(
-    executable,
-    args,
-    mode: ProcessStartMode.inheritStdio,
-  );
-  final code = await process.exitCode;
-  return ProcessResult(process.pid, code, '', '');
-}
+///
+/// While the client runs, SIGINT and SIGTERM are passed on to it and emb
+/// waits for it to exit. Left at the default, the signal kills emb at once:
+/// the prompt comes back while the container is still stopping, and a signal
+/// sent to emb alone (`kill`, a CI cancel) never reaches the client, so the
+/// container runs on with nothing attached. The client forwards the signal
+/// to the container, and emb reports the exit code that results.
+///
+/// A second signal kills the client and stops waiting. An image whose emb
+/// predates its PID 1 signal handling ignores the forwarded signal, and
+/// without this emb could not be interrupted until the build finished.
+///
+/// A client that itself died of a signal is reported the way a shell would,
+/// as 128 + the signal number, not as Dart's negative code.
+///
+/// [watch] is the signal source, replaceable for tests. Not on Windows: there
+/// Ctrl-C goes to every process on the console, and [Process.kill] can only
+/// terminate the client outright.
+@visibleForTesting
+ContainerRunner containerRunner({SignalWatcher? watch}) =>
+    (executable, args) async {
+      final process = await Process.start(
+        executable,
+        args,
+        mode: ProcessStartMode.inheritStdio,
+      );
+      var forwarded = false;
+      void onSignal(ProcessSignal signal) {
+        process.kill(forwarded ? ProcessSignal.sigkill : signal);
+        forwarded = true;
+      }
+
+      final subs = <StreamSubscription<ProcessSignal>>[
+        if (!Platform.isWindows)
+          for (final s in terminationSignals)
+            (watch ?? (s) => s.watch())(s).listen(onSignal),
+      ];
+      try {
+        final code = await process.exitCode;
+        return ProcessResult(process.pid, code < 0 ? 128 - code : code, '', '');
+      } finally {
+        for (final sub in subs) {
+          await sub.cancel();
+        }
+      }
+    };
 
 /// Whether stdin is a real terminal.
 ///
@@ -132,7 +168,7 @@ class ContainerLauncher {
     String tool = 'docker',
     bool? interactive,
     bool? tty,
-  }) : _run = run ?? _defaultRunner,
+  }) : _run = run ?? containerRunner(),
        _tool = tool,
        _interactive = interactive,
        _tty = tty;
