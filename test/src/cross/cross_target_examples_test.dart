@@ -42,6 +42,25 @@ void main() {
       'agl_sdk_url.emb.yaml',
     ];
 
+    // The one example CI builds with --app (the `app bundle` job). Its
+    // module must stay app-rooted: that is what makes the job exercise module
+    // staging into the bundle, and what `emb matrix` keys off to leave the
+    // cell's cache keys out.
+    test('app-bundle: a stand-in embedder with an app-rooted module', () {
+      final t = _loadCross(p.join('app-bundle', 'embedder', 'emb.yaml'));
+      expect(t.package?.bin, 'hello-embedder');
+      final module = t.modules.single;
+      expect(module.name, 'hello');
+      expect(module.path, r'${app_root}/native/hello');
+      expect(module.artifacts, ['libhello.so']);
+      expect(
+        Directory(
+          p.join('examples', 'cross', 'app-bundle', 'app', 'native', 'hello'),
+        ).existsSync(),
+        isTrue,
+      );
+    });
+
     test('every manifest parses with a known provider', () {
       for (final f in all) {
         final t = _loadCross(f);
