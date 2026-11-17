@@ -49,6 +49,45 @@ given ivi-homescreen checkout and builds every backend:
 ./build-all-backends.sh ~/.../ivi-homescreen --backend drm-kms-egl   # one
 ```
 
+## An embedder and an app, end to end (`app-bundle/`)
+
+[`app-bundle/`](app-bundle) is the smallest thing that goes through the whole
+`--app` path, and the one example CI builds for real on every PR (the
+`app bundle` job in `.github/workflows/cross.yaml`). Two directories, kept
+apart the way an embedder and an app are:
+
+- `embedder/`: a manifest and a stand-in embedder, one C file that renders
+  nothing. Given `-b <bundle>` it checks the bundle is complete and loads the
+  app's native module.
+- `app/`: a Flutter app with a native library under `native/hello`, which the
+  embedder manifest builds as a `cross.modules` entry through `${app_root}`.
+
+The embedder names no app; the app is chosen on the command line:
+
+```sh
+emb cross app-bundle/embedder --target local --build --app app-bundle/app --tar --run
+```
+
+With `--target local` that needs a host compiler, CMake and Ninja and nothing
+else: no cross toolchain, no sysroot. The manifest pins `flutter_version:`, so
+an empty workspace gets its SDK provisioned, and the engine for it is fetched
+from the published release. What runs: the embedder build, engine fetch, AOT,
+bundle assembly, the module build and its staging into the bundle's `lib/`, the
+bundle audit, the tarball, and then the embedder itself against the result:
+
+```
+found:   data/flutter_assets/AssetManifest.bin
+found:   data/icudtl.dat
+found:   lib/libflutter_engine.so
+found:   lib/libapp.so
+found:   lib/libhello.so
+module:  hello from the app's native module
+```
+
+Swap `--target local` for a board target and the same two directories
+cross-build; the stand-in embedder is only there so the example needs nothing
+installed.
+
 ## Validated workflow (pi5)
 
 Run from the `ivi-homescreen` package dir (where its `emb.yaml` lives). `emb

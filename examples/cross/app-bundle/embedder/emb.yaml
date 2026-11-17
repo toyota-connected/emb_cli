@@ -1,0 +1,15 @@
+id: hello-embedder
+type: app
+supported_archs: [arm64, x86_64]
+supported_host_types: [ubuntu, fedora]
+flutter_version: 3.47.9
+
+cross:
+  provider: arm-gnu              # required to parse; ignored for --target local
+  package:
+    bin: hello-embedder
+  modules:
+    - name: hello
+      path: ${app_root}/native/hello
+      build: cmake
+      artifacts: [libhello.so]

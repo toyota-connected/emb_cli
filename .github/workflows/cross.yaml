@@ -11,6 +11,11 @@ on:
       - "lib/src/cross/**"
       - "lib/src/commands/cross_command.dart"
       - "lib/src/commands/matrix_command.dart"
+      # The app-bundle job below is the only one that runs these for real.
+      - "lib/src/aot/**"
+      - "lib/src/bundle/**"
+      - "lib/src/engine/**"
+      - "lib/src/flutter/**"
       - "examples/cross/**"
       - "pubspec.yaml"
   push:
@@ -21,6 +26,11 @@ on:
       - "lib/src/cross/**"
       - "lib/src/commands/cross_command.dart"
       - "lib/src/commands/matrix_command.dart"
+      # The app-bundle job below is the only one that runs these for real.
+      - "lib/src/aot/**"
+      - "lib/src/bundle/**"
+      - "lib/src/engine/**"
+      - "lib/src/flutter/**"
       - "examples/cross/**"
       - "pubspec.yaml"
   workflow_dispatch:
@@ -96,6 +106,56 @@ jobs:
       - run: dart pub get
       - name: 🔎 Plan ${{ matrix.id }} / ${{ matrix.target }} on ${{ matrix.host }} (${{ matrix.provider }})
         run: dart run emb_cli:emb cross ${{ matrix.args }} --dry-run
+
+  # ── The --app path, for real (PR gate) ───────────────────────────────────
+  # Every cell above stops at the embedder: `emb matrix` passes no `--app`, so
+  # the runnable bundle path — engine fetch, AOT, bundle assembly, module
+  # build and staging, the bundle audit, the tarball — never ran in CI.
+  #
+  # This builds examples/cross/app-bundle with the built-in `local` target, so
+  # it needs no cross toolchain, no sysroot and no privileges: the embedder is
+  # a stand-in that renders nothing, which is what makes the job cheap enough
+  # to gate a PR. `--run` then starts that embedder on the bundle; it exits
+  # non-zero unless the bundle is complete and the app's native module loads.
+  app-bundle:
+    name: app bundle (--app, native)
+    runs-on: ubuntu-latest
+    env:
+      FLUTTER_WORKSPACE: ${{ github.workspace }}/.ws
+      EXAMPLE: examples/cross/app-bundle
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dart-lang/setup-dart@v1.8.2
+        with:
+          sdk: "stable"
+      - name: 🔧 Install native build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libsystemd-dev cmake ninja-build
+      - run: dart pub get
+      # The workspace starts empty: the manifest's flutter_version: provisions
+      # the SDK, and the engine comes from the published release for it.
+      - name: 🏗️ Build, bundle and run
+        run: |
+          set -o pipefail
+          dart run emb_cli:emb -v cross "$EXAMPLE/embedder" --target local \
+            --build --app "$EXAMPLE/app" --tar --run | tee build.log
+      # A green exit is not evidence on its own: had --run been skipped, or
+      # the module dropped from the plan, the build would still pass. Check
+      # for what only a complete bundle produces.
+      - name: ✅ Assert the bundle really ran
+        run: |
+          grep -q "module:  hello from the app's native module" build.log || {
+            echo "::error::the embedder never loaded the app's native module"
+            exit 1; }
+          tarball=$(ls "$FLUTTER_WORKSPACE"/.config/flutter_workspace/cross-build-*/runnable.tar.gz)
+          listing=$(tar -tzf "$tarball")
+          echo "$listing"
+          for f in hello-embedder lib/libapp.so lib/libflutter_engine.so \
+                   lib/libhello.so data/icudtl.dat; do
+            echo "$listing" | grep -qE "(^|/)$f\$" || {
+              echo "::error::$f is not in $tarball"; exit 1; }
+          done
 
   # ── Stage 3 (opt-in): real cross build ──────────────────────────────────
   # Manual only (workflow_dispatch + build=true). Per docs/cross_integration.md

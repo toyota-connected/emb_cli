@@ -1,4 +1,9 @@
 include: package:very_good_analysis/analysis_options.6.0.0.yaml
+analyzer:
+  exclude:
+    # A Flutter app, resolved by the Flutter SDK emb provisions, not by this
+    # package's dependencies.
+    - examples/cross/app-bundle/app/**
 linter:
   rules:
     public_member_api_docs: false
