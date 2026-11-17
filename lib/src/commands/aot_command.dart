@@ -8,6 +8,7 @@ import 'package:emb_cli/src/exec/container_reentry.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
 import 'package:mason_logger/mason_logger.dart';
+import 'package:path/path.dart' as p;
 
 /// {@template aot_command}
 /// `emb aot` — build release/profile AOT app images (`libapp.so.<mode>`) for a
@@ -117,8 +118,14 @@ class AotCommand extends Command<int> {
 
     // The AOT step runs the Linux-x86_64 gen_snapshot; on a non-Linux/non-x86_64
     // host, route through the runtime container.
-    final genSnapshot = args['gen-snapshot'] as String?;
-    final glibcSysroot = args['glibc-sysroot'] as String?;
+    //
+    // Both paths go in absolute. The inner emb runs in the image's working
+    // directory, not this one, so a relative path would name nothing there,
+    // and the mount for it sits at the absolute path anyway.
+    String? abs(String? path) =>
+        path == null ? null : p.normalize(p.absolute(path));
+    final genSnapshot = abs(args['gen-snapshot'] as String?);
+    final glibcSysroot = abs(args['glibc-sysroot'] as String?);
     final reentry = _reentry ?? ContainerReentry(host: host);
     final routed = await reentry.maybeRun(
       forceNative: args['exec-native'] as bool,
@@ -129,7 +136,7 @@ class AotCommand extends Command<int> {
         workspace.root.path,
         Directory(appPath).absolute.path,
         ensureCacheDir().path,
-        if (genSnapshot != null) File(genSnapshot).parent.path,
+        if (genSnapshot != null) p.dirname(genSnapshot),
         if (glibcSysroot != null) glibcSysroot,
       ]),
       embArgs: [
