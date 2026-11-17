@@ -60,6 +60,7 @@ class EmbCliCommandRunner extends CompletionCommandRunner<int> {
     addCommand(CacheCommand(logger: _logger));
     addCommand(BoardsCommand(logger: _logger));
     addCommand(MatrixCommand(logger: _logger));
+    addCommand(InitCommand(logger: _logger));
     addCommand(EnvCommand(logger: _logger));
     addCommand(UpdateCommand(logger: _logger, pubUpdater: _pubUpdater));
   }
