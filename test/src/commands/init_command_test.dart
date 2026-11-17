@@ -27,16 +27,17 @@ class _Harness {
     this.gitMissing = false,
     this.flatpak = const {},
     bool boards = true,
-  }) : resolver = boards
-           ? CrossProjectResolver()
-           // An empty directory: a compiled emb before `emb boards sync`.
-           : CrossProjectResolver(
-               const ManifestLoader(),
-               Directory.systemTemp.createTempSync('emb-init-noboards-'),
-               const {},
-             ) {
+  }) {
     tmp = Directory.systemTemp.createTempSync('emb-init-cmd-');
     addTearDown(() => tmp.deleteSync(recursive: true));
+    resolver = boards
+        ? CrossProjectResolver()
+        // An empty directory: a compiled emb before `emb boards sync`.
+        : CrossProjectResolver(
+            const ManifestLoader(),
+            Directory(p.join(tmp.path, 'no-boards'))..createSync(),
+            const {},
+          );
     out = Directory(p.join(tmp.path, 'repo'));
     when(() => logger.info(any())).thenAnswer((i) {
       infos.add(i.positionalArguments.single as String? ?? '');
@@ -55,7 +56,7 @@ class _Harness {
   /// `flatpak remote-ls` stdout per scope (`--user` / `--system`); a scope
   /// not listed exits non-zero.
   final Map<String, String> flatpak;
-  final CrossProjectResolver resolver;
+  late final CrossProjectResolver resolver;
   late final Directory tmp;
   late final Directory out;
 
