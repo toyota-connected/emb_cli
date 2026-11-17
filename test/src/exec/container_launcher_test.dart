@@ -95,4 +95,47 @@ void main() {
         .timeout(const Duration(seconds: 5));
     expect(code, 0);
   }, tags: 'integration');
+
+  // The default runner must hand the child this process's own stdio. Piped
+  // instead, the child gets a stdin nobody closes (anything that prompts
+  // inside the container hangs run() forever) and loses the terminal. A
+  // fixture that only writes cannot tell the two apart, and one that reads
+  // stdin would block a run started from a terminal, so compare the fds.
+  test(
+    'default runner gives the child the parent stdio, not pipes',
+    () async {
+      final dir = Directory.systemTemp.createTempSync('emb_test_');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final out = File('${dir.path}/fds');
+      // Read into variables first and write once at the end. Any redirect on
+      // the readlink itself shows up in the answer: dash applies a simple
+      // command's redirects in the parent shell before it forks, so
+      // `readlink /proc/$$/fd/1 > file` reports the file.
+      final script = File('${dir.path}/fixture.sh')
+        ..writeAsStringSync(
+          '#!/bin/sh\n'
+          r'a=$(readlink /proc/$$/fd/0)'
+          '\n'
+          r'b=$(readlink /proc/$$/fd/1)'
+          '\n'
+          r'c=$(readlink /proc/$$/fd/2)'
+          '\n'
+          r'printf "%s\n" "$a" "$b" "$c"'
+          ' > "${out.path}"\n',
+        );
+      Process.runSync('chmod', ['+x', script.path]);
+
+      final code = await ContainerLauncher(tool: script.path)
+          .run(image: 'unused', embArgs: const [])
+          .timeout(const Duration(seconds: 5));
+      expect(code, 0);
+
+      final mine = [
+        for (final fd in [0, 1, 2]) Link('/proc/self/fd/$fd').targetSync(),
+      ];
+      expect(out.readAsLinesSync(), mine);
+    },
+    tags: 'integration',
+    testOn: 'linux',
+  );
 }

@@ -37,8 +37,12 @@ const _riscvHost = HostInfo(
 /// Records every process invocation and returns success; simulates the build
 /// dir + app.dill appearing after `flutter build bundle`.
 class _Recorder {
-  _Recorder(this.app);
+  _Recorder(this.app, {this.onBuild});
   final String app;
+
+  /// Runs when `flutter build bundle` does, for what that step leaves on disk
+  /// beyond the build dir (it is what first downloads the Dart SDK).
+  final void Function()? onBuild;
   final List<({String exe, List<String> args})> calls = [];
 
   /// Every executable and argument seen, unshortened, for tests that care
@@ -62,6 +66,7 @@ class _Recorder {
       Directory(
         p.join(app, '.dart_tool', 'flutter_build', 'abc123'),
       ).createSync(recursive: true);
+      onBuild?.call();
     }
     return const RunResult(0, '', '');
   }
@@ -297,6 +302,73 @@ void main() {
       expect(frontend, isNot(contains(p.join('artifacts', 'engine'))));
     });
   }
+
+  group('frontend_server scheme', () {
+    File frontendAot(Directory ws) => File(
+      p.join(
+        ws.path,
+        'flutter',
+        'bin',
+        'cache',
+        'dart-sdk',
+        'bin',
+        'snapshots',
+        'frontend_server_aot.dart.snapshot',
+      ),
+    );
+
+    // A fresh container has no Dart SDK until `flutter build bundle` downloads
+    // it. Checked before the mode loop, the snapshot is not there yet and the
+    // build takes the legacy path, whose frontend_server modern Flutter no
+    // longer ships.
+    test('a snapshot that `flutter build` downloads is still seen', () async {
+      final ws = Directory(p.join(tmp.path, 'ws'))..createSync();
+      final app = Directory(p.join(tmp.path, 'app'));
+      writeApp(app);
+      writeSdk(ws);
+      final snapshot = frontendAot(ws)..deleteSync();
+      final rec = _Recorder(
+        app.path,
+        onBuild: () => snapshot.writeAsStringSync('x'),
+      );
+
+      final result = await builder(ws, rec).build(appPath: app.path);
+
+      expect(result.success, isTrue);
+      final kernels = rec.calls.where(
+        (c) => c.exe == 'dartaotruntime' || c.exe == 'dart',
+      );
+      // Both modes, the first included: it is the one whose build step did
+      // the download.
+      expect(kernels.map((c) => c.exe), ['dartaotruntime', 'dartaotruntime']);
+      expect(
+        kernels.map((c) => c.args),
+        everyElement(contains(endsWith('frontend_server_aot.dart.snapshot'))),
+      );
+    });
+
+    test('with no snapshot the legacy frontend_server is used', () async {
+      final ws = Directory(p.join(tmp.path, 'ws'))..createSync();
+      final app = Directory(p.join(tmp.path, 'app'));
+      writeApp(app);
+      writeSdk(ws);
+      frontendAot(ws).deleteSync();
+      final rec = _Recorder(app.path);
+
+      await builder(ws, rec).build(appPath: app.path, modes: const ['release']);
+
+      final kernel = rec.calls.firstWhere(
+        (c) => c.exe == 'dartaotruntime' || c.exe == 'dart',
+      );
+      expect(kernel.exe, 'dart');
+      expect(
+        kernel.args,
+        contains(
+          endsWith(p.join('linux-x64', 'frontend_server.dart.snapshot')),
+        ),
+      );
+    });
+  });
 
   group('gen_snapshot fetch fallback', () {
     const commit = 'abc123';
