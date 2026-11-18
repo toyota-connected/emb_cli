@@ -47,6 +47,21 @@ conflated how the provider resolves the value with how the key hashes it.
   `appstreamcli` fails a desktop application without them. See
   [`emb init`](README.md#emb-init) and `examples/cross/init-flatpak/`.
 
+**Security.**
+
+- fix(repo): a manifest's `uri`, `branch`, `rev` and `dest_name` reached git
+  and the filesystem unchecked. A `uri` beginning with `-` was read by
+  `git clone` as an option, and with `dest_name` set to a `file://` URL of any
+  local repository, `--upload-pack=<command>` ran the command. An absolute or
+  `../` `dest_name` named a directory outside the workspace, which was deleted
+  as a stale checkout before the clone. Both needed only a manifest the build
+  resolved: the project's own, one reached through `extends:`, a board library
+  entry or a `repos.json`. Such values are now refused before git runs or
+  anything is deleted, a transport-helper `uri` (`ext::`) is refused, and git is
+  given `--` so a value is an argument whatever it looks like.
+  `git checkout <rev> --` also stops a `rev` that is a file name from
+  restoring the file and reporting success.
+
 **Container re-entry.**
 
 - fix(exec): Forward host credentials (SSH agent, `~/.netrc`, `GH_TOKEN`) into

@@ -32,12 +32,13 @@ void main() {
     // Clone with the version as branch/tag into the `flutter` dir.
     expect(git.calls.first, [
       'clone',
-      FlutterSdk.repoUrl,
-      'flutter',
       '-b',
       '3.47.7',
+      '--',
+      FlutterSdk.repoUrl,
+      'flutter',
     ]);
-    expect(git.calls, contains(equals(['checkout', '3.47.7'])));
+    expect(git.calls, contains(equals(['checkout', '3.47.7', '--'])));
   });
 
   test('reads the engine commit after checkout', () async {
