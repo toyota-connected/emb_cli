@@ -3435,6 +3435,11 @@ class CrossCommand extends Command<int> {
         bundleDir: bundleDir,
         meta: meta,
         outDir: outDir,
+        // Not under outDir: that is already some 100 characters below the
+        // workspace, and appstreamcli fails on a path of 256.
+        contextRoot: Directory(
+          p.join(resolveCacheDir(environment: _environment).path, 'tmp'),
+        ),
         extraFiles: ef.files,
         fileModes: ef.modes,
         onStaged: plan == null

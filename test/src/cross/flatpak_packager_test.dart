@@ -17,6 +17,7 @@ void main() {
   String? capturedLauncher;
   List<String>? builderArgv;
   List<String>? bundleArgv;
+  setUp(() => builderArgv = null);
   Future<RunResult> fakeRun(
     String exe,
     List<String> args, {
@@ -90,6 +91,109 @@ void main() {
     // build-bundle is invoked for the right app id + branch + arch.
     expect(builderArgv, contains('--arch=aarch64'));
     expect(bundleArgv, containsAll(['com.example.Homescreen', 'stable']));
+  });
+
+  // appstreamcli compose fails with `icon-write-error` once the icon it
+  // renders sits at a path of 256 characters. The context used to live under
+  // the output directory, which is deep inside a build tree, so whether a
+  // build passed depended on where the repo was checked out.
+  group('the build context', () {
+    const meta = FlatpakMetadata(
+      appId: 'com.example.Homescreen',
+      command: 'homescreen',
+    );
+
+    String contextOf(List<String> argv) => p.dirname(argv[argv.length - 2]);
+
+    test('is under the output directory when no root is given', () async {
+      final dist = Directory(p.join(tmp.path, 'dist'));
+      await FlatpakPackager(
+        runProcess: fakeRun,
+      ).build(bundleDir: fakeBundle(), meta: meta, outDir: dist);
+      expect(
+        contextOf(builderArgv!),
+        p.join(dist.path, 'com.example.Homescreen.flatpak-ctx'),
+      );
+    });
+
+    test('is under the root when one is given, and removed after', () async {
+      final root = Directory(p.join(tmp.path, 'short'));
+      final out = await FlatpakPackager(runProcess: fakeRun).build(
+        bundleDir: fakeBundle(),
+        meta: meta,
+        outDir: Directory(p.join(tmp.path, 'a' * 120, 'dist')),
+        contextRoot: root,
+      );
+      final ctx = contextOf(builderArgv!);
+      expect(p.dirname(ctx), root.path);
+      expect(p.basename(ctx), matches(RegExp(r'^fp-[0-9a-f]{12}$')));
+      expect(Directory(ctx).existsSync(), isFalse);
+      // The bundle still lands in the output directory.
+      expect(p.dirname(out.path), p.join(tmp.path, 'a' * 120, 'dist'));
+    });
+
+    // A rerun replaces its own context and never another build's.
+    test('is named by the output directory and the app id', () async {
+      final root = Directory(p.join(tmp.path, 'short'));
+      Future<String> ctx(String dist, String appId) async {
+        await FlatpakPackager(runProcess: fakeRun).build(
+          bundleDir: fakeBundle(),
+          meta: FlatpakMetadata(appId: appId, command: 'homescreen'),
+          outDir: Directory(p.join(tmp.path, dist)),
+          contextRoot: root,
+        );
+        return contextOf(builderArgv!);
+      }
+
+      final first = await ctx('one', 'com.example.Homescreen');
+      expect(await ctx('one', 'com.example.Homescreen'), first);
+      expect(await ctx('two', 'com.example.Homescreen'), isNot(first));
+      expect(await ctx('one', 'com.example.Other'), isNot(first));
+    });
+
+    test('too deep is refused, with the path and the limit', () async {
+      final root = Directory(p.join(tmp.path, 'r' * 200));
+      await expectLater(
+        FlatpakPackager(runProcess: fakeRun).build(
+          bundleDir: fakeBundle(),
+          meta: meta,
+          outDir: Directory(p.join(tmp.path, 'dist')),
+          contextRoot: root,
+        ),
+        throwsA(
+          isA<FlatpakPackageException>().having(
+            (e) => e.message,
+            'message',
+            allOf(
+              contains('$flatpakPathLimit'),
+              contains('128x128'),
+              contains('EMB_CACHE_DIR'),
+            ),
+          ),
+        ),
+      );
+      expect(builderArgv, isNull);
+    });
+
+    test('one character under the limit is accepted', () async {
+      // Pad the root so the deepest path is exactly limit - 1.
+      final probe = flatpakDeepestPath(
+        Directory(p.join(tmp.path, 'x', 'fp-000000000000')),
+        meta.appId,
+      );
+      final pad = 'x' * (flatpakPathLimit - 1 - probe.length + 1);
+      final root = Directory(p.join(tmp.path, pad));
+      await FlatpakPackager(runProcess: fakeRun).build(
+        bundleDir: fakeBundle(),
+        meta: meta,
+        outDir: Directory(p.join(tmp.path, 'dist')),
+        contextRoot: root,
+      );
+      expect(
+        flatpakDeepestPath(Directory(contextOf(builderArgv!)), meta.appId),
+        hasLength(flatpakPathLimit - 1),
+      );
+    });
   });
 
   test('maps extra files into the /app prefix', () async {

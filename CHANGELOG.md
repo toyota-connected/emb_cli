@@ -40,6 +40,17 @@ conflated how the provider resolves the value with how the key hashes it.
 
 **Cross.**
 
+- fix(cross): `--flatpak` no longer depends on where the project is checked
+  out. flatpak-builder ran in `<build>/dist/<app_id>.flatpak-ctx`, and
+  AppStream's compose step cannot write an icon to a path of 256 characters or
+  more: it fails with `icon-write-error`, which names neither the path nor the
+  limit. For an aarch64 build with a 24-character app id that path ran 216
+  characters below the manifest's directory, which leaves 39 for the
+  directory: a GitHub checkout (`/home/runner/work/<repo>/<repo>`) passes
+  that with a repo name of 11 characters. The
+  context now lives in `<cache>/tmp/fp-<hash>`, and a cache directory deep
+  enough to hit the limit is refused up front with the path and the limit.
+
 - feat(cross): modules are now built during `--prepare` (staged into
   `<buildRoot>/modules/`) and during `--build` without `--app` (standalone
   module build). Modules whose path references `${app_root}` are skipped with
