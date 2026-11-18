@@ -151,11 +151,14 @@ jobs:
         with:
           sdk: "stable"
 
+      # polkitd and pkexec by name: `policykit-1` was a transitional package
+      # for the two and is gone from Ubuntu 26.04, which ubuntu-latest now
+      # resolves to on some runners.
       - name: 🔧 Install PackageKit and build dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
-            packagekit policykit-1 libsystemd-dev cmake ninja-build
+            packagekit polkitd pkexec libsystemd-dev cmake ninja-build
           sudo systemctl start packagekit || true
           pkcon --version
 
