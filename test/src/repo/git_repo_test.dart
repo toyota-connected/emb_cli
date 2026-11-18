@@ -61,6 +61,125 @@ void main() {
     });
   });
 
+  // uri, branch, rev and dest_name come from a manifest, which can be
+  // someone else's: an `extends:` target, a board library, a repos.json.
+  group('a value git would misread is refused', () {
+    late Directory tmp;
+    setUp(() => tmp = Directory.systemTemp.createTempSync('emb_git_arg_'));
+    tearDown(() => tmp.deleteSync(recursive: true));
+
+    const ok = 'https://x/y/foo.git';
+    final bad = <String, GitRepo>{
+      // `git clone --upload-pack=<command> <dir>` runs the command.
+      'a uri that is an option': const GitRepo(
+        uri: '--upload-pack=touch /tmp/pwned',
+      ),
+      'a uri that is a short option': const GitRepo(uri: '-u/bin/sh'),
+      'a branch that is an option': const GitRepo(uri: ok, branch: '--force'),
+      'a rev that is an option': const GitRepo(uri: ok, rev: '--detach'),
+      'a dest_name that is an option': const GitRepo(
+        uri: ok,
+        destName: '--bare',
+      ),
+      // Runs a command by design. git refuses `ext` only by default.
+      'a transport helper': const GitRepo(uri: 'ext::sh -c "touch /tmp/x"'),
+      'another transport helper': const GitRepo(uri: 'fd::3'),
+      'an empty uri': const GitRepo(uri: ''),
+      // The folder is joined onto the workspace, and a stale directory
+      // there is deleted before a clone.
+      'a dest_name that climbs out': const GitRepo(
+        uri: ok,
+        destName: '../../etc',
+      ),
+      'a dest_name that is the parent': const GitRepo(uri: ok, destName: '..'),
+      // Absolute: `p.join` lets it replace the workspace outright.
+      'a dest_name that is absolute': const GitRepo(
+        uri: ok,
+        destName: '/home/someone/project',
+      ),
+      // With an option for a uri, this was the repository git cloned from,
+      // and `--upload-pack` ran against it.
+      'a dest_name that is a url': const GitRepo(
+        uri: ok,
+        destName: 'file:///home/runner/work/app/app',
+      ),
+      'a dest_name with a separator': const GitRepo(uri: ok, destName: 'a/b'),
+      'a uri with no folder in it': const GitRepo(uri: 'https://x/y/'),
+      'a uri whose folder is hidden': const GitRepo(uri: 'https://x/y/.git'),
+    };
+    for (final entry in bad.entries) {
+      test(entry.key, () async {
+        final git = _FakeGit();
+        expect(entry.value.problem, isNotNull);
+        final result = await entry.value.sync(tmp, runner: git.run);
+        expect(result.success, isFalse);
+        expect(result.message, contains('refusing to run git'));
+        expect(git.calls, isEmpty);
+      });
+    }
+
+    // The directory a climbing name points at is never touched.
+    test('nothing outside the workspace is deleted', () async {
+      final outside = Directory(p.join(tmp.path, 'outside'))..createSync();
+      File(p.join(outside.path, 'keep')).writeAsStringSync('mine');
+      final base = Directory(p.join(tmp.path, 'ws', 'app'))
+        ..createSync(recursive: true);
+
+      const repo = GitRepo(uri: ok, destName: '../../outside');
+      final result = await repo.sync(base, runner: _FakeGit().run);
+
+      expect(result.success, isFalse);
+      expect(File(p.join(outside.path, 'keep')).readAsStringSync(), 'mine');
+    });
+
+    for (final uri in [
+      'https://github.com/flutter/samples.git',
+      'ssh://git@example.com/me/app.git',
+      'git@example.com:me/app.git',
+      'file:///srv/git/app.git',
+      '/srv/git/app.git',
+      '../sibling/app',
+    ]) {
+      test('$uri is still a uri', () {
+        expect(GitRepo(uri: uri).problem, isNull);
+      });
+    }
+
+    test('a branch with a slash and a tag with dots are fine', () {
+      expect(
+        const GitRepo(uri: ok, branch: 'release/3.0', rev: 'v1.2.3').problem,
+        isNull,
+      );
+    });
+  });
+
+  // `--` ends git's options, so a value is an argument whatever it looks
+  // like. The refusal above is the half that can explain itself.
+  group('git is told where its options end', () {
+    late Directory tmp;
+    setUp(() => tmp = Directory.systemTemp.createTempSync('emb_git_dd_'));
+    tearDown(() => tmp.deleteSync(recursive: true));
+
+    test('clone: options, --, uri, folder', () async {
+      final git = _FakeGit();
+      await const GitRepo(
+        uri: 'https://x/y/foo.git',
+      ).sync(tmp, runner: git.run);
+      expect(git.calls.first, ['clone', '--', 'https://x/y/foo.git', 'foo']);
+    });
+
+    // Without it a rev that is also a file name restores the file and
+    // reports success.
+    test('checkout: the ref, then --', () async {
+      final git = _FakeGit();
+      await const GitRepo(
+        uri: 'https://x/y/foo.git',
+        rev: 'README',
+      ).sync(tmp, runner: git.run);
+      expect(git.calls, contains(equals(['checkout', 'README', '--'])));
+    });
+  });
+
   group('sync', () {
     late Directory tmp;
     setUp(() => tmp = Directory.systemTemp.createTempSync('emb_git_'));
@@ -74,12 +193,13 @@ void main() {
       expect(result.success, isTrue);
       expect(git.calls.first, [
         'clone',
-        'https://x/y/foo.git',
-        'foo',
         '-b',
         'main',
+        '--',
+        'https://x/y/foo.git',
+        'foo',
       ]);
-      expect(git.calls, contains(equals(['checkout', 'main'])));
+      expect(git.calls, contains(equals(['checkout', 'main', '--'])));
     });
 
     test('creates a missing base directory before cloning', () async {
@@ -136,7 +256,7 @@ void main() {
         git.calls,
         contains(equals(['pull', '--ff-only', 'origin', 'dev'])),
       );
-      expect(git.calls, contains(equals(['checkout', 'dev'])));
+      expect(git.calls, contains(equals(['checkout', 'dev', '--'])));
       // No clone on the update path.
       expect(git.calls.any((c) => c.first == 'clone'), isFalse);
     });
@@ -157,8 +277,8 @@ void main() {
         rev: 'abc123',
       );
       await repo.sync(tmp, runner: git.run);
-      expect(git.calls, contains(equals(['checkout', 'abc123'])));
-      expect(git.calls, isNot(contains(equals(['checkout', 'main']))));
+      expect(git.calls, contains(equals(['checkout', 'abc123', '--'])));
+      expect(git.calls, isNot(contains(equals(['checkout', 'main', '--']))));
     });
 
     test('tolerates a failed post-checkout hook when HEAD landed', () async {

@@ -93,6 +93,49 @@ class GitRepo {
     return last.split('.').first;
   }
 
+  /// Why this repo is not handed to git, or null when it is.
+  ///
+  /// [uri], [branch], [rev] and [destName] come from a manifest, and a
+  /// manifest can be someone else's: one pulled in by `extends:`, a board
+  /// library, a `repos.json`. Each becomes a git argument or a path, so:
+  ///
+  /// - none may start with `-`. git would read it as an option, and
+  ///   `--upload-pack=<command>` as a clone's URI runs the command.
+  /// - [uri] may not name a transport helper (`ext::<command>` runs one by
+  ///   design). git refuses `ext` by default, and only by default.
+  /// - [folderName] must be one path segment. It is joined onto the
+  ///   workspace and a stale directory there is deleted before a clone, so
+  ///   `../..` would delete a directory outside it.
+  ///
+  /// `--` is passed to git as well; this is the half that can say why.
+  String? get problem {
+    String? dash(String what, String? value) =>
+        value != null && value.startsWith('-')
+        ? '$what "$value" starts with "-", which git would read as an option'
+        : null;
+    final dashed =
+        dash('uri', uri) ??
+        dash('branch', branch) ??
+        dash('rev', rev) ??
+        dash('dest_name', destName);
+    if (dashed != null) return dashed;
+    if (uri.trim().isEmpty) return 'uri is empty';
+    if (RegExp('^[A-Za-z0-9][A-Za-z0-9+.-]*::').hasMatch(uri)) {
+      return 'uri "$uri" names a git transport helper, which can run a command';
+    }
+    final folder = folderName;
+    if (folder.isEmpty ||
+        folder == '.' ||
+        folder == '..' ||
+        folder.contains('/') ||
+        folder.contains(r'\')) {
+      return 'the destination folder "$folder" (from '
+          '${destName == null || destName!.isEmpty ? 'the uri' : 'dest_name'}) '
+          'is not a single directory name';
+    }
+    return null;
+  }
+
   /// Clone or update this repo under [baseFolder].
   ///
   /// [patchBase] is the directory relative paths in [patches] resolve against —
@@ -103,6 +146,16 @@ class GitRepo {
     GitRunner runner = defaultGitRunner,
     Directory? patchBase,
   }) async {
+    // Before anything touches the disk: a bad folder name is a path.
+    final refused = problem;
+    if (refused != null) {
+      return RepoResult(
+        folderName: folderName,
+        uri: uri,
+        success: false,
+        message: 'refusing to run git: $refused',
+      );
+    }
     final base = baseFolder.path;
     final gitFolder = p.join(base, folderName);
     final dotGit = Directory(p.join(gitFolder, '.git'));
@@ -128,9 +181,10 @@ class GitRepo {
         }
         await _run(runner, [
           'clone',
+          if (branch != null) ...['-b', branch!],
+          '--',
           uri,
           folderName,
-          if (branch != null) ...['-b', branch!],
         ], base);
       }
 
@@ -234,7 +288,9 @@ class GitRepo {
   /// if it resolves to [ref]'s commit, the checkout landed and the hook's
   /// exit status is not a checkout failure.
   Future<void> _checkout(GitRunner runner, String ref, String cwd) async {
-    final r = await runner(['checkout', ref], workingDirectory: cwd);
+    // The trailing `--` makes [ref] a revision and never a path: without it
+    // a ref that is also a file name restores the file and reports success.
+    final r = await runner(['checkout', ref, '--'], workingDirectory: cwd);
     if (r.exitCode == 0) return;
     if (await _headIsAt(runner, ref, cwd)) return;
     throw _GitException(
