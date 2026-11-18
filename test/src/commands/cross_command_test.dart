@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/commands/cross_command.dart';
@@ -42,6 +43,12 @@ const _host = HostInfo(
   hostType: 'fedora',
   versionId: '43',
 );
+
+/// A 64-byte ELF64 file header of type ET_EXEC: the least the embedder
+/// search accepts as a program.
+final _fakeExecutable = Uint8List(64)
+  ..setAll(0, [0x7f, 0x45, 0x4c, 0x46, 2, 1])
+  ..[16] = 2;
 
 void main() {
   late Directory tmp;
@@ -926,7 +933,7 @@ void main() {
       // Fake ELF binary (with execute bit) so _artifactFor returns it.
       final buildDir = Directory(p.join(buildRoot.path, 'build'))..createSync();
       final bin = File(p.join(buildDir.path, 'embedder'))
-        ..writeAsBytesSync([0x7f, 0x45, 0x4c, 0x46, 0, 0, 0, 0]);
+        ..writeAsBytesSync(_fakeExecutable);
       await Process.run('chmod', ['+x', bin.path]);
 
       final logger = _CaptureLogger();
@@ -984,7 +991,7 @@ void main() {
     ).writeAsStringSync(await sourceFingerprint(pkg));
     final buildDir = Directory(p.join(buildRoot.path, 'build'))..createSync();
     final bin = File(p.join(buildDir.path, 'embedder'))
-      ..writeAsBytesSync([0x7f, 0x45, 0x4c, 0x46, 0, 0, 0, 0]);
+      ..writeAsBytesSync(_fakeExecutable);
     await Process.run('chmod', ['+x', bin.path]);
 
     final logger = _CaptureLogger();

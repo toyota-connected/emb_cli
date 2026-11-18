@@ -252,9 +252,8 @@ void main() {
       expect(spec.buildCommand, contains('--target local'));
     });
 
-    // Unset, emb takes the first executable ELF in the build tree. In a real
-    // ivi-homescreen build that was libihs_shared.so, and the flatpak
-    // launched a library.
+    // Unset, emb has to find the binary, and stops when the build tree
+    // holds more than one executable. Naming it is what always works.
     group('package.bin', () {
       YamlMap package(FlatpakRepoSpec spec) =>
           (_manifest(spec)['cross'] as YamlMap)['package'] as YamlMap;
@@ -271,7 +270,7 @@ void main() {
         expect(package(spec).containsKey('bin'), isFalse);
         final text = renderFlatpakRepo(spec)[spec.manifestName]!;
         expect(text, contains('    # bin: <path>'));
-        expect(text, contains('shared library'));
+        expect(text, contains('more than one'));
       });
     });
 

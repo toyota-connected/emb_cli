@@ -891,7 +891,9 @@ cross:
   package:                        # optional, consumed by --deb
     name: ivi-homescreen
     version: 1.0.0
-    bin: shell/homescreen         # binary, relative to each backend build dir
+    bin: shell/homescreen         # binary, relative to each backend build dir.
+                                  # Unset: the one executable in the build
+                                  # tree, and an error if there are several.
     install_dir: /usr/bin
     files:                        # extra payload; a source may be a directory
       ../runnable/data: { to: /usr/share/ivi-homescreen/data, mode: '0644' }

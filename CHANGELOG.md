@@ -78,6 +78,18 @@ conflated how the provider resolves the value with how the key hashes it.
 
 **Cross.**
 
+- fix(cross): with `cross.package.bin` unset, a shared library could be taken
+  for the embedder, packaged and launched (#304). The search took the first
+  file with the ELF magic and an execute bit, which a `.so` has too, in
+  whatever order the filesystem listed the build tree: the same manifest
+  picked `homescreen` on one filesystem and its shared library on another. It
+  now takes
+  programs only (`ET_EXEC`, or `ET_DYN` with an interpreter or the linker's PIE
+  mark, and never a `*.so` name), and does not guess: more than one executable
+  is an error that lists them and asks for `cross.package.bin`. **A project
+  that builds several executables and relied on the pick must now set
+  `cross.package.bin`.** A manifest that sets it is unaffected.
+
 - fix(cross): `--flatpak` no longer depends on where the project is checked
   out. flatpak-builder ran in `<build>/dist/<app_id>.flatpak-ctx`, and
   AppStream's compose step cannot write an icon to a path of 256 characters or
