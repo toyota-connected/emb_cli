@@ -44,7 +44,9 @@ conflated how the provider resolves the value with how the key hashes it.
   bounded and cannot prompt, and the generated workflow runs with a read-only
   token. The license is left
   as `TODO`, and the icon and description are placeholders that exist because
-  `appstreamcli` fails a desktop application without them. See
+  `appstreamcli` fails a desktop application without them. The release in
+  `metainfo.xml` is dated the day the repo is generated, since flatpak drops a
+  release with no date. See
   [`emb init`](README.md#emb-init) and `examples/cross/init-flatpak/`.
 
 **Security.**

@@ -32,6 +32,7 @@ const exampleSpec = FlatpakRepoSpec(
   runtimeVersion: '25.08',
   flutterVersion: '3.47.9',
   embVersion: '0.5.0',
+  releaseDate: '2026-01-02',
 );
 
 final _exampleDir = Directory(p.join('examples', 'cross', 'init-flatpak'));
@@ -55,6 +56,7 @@ FlatpakRepoSpec _spec({
   app: app,
   runtimeVersion: '25.08',
   embVersion: embVersion,
+  releaseDate: '2026-01-02',
   githubCi: githubCi,
 );
 
@@ -305,6 +307,7 @@ void main() {
         runtimeVersion: '25.08',
         flutterVersion: '3.47',
         embVersion: '1.2.3',
+        releaseDate: '2026-01-02',
       );
       final doc = _manifest(spec);
       final cross = doc['cross'] as YamlMap;
@@ -342,9 +345,15 @@ void main() {
           embedder: PinnedRepo(uri: defaultEmbedderUri, rev: 'abc1'),
           runtimeVersion: '25.08',
           embVersion: '1.2.3',
+          releaseDate: '2026-01-02',
         );
         final xml = renderFlatpakRepo(spec)['metainfo.xml']!;
-        expect(xml, contains('<release version="1.0&quot; date=&quot;2020"/>'));
+        expect(
+          xml,
+          contains(
+            '<release version="1.0&quot; date=&quot;2020" date="2026-01-02"/>',
+          ),
+        );
       });
 
       test('name and summary are XML-escaped', () {
@@ -353,6 +362,13 @@ void main() {
         )['metainfo.xml']!;
         expect(xml, contains('<name>Tom &amp; &lt;Jerry&gt;</name>'));
         expect(xml, contains('<summary>a &lt; b &amp; c</summary>'));
+      });
+
+      // Without a date appstreamcli warns and flatpak drops the element on
+      // install, so the version never reaches a software center.
+      test('the release is dated', () {
+        final xml = renderFlatpakRepo(_spec())['metainfo.xml']!;
+        expect(xml, contains('<release version="0.1.0" date="2026-01-02"/>'));
       });
 
       // Visibly incomplete beats quietly wrong.
