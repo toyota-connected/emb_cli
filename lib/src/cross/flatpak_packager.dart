@@ -1,5 +1,7 @@
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/cross/run_command.dart';
 import 'package:path/path.dart' as p;
@@ -116,6 +118,30 @@ class FlatpakPackageException implements Exception {
 /// Needs `flatpak-builder` plus the target runtime/SDK installed on the build
 /// host (`flatpak install org.freedesktop.Platform//<ver>` etc.); a missing
 /// `flatpak-builder` is reported up front.
+/// The path length at which `appstreamcli compose` stops writing icons
+/// (`icon-write-error`). Measured with AppStream 1.1.3: 255 succeeds, 256
+/// fails (seen on btrfs).
+const flatpakPathLimit = 256;
+
+/// The longest path flatpak-builder has appstreamcli write under [context]:
+/// the 128x128 icon it renders for the software-center metadata.
+String flatpakDeepestPath(Directory context, String appId) => p.join(
+  context.path,
+  'builddir',
+  'files',
+  'share',
+  'app-info',
+  'icons',
+  'flatpak',
+  '128x128',
+  '$appId.png',
+);
+
+String _contextKey(Directory outDir, String appId) => sha256
+    .convert(utf8.encode('${outDir.absolute.path}\n$appId'))
+    .toString()
+    .substring(0, 12);
+
 class FlatpakPackager {
   FlatpakPackager({ProcessRunner runProcess = defaultProcessRunner})
     : _run = runProcess;
@@ -126,6 +152,12 @@ class FlatpakPackager {
   /// `<outDir>/<appId>_<branch>_<arch>.flatpak`. [extraFiles] maps host source
   /// paths to destinations under the `/app` prefix (a leading `/` is treated as
   /// relative to `/app`).
+  ///
+  /// flatpak-builder works in a context directory. Under [contextRoot] it is
+  /// `fp-<hash>`, named by [outDir] and the app id so a rerun replaces its
+  /// own; with no root it is `<outDir>/<appId>.flatpak-ctx`. Give a short
+  /// root: `appstreamcli compose` cannot write an icon to a path of 256
+  /// characters or more, and [outDir] sits deep inside a build tree.
   Future<File> build({
     required Directory bundleDir,
     required FlatpakMetadata meta,
@@ -133,6 +165,7 @@ class FlatpakPackager {
     Map<String, String> extraFiles = const {},
     Map<String, String> fileModes = const {},
     Future<void> Function(Directory stagedBundle)? onStaged,
+    Directory? contextRoot,
   }) async {
     if (!bundleDir.existsSync()) {
       throw FlatpakPackageException('bundle not found: ${bundleDir.path}');
@@ -159,7 +192,25 @@ class FlatpakPackager {
     }
 
     outDir.createSync(recursive: true);
-    final ctx = Directory(p.join(outDir.path, '${meta.appId}.flatpak-ctx'));
+    final ctx = contextRoot == null
+        ? Directory(p.join(outDir.path, '${meta.appId}.flatpak-ctx'))
+        : Directory(
+            p.join(
+              contextRoot.absolute.path,
+              'fp-${_contextKey(outDir, meta.appId)}',
+            ),
+          );
+    // Checked here and not left to fail: appstreamcli reports it as
+    // `icon-write-error`, which names neither the path nor the limit.
+    final deepest = flatpakDeepestPath(ctx, meta.appId);
+    if (deepest.length >= flatpakPathLimit) {
+      throw FlatpakPackageException(
+        'the flatpak build directory is too deep: appstreamcli cannot write '
+        'a path of $flatpakPathLimit characters or more, and it would write '
+        '${deepest.length}:\n    $deepest\n'
+        'Set EMB_CACHE_DIR to a shorter directory.',
+      );
+    }
     if (ctx.existsSync()) ctx.deleteSync(recursive: true);
     ctx.createSync(recursive: true);
 
