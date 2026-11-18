@@ -25,8 +25,14 @@ emb cross my-app.emb.yaml --target rpi5-trixie --build --flatpak
 `rpi5-trixie` is a cross target, so the runtime has to be the one for the
 board's architecture, not this machine's: name it in the install, e.g.
 `org.freedesktop.Platform/aarch64/25.08` and
-`org.freedesktop.Sdk/aarch64/25.08`. `--target local` builds for
-this machine with the runtime above.
+`org.freedesktop.Sdk/aarch64/25.08`. flatpak-builder runs that
+runtime's tools while it packages, so this machine also needs `qemu-user`
+registered with binfmt_misc (`qemu-user-static` on Fedora and Ubuntu).
+`--target local` builds for this machine with the runtime above.
+
+The target extends the board alone. If the embedder ships its own layer for
+the board, as ivi-homescreen does in `.emb/`, extend that instead; emb's README
+has the steps under "A flatpak for a Raspberry Pi".
 
 The first build clones the embedder and the app and installs the Flutter SDK into
 `workspace/`; later builds reuse them. The bundle is written to

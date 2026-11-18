@@ -31,4 +31,8 @@ cross:
       runtime_version: '25.08'
   targets:
     rpi5-trixie:
+      # The board alone: toolchain, sysroot, CPU flags. An embedder
+      # that needs more to cross-build ships a project layer in its
+      # .emb/ (ivi-homescreen does); extend that target instead, as
+      # '<embedder checkout>#<target>'.
       extends: rpi5-trixie

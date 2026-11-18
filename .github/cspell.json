@@ -103,6 +103,7 @@
     "icudtl",
     "Kitware",
     "appstreamcli",
+    "binfmt",
     "metainfo",
     "libapp",
     "liba",

@@ -1582,7 +1582,7 @@ is no wrapper script.
 | `--embedder-rev` | HEAD, resolved now | as `--app-rev` |
 | `--embedder-bin` | `shell/homescreen` for ivi-homescreen | the embedder binary, relative to its build dir; becomes `package.bin` |
 | `--provider` | `arm-gnu` | |
-| `--target <board>` | none | adds a cross target that `extends:` the board |
+| `--target <board>` | none | adds a cross target that `extends:` the board, and only the board; see [A flatpak for a Raspberry Pi](#a-flatpak-for-a-raspberry-pi) |
 | `--runtime-version` | newest on flathub, else `25.08` | `YY.MM`; always written, never left to emb's default |
 | `--flutter-version` | `stable` | a branch or a tag |
 | `--ci <none\|github>` | `github` | |
@@ -1627,6 +1627,79 @@ The workflow builds natively on the runner and leaves one step as a `TODO`: the
 `-dev` packages your embedder links against, which emb cannot know. It runs
 with `permissions: contents: read` and a checkout that does not keep its
 credentials, since the job builds code from three other places.
+
+#### A flatpak for a Raspberry Pi
+
+`--target local` builds for the machine you are on. A flatpak for a board is a
+cross build, and three things differ.
+
+**The embedder's own layer, not just the board.** A board (`rpi5-trixie`) is the
+toolchain, the sysroot image and the CPU flags. An embedder usually needs more
+to cross-build: ivi-homescreen needs a host-built `wayland-cxx-scanner`, its own
+`-dev` packages in the sysroot, and its backend definitions, all of which it
+ships in its `.emb/` directory as a project layer. `--target <board>` extends
+the board alone, so with ivi-homescreen the configure step stops at
+`Could not find ... wayland-cxx-scanner`. Extend the embedder's target instead,
+by hand, in the generated manifest:
+
+```yaml
+cross:
+  # ... as generated ...
+  targets:
+    rpi5-trixie:
+      # ivi-homescreen's project layer for this board, which extends the board.
+      extends: 'workspace/app/ivi-homescreen#rpi5-trixie'
+      defines:
+        # The project layer turns plugins on and expects ivi-homescreen-plugins
+        # checked out beside the embedder. Off, unless you add that checkout.
+        DISABLE_PLUGINS: 'ON'
+```
+
+That path is inside the workspace, and emb resolves `extends:` before it clones
+anything, so on a fresh checkout nothing resolves, `--target local` included,
+until the embedder is there. Clone it once, at the commit the manifest pins:
+
+```sh
+git clone https://github.com/toyota-connected/ivi-homescreen.git workspace/app/ivi-homescreen
+git -C workspace/app/ivi-homescreen checkout <cross.source.rev>
+```
+
+**The runtime for the board's architecture, and a way to run it.**
+flatpak-builder runs the runtime's own tools while it packages, so the build
+machine needs the aarch64 runtime and `qemu-user` registered with binfmt_misc
+(`qemu-user-static` on Fedora and Ubuntu):
+
+```sh
+flatpak install --user -y flathub \
+  org.freedesktop.Platform/aarch64/25.08 org.freedesktop.Sdk/aarch64/25.08
+```
+
+Use the `runtime_version` the manifest names.
+
+**One backend.** The project layer defines five. Built together, each is
+packaged under its own app id (`<app_id>.<backend>`), which is not the id in
+`metainfo.xml`. Name the one the flatpak is for; under a compositor on the
+board that is `wayland-egl`:
+
+```sh
+emb cross my-app.emb.yaml --target rpi5-trixie --backend wayland-egl --build --flatpak
+```
+
+The first build downloads the Arm toolchain and the Raspberry Pi OS image the
+sysroot is made from. The result is
+`workspace/.config/flutter_workspace/cross-build-aarch64-*/dist/<app_id>_stable_aarch64.flatpak`.
+Copy it to the board and install it there:
+
+```sh
+flatpak install --user ./com.example.MyApp_stable_aarch64.flatpak
+flatpak run com.example.MyApp
+```
+
+The board needs the same `org.freedesktop.Platform` branch installed, and a
+Wayland compositor running for `wayland-egl`.
+
+If you edit a target after it has been built, the next build stops on
+`emb.lock` drift; `--update-lock` accepts the change.
 
 [`examples/cross/init-flatpak/`](examples/cross/init-flatpak) is the output for
 one fixed set of inputs, checked in. A test renders the same inputs and compares
