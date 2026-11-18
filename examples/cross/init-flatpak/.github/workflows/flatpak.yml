@@ -10,11 +10,18 @@ on:
   pull_request:
   workflow_dispatch:
 
+# The build runs code from the embedder, the app and the Flutter SDK.
+# None of it needs to write to this repo.
+permissions:
+  contents: read
+
 jobs:
   flatpak:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dart-lang/setup-dart@v1
       # cmake and ninja build the embedder; libsystemd-dev is for a
       # native dependency of emb itself.

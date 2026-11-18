@@ -1,5 +1,6 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/cross/cross_project.dart';
@@ -8,16 +9,116 @@ import 'package:emb_cli/src/cross/flatpak_packager.dart';
 import 'package:emb_cli/src/init/flatpak_repo_template.dart';
 import 'package:emb_cli/src/version.dart';
 import 'package:mason_logger/mason_logger.dart';
+import 'package:meta/meta.dart';
 import 'package:path/path.dart' as p;
 import 'package:yaml/yaml.dart';
 
 /// Runs a host tool (`git`, `flatpak`) for [InitFlatpakCommand]; injectable so
 /// tests need neither the network nor flatpak.
+///
+/// Throws [TimeoutException] when [timeout] passes with the tool still
+/// running.
 typedef InitProcessRunner =
-    Future<ProcessResult> Function(String executable, List<String> args);
+    Future<ProcessResult> Function(
+      String executable,
+      List<String> args, {
+      Map<String, String>? environment,
+      Duration? timeout,
+    });
 
-Future<ProcessResult> _defaultRunner(String executable, List<String> args) =>
-    Process.run(executable, args);
+/// The real [InitProcessRunner]. `Process.run` cannot be bounded: a timeout on
+/// its future leaves the child running and its pipes open, so the tool is
+/// started, and killed when [timeout] passes.
+@visibleForTesting
+Future<ProcessResult> runInitTool(
+  String executable,
+  List<String> args, {
+  Map<String, String>? environment,
+  Duration? timeout,
+}) async {
+  final process = await Process.start(
+    executable,
+    args,
+    environment: environment,
+  );
+  // Nothing here answers a question; a tool that reads stdin gets EOF.
+  unawaited(process.stdin.close().catchError((Object _) {}));
+  final out = process.stdout.transform(systemEncoding.decoder).join();
+  final err = process.stderr.transform(systemEncoding.decoder).join();
+  final code = timeout == null
+      ? await process.exitCode
+      : await process.exitCode.timeout(
+          timeout,
+          onTimeout: () {
+            process.kill(ProcessSignal.sigkill);
+            // The pipes may outlive the kill (a transport helper holds them),
+            // so the output is abandoned, not awaited.
+            unawaited(out.catchError((Object _) => ''));
+            unawaited(err.catchError((Object _) => ''));
+            throw TimeoutException('$executable did not answer', timeout);
+          },
+        );
+  return ProcessResult(process.pid, code, await out, await err);
+}
+
+/// Git environment that cannot stop for input, the rule `emb boards sync`
+/// follows: a credential prompt in the middle of a run is a hang.
+/// `GIT_SSH_COMMAND` is extended, not replaced, so a key or wrapper the user
+/// set survives.
+@visibleForTesting
+Map<String, String> gitNoPromptEnvironment(Map<String, String> environment) {
+  final ssh = environment['GIT_SSH_COMMAND']?.trim();
+  return {
+    'GIT_TERMINAL_PROMPT': '0',
+    'GIT_SSH_COMMAND': [
+      if (ssh == null || ssh.isEmpty) 'ssh' else ssh,
+      '-o',
+      'BatchMode=yes',
+    ].join(' '),
+  };
+}
+
+/// One round trip each; bounded because the failure is a stall, not an error.
+const _gitTimeout = Duration(minutes: 1);
+const _flatpakTimeout = Duration(seconds: 30);
+
+/// Why [uri] is not handed to git, or null when it is one emb will pass on.
+///
+/// The value becomes a git argument now and `cross.source.uri` in the
+/// manifest, which a later build clones. A leading `-` would be read as an
+/// option (`--upload-pack=<command>` runs the command), and a transport such
+/// as `ext::` runs one by design.
+String? _uriProblem(String uri) {
+  if (uri.startsWith('-')) return 'it starts with "-"';
+  if (RegExp(r'[\s\x00-\x1f\x7f]').hasMatch(uri)) {
+    return 'it contains whitespace';
+  }
+  final scheme = RegExp(
+    '^([A-Za-z][A-Za-z0-9+.-]*)://',
+  ).firstMatch(uri)?.group(1);
+  if (scheme != null) {
+    return const {
+          'https',
+          'http',
+          'ssh',
+          'git',
+          'file',
+        }.contains(scheme.toLowerCase())
+        ? null
+        : 'the "$scheme" transport is not one of https, http, ssh, git, file';
+  }
+  if (RegExp(r'^[\w.-]+@[\w.-]+:\S').hasMatch(uri)) return null;
+  return 'expected https://..., ssh://... or git@host:path';
+}
+
+final _revPattern = RegExp(r'^[A-Za-z0-9][\w./-]*$');
+final _commitPattern = RegExp(r'^[0-9a-fA-F]+$');
+final _runtimePattern = RegExp(r'^\d\d\.\d\d$');
+final _flutterVersionPattern = RegExp(r'^[A-Za-z0-9][\w.+-]*$');
+final _binPattern = RegExp(r'^[\w.+-]+(/[\w.+-]+)*$');
+final _targetPattern = RegExp(r'^[A-Za-z0-9][\w.-]*(/[A-Za-z0-9][\w.-]*)*$');
+final _pubNamePattern = RegExp(r'^[A-Za-z_][A-Za-z0-9_]*$');
+final _pubVersionPattern = RegExp(r'^[0-9A-Za-z][0-9A-Za-z.+-]*$');
 
 /// {@template init_command}
 /// `emb init <format>` — generate a packaging repo for one format.
@@ -61,7 +162,7 @@ class InitFlatpakCommand extends Command<int> {
     InitProcessRunner? processRunner,
     CrossProjectResolver? resolver,
   }) : _logger = logger,
-       _run = processRunner ?? _defaultRunner,
+       _run = processRunner ?? runInitTool,
        _resolver = resolver ?? CrossProjectResolver() {
     argParser
       ..addOption(
@@ -175,7 +276,16 @@ class InitFlatpakCommand extends Command<int> {
 
     // Refuse before any network work: a directory that cannot be written is
     // known now, and resolving two remotes first only delays saying so.
-    if (!force && dir.existsSync() && dir.listSync().isNotEmpty) {
+    final dirType = FileSystemEntity.typeSync(dir.path);
+    if (dirType != FileSystemEntityType.notFound &&
+        dirType != FileSystemEntityType.directory) {
+      _logger.err('${dir.path} exists and is not a directory.');
+      return ExitCode.cantCreate.code;
+    }
+    // `git init` first is the natural order, so `.git` alone is still empty.
+    if (!force &&
+        dir.existsSync() &&
+        dir.listSync().any((e) => p.basename(e.path) != '.git')) {
       _logger.err(
         '${dir.path} is not empty. Pass --force to write into it; files emb '
         'did not generate are left alone.',
@@ -183,19 +293,69 @@ class InitFlatpakCommand extends Command<int> {
       return ExitCode.cantCreate.code;
     }
 
+    // Every value below is written into a file someone will build from, and
+    // some into a shell line. Each is held to the shape it has to have, here,
+    // before the network is asked anything.
+    final runtimeArg = args['runtime-version'] as String?;
+    if (runtimeArg != null && !_runtimePattern.hasMatch(runtimeArg)) {
+      return _usage(
+        '--runtime-version "$runtimeArg": expected a freedesktop runtime '
+        'branch such as $fallbackFlatpakRuntimeVersion.',
+      );
+    }
+    final flutterVersion = args['flutter-version'] as String;
+    if (!_flutterVersionPattern.hasMatch(flutterVersion)) {
+      return _usage(
+        '--flutter-version "$flutterVersion": expected a branch or a tag.',
+      );
+    }
+    final binArg = args['embedder-bin'] as String?;
+    if (binArg != null &&
+        (!_binPattern.hasMatch(binArg) ||
+            binArg.startsWith('-') ||
+            p.posix.split(binArg).any((s) => s == '..' || s == '.'))) {
+      return _usage(
+        '--embedder-bin "$binArg": expected a path relative to the '
+        "embedder's build directory, e.g. $defaultEmbedderBin.",
+      );
+    }
+    final embedderUri = args['embedder'] as String;
+    final embedderProblem = _uriProblem(embedderUri);
+    if (embedderProblem != null) {
+      return _usage(
+        '--embedder "$embedderUri" is not a git URI: $embedderProblem.',
+      );
+    }
+    for (final flag in const ['embedder-rev', 'app-rev']) {
+      final rev = args[flag] as String?;
+      if (rev == null) continue;
+      if (!_revPattern.hasMatch(rev)) {
+        return _usage('--$flag "$rev": expected a commit.');
+      }
+      if (!_commitPattern.hasMatch(rev)) {
+        _logger.warn(
+          '--$flag $rev is not a commit id. A branch or a tag can move, and '
+          'the build will follow it.',
+        );
+      }
+    }
+
     // --app: a URI goes into the manifest, a directory only describes the app.
     final appArg = args['app'] as String?;
     final appIsUri = appArg != null && _isGitUri(appArg);
+    if (appIsUri) {
+      final problem = _uriProblem(appArg);
+      if (problem != null) {
+        return _usage('--app "$appArg" is not a git URI: $problem.');
+      }
+    }
     _Pubspec? pubspec;
     if (appArg != null && !appIsUri) {
-      pubspec = _readPubspec(Directory(appArg));
-      if (pubspec == null) {
-        _logger.err(
-          '--app $appArg: no readable pubspec.yaml there. Give a Flutter app '
-          'directory, or a git URI.',
-        );
-        return ExitCode.usage.code;
+      final read = _readPubspec(Directory(appArg));
+      if (read.problem != null) {
+        return _usage('--app $appArg: ${read.problem}');
       }
+      pubspec = read.pubspec;
     }
     if (args['app-rev'] != null && !appIsUri) {
       _logger.err('--app-rev needs --app <uri>.');
@@ -206,6 +366,18 @@ class InitFlatpakCommand extends Command<int> {
     // manifest the way `emb cross` does. All that can be said up front is
     // that there is no library to resolve it against.
     final target = args['target'] as String?;
+    if (target != null) {
+      if (!_targetPattern.hasMatch(target)) {
+        return _usage('--target "$target": expected a board name.');
+      }
+      final name = target.split('/').last;
+      if (name == 'local' || name == 'host') {
+        return _usage(
+          '--target $target: "$name" is the built-in native build, which '
+          'every generated repo already has. Name a board.',
+        );
+      }
+    }
     final haveBoards = _haveBoards();
     if (target != null && !haveBoards) {
       _logger.warn(
@@ -216,7 +388,7 @@ class InitFlatpakCommand extends Command<int> {
 
     final embedder = await _pin(
       'embedder',
-      args['embedder'] as String,
+      embedderUri,
       args['embedder-rev'] as String?,
       flag: '--embedder-rev',
     );
@@ -243,14 +415,13 @@ class InitFlatpakCommand extends Command<int> {
       // Only ivi-homescreen's layout is known. For any other embedder the
       // manifest says the binary should be named, and why.
       embedderBin:
-          (args['embedder-bin'] as String?) ??
+          binArg ??
           (embedder.uri == defaultEmbedderUri ? defaultEmbedderBin : null),
       app: app,
       provider: args['provider'] as String,
       target: target,
-      runtimeVersion:
-          (args['runtime-version'] as String?) ?? await _newestRuntime(),
-      flutterVersion: args['flutter-version'] as String,
+      runtimeVersion: runtimeArg ?? await _newestRuntime(),
+      flutterVersion: flutterVersion,
       githubCi: wantsCi,
       embVersion: packageVersion,
     );
@@ -269,13 +440,49 @@ class InitFlatpakCommand extends Command<int> {
     }
 
     final binaries = renderFlatpakRepoBinaries(spec);
-    final kept = {..._write(dir, files), ..._writeBinaries(dir, binaries)};
-    for (final rel in [...files.keys, ...binaries.keys]) {
+    final contents = <String, List<int>>{
+      for (final e in files.entries) e.key: utf8.encode(e.value),
+      ...binaries,
+    };
+    // Decide everything, then write: a file that cannot be read or a path
+    // that cannot be created is found before the first byte goes out, so a
+    // failure does not leave half a repo.
+    final _Plan plan;
+    try {
+      plan = _plan(dir, contents, binaries.keys.toSet());
+    } on _PlanProblem catch (e) {
+      _logger.err('${e.message} Nothing was written.');
+      return ExitCode.cantCreate.code;
+    } on FileSystemException catch (e) {
+      _logger.err(
+        'Could not read ${e.path ?? dir.path}: ${e.message}. '
+        'Nothing was written.',
+      );
+      return ExitCode.cantCreate.code;
+    }
+    try {
+      for (final entry in contents.entries) {
+        if (plan.kept.contains(entry.key)) continue;
+        File(p.join(dir.path, entry.key))
+          ..createSync(recursive: true)
+          ..writeAsBytesSync(entry.value);
+      }
+      for (final rel in plan.stale) {
+        File(p.join(dir.path, rel)).deleteSync();
+      }
+    } on FileSystemException catch (e) {
+      _logger.err('Could not write ${e.path ?? dir.path}: ${e.message}.');
+      return ExitCode.ioError.code;
+    }
+    for (final rel in contents.keys) {
       _logger.info(
-        kept.contains(rel)
+        plan.kept.contains(rel)
             ? '  kept     $rel (not generated by emb)'
             : '  wrote    $rel',
       );
+    }
+    for (final rel in plan.stale) {
+      _logger.info('  removed  $rel (generated by an earlier run)');
     }
     if (wantsCi && !spec.emitsWorkflow) {
       _logger.info(
@@ -288,6 +495,11 @@ class InitFlatpakCommand extends Command<int> {
       ..info('Next, in ${dir.path}:')
       ..info('  ${spec.buildCommand}');
     return ExitCode.success.code;
+  }
+
+  int _usage(String message) {
+    _logger.err(message);
+    return ExitCode.usage.code;
   }
 
   bool _isGitUri(String value) =>
@@ -315,11 +527,23 @@ class InitFlatpakCommand extends Command<int> {
     required String flag,
   }) async {
     if (rev != null) return PinnedRepo(uri: uri, rev: rev);
+    _logger.info('Resolving HEAD of $uri');
     final ProcessResult r;
     try {
-      r = await _run('git', ['ls-remote', '--symref', uri, 'HEAD']);
+      r = await _run(
+        'git',
+        ['ls-remote', '--symref', '--', uri, 'HEAD'],
+        environment: gitNoPromptEnvironment(Platform.environment),
+        timeout: _gitTimeout,
+      );
     } on ProcessException catch (e) {
       _logger.err('Could not run git to resolve the $what: ${e.message}');
+      return null;
+    } on TimeoutException {
+      _logger.err(
+        'No answer from $uri after ${_gitTimeout.inSeconds}s. '
+        'Pass $flag <commit> to pin the $what without the network.',
+      );
       return null;
     }
     String? sha;
@@ -332,15 +556,24 @@ class InitFlatpakCommand extends Command<int> {
         sha = fields[0];
       }
     }
-    if (r.exitCode != 0 || sha == null) {
+    // A commit id is all that is taken from the remote, and only as one.
+    if (r.exitCode != 0 || sha == null || !_commitPattern.hasMatch(sha)) {
+      final said = (r.stderr as String).trim().split('\n').first;
+      final why = said.isEmpty
+          ? 'the remote has no HEAD; an empty repository?'
+          : said;
       _logger.err(
-        'Could not resolve HEAD of $uri '
-        '(${(r.stderr as String).trim().split('\n').first}). '
+        'Could not resolve HEAD of $uri ($why). '
         'Pass $flag <commit> to pin the $what without the network.',
       );
       return null;
     }
-    return PinnedRepo(uri: uri, rev: sha, branch: branch);
+    return PinnedRepo(
+      uri: uri,
+      rev: sha,
+      // Written into a comment; anything that is not a ref name is dropped.
+      branch: branch != null && _revPattern.hasMatch(branch) ? branch : null,
+    );
   }
 
   /// The newest `org.freedesktop.Platform` branch flathub offers, as seen by
@@ -356,17 +589,19 @@ class InitFlatpakCommand extends Command<int> {
           '--runtime',
           '--columns=application,branch',
           'flathub',
-        ]);
+        ], timeout: _flatpakTimeout);
         if (r.exitCode != 0) continue;
         for (final line in (r.stdout as String).split('\n')) {
           final fields = line.trim().split(RegExp(r'\s+'));
           if (fields.length == 2 &&
               fields[0] == 'org.freedesktop.Platform' &&
-              RegExp(r'^\d\d\.\d\d$').hasMatch(fields[1])) {
+              _runtimePattern.hasMatch(fields[1])) {
             branches.add(fields[1]);
           }
         }
       } on ProcessException {
+        continue;
+      } on TimeoutException {
         continue;
       }
       if (branches.isNotEmpty) break;
@@ -409,74 +644,175 @@ class InitFlatpakCommand extends Command<int> {
       return '${e.message}';
     } on FormatException catch (e) {
       return e.message;
+      // A scalar the template left unquoted and YAML read as a number or a
+      // bool. A defect in the template, reported instead of thrown.
+      // ignore: avoid_catching_errors
+    } on TypeError catch (e) {
+      return 'the rendered manifest does not load: $e';
     } finally {
       scratch.deleteSync(recursive: true);
     }
   }
 
-  /// Writes [files] under [dir]. A file already there is replaced only when
-  /// it carries [flatpakInitMarker]; the paths left alone are returned.
-  Set<String> _write(Directory dir, Map<String, String> files) {
-    final kept = <String>{};
-    for (final entry in files.entries) {
-      final file = File(p.join(dir.path, entry.key));
-      if (file.existsSync() &&
-          !file.readAsStringSync().contains(flatpakInitMarker)) {
-        kept.add(entry.key);
-        continue;
-      }
-      file
-        ..createSync(recursive: true)
-        ..writeAsStringSync(entry.value);
-    }
-    return kept;
-  }
+  /// What writing [contents] under [dir] will do, with nothing written yet.
+  ///
+  /// A file already there is replaced only when it is emb's: a text file
+  /// that still opens with [flatpakInitMarker], or one of [binaries] that is
+  /// still byte for byte what emb writes. A generated manifest or workflow
+  /// from an earlier run that this run does not write is stale: it would go
+  /// on building what the earlier flags said.
+  ///
+  /// Nothing is written through a symbolic link. A linked file is the user's
+  /// and is kept; a linked directory on the way to a file is refused, since
+  /// the file would land outside [dir].
+  _Plan _plan(
+    Directory dir,
+    Map<String, List<int>> contents,
+    Set<String> binaries,
+  ) {
+    FileSystemEntityType typeOf(String rel) =>
+        FileSystemEntity.typeSync(p.join(dir.path, rel), followLinks: false);
 
-  /// The binary counterpart of [_write]: with no marker to look for, a file
-  /// already there is replaced only while it is still byte-for-byte what emb
-  /// would write.
-  Set<String> _writeBinaries(Directory dir, Map<String, Uint8List> files) {
-    final kept = <String>{};
-    for (final entry in files.entries) {
-      final file = File(p.join(dir.path, entry.key));
-      if (file.existsSync()) {
-        final existing = file.readAsBytesSync();
-        final same =
-            existing.length == entry.value.length &&
-            Iterable<int>.generate(
-              existing.length,
-            ).every((i) => existing[i] == entry.value[i]);
-        if (!same) kept.add(entry.key);
-        continue;
+    /// The first thing on the way to [rel] that is not a real directory,
+    /// with its type; null when every parent that exists is one.
+    (String, FileSystemEntityType)? blockedParent(String rel) {
+      final parts = p.split(rel);
+      for (var i = 1; i < parts.length; i++) {
+        final parent = p.joinAll(parts.take(i));
+        final type = typeOf(parent);
+        if (type == FileSystemEntityType.notFound) return null;
+        if (type != FileSystemEntityType.directory) return (parent, type);
       }
-      file
-        ..createSync(recursive: true)
-        ..writeAsBytesSync(entry.value);
-    }
-    return kept;
-  }
-
-  _Pubspec? _readPubspec(Directory app) {
-    final file = File(p.join(app.path, 'pubspec.yaml'));
-    if (!file.existsSync()) return null;
-    try {
-      final doc = loadYaml(file.readAsStringSync());
-      if (doc is! YamlMap) return null;
-      final name = doc['name']?.toString();
-      if (name == null || name.isEmpty) return null;
-      final description = doc['description']?.toString().trim();
-      return _Pubspec(
-        name: name,
-        // `1.2.3+4`: the build number means nothing to a package version.
-        version: doc['version']?.toString().split('+').first,
-        description: description == null || description.isEmpty
-            ? null
-            : description.split('\n').first,
-      );
-    } on YamlException {
       return null;
     }
+
+    bool isOurs(String rel) {
+      final bytes = File(p.join(dir.path, rel)).readAsBytesSync();
+      final expected = contents[rel];
+      if (binaries.contains(rel)) {
+        return expected != null &&
+            bytes.length == expected.length &&
+            Iterable<int>.generate(
+              bytes.length,
+            ).every((i) => bytes[i] == expected[i]);
+      }
+      // The marker is the first line of a generated file, or the second
+      // below an XML declaration. Anywhere else it is prose quoting it.
+      final head = utf8
+          .decode(bytes.take(1024).toList(), allowMalformed: true)
+          .split('\n')
+          .take(2);
+      return head.any((line) => line.contains(flatpakInitMarker));
+    }
+
+    final kept = <String>{};
+    for (final rel in contents.keys) {
+      final blocked = blockedParent(rel);
+      if (blocked != null) {
+        final what = blocked.$2 == FileSystemEntityType.link
+            ? 'a symbolic link'
+            : 'not a directory';
+        throw _PlanProblem(
+          '${blocked.$1} is $what, so $rel cannot be written under it.',
+        );
+      }
+      final type = typeOf(rel);
+      if (type == FileSystemEntityType.notFound) continue;
+      if (type == FileSystemEntityType.directory) {
+        throw _PlanProblem('$rel is a directory.');
+      }
+      if (type == FileSystemEntityType.link || !isOurs(rel)) kept.add(rel);
+    }
+
+    final stale = <String>[];
+    if (dir.existsSync()) {
+      const workflow = '.github/workflows/flatpak.yml';
+      final candidates = [
+        for (final e in dir.listSync(followLinks: false))
+          if (e is File && e.path.endsWith('.emb.yaml')) p.basename(e.path),
+        workflow,
+      ];
+      for (final rel in candidates) {
+        if (contents.containsKey(rel)) continue;
+        if (typeOf(rel) != FileSystemEntityType.file) continue;
+        if (blockedParent(rel) != null) continue;
+        if (isOurs(rel)) stale.add(rel);
+      }
+    }
+    return _Plan(kept: kept, stale: stale);
   }
+
+  /// The app's pubspec, or why it cannot be used. Its values go into the
+  /// README and the AppStream metadata, and the app may be someone else's, so
+  /// each is held to what pub itself allows.
+  ({_Pubspec? pubspec, String? problem}) _readPubspec(Directory app) {
+    const unreadable =
+        'no readable pubspec.yaml there. Give a Flutter app directory, or a '
+        'git URI.';
+    final file = File(p.join(app.path, 'pubspec.yaml'));
+    if (!file.existsSync()) return (pubspec: null, problem: unreadable);
+    final Object? doc;
+    try {
+      doc = loadYaml(file.readAsStringSync());
+    } on YamlException {
+      return (pubspec: null, problem: unreadable);
+    } on FileSystemException {
+      // Not UTF-8, or not readable.
+      return (pubspec: null, problem: unreadable);
+    }
+    if (doc is! YamlMap) return (pubspec: null, problem: unreadable);
+    final name = doc['name']?.toString();
+    if (name == null || name.isEmpty) {
+      return (pubspec: null, problem: unreadable);
+    }
+    if (!_pubNamePattern.hasMatch(name)) {
+      return (
+        pubspec: null,
+        problem: 'its pubspec.yaml has a name that is not a package name.',
+      );
+    }
+    // `1.2.3+4`: the build number means nothing to a package version.
+    final version = doc['version']?.toString().split('+').first;
+    if (version != null && !_pubVersionPattern.hasMatch(version)) {
+      return (
+        pubspec: null,
+        problem: 'its pubspec.yaml has a version that is not a version.',
+      );
+    }
+    final description = doc['description']
+        ?.toString()
+        .trim()
+        .split('\n')
+        .first
+        .replaceAll(RegExp(r'[\x00-\x1f\x7f]'), ' ')
+        .trim();
+    return (
+      pubspec: _Pubspec(
+        name: name,
+        version: version,
+        description: description == null || description.isEmpty
+            ? null
+            : description,
+      ),
+      problem: null,
+    );
+  }
+}
+
+class _Plan {
+  const _Plan({required this.kept, required this.stale});
+
+  /// Generated paths left as they are: not emb's to replace.
+  final Set<String> kept;
+
+  /// Paths an earlier run generated and this one does not: removed.
+  final List<String> stale;
+}
+
+class _PlanProblem implements Exception {
+  const _PlanProblem(this.message);
+
+  final String message;
 }
 
 class _Pubspec {

@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:yaml/yaml.dart';
+
 /// The line every generated file carries. `emb init flatpak --force` rewrites
 /// a file only when it finds this in it, so a file the user wrote, or took
 /// over by deleting the line, is never overwritten.
@@ -208,14 +210,28 @@ String _yaml(String value) {
       value.startsWith('@') ||
       value.endsWith(':') ||
       value.contains(': ');
-  if (plain && !ambiguous) return value;
+  if (plain && !ambiguous && _loadsAsItself(value)) return value;
   return "'${value.replaceAll("'", "''")}'";
 }
 
+/// Whether YAML reads [value], unquoted, as that same string. `1234e56` is a
+/// float, `0x1f` an int, `.inf` a float: an abbreviated commit can be any of
+/// the first two, and the manifest parser wants a string.
+bool _loadsAsItself(String value) {
+  try {
+    return loadYaml(value) == value;
+  } on YamlException {
+    return false;
+  }
+}
+
+/// Escaped for element content and for a quoted attribute value alike.
 String _xml(String value) => value
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;');
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&apos;');
 
 /// `key: value` padded so a trailing comment lines up with its neighbors.
 String _line(String indent, String key, String value, [String? comment]) {
@@ -293,7 +309,7 @@ String _manifest(FlatpakRepoSpec s) {
     '    flatpak:',
     '      app_id: ${s.appId}',
     _line('      ', 'icon', 'icon.png', 'a placeholder; replace it'),
-    "      runtime_version: '${s.runtimeVersion}'",
+    '      runtime_version: ${_yaml(s.runtimeVersion)}',
     if (s.target != null) ...[
       '  targets:',
       '    ${_yaml(s.targetName!)}:',
@@ -426,11 +442,18 @@ String _workflow(FlatpakRepoSpec s) {
     '  pull_request:',
     '  workflow_dispatch:',
     '',
+    '# The build runs code from the embedder, the app and the Flutter SDK.',
+    '# None of it needs to write to this repo.',
+    'permissions:',
+    '  contents: read',
+    '',
     'jobs:',
     '  flatpak:',
     '    runs-on: ubuntu-latest',
     '    steps:',
     '      - uses: actions/checkout@v4',
+    '        with:',
+    '          persist-credentials: false',
     '      - uses: dart-lang/setup-dart@v1',
     '      # cmake and ninja build the embedder; libsystemd-dev is for a',
     '      # native dependency of emb itself.',

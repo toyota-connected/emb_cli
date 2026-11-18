@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:emb_cli/src/cross/cross_project.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/init/flatpak_repo_template.dart';
+import 'package:emb_cli/src/manifest/manifest_loader.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 import 'package:yaml/yaml.dart';
@@ -112,7 +113,11 @@ void main() {
     // `emb cross` loads it. Not a build, which needs a toolchain and an
     // engine.
     test('the example manifest resolves as a cross project', () {
-      final resolver = CrossProjectResolver();
+      final resolver = CrossProjectResolver(
+        const ManifestLoader(),
+        Directory('boards'),
+        const {},
+      );
       final manifest = p.join(_exampleDir.path, exampleSpec.manifestName);
       final project = resolver.resolve(manifest)!;
 
@@ -336,7 +341,36 @@ void main() {
       expect((package['flatpak'] as YamlMap)['runtime_version'], '25.08');
     });
 
+    // A scalar YAML would read as a number is quoted. The manifest parser
+    // casts these to String, so an unquoted one is a crash, not a typo.
+    for (final rev in ['1234e56', '0x1f', '0o17', '.inf', '1e3', '12_3']) {
+      test('rev $rev reads back as a string', () {
+        final spec = _spec(
+          embedder: PinnedRepo(uri: defaultEmbedderUri, rev: rev),
+          embedderBin: rev,
+        );
+        final cross = _manifest(spec)['cross'] as YamlMap;
+        expect((cross['source'] as YamlMap)['rev'], rev);
+        expect((cross['package'] as YamlMap)['bin'], rev);
+      });
+    }
+
     group('metainfo', () {
+      // The version sits in an attribute, where a quote ends the value.
+      test('quotes are escaped', () {
+        const spec = FlatpakRepoSpec(
+          appId: 'com.example.MyApp',
+          id: 'my-app',
+          name: 'x',
+          version: '1.0" date="2020',
+          embedder: PinnedRepo(uri: defaultEmbedderUri, rev: 'abc1'),
+          runtimeVersion: '25.08',
+          embVersion: '1.2.3',
+        );
+        final xml = renderFlatpakRepo(spec)['metainfo.xml']!;
+        expect(xml, contains('<release version="1.0&quot; date=&quot;2020"/>'));
+      });
+
       test('name and summary are XML-escaped', () {
         final xml = renderFlatpakRepo(
           _spec(name: 'Tom & <Jerry>', summary: 'a < b & c'),
@@ -369,6 +403,20 @@ void main() {
                 as YamlList)
           if ((step as YamlMap).containsKey('run')) '${step['run']}',
       ];
+
+      // The job runs the embedder's build, the app's and a Flutter SDK.
+      // None of it is given a token that can write to the repo.
+      test('the token is read-only and not left in the checkout', () {
+        final doc = workflow(_spec(app: _app));
+        expect(doc['permissions'], {'contents': 'read'});
+        final steps =
+            ((doc['jobs'] as YamlMap)['flatpak'] as YamlMap)['steps']
+                as YamlList;
+        final checkout = steps.cast<YamlMap>().firstWhere(
+          (s) => '${s['uses']}'.startsWith('actions/checkout@'),
+        );
+        expect(checkout['with'], {'persist-credentials': false});
+      });
 
       test('is valid YAML that builds this manifest natively', () {
         final build = runs(_spec(app: _app, target: 'rpi5-trixie')).last;

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:args/command_runner.dart';
@@ -26,12 +27,20 @@ class _Harness {
     this.gitFails = false,
     this.gitMissing = false,
     this.flatpak = const {},
+    this.hangs = const {},
+    this.gitOutput,
     bool boards = true,
   }) {
     tmp = Directory.systemTemp.createTempSync('emb-init-cmd-');
     addTearDown(() => tmp.deleteSync(recursive: true));
+    // The repo's own library, and no environment: the developer's
+    // EMB_BOARDS_DIR must not decide which boards these tests can see.
     resolver = boards
-        ? CrossProjectResolver()
+        ? CrossProjectResolver(
+            const ManifestLoader(),
+            Directory('boards'),
+            const {},
+          )
         // An empty directory: a compiled emb before `emb boards sync`.
         : CrossProjectResolver(
             const ManifestLoader(),
@@ -53,6 +62,12 @@ class _Harness {
   final bool gitFails;
   final bool gitMissing;
 
+  /// Executables that never answer.
+  final Set<String> hangs;
+
+  /// `git ls-remote` stdout, in place of a well-formed answer.
+  final String? gitOutput;
+
   /// `flatpak remote-ls` stdout per scope (`--user` / `--system`); a scope
   /// not listed exits non-zero.
   final Map<String, String> flatpak;
@@ -67,12 +82,25 @@ class _Harness {
 
   /// Every process the command started: `[executable, ...args]`.
   final calls = <List<String>>[];
+  final environments = <Map<String, String>?>[];
+  final timeouts = <Duration?>[];
 
-  Future<ProcessResult> _run(String exe, List<String> args) async {
+  Future<ProcessResult> _run(
+    String exe,
+    List<String> args, {
+    Map<String, String>? environment,
+    Duration? timeout,
+  }) async {
     calls.add([exe, ...args]);
+    environments.add(environment);
+    timeouts.add(timeout);
+    if (hangs.contains(exe)) {
+      throw TimeoutException('$exe did not answer', timeout);
+    }
     if (exe == 'git') {
       if (gitMissing) throw ProcessException(exe, args, 'not found', 2);
       if (gitFails) return ProcessResult(0, 128, '', 'fatal: no such repo\n');
+      if (gitOutput != null) return ProcessResult(0, 0, gitOutput, '');
       final uri = args[args.length - 2];
       final isApp = uri == _appUri;
       return ProcessResult(
@@ -169,9 +197,7 @@ void main() {
     test('what it writes resolves as a cross project', () async {
       final h = _Harness();
       await h.run(['--app', _appUri, '--target', 'rpi5-trixie']);
-      final project = CrossProjectResolver().resolve(
-        h.file('my-app.emb.yaml').path,
-      )!;
+      final project = h.resolver.resolve(h.file('my-app.emb.yaml').path)!;
       expect(project.workspaceDir, p.join(h.out.absolute.path, 'workspace'));
       for (final name in ['rpi5-trixie', 'local']) {
         final target = CrossTarget.fromMap(project.selectTarget(name)!.cross);
@@ -244,8 +270,8 @@ void main() {
         await h.run(['--app', _appUri]);
 
         expect(h.callsTo('git'), [
-          ['git', 'ls-remote', '--symref', defaultEmbedderUri, 'HEAD'],
-          ['git', 'ls-remote', '--symref', _appUri, 'HEAD'],
+          ['git', 'ls-remote', '--symref', '--', defaultEmbedderUri, 'HEAD'],
+          ['git', 'ls-remote', '--symref', '--', _appUri, 'HEAD'],
         ]);
         expect(h.cross()['source'], {
           'uri': defaultEmbedderUri,
@@ -602,6 +628,401 @@ void main() {
 
         await h.run(['--force']);
         expect(h.read('.gitignore'), edited);
+      });
+    });
+
+    // Each flag value ends up in a file someone builds from, and some in a
+    // shell line or a git argument. A value of the wrong shape is refused
+    // before anything runs, and names its flag.
+    group('a value of the wrong shape is a usage error', () {
+      const bad = <String, List<String>>{
+        // An option to git: --upload-pack=<command> runs the command.
+        '--embedder': [
+          '--upload-pack=touch /tmp/x',
+          '-x://y',
+          'ext::sh -c id',
+          'gopher://example.com/x.git',
+          '../embedder',
+          'https://example.com/a b.git',
+        ],
+        // Written into the workflow's run: block and the README.
+        '--runtime-version': ["25'08", '25.08; echo hi #', '25.8', 'stable'],
+        '--embedder-rev': ['--force', 'a b', "a'b"],
+        '--flutter-version': ['-x', 'a b', 'stable; id'],
+        '--embedder-bin': ['/usr/bin/x', '../x', 'a/../b', '-x', 'a b'],
+        '--target': ['a b', '-x', 'local', 'emb-public/host'],
+      };
+      for (final entry in bad.entries) {
+        for (final value in entry.value) {
+          test('${entry.key} ${value.replaceAll('\n', r'\n')}', () async {
+            final h = _Harness();
+            expect(await h.run(['${entry.key}=$value']), ExitCode.usage.code);
+            expect(h.errors.single, contains(entry.key));
+            if (entry.key == '--embedder' && value.startsWith('-')) {
+              expect(h.errors.single, contains('starts with "-"'));
+            }
+            expect(h.calls, isEmpty);
+            expect(h.written, isEmpty);
+          });
+        }
+      }
+
+      for (final uri in ['--upload-pack=x://y', 'ext::https://example.com/x']) {
+        test('--app $uri', () async {
+          final h = _Harness();
+          // The second is not a URI at all, so it is read as a directory.
+          expect(await h.run(['--app=$uri']), ExitCode.usage.code);
+          expect(h.errors.single, contains('--app'));
+          expect(h.calls, isEmpty);
+          expect(h.written, isEmpty);
+        });
+      }
+
+      // The name is written into a comment line of the manifest.
+      test('--target with a newline in it', () async {
+        final h = _Harness();
+        expect(await h.run(['--target', 'x\ntype: evil']), ExitCode.usage.code);
+        expect(h.errors.single, contains('--target'));
+        expect(h.written, isEmpty);
+      });
+
+      test('--app-rev that is not a commit', () async {
+        final h = _Harness();
+        expect(
+          await h.run(['--app', _appUri, '--app-rev=--x']),
+          ExitCode.usage.code,
+        );
+        expect(h.errors.single, contains('--app-rev'));
+        expect(h.calls, isEmpty);
+      });
+
+      for (final uri in [
+        'https://example.com/e.git',
+        'ssh://git@example.com/e.git',
+        'git@example.com:me/e.git',
+        'file:///srv/git/e.git',
+      ]) {
+        test('$uri is a git URI', () async {
+          final h = _Harness();
+          expect(
+            await h.run(['--embedder', uri, '--embedder-rev', 'cafe']),
+            ExitCode.success.code,
+          );
+          expect((h.cross()['source'] as YamlMap)['uri'], uri);
+        });
+      }
+    });
+
+    group('a rev', () {
+      // YAML reads 1234e56 as a float. Roughly one abbreviated commit in
+      // fifty has that shape, and the manifest parser wants a string.
+      for (final rev in ['1234e56', '0123456', '12345678', '0x1f']) {
+        test('$rev is written as a string', () async {
+          final h = _Harness();
+          expect(await h.run(['--embedder-rev', rev]), ExitCode.success.code);
+          expect((h.cross()['source'] as YamlMap)['rev'], rev);
+        });
+      }
+
+      test('that is a branch is written, with a warning', () async {
+        final h = _Harness();
+        expect(await h.run(['--embedder-rev', 'main']), ExitCode.success.code);
+        expect(h.warnings.single, contains('--embedder-rev main'));
+        expect((h.cross()['source'] as YamlMap)['rev'], 'main');
+      });
+
+      test('that is a commit raises no warning', () async {
+        final h = _Harness();
+        await h.run(['--embedder-rev', _embedderHead]);
+        expect(h.warnings, isEmpty);
+      });
+    });
+
+    group('asking the network', () {
+      test('git cannot prompt, and is bounded', () async {
+        final h = _Harness();
+        await h.run();
+        expect(h.environments.first, containsPair('GIT_TERMINAL_PROMPT', '0'));
+        expect(
+          h.environments.first!['GIT_SSH_COMMAND'],
+          contains('BatchMode=yes'),
+        );
+        expect(h.timeouts.first, isNotNull);
+        expect(h.infos, contains(contains('Resolving HEAD of')));
+      });
+
+      test('flatpak is bounded', () async {
+        final h = _Harness();
+        await h.run();
+        expect(h.callsTo('flatpak'), isNotEmpty);
+        expect(h.timeouts.last, isNotNull);
+      });
+
+      test('a git that never answers is unavailable, not a hang', () async {
+        final h = _Harness(hangs: {'git'});
+        expect(await h.run(), ExitCode.unavailable.code);
+        expect(
+          h.errors.single,
+          allOf(contains('No answer'), contains('--embedder-rev')),
+        );
+        expect(h.written, isEmpty);
+      });
+
+      test('a flatpak that never answers falls back', () async {
+        final h = _Harness(hangs: {'flatpak'});
+        expect(await h.run(), ExitCode.success.code);
+        expect(
+          h.read('my-app.emb.yaml'),
+          contains("'$fallbackFlatpakRuntimeVersion'"),
+        );
+      });
+
+      // `git ls-remote` on an empty repository: exit 0 and no output.
+      test('a remote with no HEAD says so', () async {
+        final h = _Harness(gitOutput: '');
+        expect(await h.run(), ExitCode.unavailable.code);
+        expect(h.errors.single, contains('no HEAD'));
+        expect(h.errors.single, isNot(contains('()')));
+      });
+
+      test('a HEAD that is not a commit id is not written', () async {
+        final h = _Harness(gitOutput: 'not-a-sha\tHEAD\n');
+        expect(await h.run(), ExitCode.unavailable.code);
+        expect(h.written, isEmpty);
+      });
+
+      test('GIT_SSH_COMMAND is extended, not replaced', () {
+        expect(
+          gitNoPromptEnvironment({'GIT_SSH_COMMAND': 'ssh -i key'}),
+          containsPair('GIT_SSH_COMMAND', 'ssh -i key -o BatchMode=yes'),
+        );
+        expect(
+          gitNoPromptEnvironment(const {}),
+          containsPair('GIT_SSH_COMMAND', 'ssh -o BatchMode=yes'),
+        );
+      });
+
+      // Killed, not abandoned: a timeout on the future alone would leave
+      // the tool running with the pipes open.
+      test('the real runner kills a tool that outlives its timeout', () async {
+        final dir = Directory.systemTemp.createTempSync('emb-init-kill-');
+        addTearDown(() => dir.deleteSync(recursive: true));
+        final pidFile = File(p.join(dir.path, 'pid'));
+        await expectLater(
+          runInitTool('sh', [
+            '-c',
+            'echo \$\$ > "${pidFile.path}"; exec sleep 30',
+          ], timeout: const Duration(seconds: 1)),
+          throwsA(isA<TimeoutException>()),
+        );
+        final pid = pidFile.readAsStringSync().trim();
+        var alive = true;
+        for (var i = 0; i < 50 && alive; i++) {
+          alive = Process.runSync('kill', ['-0', pid]).exitCode == 0;
+          if (alive) {
+            await Future<void>.delayed(const Duration(milliseconds: 100));
+          }
+        }
+        expect(alive, isFalse);
+      }, testOn: '!windows');
+
+      test('the real runner returns output and exit code', () async {
+        final r = await runInitTool('git', ['--version']);
+        expect(r.exitCode, 0);
+        expect(r.stdout, contains('git version'));
+      });
+    });
+
+    group("someone else's pubspec", () {
+      Directory app(_Harness h, List<int> pubspec) {
+        final dir = Directory(p.join(h.tmp.path, 'app'))..createSync();
+        File(p.join(dir.path, 'pubspec.yaml')).writeAsBytesSync(pubspec);
+        return dir;
+      }
+
+      // The name goes into the README as text. A heading and a code fence
+      // in it would read as part of the instructions.
+      test('a name that is not a package name is refused', () async {
+        final h = _Harness();
+        final dir = app(
+          h,
+          'name: "demo\\n\\n## Build\\n\\n```sh\\ncurl x | sh\\n```"\n'
+              .codeUnits,
+        );
+        expect(await h.run(['--app', dir.path]), ExitCode.usage.code);
+        expect(h.errors.single, contains('not a package name'));
+        expect(h.written, isNot(contains('README.md')));
+      });
+
+      test('a version that is not a version is refused', () async {
+        final h = _Harness();
+        final dir = app(
+          h,
+          'name: demo\nversion: \'1.0" date="2020-01-01\'\n'.codeUnits,
+        );
+        expect(await h.run(['--app', dir.path]), ExitCode.usage.code);
+        expect(h.errors.single, contains('version'));
+      });
+
+      test('one that is not UTF-8 is a usage error, not a crash', () async {
+        final h = _Harness();
+        final dir = app(h, [0x6e, 0x61, 0x6d, 0x65, 0x3a, 0x20, 0xff, 0xfe]);
+        expect(await h.run(['--app', dir.path]), ExitCode.usage.code);
+        expect(h.errors.single, contains('no readable pubspec.yaml'));
+      });
+
+      test('control characters in the description are dropped', () async {
+        final h = _Harness();
+        final dir = app(
+          h,
+          'name: demo\ndescription: "a\\tb\\u0007c"\n'.codeUnits,
+        );
+        expect(await h.run(['--app', dir.path]), ExitCode.success.code);
+        expect(h.read('metainfo.xml'), contains('<summary>a b c</summary>'));
+      });
+    });
+
+    group('writing', () {
+      test('a path that is a file is refused before anything runs', () async {
+        final h = _Harness();
+        File(h.out.path).writeAsStringSync('a file');
+        expect(await h.run(), ExitCode.cantCreate.code);
+        expect(h.errors.single, contains('not a directory'));
+        expect(h.calls, isEmpty);
+      });
+
+      // `git init` first is the natural order for a packaging repo.
+      test('a directory holding only .git counts as empty', () async {
+        final h = _Harness();
+        Directory(p.join(h.out.path, '.git')).createSync(recursive: true);
+        expect(await h.run(), ExitCode.success.code);
+        expect(h.written, contains('my-app.emb.yaml'));
+      });
+
+      // All or nothing: the workflow cannot be created, so the manifest that
+      // would have been written first is not written either.
+      test('one unwritable path writes nothing at all', () async {
+        final h = _Harness();
+        h.out.createSync();
+        h.file('.github').writeAsStringSync('a file, not a directory');
+
+        expect(
+          await h.run(['--app', _appUri, '--force']),
+          ExitCode.cantCreate.code,
+        );
+        expect(
+          h.errors.single,
+          allOf(contains('.github'), contains('Nothing was written')),
+        );
+        expect(h.written, {'.github'});
+      });
+
+      test('an existing file that is not UTF-8 is kept', () async {
+        final h = _Harness();
+        h.out.createSync();
+        h.file('metainfo.xml').writeAsBytesSync([0xff, 0xfe, 0x00, 0x41]);
+
+        expect(await h.run(['--force']), ExitCode.success.code);
+        expect(h.file('metainfo.xml').readAsBytesSync(), [0xff, 0xfe, 0, 0x41]);
+        expect(h.infos, contains(contains('kept     metainfo.xml')));
+        expect(h.written, contains('my-app.emb.yaml'));
+      });
+
+      // The marker opens a generated file. Quoted in prose further down, it
+      // does not make the file emb's.
+      test('the marker in prose does not make a file generated', () async {
+        final h = _Harness();
+        h.out.createSync();
+        const mine = '# Mine\n\nNotes.\n\nThis repo was $flatpakInitMarker.\n';
+        h.file('README.md').writeAsStringSync(mine);
+
+        await h.run(['--force']);
+        expect(h.read('README.md'), mine);
+      });
+
+      group('symbolic links', () {
+        test('a linked file is kept, and its target untouched', () async {
+          final h = _Harness();
+          await h.run();
+          final outside = File(p.join(h.tmp.path, 'outside.md'))
+            ..writeAsStringSync(h.read('README.md'));
+          h.file('README.md').deleteSync();
+          Link(h.file('README.md').path).createSync(outside.path);
+          final before = outside.readAsStringSync();
+
+          expect(
+            await h.run(['--runtime-version', '24.08', '--force']),
+            ExitCode.success.code,
+          );
+          expect(outside.readAsStringSync(), before);
+          expect(h.infos, contains(contains('kept     README.md')));
+        });
+
+        test('a dangling linked file is not written through', () async {
+          final h = _Harness();
+          h.out.createSync();
+          final outside = File(p.join(h.tmp.path, 'created.md'));
+          Link(h.file('README.md').path).createSync(outside.path);
+
+          expect(await h.run(['--force']), ExitCode.success.code);
+          expect(outside.existsSync(), isFalse);
+        });
+
+        test('a linked directory is refused, nothing written', () async {
+          final h = _Harness();
+          h.out.createSync();
+          final outside = Directory(p.join(h.tmp.path, 'outside'))
+            ..createSync();
+          Link(p.join(h.out.path, '.github')).createSync(outside.path);
+
+          expect(
+            await h.run(['--app', _appUri, '--force']),
+            ExitCode.cantCreate.code,
+          );
+          expect(h.errors.single, contains('symbolic link'));
+          expect(outside.listSync(recursive: true), isEmpty);
+          expect(h.written, isEmpty);
+        });
+      }, testOn: '!windows');
+
+      group('files an earlier run generated', () {
+        test('a manifest under another id is removed', () async {
+          final h = _Harness();
+          await h.run(['--app', _appUri]);
+          h.infos.clear();
+
+          expect(
+            await h.run(['--force'], 'com.example.OtherThing'),
+            ExitCode.success.code,
+          );
+          expect(h.written, contains('other-thing.emb.yaml'));
+          expect(h.written, isNot(contains('my-app.emb.yaml')));
+          expect(h.infos, contains(contains('removed  my-app.emb.yaml')));
+        });
+
+        // It would go on building the manifest the earlier flags named.
+        test('a workflow no longer rendered is removed', () async {
+          final h = _Harness();
+          await h.run(['--app', _appUri]);
+          expect(h.written, contains('.github/workflows/flatpak.yml'));
+
+          await h.run(['--app', _appUri, '--ci', 'none', '--force']);
+          expect(h.written, isNot(contains('.github/workflows/flatpak.yml')));
+        });
+
+        test("a manifest that is the user's is left alone", () async {
+          final h = _Harness();
+          h.out.createSync();
+          h.file('board.emb.yaml').writeAsStringSync('id: board\n');
+          h.file('.github/workflows/flatpak.yml')
+            ..createSync(recursive: true)
+            ..writeAsStringSync('name: mine\n');
+
+          await h.run(['--force']);
+          expect(h.read('board.emb.yaml'), 'id: board\n');
+          expect(h.read('.github/workflows/flatpak.yml'), 'name: mine\n');
+          expect(h.infos, isNot(contains(contains('removed'))));
+        });
       });
     });
   });
