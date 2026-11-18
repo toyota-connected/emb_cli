@@ -1582,7 +1582,6 @@ is no wrapper script.
 | `--embedder-rev` | HEAD, resolved now | as `--app-rev` |
 | `--embedder-bin` | `shell/homescreen` for ivi-homescreen | the embedder binary, relative to its build dir; becomes `package.bin` |
 | `--provider` | `arm-gnu` | |
-| `--target <board>` | none | adds a cross target that `extends:` the board, and only the board; see [A flatpak for a Raspberry Pi](#a-flatpak-for-a-raspberry-pi) |
 | `--runtime-version` | newest on flathub, else `25.08` | `YY.MM`; always written, never left to emb's default |
 | `--flutter-version` | `stable` | a branch or a tag |
 | `--ci <none\|github>` | `github` | |
@@ -1602,6 +1601,9 @@ What it decides for you, and why:
 - **A local `--app` is not written down.** A path is this machine's. The
   manifest then names no app, the build takes `--app <dir>`, and no workflow is
   generated, since a runner would have nothing to build.
+- **Native only.** The one build is `--target local`. A board needs the
+  embedder's own cross layer, which cannot be named before the embedder is
+  cloned; see [A flatpak for a Raspberry Pi](#a-flatpak-for-a-raspberry-pi).
 - **Nothing site-specific.** No `sysroot.host`, no ssh options, no board file,
   no `finish_args` beyond the packager's default sandbox.
 - **Your files are yours.** A non-empty directory is refused without `--force`
@@ -1630,17 +1632,18 @@ credentials, since the job builds code from three other places.
 
 #### A flatpak for a Raspberry Pi
 
-`--target local` builds for the machine you are on. A flatpak for a board is a
-cross build, and three things differ.
+A generated repo builds for the machine you are on (`--target local`), and
+`emb init flatpak` writes no other target. A flatpak for a board is a cross
+target you add to the manifest, and three things differ.
 
 **The embedder's own layer, not just the board.** A board (`rpi5-trixie`) is the
 toolchain, the sysroot image and the CPU flags. An embedder usually needs more
 to cross-build: ivi-homescreen needs a host-built `wayland-cxx-scanner`, its own
 `-dev` packages in the sysroot, and its backend definitions, all of which it
-ships in its `.emb/` directory as a project layer. `--target <board>` extends
-the board alone, so with ivi-homescreen the configure step stops at
-`Could not find ... wayland-cxx-scanner`. Extend the embedder's target instead,
-by hand, in the generated manifest:
+ships in its `.emb/` directory as a project layer. A target that extends the
+board alone stops in the configure step at
+`Could not find ... wayland-cxx-scanner`, which is why none is generated.
+Extend the embedder's target, in the generated manifest:
 
 ```yaml
 cross:

@@ -29,24 +29,16 @@ class _Harness {
     this.flatpak = const {},
     this.hangs = const {},
     this.gitOutput,
-    bool boards = true,
   }) {
     tmp = Directory.systemTemp.createTempSync('emb-init-cmd-');
     addTearDown(() => tmp.deleteSync(recursive: true));
-    // The repo's own library, and no environment: the developer's
-    // EMB_BOARDS_DIR must not decide which boards these tests can see.
-    resolver = boards
-        ? CrossProjectResolver(
-            const ManifestLoader(),
-            Directory('boards'),
-            const {},
-          )
-        // An empty directory: a compiled emb before `emb boards sync`.
-        : CrossProjectResolver(
-            const ManifestLoader(),
-            Directory(p.join(tmp.path, 'no-boards'))..createSync(),
-            const {},
-          );
+    // An empty board library and no environment: a generated repo extends no
+    // board, and the developer's EMB_BOARDS_DIR must not come into it.
+    resolver = CrossProjectResolver(
+      const ManifestLoader(),
+      Directory(p.join(tmp.path, 'no-boards'))..createSync(),
+      const {},
+    );
     out = Directory(p.join(tmp.path, 'repo'));
     when(() => logger.info(any())).thenAnswer((i) {
       infos.add(i.positionalArguments.single as String? ?? '');
@@ -196,13 +188,13 @@ void main() {
     // `emb cross` would load it.
     test('what it writes resolves as a cross project', () async {
       final h = _Harness();
-      await h.run(['--app', _appUri, '--target', 'rpi5-trixie']);
+      await h.run(['--app', _appUri]);
       final project = h.resolver.resolve(h.file('my-app.emb.yaml').path)!;
       expect(project.workspaceDir, p.join(h.out.absolute.path, 'workspace'));
-      for (final name in ['rpi5-trixie', 'local']) {
-        final target = CrossTarget.fromMap(project.selectTarget(name)!.cross);
-        expect(target.package!.flatpak!.appId, 'com.example.MyApp');
-      }
+      final target = CrossTarget.fromMap(project.selectTarget('local')!.cross);
+      expect(target.package!.flatpak!.appId, 'com.example.MyApp');
+      // Native only: a board build is a target the user adds.
+      expect(h.cross().containsKey('targets'), isFalse);
     });
 
     test('the workflow installs the emb that generated it', () async {
@@ -401,38 +393,16 @@ void main() {
       });
     });
 
-    group('--target', () {
-      test('adds a target that extends the board', () async {
-        final h = _Harness();
-        expect(
-          await h.run(['--app', _appUri, '--target', 'rpi5-trixie']),
-          ExitCode.success.code,
-        );
-        expect(h.cross()['targets'], {
-          'rpi5-trixie': {'extends': 'rpi5-trixie'},
-        });
-        expect(h.infos, contains(contains('--target rpi5-trixie --build')));
-      });
-
-      test('an unknown board is a usage error, and writes nothing', () async {
-        final h = _Harness();
-        expect(await h.run(['--target', 'no-such-board']), ExitCode.usage.code);
-        expect(h.errors.single, contains('no-such-board'));
-        // The scratch copy it was checked in is not what the user will have.
-        expect(h.errors.single, isNot(contains('emb-init-')));
-        expect(h.written, isEmpty);
-      });
-
-      // A compiled emb has no board library until `emb boards sync`. That is
-      // not a reason to refuse: say so and write the target as asked.
-      test('with no board library it warns and still writes', () async {
-        final h = _Harness(boards: false);
-        expect(await h.run(['--target', 'rpi5-trixie']), ExitCode.success.code);
-        expect(h.warnings.single, contains('emb boards sync'));
-        expect(h.cross()['targets'], {
-          'rpi5-trixie': {'extends': 'rpi5-trixie'},
-        });
-      });
+    // A cross target was generated once, as `extends: <board>`. With
+    // ivi-homescreen that does not configure: the embedder's own layer is
+    // needed too, and it cannot be named before the embedder is cloned.
+    test('--target is not an option', () async {
+      final h = _Harness();
+      await expectLater(
+        h.run(['--target', 'rpi5-trixie']),
+        throwsA(isA<UsageException>()),
+      );
+      expect(h.written, isEmpty);
     });
 
     group('runtime version', () {
@@ -650,7 +620,6 @@ void main() {
         '--embedder-rev': ['--force', 'a b', "a'b"],
         '--flutter-version': ['-x', 'a b', 'stable; id'],
         '--embedder-bin': ['/usr/bin/x', '../x', 'a/../b', '-x', 'a b'],
-        '--target': ['a b', '-x', 'local', 'emb-public/host'],
       };
       for (final entry in bad.entries) {
         for (final value in entry.value) {
@@ -677,14 +646,6 @@ void main() {
           expect(h.written, isEmpty);
         });
       }
-
-      // The name is written into a comment line of the manifest.
-      test('--target with a newline in it', () async {
-        final h = _Harness();
-        expect(await h.run(['--target', 'x\ntype: evil']), ExitCode.usage.code);
-        expect(h.errors.single, contains('--target'));
-        expect(h.written, isEmpty);
-      });
 
       test('--app-rev that is not a commit', () async {
         final h = _Harness();

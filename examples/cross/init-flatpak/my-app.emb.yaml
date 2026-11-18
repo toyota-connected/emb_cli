@@ -4,7 +4,7 @@
 # cloned into the workspace below and the Flutter SDK is installed into
 # it, so this directory is the whole packaging repo:
 #
-#   emb cross my-app.emb.yaml --target rpi5-trixie --build --flatpak
+#   emb cross my-app.emb.yaml --target local --build --flatpak
 id: my-app
 type: app
 workspace: workspace               # relative to this file; git-ignored
@@ -29,10 +29,3 @@ cross:
       app_id: com.example.MyApp
       icon: icon.png               # a placeholder; replace it
       runtime_version: '25.08'
-  targets:
-    rpi5-trixie:
-      # The board alone: toolchain, sysroot, CPU flags. An embedder
-      # that needs more to cross-build ships a project layer in its
-      # .emb/ (ivi-homescreen does); extend that target instead, as
-      # '<embedder checkout>#<target>'.
-      extends: rpi5-trixie

@@ -89,7 +89,6 @@ class FlatpakRepoSpec {
     this.app,
     this.embedderBin,
     this.provider = 'arm-gnu',
-    this.target,
     this.flutterVersion = 'stable',
     this.githubCi = true,
   });
@@ -124,12 +123,6 @@ class FlatpakRepoSpec {
 
   final String provider;
 
-  /// A board to `extends:`, or null for a native-only repo. May be qualified
-  /// by its source (`emb-public/rpi5-trixie`).
-  final String? target;
-
-  /// The target's name in the manifest: the board without its source.
-  String? get targetName => target?.split('/').last;
   final String runtimeVersion;
   final String flutterVersion;
 
@@ -145,12 +138,9 @@ class FlatpakRepoSpec {
 
   String get manifestName => '$id.emb.yaml';
 
-  /// The `--target` a build of this repo names.
-  String get buildTarget => targetName ?? 'local';
-
   /// `emb cross …` as the README and the workflow spell it.
   String get buildCommand => [
-    'emb cross $manifestName --target $buildTarget --build',
+    'emb cross $manifestName --target local --build',
     if (app == null) '--app <path-to-your-flutter-app>',
     '--flatpak',
   ].join(' ');
@@ -310,36 +300,11 @@ String _manifest(FlatpakRepoSpec s) {
     '      app_id: ${s.appId}',
     _line('      ', 'icon', 'icon.png', 'a placeholder; replace it'),
     '      runtime_version: ${_yaml(s.runtimeVersion)}',
-    if (s.target != null) ...[
-      '  targets:',
-      '    ${_yaml(s.targetName!)}:',
-      '      # The board alone: toolchain, sysroot, CPU flags. An embedder',
-      '      # that needs more to cross-build ships a project layer in its',
-      '      # .emb/ (ivi-homescreen does); extend that target instead, as',
-      "      # '<embedder checkout>#<target>'.",
-      '      extends: ${_yaml(s.target!)}',
-    ],
   ];
   return '${lines.join('\n')}\n';
 }
 
 String _readme(FlatpakRepoSpec s) {
-  final crossNote = s.target == null
-      ? ''
-      : '''
-
-`${s.targetName}` is a cross target, so the runtime has to be the one for the
-board's architecture, not this machine's: name it in the install, e.g.
-`org.freedesktop.Platform/aarch64/${s.runtimeVersion}` and
-`org.freedesktop.Sdk/aarch64/${s.runtimeVersion}`. flatpak-builder runs that
-runtime's tools while it packages, so this machine also needs `qemu-user`
-registered with binfmt_misc (`qemu-user-static` on Fedora and Ubuntu).
-`--target local` builds for this machine with the runtime above.
-
-The target extends the board alone. If the embedder ships its own layer for
-the board, as ivi-homescreen does in `.emb/`, extend that instead; emb's README
-has the steps under "A flatpak for a Raspberry Pi".
-''';
   return '''
 <!-- ${_header(s)} -->
 # ${s.name} flatpak
@@ -364,7 +329,7 @@ Then:
 ```sh
 ${s.buildCommand}
 ```
-$crossNote
+
 The first build clones the embedder${s.app == null ? '' : ' and the app'} and installs the Flutter SDK into
 `workspace/`; later builds reuse them. The bundle is written to
 `workspace/.config/flutter_workspace/cross-build-*/dist/`.

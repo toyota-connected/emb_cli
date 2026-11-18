@@ -116,7 +116,6 @@ final _commitPattern = RegExp(r'^[0-9a-fA-F]+$');
 final _runtimePattern = RegExp(r'^\d\d\.\d\d$');
 final _flutterVersionPattern = RegExp(r'^[A-Za-z0-9][\w.+-]*$');
 final _binPattern = RegExp(r'^[\w.+-]+(/[\w.+-]+)*$');
-final _targetPattern = RegExp(r'^[A-Za-z0-9][\w.-]*(/[A-Za-z0-9][\w.-]*)*$');
 final _pubNamePattern = RegExp(r'^[A-Za-z_][A-Za-z0-9_]*$');
 final _pubVersionPattern = RegExp(r'^[0-9A-Za-z][0-9A-Za-z.+-]*$');
 
@@ -201,10 +200,6 @@ class InitFlatpakCommand extends Command<int> {
         help: 'Cross provider the manifest declares.',
         allowed: [for (final k in CrossProviderKind.values) k.token],
         defaultsTo: CrossProviderKind.armGnu.token,
-      )
-      ..addOption(
-        'target',
-        help: 'A board to add as a cross target (extends: <board>).',
       )
       ..addOption(
         'runtime-version',
@@ -362,30 +357,6 @@ class InitFlatpakCommand extends Command<int> {
       return ExitCode.usage.code;
     }
 
-    // Whether the board exists is settled by [_verify], which resolves the
-    // manifest the way `emb cross` does. All that can be said up front is
-    // that there is no library to resolve it against.
-    final target = args['target'] as String?;
-    if (target != null) {
-      if (!_targetPattern.hasMatch(target)) {
-        return _usage('--target "$target": expected a board name.');
-      }
-      final name = target.split('/').last;
-      if (name == 'local' || name == 'host') {
-        return _usage(
-          '--target $target: "$name" is the built-in native build, which '
-          'every generated repo already has. Name a board.',
-        );
-      }
-    }
-    final haveBoards = _haveBoards();
-    if (target != null && !haveBoards) {
-      _logger.warn(
-        'No board library found, so "$target" could not be checked. Run '
-        '`emb boards sync` before building.',
-      );
-    }
-
     final embedder = await _pin(
       'embedder',
       embedderUri,
@@ -419,7 +390,6 @@ class InitFlatpakCommand extends Command<int> {
           (embedder.uri == defaultEmbedderUri ? defaultEmbedderBin : null),
       app: app,
       provider: args['provider'] as String,
-      target: target,
       runtimeVersion: runtimeArg ?? await _newestRuntime(),
       flutterVersion: flutterVersion,
       githubCi: wantsCi,
@@ -431,12 +401,12 @@ class InitFlatpakCommand extends Command<int> {
     }
 
     final files = renderFlatpakRepo(spec);
-    final problem = _verify(files, spec, haveBoards: haveBoards);
+    final problem = _verify(files, spec);
     if (problem != null) {
-      // The one input that can make a rendered manifest unloadable is a
-      // board that does not exist; anything else is a defect in the template.
+      // Every value was checked above, so a manifest that does not load is a
+      // defect in the template.
       _logger.err(problem);
-      return target != null ? ExitCode.usage.code : ExitCode.software.code;
+      return ExitCode.software.code;
     }
 
     final binaries = renderFlatpakRepoBinaries(spec);
@@ -504,16 +474,6 @@ class InitFlatpakCommand extends Command<int> {
 
   bool _isGitUri(String value) =>
       value.contains('://') || RegExp(r'^[\w.-]+@[\w.-]+:').hasMatch(value);
-
-  /// Whether there is a board library to resolve `extends:` against. A
-  /// compiled emb has none until `emb boards sync`.
-  bool _haveBoards() {
-    try {
-      return _resolver.boardNames().isNotEmpty;
-    } on CrossProjectException {
-      return false;
-    }
-  }
 
   /// [uri] pinned to [rev], or to its HEAD when [rev] is null. Null (after
   /// reporting) when HEAD cannot be resolved.
@@ -614,28 +574,21 @@ class InitFlatpakCommand extends Command<int> {
   /// Resolves the rendered manifest the way `emb cross` would, from a scratch
   /// copy, so nothing is written into the user's directory unless what is
   /// written will load. Returns the problem, or null.
-  String? _verify(
-    Map<String, String> files,
-    FlatpakRepoSpec spec, {
-    required bool haveBoards,
-  }) {
+  String? _verify(Map<String, String> files, FlatpakRepoSpec spec) {
     final scratch = Directory.systemTemp.createTempSync('emb-init-');
     try {
       final manifest = File(p.join(scratch.path, spec.manifestName))
         ..writeAsStringSync(files[spec.manifestName]!);
       final project = _resolver.resolve(manifest.path);
       if (project == null) return 'no manifest was produced';
-      final selection = project.selectTarget(spec.buildTarget);
-      if (selection == null) return 'target "${spec.buildTarget}" is missing';
+      final selection = project.selectTarget('local');
+      if (selection == null) return 'target "local" is missing';
       final target = CrossTarget.fromMap(selection.cross);
       if (target.package?.flatpak?.appId != spec.appId) {
         return 'package.flatpak.app_id did not survive';
       }
       return null;
     } on CrossProjectException catch (e) {
-      // With no board library the board cannot be loaded here either; that
-      // was already warned about and is not a defect in what was rendered.
-      if (spec.target != null && !haveBoards) return null;
       // Name the file the user will have, not the scratch copy.
       return e.message.replaceAll('${scratch.path}${p.separator}', '');
       // The manifest parser reports a bad value by throwing ArgumentError.

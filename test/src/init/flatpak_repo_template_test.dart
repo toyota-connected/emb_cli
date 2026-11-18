@@ -29,7 +29,6 @@ const exampleSpec = FlatpakRepoSpec(
     rev: '76b2c6de449ad27de77f53e5a0c1bf748c79b139',
     branch: 'main',
   ),
-  target: 'rpi5-trixie',
   runtimeVersion: '25.08',
   flutterVersion: '3.47.9',
   embVersion: '0.5.0',
@@ -42,7 +41,6 @@ FlatpakRepoSpec _spec({
   String name = 'My App',
   String? summary,
   PinnedRepo? app,
-  String? target,
   String embVersion = '1.2.3',
   String? embedderBin,
   bool githubCi = true,
@@ -55,7 +53,6 @@ FlatpakRepoSpec _spec({
   embedder: embedder,
   embedderBin: embedderBin,
   app: app,
-  target: target,
   runtimeVersion: '25.08',
   embVersion: embVersion,
   githubCi: githubCi,
@@ -127,9 +124,11 @@ void main() {
         project.workspaceDir,
         p.normalize(p.absolute(_exampleDir.path, 'workspace')),
       );
-      expect(project.targets.keys, ['rpi5-trixie']);
+      // No `targets:` block. A flat manifest is one implicit target named
+      // after the id; the build a generated repo documents is `local`.
+      expect(project.targets.keys, ['my-app']);
 
-      for (final name in ['rpi5-trixie', 'local']) {
+      for (final name in ['local']) {
         final selection = project.selectTarget(name)!;
         final target = CrossTarget.fromMap(selection.cross);
         final source = CrossTarget.repoFrom(selection.cross['source'])!;
@@ -147,12 +146,6 @@ void main() {
           'metainfo.xml': '/share/metainfo/com.example.MyApp.metainfo.xml',
         });
       }
-      // The board's hardware came through `extends:`.
-      final board = CrossTarget.fromMap(
-        project.selectTarget('rpi5-trixie')!.cross,
-      );
-      expect(board.cpuFlags, isNotEmpty);
-      expect(board.imageUrl, isNotNull);
     });
   });
 
@@ -257,22 +250,6 @@ void main() {
         isFalse,
       );
       expect(spec.buildCommand, contains('--target local'));
-    });
-
-    test('a target extends the board of the same name', () {
-      final spec = _spec(app: _app, target: 'rpi5-trixie');
-      expect((_manifest(spec)['cross'] as YamlMap)['targets'], {
-        'rpi5-trixie': {'extends': 'rpi5-trixie'},
-      });
-      expect(spec.buildCommand, contains('--target rpi5-trixie'));
-    });
-
-    test('a source-qualified board keeps its source only in extends', () {
-      final spec = _spec(app: _app, target: 'emb-public/rpi5-trixie');
-      expect((_manifest(spec)['cross'] as YamlMap)['targets'], {
-        'rpi5-trixie': {'extends': 'emb-public/rpi5-trixie'},
-      });
-      expect(spec.buildCommand, contains('--target rpi5-trixie '));
     });
 
     // Unset, emb takes the first executable ELF in the build tree. In a real
@@ -419,7 +396,7 @@ void main() {
       });
 
       test('is valid YAML that builds this manifest natively', () {
-        final build = runs(_spec(app: _app, target: 'rpi5-trixie')).last;
+        final build = runs(_spec(app: _app)).last;
         expect(
           build.trim(),
           'emb cross my-app.emb.yaml --target local --build --flatpak',
