@@ -22,6 +22,7 @@ import 'package:emb_cli/src/cross/deployer.dart';
 import 'package:emb_cli/src/cross/dockerfile_emitter.dart';
 import 'package:emb_cli/src/cross/elf_check.dart';
 import 'package:emb_cli/src/cross/emb_lock.dart';
+import 'package:emb_cli/src/cross/embedder_artifact.dart';
 import 'package:emb_cli/src/cross/flatpak_packager.dart';
 import 'package:emb_cli/src/cross/flatpak_vendor.dart';
 import 'package:emb_cli/src/cross/hook_cargo.dart';
@@ -2393,10 +2394,7 @@ class CrossCommand extends Command<int> {
     for (final r in built) {
       final binary = _artifactFor(r.buildDir, target.package?.bin);
       if (binary == null) {
-        _logger.err(
-          '  ${r.backend ?? ""}: no embedder binary in ${r.buildDir} '
-          '(set cross.package.bin)',
-        );
+        _logger.err(_noArtifact(r.backend, r.buildDir, target.package?.bin));
         return ExitCode.software.code;
       }
       final binArchErr = verifyElfForTriple(binary, profile.targetTriple);
@@ -2583,10 +2581,7 @@ class CrossCommand extends Command<int> {
     for (final r in found) {
       final bin = _artifactFor(r.dir.path, target.package?.bin);
       if (bin == null) {
-        _logger.err(
-          '  ${r.backend ?? ""}: no embedder binary in ${r.dir.path} '
-          '(set cross.package.bin)',
-        );
+        _logger.err(_noArtifact(r.backend, r.dir.path, target.package?.bin));
         return ExitCode.software.code;
       }
       _logger.info(
@@ -2961,10 +2956,7 @@ class CrossCommand extends Command<int> {
     for (final r in built) {
       final binary = _artifactFor(r.buildDir, spec.bin);
       if (binary == null) {
-        _logger.err(
-          '  ${r.backend ?? ""}: no binary to package in ${r.buildDir} '
-          '(set cross.package.bin)',
-        );
+        _logger.err(_noArtifact(r.backend, r.buildDir, spec.bin));
         return ExitCode.software.code;
       }
       final multi = built.length > 1 && r.backend != null;
@@ -3081,10 +3073,7 @@ class CrossCommand extends Command<int> {
     for (final r in built) {
       final binary = _artifactFor(r.buildDir, spec.bin);
       if (binary == null) {
-        _logger.err(
-          '  ${r.backend ?? ""}: no binary to package in ${r.buildDir} '
-          '(set cross.package.bin)',
-        );
+        _logger.err(_noArtifact(r.backend, r.buildDir, spec.bin));
         return ExitCode.software.code;
       }
       final multi = built.length > 1 && r.backend != null;
@@ -3168,10 +3157,7 @@ class CrossCommand extends Command<int> {
     for (final r in built) {
       final binary = _artifactFor(r.buildDir, spec.bin);
       if (binary == null) {
-        _logger.err(
-          '  ${r.backend ?? ""}: no binary to package in ${r.buildDir} '
-          '(set cross.package.bin)',
-        );
+        _logger.err(_noArtifact(r.backend, r.buildDir, spec.bin));
         return ExitCode.software.code;
       }
       final multi = built.length > 1 && r.backend != null;
@@ -3252,10 +3238,7 @@ class CrossCommand extends Command<int> {
     for (final r in built) {
       final binary = _artifactFor(r.buildDir, spec.bin);
       if (binary == null) {
-        _logger.err(
-          '  ${r.backend ?? ""}: no binary to package in ${r.buildDir} '
-          '(set cross.package.bin)',
-        );
+        _logger.err(_noArtifact(r.backend, r.buildDir, spec.bin));
         return ExitCode.software.code;
       }
       final multi = built.length > 1 && r.backend != null;
@@ -3667,34 +3650,15 @@ class CrossCommand extends Command<int> {
   static Future<String> _sourceFingerprint(Directory dir) =>
       sourceFingerprint(dir);
 
-  /// The binary to package: [bin] resolved under [buildDir], else the first ELF
-  /// executable found there.
-  File? _artifactFor(String buildDir, String? bin) {
-    if (bin != null) {
-      final f = File(p.join(buildDir, bin));
-      return f.existsSync() ? f : null;
-    }
-    for (final e in Directory(buildDir).listSync(recursive: true)) {
-      if (e is! File) continue;
-      // Skip CMake's internal compiler-probe binaries (CMakeFiles/**): they are
-      // ELF executables too and would otherwise shadow the real embedder.
-      if (p.split(e.path).contains('CMakeFiles')) continue;
-      final stat = e.statSync();
-      // Executable bit + ELF magic.
-      if (stat.mode & 0x49 == 0) continue;
-      final head = e.openSync()..setPositionSync(0);
-      final magic = head.readSync(4);
-      head.closeSync();
-      if (magic.length == 4 &&
-          magic[0] == 0x7f &&
-          magic[1] == 0x45 &&
-          magic[2] == 0x4c &&
-          magic[3] == 0x46) {
-        return e;
-      }
-    }
-    return null;
-  }
+  /// The binary to package: [bin] resolved under [buildDir], else the one
+  /// executable there. Null when there is none, or more than one and no [bin]
+  /// to choose by; [_noArtifact] says which.
+  File? _artifactFor(String buildDir, String? bin) =>
+      findEmbedderBinary(buildDir, bin).file;
+
+  /// Why [_artifactFor] found nothing in [buildDir], for the user.
+  String _noArtifact(String? backend, String buildDir, String? bin) =>
+      describeMissingEmbedder(backend: backend, buildDir: buildDir, bin: bin);
 
   /// Stage [CrossTarget.embedderExports] out of the embedder build and into
   /// the overlay, so a module that links one of them gets the embedder's own

@@ -110,11 +110,10 @@ class FlatpakRepoSpec {
 
   /// The embedder binary, relative to its build directory (`package.bin`).
   ///
-  /// Worth naming whenever it is known. Unset, emb takes the first executable
-  /// ELF file it finds in the build tree, and a shared library with its
-  /// execute bit set qualifies: ivi-homescreen's `libihs_shared.so` was picked
-  /// over `homescreen` in a real build, producing a flatpak that launches a
-  /// library.
+  /// Worth naming whenever it is known. Unset, emb looks for the one
+  /// executable in the build tree and stops when there are several, so a
+  /// repo that leaves it out can fail on an embedder that also builds a
+  /// tool or a test.
   final String? embedderBin;
 
   /// The Flutter app, when it lives in a git repo. Null means the build is
@@ -289,8 +288,8 @@ String _manifest(FlatpakRepoSpec s) {
       )
     else ...[
       '    # Name the embedder binary, relative to its build directory. Unset,',
-      '    # emb takes the first executable it finds there, which can be a',
-      '    # shared library.',
+      '    # emb looks for the one executable there, and stops if the build',
+      '    # leaves more than one.',
       '    # bin: <path>',
     ],
     '    files:',
