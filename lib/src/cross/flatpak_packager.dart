@@ -90,6 +90,12 @@ class FlatpakMetadata {
   final bool libDirOnPath;
 }
 
+/// Whether [id] is a reverse-DNS flatpak app id of at least three segments,
+/// e.g. `com.example.MyApp`. The rule `--flatpak` enforces; `emb init flatpak`
+/// uses the same one so it never generates an id the build then refuses.
+bool looksLikeFlatpakAppId(String id) =>
+    RegExp(r'^[A-Za-z][\w-]*(\.[A-Za-z][\w-]*){2,}$').hasMatch(id);
+
 /// Thrown when packaging a `.flatpak` fails.
 class FlatpakPackageException implements Exception {
   FlatpakPackageException(this.message);
@@ -169,7 +175,7 @@ class FlatpakPackager {
         'embedder "${meta.command}" not found in ${bundleDir.path}',
       );
     }
-    if (!_looksLikeAppId(meta.appId)) {
+    if (!looksLikeFlatpakAppId(meta.appId)) {
       throw FlatpakPackageException(
         'invalid flatpak app id "${meta.appId}" '
         '(need reverse-DNS, e.g. com.example.App)',
@@ -580,9 +586,6 @@ class FlatpakPackager {
     // keep the basename so at minimum the file is shipped.
     return ext.isEmpty ? '.png' : ext;
   }
-
-  bool _looksLikeAppId(String id) =>
-      RegExp(r'^[A-Za-z][\w-]*(\.[A-Za-z][\w-]*){2,}$').hasMatch(id);
 
   /// Locate [exe] on PATH (`command -v`), or null when absent.
   Future<String?> _which(String exe) async {

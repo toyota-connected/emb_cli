@@ -172,6 +172,11 @@ cross:
 emb cross my-app.emb.yaml --build --flatpak
 ```
 
+`emb init flatpak <dir> --app-id <id>` writes a repo of this shape, with the
+README, `.gitignore`, AppStream metadata and CI around the manifest.
+[`init-flatpak/`](init-flatpak) is its output for one fixed set of inputs, kept
+identical to what the command renders by a test.
+
 `source:` and `app:` take the same fields as a top-level `src:` entry — `rev`
 (alias `ref`), `branch`, `dest_name`, `pubspec_path`, `patches:` — and clone with
 the same machinery `emb sync` uses, so submodules and Git-LFS work unchanged.
