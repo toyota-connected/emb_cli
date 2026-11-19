@@ -6,6 +6,7 @@ import 'package:emb_cli/src/cross/cross_keys.dart';
 import 'package:emb_cli/src/cross/cross_project.dart';
 import 'package:emb_cli/src/cross/cross_provider.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
+import 'package:emb_cli/src/cross/source_checkout.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/manifest/build_config.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
@@ -48,6 +49,22 @@ class MatrixCommand extends Command<int> {
       )
       ..addOption('target', help: 'Only emit the cells for this target name.')
       ..addOption(
+        'workspace',
+        abbr: 'w',
+        help:
+            "Workspace root (defaults to each manifest's workspace:, then "
+            r'$FLUTTER_WORKSPACE, then cwd). Where the checkout of a '
+            'cross.source is looked for.',
+      )
+      ..addFlag(
+        'fetch',
+        help:
+            "Clone a cross.source that an extends: 'source#<target>' target "
+            'needs and the workspace does not have. Off by default: without '
+            'it nothing is downloaded, and such a target is skipped.',
+        negatable: false,
+      )
+      ..addOption(
         'output',
         abbr: 'o',
         help:
@@ -86,7 +103,8 @@ class MatrixCommand extends Command<int> {
     final hostFilter = args['host'] as List<String>;
     final targetFilter = args['target'] as String?;
     final host = _host ?? HostInfo.detect();
-    final workspace = Workspace.resolve();
+    final workspaceArg = args['workspace'] as String?;
+    final fetch = args['fetch'] == true;
 
     final include = <Map<String, dynamic>>[];
     for (final file in _collect(args.rest)) {
@@ -115,8 +133,26 @@ class MatrixCommand extends Command<int> {
         );
       }
 
+      final workspace = _workspaceFor(file, workspaceArg);
+
       for (final entry in _targets(crossMap)) {
         if (targetFilter != null && entry.name != targetFilter) continue;
+        // `extends: 'source#<target>'` names a target inside the embedder's
+        // repo, so the cell exists only once that repo is on disk.
+        String? sourceDir;
+        if (_extendsSource(entry.merged)) {
+          final found = await _sourceCheckout(
+            entry.merged,
+            workspace,
+            file,
+            fetch: fetch,
+          );
+          if (found.dir == null) {
+            _logger.warn('skip ${file.path}#${entry.name}: ${found.why}');
+            continue;
+          }
+          sourceDir = found.dir;
+        }
         final CrossTarget target;
         try {
           // Resolve the target's `extends` chain (board library / cross-project)
@@ -125,6 +161,7 @@ class MatrixCommand extends Command<int> {
           final resolved = _resolver.resolveExtends(
             Map<String, dynamic>.from(entry.merged),
             file.path,
+            sourceDir: sourceDir,
           );
           target = CrossTarget.fromMap(resolved).withResolvedPaths(
             file.path,
@@ -197,6 +234,70 @@ class MatrixCommand extends Command<int> {
       );
     }
     return ExitCode.success.code;
+  }
+
+  /// The workspace [file] builds in, by the rule `emb cross` uses: `-w`, the
+  /// manifest's `workspace:`, `$FLUTTER_WORKSPACE`, cwd. A manifest that does
+  /// not resolve as a project still has the last three.
+  Workspace _workspaceFor(File file, String? override) {
+    try {
+      final project = _resolver.resolve(file.path, deferExtends: true);
+      if (project != null) {
+        return resolveBuildWorkspace(project, override: override);
+      }
+    } on CrossProjectException {
+      // Reported per target below, where it can name the target.
+    }
+    return Workspace.resolve(override: override);
+  }
+
+  static bool _extendsSource(Map<dynamic, dynamic> block) {
+    final ref = block['extends'];
+    return ref is String &&
+        ref.startsWith('${CrossProjectResolver.sourceRef}#');
+  }
+
+  /// The checkout of [block]'s `cross.source` in [workspace], cloned first
+  /// when [fetch] asks, or why there is none.
+  Future<({String? dir, String why})> _sourceCheckout(
+    Map<dynamic, dynamic> block,
+    Workspace workspace,
+    File file, {
+    required bool fetch,
+  }) async {
+    final repo = CrossTarget.repoFrom(block['source']);
+    if (repo == null) {
+      return (
+        dir: null,
+        why:
+            'extends: "${block['extends']}" needs a cross.source, and the '
+            'manifest declares none',
+      );
+    }
+    final dest = sourceCheckoutDir(repo, workspace);
+    if (!fetch) {
+      if (dest.existsSync()) return (dir: dest.path, why: '');
+      return (
+        dir: null,
+        why:
+            'extends: "${block['extends']}" needs the checkout of '
+            'cross.source (${repo.uri}), which is not in ${dest.path}. Pass '
+            '--fetch to clone it, or run `emb fetch` first.',
+      );
+    }
+    final cloned = await cloneSourceRepo(
+      repo,
+      workspace,
+      sourcePath: file.path,
+    );
+    return cloned.dir == null
+        ? (
+            dir: null,
+            why:
+                'cross.source (${repo.uri}) could not be fetched: '
+                '${cloned.message}',
+          )
+        : (dir: cloned.dir!.path, why: '');
   }
 
   /// Expand a `cross:` map into its targets. A `cross.targets` map yields one

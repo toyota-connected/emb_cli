@@ -81,6 +81,23 @@ Future<Directory?> syncSourceRepo(
   final progress = StepReporter(
     logger,
   ).start('Fetching $what (${git.folderName})');
+  final cloned = await cloneSourceRepo(repo, workspace, sourcePath: sourcePath);
+  if (cloned.dir == null) {
+    progress.fail('$what: ${cloned.message}');
+    return null;
+  }
+  progress.complete('$what → ${dest.path}');
+  return dest;
+}
+
+/// Clone or update [repo] into `<workspace>/app` and say nothing: the
+/// checkout, or why there is none. For a caller whose stdout is its output.
+Future<({Directory? dir, String message})> cloneSourceRepo(
+  SourceRepo repo,
+  Workspace workspace, {
+  required String? sourcePath,
+}) async {
+  final git = GitRepo.fromSource(repo).resolvePatchesAgainst(sourcePath);
   final result = await git.sync(
     workspace.ensureAppDir(),
     patchBase: sourcePath == null
@@ -88,9 +105,10 @@ Future<Directory?> syncSourceRepo(
         : Directory(p.dirname(p.absolute(sourcePath))),
   );
   if (!result.success) {
-    progress.fail('$what: ${result.message ?? "git failed"}');
-    return null;
+    return (dir: null, message: result.message ?? 'git failed');
   }
-  progress.complete('$what → ${dest.path}');
-  return dest;
+  return (
+    dir: Directory(p.join(workspace.appDir.path, git.folderName)),
+    message: '',
+  );
 }

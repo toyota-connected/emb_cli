@@ -364,10 +364,15 @@ class CrossProjectResolver {
   ///
   /// Lets callers that enumerate targets themselves (e.g. `emb matrix`) apply
   /// the same board-library / cross-project resolution the full [resolve] does.
+  ///
+  /// [sourceDir] is the checkout of the block's `cross.source`, which
+  /// `extends: 'source#<target>'` resolves against; without it such a block
+  /// throws.
   Map<String, dynamic> resolveExtends(
     Map<String, dynamic> block,
-    String? sourcePath,
-  ) => _applyExtends(block, sourcePath);
+    String? sourcePath, {
+    String? sourceDir,
+  }) => _applyExtends(block, sourcePath, const {}, sourceDir);
 
   /// A single manifest (explicit file or back-compat package dir): its
   /// `cross.targets` (or the one flat target).
