@@ -13,6 +13,7 @@ import 'package:emb_cli/src/cross/local_cross_provider.dart';
 import 'package:emb_cli/src/cross/offline_enforcement.dart';
 import 'package:emb_cli/src/cross/offline_probe.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
+import 'package:emb_cli/src/cross/source_checkout.dart';
 import 'package:emb_cli/src/engine/engine_artifacts.dart';
 import 'package:emb_cli/src/engine/engine_offline_probe.dart';
 import 'package:emb_cli/src/host/auth_probe.dart';
@@ -361,17 +362,33 @@ class DoctorCommand extends Command<int> {
   }) async {
     final rest = argResults?.rest ?? const [];
     final inputPath = rest.isNotEmpty ? rest.first : '.';
-    final CrossProject project;
-    try {
-      final resolved = _project.resolve(inputPath);
-      if (resolved == null) {
-        if (logErrors) _logger.err('No emb manifest at $inputPath.');
-        return (null, ExitCode.usage.code);
+    // Unresolvable targets are set aside, so one of them fails only when it
+    // is the one asked about. doctor fetches nothing: a target that extends
+    // into cross.source resolves against a checkout that is already there.
+    CrossProject? resolve([Map<String, String> sourceDirs = const {}]) {
+      try {
+        final resolved = _project.resolve(
+          inputPath,
+          deferExtends: true,
+          sourceDirs: sourceDirs,
+        );
+        if (resolved == null && logErrors) {
+          _logger.err('No emb manifest at $inputPath.');
+        }
+        return resolved;
+      } on CrossProjectException catch (e) {
+        if (logErrors) _logger.err(e.message);
+        return null;
       }
-      project = resolved;
-    } on CrossProjectException catch (e) {
-      if (logErrors) _logger.err(e.message);
-      return (null, ExitCode.usage.code);
+    }
+
+    var project = resolve();
+    if (project == null) return (null, ExitCode.usage.code);
+    final workspace = resolveBuildWorkspace(project, environment: _environment);
+    final cloned = clonedSources(project, workspace);
+    if (cloned.isNotEmpty) {
+      project = resolve(cloned);
+      if (project == null) return (null, ExitCode.usage.code);
     }
 
     final isNative = targetArg == 'local' || targetArg == 'host';
@@ -382,6 +399,11 @@ class DoctorCommand extends Command<int> {
       selected = project.nativeCross;
     } else {
       final ref = project[targetArg];
+      final pending = project.unresolved[targetArg];
+      if (ref == null && pending != null) {
+        if (logErrors) _logger.err(pending.message);
+        return (null, ExitCode.usage.code);
+      }
       if (ref == null) {
         if (logErrors) {
           _logger.err(
@@ -412,7 +434,6 @@ class DoctorCommand extends Command<int> {
       return (null, ExitCode.usage.code);
     }
 
-    final workspace = Workspace.resolve();
     final provider = isNative
         ? LocalCrossProvider(host)
         : CrossProvider.forTarget(target, workspace: workspace, host: host);

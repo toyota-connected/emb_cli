@@ -699,6 +699,21 @@ void main() {
       );
     });
 
+    // --fetch-only is what an offline build is prepared with, and an offline
+    // build cannot clone. The clone comes before any toolchain download, so
+    // a source that cannot be had ends the run here.
+    test('--fetch-only clones a declared cross.source', () async {
+      final f = File(p.join(tmp.path, 'app.emb.yaml'))
+        ..writeAsStringSync(
+          'id: app\ntype: app\ncross:\n  provider: arm-gnu\n'
+          '  toolchain_version: 12.3.rel1\n'
+          '  image_url: https://invalid.example/y.img.xz\n'
+          '  source: { uri: ${p.join(tmp.path, 'no-such-repo')} }\n',
+        );
+      expect(await cross(['--fetch-only', f.path]), ExitCode.software.code);
+      expect(Directory(p.join(ws.path, 'app')).existsSync(), isTrue);
+    });
+
     test('a target with no cross.source reports its own error', () async {
       final f = File(p.join(tmp.path, 'app.emb.yaml'))
         ..writeAsStringSync(
