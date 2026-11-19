@@ -113,8 +113,8 @@ void main() {
     if (branch == null) {
       markTestSkipped(
         'needs org.freedesktop.Platform and .Sdk at the same branch: '
-        'flatpak install flathub org.freedesktop.Platform//23.08 '
-        'org.freedesktop.Sdk//23.08',
+        'flatpak install flathub org.freedesktop.Platform//25.08 '
+        'org.freedesktop.Sdk//25.08',
       );
       return;
     }

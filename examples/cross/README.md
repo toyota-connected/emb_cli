@@ -359,7 +359,7 @@ cross:
       arch: cortexa53              # opkg MACHINE tuning (else a CPU-arch default)
     flatpak:
       app_id: com.toyota.ivi.Homescreen
-      runtime_version: '23.08'
+      runtime_version: '25.08'
       finish_args: [--share=ipc, --socket=wayland, --device=dri]
 ```
 
@@ -413,7 +413,7 @@ package:
   bin: shell/homescreen
   flatpak:
     app_id: com.toyota.ivi.Homescreen
-    runtime_version: '23.08'
+    runtime_version: '25.08'
     finish_args: [--share=ipc, --socket=wayland, --device=dri]
     vendor_libs: auto                      # see below
     env: {XDG_DATA_HOME: $HOME/.local/share}

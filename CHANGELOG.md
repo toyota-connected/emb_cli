@@ -24,6 +24,15 @@ the same everywhere. Use an absolute path, or accept the per-clone key.
 An earlier version of this entry claimed no key moved. That was wrong: it
 conflated how the provider resolves the value with how the key hashes it.
 
+**A flatpak with no `runtime_version` now builds against freedesktop `25.08`,
+not `23.08`.** A manifest that sets `cross.package.flatpak` and omits the key
+needs `org.freedesktop.Platform//25.08` and `org.freedesktop.Sdk//25.08`
+installed on the build machine, and the device needs the `25.08` Platform to
+run the result. With `vendor_libs`, the set of libraries copied into the
+bundle is worked out against the new runtime, so it can change. To stay on the
+old branch, set `runtime_version: '23.08'`; a manifest that already names a
+version is unaffected.
+
 **Init.**
 
 - feat(init): `emb init flatpak <dir> --app-id <id>` writes a flatpak
@@ -80,6 +89,12 @@ conflated how the provider resolves the value with how the key hashes it.
 
 **Cross.**
 
+- fix(cross): the default flatpak `runtime_version` was `23.08`, which flatpak
+  reports end-of-life (#311). A manifest that omitted the key built against a
+  runtime the user is warned about on install and that can leave flathub. The
+  default is now `25.08`, held in one constant that `emb init flatpak` also
+  falls back to, and a test fails if CI's flatpak job installs a different
+  branch. See Upgrading.
 - fix(cross): with `cross.package.bin` unset, a shared library could be taken
   for the embedder, packaged and launched (#304). The search took the first
   file with the ELF magic and an execute bit, which a `.so` has too, in

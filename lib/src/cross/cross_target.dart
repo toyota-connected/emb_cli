@@ -780,6 +780,15 @@ class RpmPackageSpec {
   final String? group;
 }
 
+/// The freedesktop runtime branch a flatpak builds against when the manifest
+/// names none, and the one `emb init flatpak` writes when flathub cannot be
+/// asked.
+///
+/// A branch goes end-of-life about two years after it ships, and an
+/// end-of-life runtime can leave flathub. Move this, and `FREEDESKTOP_BRANCH`
+/// in CI, when `flatpak install` starts warning about it.
+const defaultFlatpakRuntimeVersion = '25.08';
+
 /// The `package.flatpak:` sub-block — the flatpak manifest knobs `--flatpak`
 /// needs beyond the shared [PackageSpec] fields.
 class FlatpakPackageSpec {
@@ -787,7 +796,7 @@ class FlatpakPackageSpec {
     this.appId,
     this.branch = 'stable',
     this.runtime = 'org.freedesktop.Platform',
-    this.runtimeVersion = '23.08',
+    this.runtimeVersion = defaultFlatpakRuntimeVersion,
     this.sdk = 'org.freedesktop.Sdk',
     this.finishArgs = const [],
     this.icon,
@@ -802,7 +811,8 @@ class FlatpakPackageSpec {
         appId: (map['app_id'] ?? map['id'])?.toString(),
         branch: (map['branch'] ?? 'stable').toString(),
         runtime: (map['runtime'] ?? 'org.freedesktop.Platform').toString(),
-        runtimeVersion: (map['runtime_version'] ?? '23.08').toString(),
+        runtimeVersion: (map['runtime_version'] ?? defaultFlatpakRuntimeVersion)
+            .toString(),
         sdk: (map['sdk'] ?? 'org.freedesktop.Sdk').toString(),
         finishArgs: (map['finish_args'] as List<dynamic>? ?? const [])
             .map((e) => e.toString())

@@ -123,7 +123,7 @@ cross:
       app_id: com.toyota.ivi.Homescreen    # reverse-DNS; also the /app prefix
       branch: stable
       runtime: org.freedesktop.Platform
-      runtime_version: '23.08'
+      runtime_version: '25.08'
       sdk: org.freedesktop.Sdk
       # icon: assets/icon.png              # relative to this manifest
       finish_args:                         # sandbox permissions

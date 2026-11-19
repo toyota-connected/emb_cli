@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
+import 'package:emb_cli/src/cross/flatpak_packager.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 import 'package:yaml/yaml.dart';
@@ -483,6 +484,36 @@ void main() {
       });
       expect(fp.args, ['--backend=wayland-egl', '--shell=xdg']);
       expect(fp.vendorLibs, isTrue);
+    });
+
+    test('a flatpak with no runtime_version gets the default branch', () {
+      final t = CrossTarget.fromMap(const {
+        'provider': 'arm-gnu',
+        'package': {
+          'flatpak': {'app_id': 'com.example.App'},
+        },
+      });
+      expect(t.package!.flatpak!.runtimeVersion, defaultFlatpakRuntimeVersion);
+      expect(
+        const FlatpakPackageSpec().runtimeVersion,
+        defaultFlatpakRuntimeVersion,
+      );
+      expect(
+        const FlatpakMetadata(appId: 'a.b.C', command: 'c').runtimeVersion,
+        defaultFlatpakRuntimeVersion,
+      );
+    });
+
+    // The flatpak job installs one branch and the tests build against it. If
+    // the default moves alone, CI stops exercising what users get.
+    test('CI tests the default flatpak runtime branch', () {
+      final workflow = File(
+        '.github/workflows/emb_cli.yaml',
+      ).readAsStringSync();
+      expect(
+        workflow,
+        contains('FREEDESKTOP_BRANCH: "$defaultFlatpakRuntimeVersion"'),
+      );
     });
 
     test('flatpak env, args and vendor_libs default to empty/off', () {
