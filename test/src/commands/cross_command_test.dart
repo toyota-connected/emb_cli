@@ -629,6 +629,8 @@ void main() {
       final out = logger.buffer.toString();
       expect(out, contains('pi'));
       expect(out, contains('extends source#rpi, not resolved'));
+      // And why, so a missing board library is not read as a typo.
+      expect(logger.errors.toString(), contains('is not fetched'));
       expect(out, contains('local'));
       expect(Directory(p.join(ws.path, 'app')).existsSync(), isFalse);
     });

@@ -30,7 +30,7 @@ used to mean a directory called `source` beside the manifest. Write
 
 **`emb cross` no longer fails on a target it was not asked to build.** A
 target whose `extends:` does not resolve is reported when it is selected, and
-`--list-targets` lists it as not resolved. Before, one such target failed
+`--list-targets` lists it as not resolved, with the reason, and exits 0. Before, one such target failed
 every `emb cross` run on the manifest, `--target local` included. A script
 that used `emb cross --list-targets` or `--dry-run` to validate every target
 of a manifest has to select each target to get the error. `emb fetch`,

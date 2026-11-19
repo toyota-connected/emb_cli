@@ -1363,7 +1363,10 @@ class CrossCommand extends Command<int> {
     _logger.info(
       '  ${'local'.padRight(16)} ${'host'.padRight(8)} '
       '(native build)',
-    );
+    ); // Why, after the table: the reason can run to several lines.
+    for (final t in project.unresolved.values) {
+      _logger.warn('${t.name}: ${t.message}');
+    }
   }
 
   /// Build augment libraries and the embedder, returning everything the

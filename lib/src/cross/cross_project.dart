@@ -594,7 +594,8 @@ class CrossProjectResolver {
       if (sourceDir == null) {
         throw CrossProjectException(
           'extends: "$ref" resolves against the checkout of cross.source '
-          '(${source['uri']}), which only `emb cross` fetches (in $where).',
+          '(${source['uri']}), which is not fetched (in $where). '
+          '`emb cross --prepare` or `--build` fetches it.',
         );
       }
       base = _projectExtendsBase(ref, sourcePath, dir: sourceDir);
