@@ -162,6 +162,12 @@ version is unaffected.
   checkout that is there. Both take the workspace the way `emb cross` does,
   and `emb fetch` accepts `-w`, which its documentation already listed. See
   Upgrading.
+- fix(cross): a failed copy of the app bundle into the runnable directory
+  ended `emb cross --build` with an unhandled exception. The copy ran outside
+  the block that reports bundle errors, so a full disk or an exceeded quota
+  printed a stack trace. It now fails with one line naming both paths and the
+  reason, as does a failure to copy the embedder in or to clear the previous
+  runnable directory.
 - fix(cross): the default flatpak `runtime_version` was `23.08`, which flatpak
   reports end-of-life (#311). A manifest that omitted the key built against a
   runtime the user is warned about on install and that can leave flathub. The

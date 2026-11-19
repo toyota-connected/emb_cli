@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/cross/runnable_bundle.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
@@ -52,6 +53,97 @@ void main() {
       () => RunnableBundle().install(File(p.join(tmp.path, 'nope')), bundle()),
       throwsA(isA<RunnableBundleException>()),
     );
+  });
+
+  test('install reports a copy the filesystem refuses', () async {
+    final b = bundle();
+    // A directory where the binary goes: the copy fails for any user, root
+    // included.
+    Directory(p.join(b.path, 'homescreen')).createSync();
+    await expectLater(
+      () => RunnableBundle().install(embedder(), b),
+      throwsA(
+        isA<RunnableBundleException>().having(
+          (e) => e.message,
+          'message',
+          allOf(
+            contains('cannot copy'),
+            contains(p.join(b.path, 'homescreen')),
+          ),
+        ),
+      ),
+    );
+  });
+
+  group('stage', () {
+    test('copies the tree with modes and symlinks, replacing what was '
+        'there', () async {
+      final src = bundle();
+      final exe = File(p.join(src.path, 'lib', 'tool'))..createSync();
+      Process.runSync('chmod', ['0755', exe.path]);
+      Link(p.join(src.path, 'lib', 'alias')).createSync('tool');
+      final dst = Directory(p.join(tmp.path, 'out'));
+      File(p.join(dst.path, 'stale')).createSync(recursive: true);
+
+      await RunnableBundle().stage(src, dst);
+
+      expect(File(p.join(dst.path, 'stale')).existsSync(), isFalse);
+      expect(
+        File(
+          p.join(dst.path, 'data', 'flutter_assets', 'x'),
+        ).readAsStringSync(),
+        'a',
+      );
+      expect(
+        File(p.join(dst.path, 'lib', 'tool')).statSync().mode & 0x40,
+        isNot(0),
+      );
+      expect(Link(p.join(dst.path, 'lib', 'alias')).targetSync(), 'tool');
+    });
+
+    test('reports a failed cp with both ends and its stderr', () async {
+      final src = bundle();
+      final dst = Directory(p.join(tmp.path, 'out'));
+      Future<RunResult> full(
+        String executable,
+        List<String> arguments, {
+        String? workingDirectory,
+        Map<String, String>? environment,
+        bool includeParentEnvironment = true,
+        bool runInShell = false,
+        ProcessOutputMode output = ProcessOutputMode.capture,
+        String? label,
+      }) async => const RunResult(1, '', 'cp: No space left on device\n');
+
+      await expectLater(
+        () => RunnableBundle(runProcess: full).stage(src, dst),
+        throwsA(
+          isA<RunnableBundleException>().having(
+            (e) => e.message,
+            'message',
+            'cannot copy ${src.path} to ${dst.path}: '
+                'cp: No space left on device',
+          ),
+        ),
+      );
+    });
+
+    test('reports a destination it cannot create', () async {
+      final src = bundle();
+      final blocker = File(p.join(tmp.path, 'file'))..createSync();
+      final dst = Directory(p.join(blocker.path, 'out'));
+
+      await expectLater(
+        () => RunnableBundle().stage(src, dst),
+        throwsA(
+          isA<RunnableBundleException>().having(
+            (e) => e.message,
+            'message',
+            startsWith('cannot copy ${src.path} to ${dst.path}: '),
+          ),
+        ),
+      );
+    });
   });
 
   test('tar produces a .tar.gz of the tree', () async {
