@@ -303,4 +303,137 @@ cross:
       expect(logger.warnings.toString(), isEmpty);
     },
   );
+
+  // `extends: 'source#<target>'` names a target inside the embedder's repo.
+  // The matrix downloads nothing unless asked, so the cell exists when the
+  // checkout does, or with --fetch.
+  group("extends: 'source#<target>'", () {
+    late _CapturingLogger logger;
+    late Directory origin;
+
+    /// The cells, and the exit code they came with.
+    Future<List<Map<String, dynamic>>> cells(List<String> args) async {
+      final outFile = p.join(tmp.path, 'matrix.json');
+      final runner = CommandRunner<int>('emb', 'test')
+        ..addCommand(MatrixCommand(logger: logger, host: _host));
+      expect(
+        await runner.run(['matrix', ...args, '-o', outFile]),
+        ExitCode.success.code,
+      );
+      final decoded = jsonDecode(File(outFile).readAsStringSync()) as Map;
+      return (decoded['include'] as List).cast<Map<String, dynamic>>();
+    }
+
+    /// An embedder project with one board target, `rpi`.
+    void writeEmbedder(Directory dir) {
+      Directory(p.join(dir.path, '.emb')).createSync(recursive: true);
+      File(p.join(dir.path, '.emb', 'rpi.emb.yaml')).writeAsStringSync(
+        'id: embedder\ncross:\n  targets:\n    rpi:\n'
+        '      provider: arm-gnu\n'
+        '      triple: aarch64-none-linux-gnu\n'
+        '      toolchain_version: 12.3.rel1\n'
+        '      image_url: https://example.com/os.img.xz\n',
+      );
+    }
+
+    /// The same project as a git repository to clone from.
+    Future<void> makeOrigin() async {
+      origin = Directory(p.join(tmp.path, 'origin', 'embedder'));
+      writeEmbedder(origin);
+      for (final args in [
+        ['init', '-q'],
+        ['add', '-A'],
+        ['commit', '-q', '-m', 'init'],
+      ]) {
+        final r = await Process.run('git', [
+          '-c',
+          'user.name=t',
+          '-c',
+          'user.email=t@example.invalid',
+          '-c',
+          'init.defaultBranch=main',
+          ...args,
+        ], workingDirectory: origin.path);
+        expect(r.exitCode, 0, reason: '${r.stderr}');
+      }
+    }
+
+    /// One target that extends into the source, and one that stands alone.
+    File manifest(String uri) => write(
+      'app.emb.yaml',
+      'id: app\ntype: app\nworkspace: ws\nsupported_host_types: [ubuntu]\n'
+          'cross:\n'
+          '  source: { uri: $uri }\n'
+          '  targets:\n'
+          "    pi: { extends: 'source#rpi' }\n"
+          '    plain:\n'
+          '      provider: arm-gnu\n'
+          '      triple: aarch64-none-linux-gnu\n'
+          '      toolchain_version: 12.3.rel1\n'
+          '      image_url: https://example.com/other.img.xz\n',
+    );
+
+    Directory checkout([String ws = 'ws']) =>
+        Directory(p.join(tmp.path, ws, 'app', 'embedder'));
+
+    setUp(() => logger = _CapturingLogger());
+
+    test('is skipped, and nothing is cloned, without the checkout', () async {
+      await makeOrigin();
+      final include = await cells([manifest(origin.path).path]);
+      expect(include.map((c) => c['target']), ['plain']);
+      expect(checkout().existsSync(), isFalse);
+      final warned = logger.warnings.toString();
+      expect(warned, contains('#pi'));
+      expect(warned, contains('--fetch'));
+    });
+
+    test('resolves against a checkout the workspace has', () async {
+      writeEmbedder(checkout());
+      final include = await cells([
+        manifest('https://invalid.example/embedder.git').path,
+      ]);
+      expect(include.map((c) => c['target']), ['pi', 'plain']);
+      final pi = include.first;
+      expect(pi['provider'], 'arm-gnu');
+      expect(pi['triple'], 'aarch64-none-linux-gnu');
+      expect(pi['sysroot_key'], isNotEmpty);
+      expect(logger.warnings.toString(), isEmpty);
+    });
+
+    test('--fetch clones the source and emits the cell', () async {
+      await makeOrigin();
+      final include = await cells([manifest(origin.path).path, '--fetch']);
+      expect(include.map((c) => c['target']), ['pi', 'plain']);
+      expect(checkout().existsSync(), isTrue);
+    });
+
+    test('--fetch that cannot clone skips the target and says why', () async {
+      final f = manifest(p.join(tmp.path, 'no-such-repo'));
+      final include = await cells([f.path, '--fetch']);
+      expect(include.map((c) => c['target']), ['plain']);
+      expect(logger.warnings.toString(), contains('could not be fetched'));
+    });
+
+    test('-w outranks the workspace the manifest declares', () async {
+      writeEmbedder(checkout('other'));
+      final include = await cells([
+        manifest('https://invalid.example/embedder.git').path,
+        '-w',
+        p.join(tmp.path, 'other'),
+      ]);
+      expect(include.map((c) => c['target']), ['pi', 'plain']);
+    });
+
+    test('with no cross.source it is skipped with that reason', () async {
+      final f = write(
+        'app.emb.yaml',
+        'id: app\ntype: app\nsupported_host_types: [ubuntu]\ncross:\n'
+            '  targets:\n'
+            "    pi: { extends: 'source#rpi' }\n",
+      );
+      expect(await cells([f.path]), isEmpty);
+      expect(logger.warnings.toString(), contains('declares none'));
+    });
+  });
 }

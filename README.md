@@ -1281,8 +1281,13 @@ clone coming first:
   other targets build, where a bad `extends:` used to fail every command.
 - `emb fetch` clones `cross.source` the same way. `emb doctor --target`
   fetches nothing and resolves against a checkout that is already there, or
-  says to fetch it. `emb matrix` does not clone and skips a `source#` target
-  with a warning.
+  says to fetch it.
+- `emb matrix` downloads nothing by default. It emits the cell for a
+  `source#` target when the checkout is in the workspace (`-w`, then the
+  manifest's `workspace:`, `$FLUTTER_WORKSPACE`, cwd) and otherwise skips the
+  target with a warning. `emb matrix --fetch` clones a missing `cross.source`
+  first, which is what a CI job rendering the matrix from a fresh checkout
+  wants; pair it with `-o` so nothing else lands on stdout.
 
 A directory that is itself called `source` is written `./source#<target>`.
 

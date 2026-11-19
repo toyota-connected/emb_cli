@@ -191,6 +191,14 @@ version is unaffected.
   checkout that is there. Both take the workspace the way `emb cross` does,
   and `emb fetch` accepts `-w`, which its documentation already listed. See
   Upgrading.
+- fix(matrix): `emb matrix` skipped every `extends: 'source#<target>'`
+  target, with the checkout of `cross.source` on disk or not, so a repo from
+  `emb init flatpak --target <board>` rendered a matrix with no board in it.
+  It now resolves such a target against a checkout in the workspace, which
+  it finds the way `emb cross` does (new `-w`, then the manifest's
+  `workspace:`, `$FLUTTER_WORKSPACE`, cwd). `--fetch` (new, off by default)
+  clones a `cross.source` that is missing; without it the matrix still
+  downloads nothing and the skip warning says how to get the cell.
 - fix(cross): `emb cross --fetch-only` is documented as the same step as
   `emb fetch` and had fallen behind it: it installed no Flutter SDK, resolved
   no pub packages and fetched no engine, so an offline build prepared with it
