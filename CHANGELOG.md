@@ -46,9 +46,14 @@ lands in the manifest's workspace. `--workspace` still wins.
 **`emb fetch` clones a declared `cross.source` and `cross.app`.** It needs
 git and network access to both, and fails if a clone does. With a Flutter SDK
 in the workspace or on `PATH` it also runs `flutter pub get` in the app, and
-fails if that does; without one it warns and carries on. `emb cross
---fetch-only` clones both and resolves no packages. `--app` replaces the
+fails if that does; without one it warns and carries on. `--app` replaces the
 declared app, as before.
+
+**`emb cross --fetch-only` fetches everything `emb fetch` does.** It now
+installs the Flutter SDK a manifest pins, and with an app (`--app` or a
+declared `cross.app`) runs `flutter pub get` and fetches the engine SDK for
+`--mode`. Each is a download or a step it did not make before, and each can
+fail it.
 
 **`emb cross --build --offline` no longer downloads the engine SDK.** It
 did, silently, when the SDK was not in the store. It now stops and names the
@@ -186,6 +191,11 @@ version is unaffected.
   checkout that is there. Both take the workspace the way `emb cross` does,
   and `emb fetch` accepts `-w`, which its documentation already listed. See
   Upgrading.
+- fix(cross): `emb cross --fetch-only` is documented as the same step as
+  `emb fetch` and had fallen behind it: it installed no Flutter SDK, resolved
+  no pub packages and fetched no engine, so an offline build prepared with it
+  stopped at the first of those. The pub prefetch and the engine fetch move
+  out of `emb fetch` into functions both commands call. See Upgrading.
 - fix(cross): `emb cross --build --offline` and `--offline-strict` downloaded
   the engine SDK from GitHub when it was not cached (193 MB for
   release/x86_64). The engine is emb's own download, so the network namespace

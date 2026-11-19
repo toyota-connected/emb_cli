@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/cache/cache_dir.dart';
+import 'package:emb_cli/src/cross/app_prefetch.dart';
 import 'package:emb_cli/src/cross/cargo_vendor.dart';
 import 'package:emb_cli/src/cross/cross_arch.dart';
 import 'package:emb_cli/src/cross/cross_cache.dart';
@@ -15,7 +16,6 @@ import 'package:emb_cli/src/cross/lock_sync.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/cross/source_checkout.dart';
 import 'package:emb_cli/src/engine/engine_artifacts.dart';
-import 'package:emb_cli/src/flutter/flutter_sdk.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/host/preflight.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
@@ -388,10 +388,13 @@ class FetchCommand extends Command<int> {
     // PUB_CACHE. `--enforce-lockfile` fails rather than silently updating, and
     // populates the app's `.dart_tool` for the later build.
     if (appArg case final appPath?) {
-      final rc = await _prefetchPub(
+      final rc = await prefetchAppPub(
         appPath,
-        host,
         workspace,
+        host: host,
+        logger: _logger,
+        run: _runProcess,
+        preflight: _preflight,
         declared: declaredApp != null,
       );
       if (rc != ExitCode.success.code) return rc;
@@ -400,10 +403,12 @@ class FetchCommand extends Command<int> {
     // The engine the bundle ships and gen_snapshot comes from is emb's own
     // download, made by the build when it is missing: fetch it here instead.
     if (appArg != null) {
-      final rc = await _fetchEngine(
+      final rc = await fetchAppEngines(
+        _engineFactory(workspace),
         workspace,
-        engineArch,
-        args['mode'] as List<String>,
+        arch: engineArch,
+        modes: args['mode'] as List<String>,
+        logger: _logger,
       );
       if (rc != ExitCode.success.code) return rc;
     }
@@ -412,118 +417,6 @@ class FetchCommand extends Command<int> {
       'Closure ready for "${selection.name}". Build it offline with: '
       'emb cross $inputPath --target ${selection.name} --build --offline',
     );
-    return ExitCode.success.code;
-  }
-
-  /// Put the engine SDK for each of [modes] in the shared store and stage it
-  /// in [workspace], as the build would on its first run.
-  ///
-  /// The engine is named by the commit of the workspace's Flutter SDK. With
-  /// no SDK there is no commit, and the build will not get as far as the
-  /// engine either, so that is a warning here.
-  Future<int> _fetchEngine(
-    Workspace workspace,
-    String arch,
-    List<String> modes,
-  ) async {
-    final commit = workspace.engineCommit();
-    if (commit == null) {
-      _logger.warn(
-        'No Flutter SDK in ${workspace.root.path}: the engine is not '
-        'fetched, and an offline build needs it. Pin flutter_version: or run '
-        '"emb flutter", then fetch again.',
-      );
-      return ExitCode.success.code;
-    }
-    final engine = _engineFactory(workspace);
-    try {
-      for (final mode in modes) {
-        final token = EngineArtifacts.engineArch(arch);
-        final progress = _steps.start('Fetching engine ($mode/$token)');
-        final r = await engine.fetch(
-          runtime: mode,
-          arch: token,
-          commit: commit,
-        );
-        if (!r.ok) {
-          progress.fail(r.message ?? 'engine ($mode/$token) fetch failed');
-          return ExitCode.software.code;
-        }
-        progress.complete('Engine ($mode/$token) ready');
-      }
-    } finally {
-      engine.close();
-    }
-    return ExitCode.success.code;
-  }
-
-  /// `flutter pub get` in [appPath], into the store's `PUB_CACHE`.
-  ///
-  /// [declared] is an app the manifest named rather than one passed with
-  /// `--app`. Nobody asked for its packages on this run, so what `--app`
-  /// treats as an error (no `flutter`, no `pubspec.lock`) is a warning there:
-  /// a fetch that worked before the app was cloned still does.
-  Future<int> _prefetchPub(
-    String appPath,
-    HostInfo host,
-    Workspace workspace, {
-    required bool declared,
-  }) async {
-    final appDir = Directory(appPath);
-    if (!File(p.join(appDir.path, 'pubspec.yaml')).existsSync()) {
-      _logger.err('no pubspec.yaml in $appPath (is it a Flutter app?)');
-      return ExitCode.usage.code;
-    }
-    // The workspace SDK is the one the build runs, so it resolves the packages
-    // when there is one.
-    final sdk = FlutterSdk(workspace, host: host).flutterBin;
-    final String flutter;
-    if (File(sdk).existsSync()) {
-      flutter = sdk;
-    } else if ((await _preflight.missingTools(['flutter'])).isEmpty) {
-      flutter = 'flutter';
-    } else if (declared) {
-      _logger.warn(
-        'No Flutter SDK in ${workspace.root.path} or on PATH: the pub '
-        'packages of ${appDir.path} are not fetched, and an offline build '
-        'needs them. Run "emb flutter", then fetch again.',
-      );
-      return ExitCode.success.code;
-    } else {
-      _logger.err('flutter not found on PATH — cannot prefetch pub packages.');
-      await _preflight.logInstallHint(host, ['flutter']);
-      return ExitCode.unavailable.code;
-    }
-    // `--enforce-lockfile` has nothing to enforce without a lockfile, and
-    // fails.
-    final locked =
-        !declared || File(p.join(appDir.path, 'pubspec.lock')).existsSync();
-    if (!locked) {
-      _logger.warn(
-        '${appDir.path} has no pubspec.lock: its packages are resolved now '
-        'and not pinned.',
-      );
-    }
-    // Into the store-rooted PUB_CACHE, so the packages are part of the same
-    // closure the escrow archives and an offline build reads from.
-    final pubCache = storePubCacheDir(ensureCacheDir())
-      ..createSync(recursive: true);
-    final progress = _steps.start(
-      'Prefetching pub packages (${p.basename(appDir.path)})',
-    );
-    final r = await _runProcess(
-      flutter,
-      ['pub', 'get', if (locked) '--enforce-lockfile'],
-      workingDirectory: appDir.path,
-      environment: {'PUB_CACHE': pubCache.path},
-      output: ProcessOutputMode.stream,
-      label: 'pub',
-    );
-    if (r.exitCode != 0) {
-      progress.fail('flutter pub get failed: ${r.stderr}');
-      return ExitCode.software.code;
-    }
-    progress.complete('Prefetched pub packages');
     return ExitCode.success.code;
   }
 }

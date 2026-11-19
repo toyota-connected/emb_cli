@@ -8,6 +8,7 @@ import 'package:emb_cli/src/cross/cross_keys.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/cross/dockerfile_emitter.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
+import 'package:emb_cli/src/engine/engine_artifacts.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:mason_logger/mason_logger.dart';
 import 'package:path/path.dart' as p;
@@ -29,6 +30,27 @@ class _CaptureLogger extends Logger {
   @override
   void warn(String? message, {String tag = 'WARN', LogStyle? style}) =>
       errors.writeln(message);
+}
+
+/// An engine that records what it is asked to fetch.
+class _RecordingEngine extends EngineArtifacts {
+  _RecordingEngine(super.workspace, this.fetches);
+  final List<String> fetches;
+
+  @override
+  Future<EngineFetchResult> fetch({
+    required String runtime,
+    required String arch,
+    required String commit,
+    bool clean = false,
+  }) async {
+    fetches.add('$runtime/$arch@$commit');
+    return EngineFetchResult(
+      runtime: runtime,
+      arch: arch,
+      status: EngineFetchStatus.fetched,
+    );
+  }
 }
 
 /// Thrown by a fake process runner to end a command early.
@@ -714,44 +736,125 @@ void main() {
       expect(Directory(p.join(ws.path, 'app')).existsSync(), isTrue);
     });
 
-    // The app is cloned by the same rule: `--target local` has no toolchain
-    // to fetch, so the run gets as far as the clone and no further.
-    test('--fetch-only clones a declared cross.app', () async {
-      final origin = Directory(p.join(tmp.path, 'origin', 'my_app'))
-        ..createSync(recursive: true);
-      File(p.join(origin.path, 'pubspec.yaml')).writeAsStringSync('name: a\n');
-      for (final args in [
-        ['init', '-q'],
-        ['add', '-A'],
-        ['commit', '-q', '-m', 'init'],
-      ]) {
-        final r = await Process.run('git', [
-          '-c',
-          'user.name=t',
-          '-c',
-          'user.email=t@example.invalid',
-          '-c',
-          'init.defaultBranch=main',
+    // --fetch-only fetches what `emb fetch` does for a declared app: the
+    // clone, its pub packages, and the engine for the mode it will be built
+    // in. `--target local` has no toolchain to fetch, so that is all of it.
+    group('--fetch-only with a declared cross.app', () {
+      late List<List<String>> ran;
+      late List<String> engines;
+      late File manifest;
+      late File clone;
+
+      Future<int?> fetchOnly(List<String> args) {
+        final runner = CommandRunner<int>('emb', 'test')
+          ..addCommand(
+            CrossCommand(
+              logger: logger,
+              host: _host,
+              toolProbe: (tool) async => false,
+              engineFactory: (w) => _RecordingEngine(w, engines),
+              processRunner:
+                  (
+                    exe,
+                    args, {
+                    workingDirectory,
+                    environment,
+                    includeParentEnvironment = true,
+                    runInShell = false,
+                    output = ProcessOutputMode.capture,
+                    label,
+                  }) async {
+                    ran.add([exe, ...args, '@$workingDirectory']);
+                    return const RunResult(0, '', '');
+                  },
+            ),
+          );
+        return runner.run([
+          'cross',
+          '--fetch-only',
+          '--target',
+          'local',
           ...args,
-        ], workingDirectory: origin.path);
-        expect(r.exitCode, 0, reason: '${r.stderr}');
+          '-w',
+          ws.path,
+          manifest.path,
+        ]);
       }
-      final f = File(p.join(tmp.path, 'app.emb.yaml'))
-        ..writeAsStringSync(
-          'id: app\ntype: app\ncross:\n  provider: arm-gnu\n'
-          '  app: { uri: ${origin.path} }\n',
-        );
-      final clone = File(p.join(ws.path, 'app', 'my_app', 'pubspec.yaml'));
 
-      // Reporting modes still fetch nothing.
-      await cross(['--fetch-only', '--dry-run', '--target', 'local', f.path]);
-      expect(clone.existsSync(), isFalse);
+      /// The SDK `emb flutter` would have put in the workspace.
+      String workspaceSdk() {
+        final bin = File(p.join(ws.path, 'flutter', 'bin', 'flutter'))
+          ..createSync(recursive: true);
+        File(p.join(bin.parent.path, 'internal', 'engine.version'))
+          ..createSync(recursive: true)
+          ..writeAsStringSync('abc123\n');
+        return bin.path;
+      }
 
-      expect(
-        await cross(['--fetch-only', '--target', 'local', f.path]),
-        ExitCode.success.code,
-      );
-      expect(clone.existsSync(), isTrue);
+      setUp(() async {
+        ran = [];
+        engines = [];
+        final origin = Directory(p.join(tmp.path, 'origin', 'my_app'))
+          ..createSync(recursive: true);
+        File(
+          p.join(origin.path, 'pubspec.yaml'),
+        ).writeAsStringSync('name: a\n');
+        File(p.join(origin.path, 'pubspec.lock')).writeAsStringSync('');
+        for (final args in [
+          ['init', '-q'],
+          ['add', '-A'],
+          ['commit', '-q', '-m', 'init'],
+        ]) {
+          final r = await Process.run('git', [
+            '-c',
+            'user.name=t',
+            '-c',
+            'user.email=t@example.invalid',
+            '-c',
+            'init.defaultBranch=main',
+            ...args,
+          ], workingDirectory: origin.path);
+          expect(r.exitCode, 0, reason: '${r.stderr}');
+        }
+        manifest = File(p.join(tmp.path, 'app.emb.yaml'))
+          ..writeAsStringSync(
+            'id: app\ntype: app\ncross:\n  provider: arm-gnu\n'
+            '  app: { uri: ${origin.path} }\n',
+          );
+        clone = File(p.join(ws.path, 'app', 'my_app', 'pubspec.yaml'));
+      });
+
+      test('clones it, resolves its packages and fetches the engine', () async {
+        final sdk = workspaceSdk();
+        expect(await fetchOnly([]), ExitCode.success.code);
+        expect(clone.existsSync(), isTrue);
+        expect(ran, [
+          [sdk, 'pub', 'get', '--enforce-lockfile', '@${clone.parent.path}'],
+        ]);
+        expect(engines, ['release/x86_64@abc123']);
+      });
+
+      test('fetches the engine for --mode', () async {
+        workspaceSdk();
+        expect(await fetchOnly(['--mode', 'profile']), ExitCode.success.code);
+        expect(engines, ['profile/x86_64@abc123']);
+      });
+
+      test('with no Flutter SDK it still clones, and names the gaps', () async {
+        expect(await fetchOnly([]), ExitCode.success.code);
+        expect(clone.existsSync(), isTrue);
+        expect(engines, isEmpty);
+        final warned = logger.errors.toString();
+        expect(warned, contains('pub packages'));
+        expect(warned, contains('the engine is not fetched'));
+      });
+
+      test('a reporting mode fetches nothing', () async {
+        workspaceSdk();
+        await fetchOnly(['--dry-run']);
+        expect(clone.existsSync(), isFalse);
+        expect(engines, isEmpty);
+      });
     });
 
     test('--fetch-only fails when cross.app cannot be cloned', () async {
