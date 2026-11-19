@@ -6,6 +6,7 @@ import 'package:emb_cli/src/aot/aot_builder.dart';
 import 'package:emb_cli/src/bundle/bundle_builder.dart';
 import 'package:emb_cli/src/bundle/bundle_pipeline.dart';
 import 'package:emb_cli/src/cache/cache_dir.dart';
+import 'package:emb_cli/src/cross/app_prefetch.dart';
 import 'package:emb_cli/src/cross/bundle_audit.dart';
 import 'package:emb_cli/src/cross/cargo_env.dart';
 import 'package:emb_cli/src/cross/cargo_vendor.dart';
@@ -173,7 +174,9 @@ class CrossCommand extends Command<int> {
     EngineArtifacts Function(Workspace ws)? engineFactory,
     ProcessRunner? processRunner,
     Map<String, String>? environment,
+    ToolProbe toolProbe = whichProbe,
   }) : _logger = logger,
+       _toolProbe = toolProbe,
        _environment = environment ?? Platform.environment,
        _host = host,
        _loader = loader,
@@ -529,7 +532,8 @@ class CrossCommand extends Command<int> {
   Directory? _sourceOverride;
   bool _offlineWrap = false;
 
-  late final Preflight _preflight = Preflight(_logger);
+  final ToolProbe _toolProbe;
+  late final Preflight _preflight = Preflight(_logger, probe: _toolProbe);
   late final LockSync _lockSync = LockSync(
     logger: _logger,
     runProcess: _runProcess,
@@ -784,7 +788,7 @@ class CrossCommand extends Command<int> {
       }
     }
 
-    if (building &&
+    if ((building || fetching) &&
         !await _ensureFlutterSdk(project, workspace, host, offline)) {
       return ExitCode.software.code;
     }
@@ -1008,6 +1012,28 @@ class CrossCommand extends Command<int> {
           _logger.err('  $err');
           return ExitCode.software.code;
         }
+      }
+      // The rest of what `emb fetch` gets for an app: its pub packages, and
+      // the engine for the mode it will be built in.
+      if (_appDir(appDirArg) case final appDir?) {
+        var rc = await prefetchAppPub(
+          appDir,
+          workspace,
+          host: host,
+          logger: _logger,
+          run: _runProcess,
+          preflight: _preflight,
+          declared: declaredApp != null,
+        );
+        if (rc != ExitCode.success.code) return rc;
+        rc = await fetchAppEngines(
+          _engine(workspace),
+          workspace,
+          arch: archOfTriple(profile.targetTriple),
+          modes: [args['mode'] as String],
+          logger: _logger,
+        );
+        if (rc != ExitCode.success.code) return rc;
       }
       _logger.success('Fetched cross closure for $effectiveTarget.');
       return ExitCode.success.code;
