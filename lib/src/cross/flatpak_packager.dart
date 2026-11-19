@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
+import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/cross/run_command.dart';
 import 'package:path/path.dart' as p;
@@ -17,7 +18,7 @@ class FlatpakMetadata {
     required this.command,
     this.branch = 'stable',
     this.runtime = 'org.freedesktop.Platform',
-    this.runtimeVersion = '23.08',
+    this.runtimeVersion = defaultFlatpakRuntimeVersion,
     this.sdk = 'org.freedesktop.Sdk',
     this.arch,
     this.finishArgs = defaultFinishArgs,

@@ -445,13 +445,10 @@ void main() {
         expect(h.callsTo('flatpak'), hasLength(2));
       });
 
-      // Not the packager's default of 23.08, which flatpak reports
-      // end-of-life.
-      test('falls back to a supported constant with no flatpak', () async {
+      test('falls back to the packager default with no flatpak', () async {
         final h = _Harness();
         await h.run();
-        expect(runtime(h), fallbackFlatpakRuntimeVersion);
-        expect(fallbackFlatpakRuntimeVersion, isNot('23.08'));
+        expect(runtime(h), defaultFlatpakRuntimeVersion);
       });
 
       test('--runtime-version is written as given, flatpak unasked', () async {
@@ -736,7 +733,7 @@ void main() {
         expect(await h.run(), ExitCode.success.code);
         expect(
           h.read('my-app.emb.yaml'),
-          contains("'$fallbackFlatpakRuntimeVersion'"),
+          contains("'$defaultFlatpakRuntimeVersion'"),
         );
       });
 

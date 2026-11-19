@@ -209,7 +209,7 @@ class InitFlatpakCommand extends Command<int> {
         'runtime-version',
         help:
             'freedesktop runtime branch (default: the newest flathub offers, '
-            'else $fallbackFlatpakRuntimeVersion).',
+            'else $defaultFlatpakRuntimeVersion).',
       )
       ..addOption(
         'flutter-version',
@@ -311,7 +311,7 @@ class InitFlatpakCommand extends Command<int> {
     if (runtimeArg != null && !_runtimePattern.hasMatch(runtimeArg)) {
       return _usage(
         '--runtime-version "$runtimeArg": expected a freedesktop runtime '
-        'branch such as $fallbackFlatpakRuntimeVersion.',
+        'branch such as $defaultFlatpakRuntimeVersion.',
       );
     }
     final flutterVersion = args['flutter-version'] as String;
@@ -583,7 +583,7 @@ class InitFlatpakCommand extends Command<int> {
       }
       if (branches.isNotEmpty) break;
     }
-    if (branches.isEmpty) return fallbackFlatpakRuntimeVersion;
+    if (branches.isEmpty) return defaultFlatpakRuntimeVersion;
     // `YY.MM`, zero-padded, so string order is version order.
     return (branches.toList()..sort()).last;
   }
