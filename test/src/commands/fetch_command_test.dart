@@ -3,6 +3,8 @@ import 'dart:io';
 import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/commands/fetch_command.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
+import 'package:emb_cli/src/engine/engine_artifacts.dart';
+import 'package:emb_cli/src/host/host_info.dart';
 import 'package:mason_logger/mason_logger.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:path/path.dart' as p;
@@ -25,6 +27,29 @@ class _CaptureLogger extends Logger {
 
   @override
   void info(String? message, {LogStyle? style}) => infos.writeln(message);
+}
+
+/// An engine that records what it is asked to fetch.
+class _FakeEngine extends EngineArtifacts {
+  _FakeEngine(super.workspace, this.fetches, {this.fails = false});
+  final List<String> fetches;
+  final bool fails;
+
+  @override
+  Future<EngineFetchResult> fetch({
+    required String runtime,
+    required String arch,
+    required String commit,
+    bool clean = false,
+  }) async {
+    fetches.add('$runtime/$arch@$commit');
+    return EngineFetchResult(
+      runtime: runtime,
+      arch: arch,
+      status: fails ? EngineFetchStatus.unavailable : EngineFetchStatus.fetched,
+      message: fails ? 'no prebuilt' : null,
+    );
+  }
 }
 
 void main() {
@@ -207,7 +232,9 @@ cross:
     late _CaptureLogger log;
     late Directory origin;
     late List<({String exe, List<String> args, String? cwd})> calls;
+    late List<String> engines;
     var onPath = false;
+    var engineFails = false;
 
     Future<RunResult> fake(
       String exe,
@@ -230,6 +257,14 @@ cross:
             logger: log,
             processRunner: fake,
             toolProbe: (tool) async => onPath,
+            host: const HostInfo(
+              os: HostOs.linux,
+              machineArch: 'x86_64',
+              archAliases: {'x86_64', 'x64', 'amd64'},
+              hostType: 'fedora',
+              versionId: '43',
+            ),
+            engineFactory: (ws) => _FakeEngine(ws, engines, fails: engineFails),
           ),
         );
       return r.run(['fetch', ...args]);
@@ -277,17 +312,75 @@ cross:
 
     String clone() => p.join(tmp.path, 'ws', 'app', 'my_app');
 
-    /// The SDK `emb flutter` would have put in the workspace.
-    String workspaceSdk() {
+    /// The SDK `emb flutter` would have put in the workspace. [commit] is
+    /// the engine it pins.
+    String workspaceSdk({String? commit}) {
       final bin = File(p.join(tmp.path, 'ws', 'flutter', 'bin', 'flutter'))
         ..createSync(recursive: true);
+      if (commit != null) {
+        File(p.join(bin.parent.path, 'internal', 'engine.version'))
+          ..createSync(recursive: true)
+          ..writeAsStringSync('$commit\n');
+      }
       return bin.path;
     }
 
     setUp(() {
       log = _CaptureLogger();
       calls = [];
+      engines = [];
       onPath = false;
+      engineFails = false;
+    });
+
+    // The engine is emb's own download, which the build makes when it is
+    // missing: an offline build cannot, so the fetch does.
+    group('engine', () {
+      test('is fetched for release by default', () async {
+        await makeOrigin();
+        workspaceSdk(commit: 'abc123');
+        final f = manifest(origin.path);
+        expect(await fetch([f.path, '-t', 'local']), ExitCode.success.code);
+        expect(engines, ['release/x86_64@abc123']);
+      });
+
+      test('is fetched for each --mode', () async {
+        await makeOrigin();
+        workspaceSdk(commit: 'abc123');
+        final f = manifest(origin.path);
+        expect(
+          await fetch([f.path, '-t', 'local', '-m', 'debug', '-m', 'profile']),
+          ExitCode.success.code,
+        );
+        expect(engines, ['debug/x86_64@abc123', 'profile/x86_64@abc123']);
+      });
+
+      test('a failed fetch fails the command', () async {
+        await makeOrigin();
+        workspaceSdk(commit: 'abc123');
+        engineFails = true;
+        final f = manifest(origin.path);
+        expect(await fetch([f.path, '-t', 'local']), ExitCode.software.code);
+      });
+
+      test('with no SDK to name it, the gap is a warning', () async {
+        await makeOrigin();
+        final f = manifest(origin.path);
+        expect(await fetch([f.path, '-t', 'local']), ExitCode.success.code);
+        expect(engines, isEmpty);
+        expect(log.warnings.toString(), contains('the engine is not fetched'));
+      });
+
+      test('is not fetched for a project with no app', () async {
+        workspaceSdk(commit: 'abc123');
+        final f = File(p.join(tmp.path, 'app.emb.yaml'))
+          ..writeAsStringSync(
+            'id: app\nworkspace: ws\ncross:\n'
+            '  provider: arm-gnu\n',
+          );
+        expect(await fetch([f.path, '-t', 'local']), ExitCode.success.code);
+        expect(engines, isEmpty);
+      });
     });
 
     test('is cloned and resolved with the workspace SDK', () async {

@@ -50,7 +50,16 @@ Future<BundleResult> buildAndAssemble({
     if (commit != null && (!icu.existsSync() || have != want)) {
       final token = EngineArtifacts.engineArch(arch);
       onStep?.call('fetching engine ($mode/$token)');
-      await engine.fetch(runtime: mode, arch: token, commit: commit);
+      final r = await engine.fetch(runtime: mode, arch: token, commit: commit);
+      // An engine staged by hand (a local build) still serves when there is
+      // no prebuilt to fetch. With nothing staged the build cannot go on,
+      // and the fetch knows why.
+      if (!r.ok && !icu.existsSync()) {
+        return BundleResult(
+          success: false,
+          message: r.message ?? 'engine ($mode/$token) could not be fetched',
+        );
+      }
     }
   }
 
