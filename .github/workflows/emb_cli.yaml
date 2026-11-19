@@ -447,6 +447,9 @@ jobs:
       # Before installing the library: the failure must be self-explanatory.
       # The old message named the board, which read as a typo and sent people
       # to audit a manifest that was fine.
+      #
+      # The target is selected: a target that does not resolve fails when it
+      # is asked for, and --list-targets only lists it as not resolved.
       - name: 🚫 Without the library, the diagnostic names the real cause
         env:
           XDG_DATA_HOME: ${{ runner.temp }}/none
@@ -454,7 +457,7 @@ jobs:
         run: |
           set +e
           out=$("$RUNNER_TEMP/dart/install/bin/emb" cross \
-                  "$RUNNER_TEMP/proj/app.emb.yaml" --list-targets 2>&1)
+                  "$RUNNER_TEMP/proj/app.emb.yaml" --target x --dry-run 2>&1)
           code=$?
           set -e
           echo "$out"

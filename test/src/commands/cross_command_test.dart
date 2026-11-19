@@ -582,6 +582,175 @@ void main() {
     expect((data['sysroot'] as Map)['source'], 'image');
   });
 
+  // #309: `extends:` can name a target in the embedder cross.source clones.
+  // The clone has to come before the resolve, and a target that cannot
+  // resolve must not take the others down with it.
+  group('extends into cross.source', () {
+    late Directory ws;
+    late _CaptureLogger logger;
+
+    setUp(() {
+      ws = Directory(p.join(tmp.path, 'ws'))..createSync();
+      logger = _CaptureLogger();
+    });
+
+    Future<int?> cross(List<String> args) {
+      final runner = CommandRunner<int>('emb', 'test')
+        ..addCommand(CrossCommand(logger: logger, host: _host));
+      return runner.run(['cross', ...args, '-w', ws.path]);
+    }
+
+    /// An embedder project with one board target, `rpi`.
+    void writeEmbedder(Directory dir, {String provider = 'arm-gnu'}) {
+      Directory(p.join(dir.path, '.emb')).createSync(recursive: true);
+      File(p.join(dir.path, '.emb', 'rpi.emb.yaml')).writeAsStringSync(
+        'id: embedder\ncross:\n  targets:\n    rpi:\n'
+        '      provider: $provider\n'
+        '      triple: aarch64-none-linux-gnu\n'
+        '      toolchain_version: 12.3.rel1\n'
+        '      image_url: https://x/y.img.xz\n'
+        '      cpu_flags: [-mcpu=cortex-a76]\n',
+      );
+    }
+
+    File manifest(String uri, {String ref = 'source#rpi'}) =>
+        File(p.join(tmp.path, 'app.emb.yaml'))..writeAsStringSync(
+          'id: app\ntype: app\ncross:\n'
+          '  source: { uri: $uri }\n'
+          '  targets:\n'
+          "    pi: { extends: '$ref' }\n",
+        );
+
+    const remote = 'https://invalid.example/embedder.git';
+
+    test('--list-targets works before anything is cloned', () async {
+      final f = manifest(remote);
+      expect(await cross(['--list-targets', f.path]), ExitCode.success.code);
+      final out = logger.buffer.toString();
+      expect(out, contains('pi'));
+      expect(out, contains('extends source#rpi, not resolved'));
+      // And why, so a missing board library is not read as a typo.
+      expect(logger.errors.toString(), contains('is not fetched'));
+      expect(out, contains('local'));
+      expect(Directory(p.join(ws.path, 'app')).existsSync(), isFalse);
+    });
+
+    test('--list-targets reads a checkout that is there', () async {
+      writeEmbedder(Directory(p.join(ws.path, 'app', 'embedder')));
+      final f = manifest(remote);
+      expect(await cross(['--list-targets', f.path]), ExitCode.success.code);
+      final out = logger.buffer.toString();
+      expect(out, contains('arm-gnu'));
+      expect(out, isNot(contains('not resolved')));
+    });
+
+    test('the native build is not held up by it', () async {
+      final f = File(p.join(tmp.path, 'app.emb.yaml'))
+        ..writeAsStringSync(
+          'id: app\ntype: app\ncross:\n  provider: arm-gnu\n'
+          '  source: { uri: $remote }\n'
+          '  targets:\n'
+          "    pi: { extends: 'source#rpi' }\n",
+        );
+      expect(
+        await cross(['--dry-run', '--target', 'local', f.path]),
+        ExitCode.success.code,
+        reason: logger.errors.toString(),
+      );
+    });
+
+    test('--dry-run fetches nothing and says what to do', () async {
+      final f = manifest(remote);
+      expect(
+        await cross(['--dry-run', '--target', 'pi', f.path]),
+        ExitCode.software.code,
+      );
+      expect(
+        logger.errors.toString(),
+        allOf(contains('not fetched yet'), contains('--prepare')),
+      );
+      expect(Directory(p.join(ws.path, 'app')).existsSync(), isFalse);
+    });
+
+    test('--dry-run resolves against a checkout that is there', () async {
+      writeEmbedder(Directory(p.join(ws.path, 'app', 'embedder')));
+      final f = manifest(remote);
+      final code = await cross(['--json', '--target', 'pi', f.path]);
+      expect(code, ExitCode.success.code);
+      final json = jsonDecode(logger.buffer.toString()) as Map;
+      expect((json['data'] as Map)['cpuFlags'], ['-mcpu=cortex-a76']);
+    });
+
+    // The path form names where the clone lands. It resolves the same way,
+    // as long as the path and the workspace agree.
+    test('a path into the workspace resolves once it is there', () async {
+      writeEmbedder(Directory(p.join(ws.path, 'app', 'embedder')));
+      final f = manifest(remote, ref: 'ws/app/embedder#rpi');
+      final code = await cross(['--json', '--target', 'pi', f.path]);
+      expect(code, ExitCode.success.code);
+    });
+
+    test('a failed fetch is reported as one', () async {
+      final f = manifest(p.join(tmp.path, 'no-such-repo'));
+      expect(await cross(['--target', 'pi', f.path]), ExitCode.software.code);
+      expect(
+        Directory(p.join(ws.path, 'app', 'no-such-repo')).existsSync(),
+        isFalse,
+      );
+    });
+
+    test('a target with no cross.source reports its own error', () async {
+      final f = File(p.join(tmp.path, 'app.emb.yaml'))
+        ..writeAsStringSync(
+          'id: app\ntype: app\ncross:\n  targets:\n'
+          "    pi: { extends: 'source#rpi' }\n",
+        );
+      expect(await cross(['--target', 'pi', f.path]), ExitCode.usage.code);
+      expect(logger.errors.toString(), contains('declares none'));
+    });
+
+    test('an unknown target is still unknown', () async {
+      final f = manifest(remote);
+      expect(await cross(['--target', 'nope', f.path]), ExitCode.usage.code);
+      expect(logger.errors.toString(), contains('Unknown target "nope"'));
+    });
+
+    // The whole path, with a real repository. The cloned target names a
+    // provider emb does not have, which stops the run right after the resolve
+    // and puts a value only the clone holds into the message.
+    test('clones the source, then resolves the target in it', () async {
+      final origin = Directory(p.join(tmp.path, 'origin', 'embedder'))
+        ..createSync(recursive: true);
+      writeEmbedder(origin, provider: 'only-in-the-clone');
+      Future<void> git(List<String> args) async {
+        final r = await Process.run('git', [
+          '-c',
+          'user.name=t',
+          '-c',
+          'user.email=t@example.invalid',
+          '-c',
+          'init.defaultBranch=main',
+          ...args,
+        ], workingDirectory: origin.path);
+        expect(r.exitCode, 0, reason: '${r.stderr}');
+      }
+
+      await git(['init', '-q']);
+      await git(['add', '-A']);
+      await git(['commit', '-q', '-m', 'init']);
+
+      final f = manifest(origin.path);
+      expect(await cross(['--target', 'pi', f.path]), ExitCode.usage.code);
+      expect(logger.errors.toString(), contains('only-in-the-clone'));
+      expect(
+        File(
+          p.join(ws.path, 'app', 'embedder', '.emb', 'rpi.emb.yaml'),
+        ).existsSync(),
+        isTrue,
+      );
+    });
+  });
+
   // A manifest whose cross: block defines several platforms via cross.targets.
   String targetsManifest() =>
       'id: multi\ntype: app\ncross:\n  provider: arm-gnu\n'

@@ -855,6 +855,228 @@ cross:
         throwsA(isA<CrossProjectException>()),
       );
     });
+
+    // `extends: 'source#<target>'`: the base is in the embedder cross.source
+    // clones, wherever that ends up. The manifest names no path to it.
+    group('source#<target>', () {
+      late Directory checkout;
+      late File app;
+
+      setUp(() {
+        checkout = Directory(p.join(tmp.path, 'elsewhere', 'embedder'));
+        Directory(p.join(checkout.path, '.emb')).createSync(recursive: true);
+        File(p.join(checkout.path, '.emb', 'rpi.emb.yaml')).writeAsStringSync(
+          '''
+id: embedder
+cross:
+  targets:
+    rpi5-bookworm:
+      extends: rpi5-bookworm
+      backends:
+        drm-kms-egl: {BUILD_BACKEND_DRM_KMS_EGL: 'ON'}
+''',
+        );
+        app = File(p.join(tmp.path, 'app.emb.yaml'))
+          ..writeAsStringSync('''
+id: myapp
+cross:
+  source: {uri: https://example.invalid/embedder.git}
+  targets:
+    pi:
+      extends: 'source#rpi5-bookworm'
+      defines: {DISABLE_PLUGINS: 'ON'}
+    other:
+      extends: 'source#rpi5-bookworm'
+    plain:
+      extends: rpi5-trixie
+''');
+      });
+
+      CrossProjectResolver resolver() =>
+          CrossProjectResolver(const ManifestLoader(), boards);
+
+      test('resolves against the checkout it is given', () {
+        final project = resolver().resolve(
+          app.path,
+          sourceDirs: {'pi': checkout.path, 'other': checkout.path},
+        )!;
+        final cross = project.targets['pi']!.cross;
+        // The board, through the embedder's project layer.
+        expect(cross['toolchain_version'], '12.3.rel1');
+        expect((cross['backends'] as Map).keys, ['drm-kms-egl']);
+        expect((cross['defines'] as Map)['DISABLE_PLUGINS'], 'ON');
+        expect(cross.containsKey('extends'), isFalse);
+        // The source is still there for the build to clone.
+        expect((cross['source'] as Map)['uri'], contains('embedder.git'));
+      });
+
+      test('throws without a checkout, naming who fetches one', () {
+        expect(
+          () => resolver().resolve(app.path),
+          throwsA(
+            isA<CrossProjectException>().having(
+              (e) => e.message,
+              'message',
+              allOf(contains('source#rpi5-bookworm'), contains('emb cross')),
+            ),
+          ),
+        );
+      });
+
+      test('a checkout is per target', () {
+        final project = resolver().resolve(
+          app.path,
+          deferExtends: true,
+          sourceDirs: {'pi': checkout.path},
+        )!;
+        expect(project.targets.keys, ['pi', 'plain']);
+        expect(project.unresolved.keys, ['other']);
+      });
+
+      test('needs cross.source, and says how to name a directory', () {
+        app.writeAsStringSync('''
+id: myapp
+cross:
+  targets:
+    pi: {extends: 'source#rpi5-bookworm'}
+''');
+        expect(
+          () => resolver().resolve(app.path, sourceDirs: {'pi': checkout.path}),
+          throwsA(
+            isA<CrossProjectException>().having(
+              (e) => e.message,
+              'message',
+              allOf(
+                contains('declares none'),
+                contains('./source#rpi5-bookworm'),
+              ),
+            ),
+          ),
+        );
+      });
+
+      test('./source#<target> is still a directory called source', () {
+        final dir = Directory(p.join(tmp.path, 'source', '.emb'))
+          ..createSync(recursive: true);
+        File(p.join(dir.path, 'x.emb.yaml')).writeAsStringSync('''
+id: local-source
+cross:
+  targets:
+    rpi5-bookworm: {extends: rpi5-trixie}
+''');
+        app.writeAsStringSync('''
+id: myapp
+cross:
+  source: {uri: https://example.invalid/embedder.git}
+  targets:
+    pi: {extends: './source#rpi5-bookworm'}
+''');
+        // The checkout is offered and not used: the path form wins.
+        final project = resolver().resolve(
+          app.path,
+          sourceDirs: {'pi': checkout.path},
+        )!;
+        expect(project.targets['pi']!.cross['toolchain_version'], '15.2.rel1');
+      });
+    });
+
+    // `emb cross` asks for this, so one target that cannot resolve does not
+    // stop another from building.
+    group('deferExtends', () {
+      late File app;
+      setUp(() {
+        app = File(p.join(tmp.path, 'app.emb.yaml'))
+          ..writeAsStringSync('''
+id: myapp
+cross:
+  defines: {SHARED: '1'}
+  targets:
+    good: {extends: rpi5-bookworm}
+    typo: {extends: rpi5-bookwrm}
+    cloned:
+      source: {uri: https://example.invalid/embedder.git}
+      extends: 'workspace/app/embedder#rpi5-bookworm'
+''');
+      });
+
+      CrossProject resolve() => CrossProjectResolver(
+        const ManifestLoader(),
+        boards,
+      ).resolve(app.path, deferExtends: true)!;
+
+      test('sets aside the targets that do not resolve', () {
+        final project = resolve();
+        expect(project.targets.keys, ['good']);
+        expect(project.unresolved.keys, ['typo', 'cloned']);
+        expect(project.nativeCross['defines'], {'SHARED': '1'});
+        expect(project.selectTarget('good'), isNotNull);
+        expect(project.selectTarget('typo'), isNull);
+      });
+
+      test('records why, and the block before extends', () {
+        final project = resolve();
+        expect(project.unresolved['typo']!.message, contains('rpi5-bookwrm'));
+        final cloned = project.unresolved['cloned']!;
+        expect(cloned.message, contains('no emb project'));
+        expect(cloned.sourcePath, app.path);
+        // Shared fields and the target's own, extends still on it.
+        expect(cloned.block['defines'], {'SHARED': '1'});
+        expect((cloned.block['source'] as Map)['uri'], contains('embedder'));
+        expect(cloned.block['extends'], contains('#rpi5-bookworm'));
+      });
+
+      test('is off by default', () {
+        expect(
+          () => CrossProjectResolver(
+            const ManifestLoader(),
+            boards,
+          ).resolve(app.path),
+          throwsA(isA<CrossProjectException>()),
+        );
+      });
+
+      test('a flat manifest that does not resolve has no targets', () {
+        app.writeAsStringSync('''
+id: flat
+cross:
+  extends: no-such-board
+''');
+        final project = resolve();
+        expect(project.targets, isEmpty);
+        expect(project.unresolved.keys, ['flat']);
+        expect(project.defaultTarget, 'flat');
+      });
+
+      test('still rejects a name two .emb/ files declare', () {
+        final emb = Directory(p.join(tmp.path, 'dup', '.emb'))
+          ..createSync(recursive: true);
+        File(p.join(emb.path, 'a.emb.yaml')).writeAsStringSync('''
+id: a
+cross:
+  targets:
+    same: {extends: no-such-board}
+''');
+        File(p.join(emb.path, 'b.emb.yaml')).writeAsStringSync('''
+id: b
+cross:
+  targets:
+    same: {extends: no-such-board}
+''');
+        expect(
+          () => CrossProjectResolver(
+            const ManifestLoader(),
+            boards,
+          ).resolve(emb.parent.path, deferExtends: true),
+          throwsA(
+            isA<CrossProjectException>().having(
+              (e) => e.message,
+              'message',
+              contains('Duplicate target "same"'),
+            ),
+          ),
+        );
+      });
+    });
   });
 
   // The bug this layer exists to fix: an AOT-compiled `emb` carries no package

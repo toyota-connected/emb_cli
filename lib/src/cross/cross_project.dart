@@ -52,6 +52,34 @@ class CrossTargetRef {
   final String? sourcePath;
 }
 
+/// A target whose `extends:` could not be resolved yet.
+///
+/// Only produced when the caller asks for it (`deferExtends`): `emb cross`
+/// does, so one target that cannot resolve does not stop another from
+/// building, and so it can fetch `cross.source` and resolve again.
+class UnresolvedTarget {
+  UnresolvedTarget({
+    required this.name,
+    required this.block,
+    required this.message,
+    this.sourcePath,
+  });
+
+  /// The `--target` value that selects this entry.
+  final String name;
+
+  /// The target's `cross:` block before `extends:` is applied: the shared
+  /// fields with the target's override merged in. `source` is read from here,
+  /// since it has to be known before the base it extends can be.
+  final Map<String, dynamic> block;
+
+  /// Why it did not resolve.
+  final String message;
+
+  /// The file this target was declared in.
+  final String? sourcePath;
+}
+
 /// A project's resolved cross targets: the union across every `.emb/` file (or
 /// the single manifest), plus the shared `cross:` block a native `local` build
 /// uses.
@@ -64,7 +92,13 @@ class CrossProject {
     this.defaultTarget,
     this.workspaceDir,
     this.flutterVersion,
+    this.unresolved = const {},
   });
+
+  /// Targets whose `extends:` did not resolve, keyed by name. Empty unless
+  /// the project was resolved with `deferExtends`; without it the first such
+  /// target throws.
+  final Map<String, UnresolvedTarget> unresolved;
 
   /// The project identifier (single manifest's id, or the `.emb/` base's),
   /// used as the fallback `.deb` package name.
@@ -132,6 +166,11 @@ class CrossProject {
   }
 }
 
+/// How one [CrossProjectResolver.resolve] call treats `extends:`.
+typedef _ResolveOptions = ({bool defer, Map<String, String> sourceDirs});
+
+const _ResolveOptions _strict = (defer: false, sourceDirs: {});
+
 /// Resolves a project directory, an explicit manifest file, or a bare `.emb/`
 /// directory into a [CrossProject].
 class CrossProjectResolver {
@@ -166,22 +205,37 @@ class CrossProjectResolver {
   /// Target names reserved for the built-in native build.
   static const _reserved = {'local', 'host'};
 
+  /// The `<dir>` of an `extends: 'source#<target>'` reference: the checkout
+  /// of the extending target's own `cross.source`, wherever it was cloned.
+  static const sourceRef = 'source';
+
   /// Resolve [input] into a [CrossProject], or null if no manifest is found.
-  CrossProject? resolve(String input) {
+  ///
+  /// With [deferExtends], a target whose `extends:` fails is left out of
+  /// [CrossProject.targets] and recorded in [CrossProject.unresolved], where
+  /// otherwise it throws. [sourceDirs] maps a target name to the checkout of
+  /// its `cross.source`, which is what `extends: 'source#<target>'` resolves
+  /// against; a target with that form and no entry does not resolve.
+  CrossProject? resolve(
+    String input, {
+    bool deferExtends = false,
+    Map<String, String> sourceDirs = const {},
+  }) {
+    final opts = (defer: deferExtends, sourceDirs: sourceDirs);
     final type = FileSystemEntity.typeSync(input);
     if (type == FileSystemEntityType.file) {
       final m = _loader.loadManifestFile(File(input));
       if (m == null) return null;
-      return _single(m.raw, fallback: m.id, sourcePath: input);
+      return _single(m.raw, fallback: m.id, sourcePath: input, opts: opts);
     }
 
     final embDir = Directory(p.join(input, '.emb'));
-    if (embDir.existsSync()) return _fromEmbDir(embDir);
+    if (embDir.existsSync()) return _fromEmbDir(embDir, opts);
 
     // Back-compat: a package directory with an emb.yaml / pubspec(emb:).
     final m = _loader.loadPackageDir(Directory(input));
     if (m == null) return null;
-    return _single(m.raw, fallback: m.id, sourcePath: m.sourcePath);
+    return _single(m.raw, fallback: m.id, sourcePath: m.sourcePath, opts: opts);
   }
 
   /// Merge an app-owned manifest layer over a project target's resolved
@@ -262,11 +316,13 @@ class CrossProjectResolver {
     Map<String, dynamic> manifest, {
     required String fallback,
     String? sourcePath,
+    _ResolveOptions opts = _strict,
   }) {
     final cross = _crossOf(manifest);
     final platform = _platformOf(manifest);
     final name = (platform['name'] as String?) ?? fallback;
     final multi = _hasTargets(cross);
+    final unresolved = <String, UnresolvedTarget>{};
     final targets = _expand(
       cross,
       fallbackName: name,
@@ -274,10 +330,13 @@ class CrossProjectResolver {
       supportedArchs: _supportedArchs(manifest),
       sourcePath: sourcePath,
       family: multi ? name : null,
+      opts: opts,
+      unresolved: unresolved,
     );
     return CrossProject(
       id: fallback,
       targets: targets,
+      unresolved: unresolved,
       nativeCross: _withoutTargets(cross),
       nativeSourcePath: sourcePath,
       // A flat file's single target is the default; a cross.targets file
@@ -288,7 +347,7 @@ class CrossProjectResolver {
     );
   }
 
-  CrossProject _fromEmbDir(Directory embDir) {
+  CrossProject _fromEmbDir(Directory embDir, [_ResolveOptions opts = _strict]) {
     final baseFile = File(p.join(embDir.path, baseFileName));
     final baseManifest = baseFile.existsSync()
         ? (_loader.loadManifestFile(baseFile)?.raw ?? const {})
@@ -305,6 +364,9 @@ class CrossProjectResolver {
           ..sort((a, b) => a.path.compareTo(b.path));
 
     final out = <String, CrossTargetRef>{};
+    final unresolved = <String, UnresolvedTarget>{};
+    // Every name seen so far and the file that declared it, resolved or not.
+    final declaredIn = <String, String>{};
     for (final file in files) {
       final fm = _loader.loadManifestFile(file)?.raw;
       if (fm == null) continue;
@@ -322,6 +384,7 @@ class CrossProjectResolver {
           (platform['name'] as String?) ??
           (merged['id'] as String?) ??
           p.basename(file.path).split('.').first;
+      final pending = <String, UnresolvedTarget>{};
       final refs = _expand(
         cross,
         fallbackName: fallback,
@@ -330,22 +393,26 @@ class CrossProjectResolver {
         sourcePath: file.path,
         // A multi-target file is a family; label its variants with [fallback].
         family: _hasTargets(cross) ? fallback : null,
+        opts: opts,
+        unresolved: pending,
       );
-      for (final entry in refs.entries) {
-        final existing = out[entry.key];
+      for (final name in [...refs.keys, ...pending.keys]) {
+        final existing = declaredIn[name];
         if (existing != null) {
           throw CrossProjectException(
-            'Duplicate target "${entry.key}" in '
-            '${p.basename(file.path)} and '
-            '${p.basename(existing.sourcePath ?? "?")}.',
+            'Duplicate target "$name" in '
+            '${p.basename(file.path)} and ${p.basename(existing)}.',
           );
         }
-        out[entry.key] = entry.value;
+        declaredIn[name] = file.path;
       }
+      out.addAll(refs);
+      unresolved.addAll(pending);
     }
     return CrossProject(
       id: (baseManifest['id'] as String?) ?? p.basename(embDir.parent.path),
       targets: out,
+      unresolved: unresolved,
       nativeCross: _withoutTargets(baseCross),
       nativeSourcePath: baseFile.existsSync() ? baseFile.path : null,
       workspaceDir: _workspaceOf(
@@ -378,12 +445,36 @@ class CrossProjectResolver {
     List<String> supportedArchs = const [],
     String? sourcePath,
     String? family,
+    _ResolveOptions opts = _strict,
+    Map<String, UnresolvedTarget>? unresolved,
   }) {
+    // Null when the target is deferred: recorded in [unresolved], not thrown.
+    Map<String, dynamic>? apply(String name, Map<String, dynamic> block) {
+      try {
+        return _applyExtends(
+          block,
+          sourcePath,
+          const {},
+          opts.sourceDirs[name],
+        );
+      } on CrossProjectException catch (e) {
+        if (!opts.defer || unresolved == null) rethrow;
+        unresolved[name] = UnresolvedTarget(
+          name: name,
+          block: block,
+          message: e.message,
+          sourcePath: sourcePath,
+        );
+        return null;
+      }
+    }
+
     final shared = _withoutTargets(cross);
     final targets = cross['targets'];
     if (targets is! Map || targets.isEmpty) {
       _checkName(fallbackName, sourcePath);
-      final resolved = _applyExtends(shared, sourcePath);
+      final resolved = apply(fallbackName, shared);
+      if (resolved == null) return {};
       return {
         fallbackName: CrossTargetRef(
           name: fallbackName,
@@ -401,10 +492,8 @@ class CrossProjectResolver {
       final override = entry.value is Map
           ? Map<String, dynamic>.from(entry.value as Map)
           : const <String, dynamic>{};
-      final merged = _applyExtends(
-        _mergeSharedOverride(shared, override),
-        sourcePath,
-      );
+      final merged = apply(name, _mergeSharedOverride(shared, override));
+      if (merged == null) continue;
       out[name] = CrossTargetRef(
         name: name,
         cross: merged,
@@ -464,18 +553,22 @@ class CrossProjectResolver {
   };
 
   /// Resolve a `cross.extends` reference: deep-merge [cross] (the derived
-  /// project/app layer) over the resolved base it names. Two forms:
+  /// project/app layer) over the resolved base it names. Three forms:
   ///   - `<board>`        — a target in emb's shipped board library (hardware).
   ///   - `<dir>#<target>` — a target in another emb project at `<dir>` (the
   ///                         project layer; e.g. an app extending an
   ///                         ivi-homescreen target). `<dir>` is relative to the
   ///                         extending manifest's project root.
+  ///   - `source#<target>` — a target in the project this block's own
+  ///                         `cross.source` clones. [sourceDir] is that
+  ///                         checkout; the manifest names no path to it.
   /// Chains resolve recursively (app -> project -> board). No-op without
   /// `extends`.
   Map<String, dynamic> _applyExtends(
     Map<String, dynamic> cross,
     String? sourcePath, [
     Set<String> seen = const {},
+    String? sourceDir,
   ]) {
     final ext = cross['extends'];
     if (ext == null) return cross;
@@ -485,9 +578,30 @@ class CrossProjectResolver {
         'extends: cycle through "$ref" (in ${sourcePath ?? "manifest"}).',
       );
     }
-    final base = ref.contains('#')
-        ? _projectExtendsBase(ref, sourcePath)
-        : _boardExtendsBase(ref, sourcePath, seen);
+    final Map<String, dynamic> base;
+    if (!ref.contains('#')) {
+      base = _boardExtendsBase(ref, sourcePath, seen);
+    } else if (ref.startsWith('$sourceRef#')) {
+      final where = sourcePath ?? 'manifest';
+      final source = cross['source'];
+      if (source is! Map || (source['uri']?.toString() ?? '').isEmpty) {
+        throw CrossProjectException(
+          'extends: "$ref" names the checkout of cross.source, and this '
+          'target declares none (in $where). For a directory called '
+          '"$sourceRef", write "./$ref".',
+        );
+      }
+      if (sourceDir == null) {
+        throw CrossProjectException(
+          'extends: "$ref" resolves against the checkout of cross.source '
+          '(${source['uri']}), which is not fetched (in $where). '
+          '`emb cross --prepare` or `--build` fetches it.',
+        );
+      }
+      base = _projectExtendsBase(ref, sourcePath, dir: sourceDir);
+    } else {
+      base = _projectExtendsBase(ref, sourcePath);
+    }
     final derived = {...cross}..remove('extends');
     return _mergeCross(base, derived);
   }
@@ -558,12 +672,19 @@ class CrossProjectResolver {
   /// The resolved `cross:` of `<dir>#<target>` — a target from another emb
   /// project (its `<dir>`, relative to the extending manifest's project root).
   /// That project's own `extends` chain is applied by [resolve].
-  Map<String, dynamic> _projectExtendsBase(String ref, String? sourcePath) {
+  ///
+  /// [dir] overrides where the project is: the `source#<target>` form passes
+  /// the checkout of `cross.source`.
+  Map<String, dynamic> _projectExtendsBase(
+    String ref,
+    String? sourcePath, {
+    String? dir,
+  }) {
     final i = ref.lastIndexOf('#');
     final dirRef = ref.substring(0, i);
     final name = ref.substring(i + 1);
     final root = _projectRootOf(sourcePath);
-    final dir = p.normalize(p.join(root, dirRef));
+    dir ??= p.normalize(p.join(root, dirRef));
     final abs = p.absolute(dir);
     if (!_resolvingProjects.add(abs)) {
       throw CrossProjectException(
