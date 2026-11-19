@@ -666,8 +666,11 @@ class CrossCommand extends Command<int> {
     final building = args['build'] == true && !inspecting;
     final compiling = building || (args['prepare'] == true && !inspecting);
 
+    // --fetch-only clones what the build would: an offline build reuses a
+    // checkout and cannot make one.
+    final fetching = args['fetch-only'] == true && !inspecting;
     var appDirArg = args['app'] as String?;
-    final declaredApp = building && appDirArg == null
+    final declaredApp = (building || fetching) && appDirArg == null
         ? CrossTarget.repoFrom(selection.cross['app'])
         : null;
 
@@ -774,9 +777,7 @@ class CrossCommand extends Command<int> {
       return ExitCode.usage.code;
     }
 
-    // --fetch-only clones it too: an offline build reuses the checkout and
-    // cannot make one.
-    if (compiling || (args['fetch-only'] == true && !inspecting)) {
+    if (compiling || fetching) {
       final declaredSource = CrossTarget.repoFrom(selection.cross['source']);
       if (declaredSource != null) {
         // Already synced when resolving `extends:` needed the checkout.
@@ -794,29 +795,28 @@ class CrossCommand extends Command<int> {
       }
     }
 
+    if (building &&
+        !await _ensureFlutterSdk(project, workspace, host, offline)) {
+      return ExitCode.software.code;
+    }
+
+    if (declaredApp != null) {
+      final dir = await _syncRepo(
+        declaredApp,
+        workspace,
+        what: 'app source',
+        sourcePath: selection.sourcePath,
+        offline: offline,
+      );
+      if (dir == null) return ExitCode.software.code;
+      // `pubspec_path` addresses an app inside a larger repo.
+      final sub = declaredApp.pubspecPath;
+      appDirArg = sub == null || sub.isEmpty ? dir.path : p.join(dir.path, sub);
+      resolved = resolveTarget();
+      if (resolved == null) return ExitCode.usage.code;
+    }
+
     if (building) {
-      if (!await _ensureFlutterSdk(project, workspace, host, offline)) {
-        return ExitCode.software.code;
-      }
-
-      if (declaredApp != null) {
-        final dir = await _syncRepo(
-          declaredApp,
-          workspace,
-          what: 'app source',
-          sourcePath: selection.sourcePath,
-          offline: offline,
-        );
-        if (dir == null) return ExitCode.software.code;
-        // `pubspec_path` addresses an app inside a larger repo.
-        final sub = declaredApp.pubspecPath;
-        appDirArg = sub == null || sub.isEmpty
-            ? dir.path
-            : p.join(dir.path, sub);
-        resolved = resolveTarget();
-        if (resolved == null) return ExitCode.usage.code;
-      }
-
       final appDir = appDirArg;
       if (appDir != null &&
           !await _ensureAppResolved(Directory(appDir), workspace, offline)) {

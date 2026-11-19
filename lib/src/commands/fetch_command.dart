@@ -12,11 +12,13 @@ import 'package:emb_cli/src/cross/emb_lock.dart';
 import 'package:emb_cli/src/cross/lock_sync.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/cross/source_checkout.dart';
+import 'package:emb_cli/src/flutter/flutter_sdk.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/host/preflight.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
 import 'package:emb_cli/src/step_reporter.dart';
 import 'package:emb_cli/src/verbosity.dart';
+import 'package:emb_cli/src/workspace/workspace.dart';
 import 'package:mason_logger/mason_logger.dart';
 import 'package:path/path.dart' as p;
 
@@ -34,8 +36,10 @@ class FetchCommand extends Command<int> {
     HostInfo? host,
     ManifestLoader loader = const ManifestLoader(),
     ProcessRunner? processRunner,
+    ToolProbe toolProbe = whichProbe,
   }) : _logger = logger,
        _host = host,
+       _toolProbe = toolProbe,
        _project = CrossProjectResolver(loader),
        _injectedRunner = processRunner {
     argParser
@@ -56,9 +60,10 @@ class FetchCommand extends Command<int> {
       ..addOption(
         'app',
         help:
-            "Also prefetch this Flutter app's pub packages "
+            "Prefetch this Flutter app's pub packages "
             '(`flutter pub get --enforce-lockfile`), so an offline build has '
-            'them in PUB_CACHE.',
+            'them in PUB_CACHE. Replaces a declared cross.app, which is '
+            'otherwise cloned and prefetched.',
       )
       ..addFlag(
         'update-lock',
@@ -78,10 +83,11 @@ class FetchCommand extends Command<int> {
   final HostInfo? _host;
   final CrossProjectResolver _project;
   final ProcessRunner? _injectedRunner;
+  final ToolProbe _toolProbe;
 
   late final ProcessRunner _runProcess =
       _injectedRunner ?? makeProcessRunner(verbosity: embVerbosity);
-  late final Preflight _preflight = Preflight(_logger);
+  late final Preflight _preflight = Preflight(_logger, probe: _toolProbe);
   late final LockSync _lockSync = LockSync(
     logger: _logger,
     runProcess: _runProcess,
@@ -184,7 +190,42 @@ class FetchCommand extends Command<int> {
         FileSystemEntity.typeSync(inputPath) == FileSystemEntityType.file
         ? p.dirname(p.absolute(inputPath))
         : p.absolute(inputPath);
-    final appArg = args['app'] as String?;
+
+    // An offline build reuses the embedder checkout and cannot make one, so
+    // a declared cross.source is part of what there is to fetch.
+    final declaredSource = CrossTarget.repoFrom(selection.cross['source']);
+    if (declaredSource != null && source == null) {
+      source = await syncSourceRepo(
+        declaredSource,
+        workspace,
+        logger: _logger,
+        what: 'embedder source',
+        sourcePath: selection.sourcePath,
+        offline: false,
+      );
+      if (source == null) return ExitCode.software.code;
+    }
+
+    // The same goes for a declared cross.app, which `--app` replaces here as
+    // it does in `emb cross`.
+    var appArg = args['app'] as String?;
+    final declaredApp = appArg == null
+        ? CrossTarget.repoFrom(selection.cross['app'])
+        : null;
+    if (declaredApp != null) {
+      final dir = await syncSourceRepo(
+        declaredApp,
+        workspace,
+        logger: _logger,
+        what: 'app source',
+        sourcePath: selection.sourcePath,
+        offline: false,
+      );
+      if (dir == null) return ExitCode.software.code;
+      // `pubspec_path` addresses an app inside a larger repo.
+      final sub = declaredApp.pubspecPath;
+      appArg = sub == null || sub.isEmpty ? dir.path : p.join(dir.path, sub);
+    }
     final appDir = appArg == null
         ? null
         : FileSystemEntity.typeSync(appArg) == FileSystemEntityType.file
@@ -207,21 +248,6 @@ class FetchCommand extends Command<int> {
     }
 
     final host = _host ?? HostInfo.detect();
-
-    // An offline build reuses the embedder checkout and cannot make one, so
-    // a declared cross.source is part of what there is to fetch.
-    final declaredSource = CrossTarget.repoFrom(selection.cross['source']);
-    if (declaredSource != null && source == null) {
-      source = await syncSourceRepo(
-        declaredSource,
-        workspace,
-        logger: _logger,
-        what: 'embedder source',
-        sourcePath: selection.sourcePath,
-        offline: false,
-      );
-      if (source == null) return ExitCode.software.code;
-    }
 
     // A cross target resolves a toolchain + sysroot into the store; a native
     // (`local`/`host`) build has none, so skip straight to the cargo/pub
@@ -320,7 +346,12 @@ class FetchCommand extends Command<int> {
     // PUB_CACHE. `--enforce-lockfile` fails rather than silently updating, and
     // populates the app's `.dart_tool` for the later build.
     if (appArg case final appPath?) {
-      final rc = await _prefetchPub(appPath, host);
+      final rc = await _prefetchPub(
+        appPath,
+        host,
+        workspace,
+        declared: declaredApp != null,
+      );
       if (rc != ExitCode.success.code) return rc;
     }
 
@@ -331,16 +362,52 @@ class FetchCommand extends Command<int> {
     return ExitCode.success.code;
   }
 
-  Future<int> _prefetchPub(String appPath, HostInfo host) async {
+  /// `flutter pub get` in [appPath], into the store's `PUB_CACHE`.
+  ///
+  /// [declared] is an app the manifest named rather than one passed with
+  /// `--app`. Nobody asked for its packages on this run, so what `--app`
+  /// treats as an error (no `flutter`, no `pubspec.lock`) is a warning there:
+  /// a fetch that worked before the app was cloned still does.
+  Future<int> _prefetchPub(
+    String appPath,
+    HostInfo host,
+    Workspace workspace, {
+    required bool declared,
+  }) async {
     final appDir = Directory(appPath);
     if (!File(p.join(appDir.path, 'pubspec.yaml')).existsSync()) {
       _logger.err('no pubspec.yaml in $appPath (is it a Flutter app?)');
       return ExitCode.usage.code;
     }
-    if ((await _preflight.missingTools(['flutter'])).isNotEmpty) {
+    // The workspace SDK is the one the build runs, so it resolves the packages
+    // when there is one.
+    final sdk = FlutterSdk(workspace, host: host).flutterBin;
+    final String flutter;
+    if (File(sdk).existsSync()) {
+      flutter = sdk;
+    } else if ((await _preflight.missingTools(['flutter'])).isEmpty) {
+      flutter = 'flutter';
+    } else if (declared) {
+      _logger.warn(
+        'No Flutter SDK in ${workspace.root.path} or on PATH: the pub '
+        'packages of ${appDir.path} are not fetched, and an offline build '
+        'needs them. Run "emb flutter", then fetch again.',
+      );
+      return ExitCode.success.code;
+    } else {
       _logger.err('flutter not found on PATH — cannot prefetch pub packages.');
       await _preflight.logInstallHint(host, ['flutter']);
       return ExitCode.unavailable.code;
+    }
+    // `--enforce-lockfile` has nothing to enforce without a lockfile, and
+    // fails.
+    final locked =
+        !declared || File(p.join(appDir.path, 'pubspec.lock')).existsSync();
+    if (!locked) {
+      _logger.warn(
+        '${appDir.path} has no pubspec.lock: its packages are resolved now '
+        'and not pinned.',
+      );
     }
     // Into the store-rooted PUB_CACHE, so the packages are part of the same
     // closure the escrow archives and an offline build reads from.
@@ -350,8 +417,8 @@ class FetchCommand extends Command<int> {
       'Prefetching pub packages (${p.basename(appDir.path)})',
     );
     final r = await _runProcess(
-      'flutter',
-      ['pub', 'get', '--enforce-lockfile'],
+      flutter,
+      ['pub', 'get', if (locked) '--enforce-lockfile'],
       workingDirectory: appDir.path,
       environment: {'PUB_CACHE': pubCache.path},
       output: ProcessOutputMode.stream,

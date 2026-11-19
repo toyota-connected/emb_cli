@@ -714,6 +714,58 @@ void main() {
       expect(Directory(p.join(ws.path, 'app')).existsSync(), isTrue);
     });
 
+    // The app is cloned by the same rule: `--target local` has no toolchain
+    // to fetch, so the run gets as far as the clone and no further.
+    test('--fetch-only clones a declared cross.app', () async {
+      final origin = Directory(p.join(tmp.path, 'origin', 'my_app'))
+        ..createSync(recursive: true);
+      File(p.join(origin.path, 'pubspec.yaml')).writeAsStringSync('name: a\n');
+      for (final args in [
+        ['init', '-q'],
+        ['add', '-A'],
+        ['commit', '-q', '-m', 'init'],
+      ]) {
+        final r = await Process.run('git', [
+          '-c',
+          'user.name=t',
+          '-c',
+          'user.email=t@example.invalid',
+          '-c',
+          'init.defaultBranch=main',
+          ...args,
+        ], workingDirectory: origin.path);
+        expect(r.exitCode, 0, reason: '${r.stderr}');
+      }
+      final f = File(p.join(tmp.path, 'app.emb.yaml'))
+        ..writeAsStringSync(
+          'id: app\ntype: app\ncross:\n  provider: arm-gnu\n'
+          '  app: { uri: ${origin.path} }\n',
+        );
+      final clone = File(p.join(ws.path, 'app', 'my_app', 'pubspec.yaml'));
+
+      // Reporting modes still fetch nothing.
+      await cross(['--fetch-only', '--dry-run', '--target', 'local', f.path]);
+      expect(clone.existsSync(), isFalse);
+
+      expect(
+        await cross(['--fetch-only', '--target', 'local', f.path]),
+        ExitCode.success.code,
+      );
+      expect(clone.existsSync(), isTrue);
+    });
+
+    test('--fetch-only fails when cross.app cannot be cloned', () async {
+      final f = File(p.join(tmp.path, 'app.emb.yaml'))
+        ..writeAsStringSync(
+          'id: app\ntype: app\ncross:\n  provider: arm-gnu\n'
+          '  app: { uri: ${p.join(tmp.path, 'no-such-repo')} }\n',
+        );
+      expect(
+        await cross(['--fetch-only', '--target', 'local', f.path]),
+        ExitCode.software.code,
+      );
+    });
+
     test('a target with no cross.source reports its own error', () async {
       final f = File(p.join(tmp.path, 'app.emb.yaml'))
         ..writeAsStringSync(
