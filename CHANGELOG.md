@@ -114,6 +114,31 @@ version is unaffected.
   `GITHUB_TOKEN` via Docker `-e` flags (visible in `ps aux` on shared
   workstations). Prefer `~/.netrc` when possible.
 
+- feat(exec): the container gets a TTY and stdin when emb has them (#297,
+  fixes #293). The container was run with neither `-i` nor `-t`, so inside it
+  stdout was a pipe and stdin was closed: the inner emb, flutter, ninja and git
+  ran without color or progress, and anything that prompted read EOF. `-i -t`
+  are now passed together, and only when stdin, stdout and stderr are all
+  terminals and emb is the foreground job. Redirected, piped, in the
+  background or in CI, neither is passed and the run is as before.
+
+- fix(exec): interrupting emb stops the container (#299, fixes #298). Ctrl-C
+  on a containerized run with no TTY killed the host emb and left the
+  container building: the signal reached the inner emb as PID 1, and the
+  kernel drops a signal PID 1 has no handler for. The inner emb now exits 130
+  on SIGINT and 143 on SIGTERM when it is PID 1. The host emb passes both on
+  to the container client and waits for it, so `kill <emb pid>` and a CI
+  cancel reach the container too; a second signal kills the client and stops
+  waiting. A client that died of a signal is reported as 128 + n. An image
+  whose emb predates this still ignores the first signal, so a container
+  image that carries its own emb has to be rebuilt to get it.
+
+- fix(aot): a relative `--gen-snapshot` or `--glibc-sysroot` named nothing
+  inside the container (#300). The path was forwarded as typed while its
+  mount was made at the absolute path, and the inner emb runs in the image's
+  working directory. Both are made absolute before forwarding and mounting.
+  The native path is unchanged.
+
 **Cross.**
 
 - feat(cross): `extends: 'source#<target>'` extends a target in the project
@@ -245,6 +270,24 @@ version is unaffected.
   treated as unknown rather than as defining none, so an unversioned library
   does not turn every requirement into a warning. The arch check stays a hard
   skip, because a wrong-arch library is never usable.
+
+**Tests and CI.**
+
+- ci(cross): an `app bundle (--app, native)` job builds an embedder and an
+  app with `--app` on every PR (#302, refs #272). No cross job passed `--app`,
+  so every cell stopped at the embedder and the runnable bundle path never
+  ran: engine fetch, AOT, bundle assembly, module build and staging, the
+  bundle audit, the tarball. `examples/cross/app-bundle/` is the smallest
+  thing that goes through all of it: a stand-in embedder that checks the
+  bundle is complete and loads the app's native module, and a Flutter app
+  with that module. Built with `--target local`, from an empty workspace.
+
+- test(aot): `emb aot` had two tests and now has 22, over the container path
+  and the native path (#300, fixes #287).
+
+- test: `emb engine` had no tests and now has 31, and the `EMB_CACHE_DIR`
+  forwarding into the container is asserted where removing it used to leave
+  the suite green (#301, fixes #286 and #288).
 
 **Docs.**
 
