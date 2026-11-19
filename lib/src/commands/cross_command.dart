@@ -498,7 +498,19 @@ class CrossCommand extends Command<int> {
     ProcessRunner? runProcess,
   }) =>
       _aotFactoryInjected?.call(ws, host) ??
-      AotBuilder(ws, host: host, runProcess: runProcess ?? _runProcess);
+      AotBuilder(
+        ws,
+        host: host,
+        runProcess: runProcess ?? _runProcess,
+        engineFactory: _engine,
+      );
+
+  /// The engine artifacts for [ws]. An offline build gets ones that serve
+  /// the shared store and download nothing: the engine SDK is emb's own
+  /// fetch, which no subprocess sandbox covers.
+  EngineArtifacts _engine(Workspace ws) => _offlineMode == OfflineMode.off
+      ? _engineFactory(ws)
+      : EngineArtifacts(ws, offline: true);
 
   /// Progress reporter that draws spinners normally but plain banners at `-v`+,
   /// where a spinner would garble streamed toolchain output. Read fresh so it
@@ -2320,7 +2332,7 @@ class CrossCommand extends Command<int> {
       workspace: workspace,
       aot: _makeAot(workspace, host, runProcess: appRunner),
       bundle: _bundleFactory(workspace),
-      engine: _engineFactory(workspace),
+      engine: _engine(workspace),
       appPath: appPath,
       arch: arch,
       mode: mode,

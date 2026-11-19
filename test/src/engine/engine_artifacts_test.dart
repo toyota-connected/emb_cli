@@ -241,6 +241,54 @@ void main() {
       });
     }
 
+    // An offline build's engine is emb's own download, so no subprocess
+    // sandbox stops it: the artifacts have to refuse.
+    test('offline serves an SDK in the store and downloads nothing', () async {
+      final blob = await seedSdk('sdk', 'x');
+      final store = Store(cache);
+      final ws = Directory(p.join(tmp.path, 'ws'))..createSync();
+      EngineArtifacts offline() => EngineArtifacts(
+        Workspace(ws),
+        // A real Cas: offline, it throws rather than open a connection.
+        cas: Cas(cache, offline: true),
+        store: store,
+        offline: true,
+      );
+
+      final cold = await offline().fetch(
+        runtime: 'release',
+        arch: 'x86_64',
+        commit: 'abc123',
+      );
+      expect(cold.status, EngineFetchStatus.unavailable);
+      expect(cold.message, contains('is not cached'));
+      expect(cold.message, contains('emb fetch'));
+
+      final online = await EngineArtifacts(
+        Workspace(Directory(p.join(tmp.path, 'other'))..createSync()),
+        cas: _FakeCas(cache, blob),
+        store: store,
+      ).fetch(runtime: 'release', arch: 'x86_64', commit: 'abc123');
+      expect(online.ok, isTrue, reason: online.message);
+
+      final warm = await offline().fetch(
+        runtime: 'release',
+        arch: 'x86_64',
+        commit: 'abc123',
+      );
+      expect(warm.ok, isTrue, reason: warm.message);
+      expect(
+        File(
+          p.join(
+            ws.path,
+            '.config/flutter_workspace/flutter-engine',
+            'bundle-release-x86_64/lib/libflutter_engine.so',
+          ),
+        ).readAsStringSync(),
+        'engine-x',
+      );
+    });
+
     test('stores the SDK once and symlinks it into each workspace', () async {
       // A tiny engine SDK tarball with the gen_snapshot clang sibling layout.
       final src = Directory(p.join(tmp.path, 'sdk'))..createSync();

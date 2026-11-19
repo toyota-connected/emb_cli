@@ -50,6 +50,12 @@ fails if that does; without one it warns and carries on. `emb cross
 --fetch-only` clones both and resolves no packages. `--app` replaces the
 declared app, as before.
 
+**`emb cross --build --offline` no longer downloads the engine SDK.** It
+did, silently, when the SDK was not in the store. It now stops and names the
+mode. `emb fetch` fetches the engine for an app, for `release` unless told
+otherwise with `--mode`: a build in another mode needs `emb fetch --mode
+<mode>` first.
+
 **`emb fetch` installs the Flutter SDK a manifest pins.** With
 `flutter_version:` set and no SDK in the workspace, it clones that SDK and runs
 `flutter precache`, as `emb cross --build` does, and fails if it cannot. This is a
@@ -180,6 +186,15 @@ version is unaffected.
   checkout that is there. Both take the workspace the way `emb cross` does,
   and `emb fetch` accepts `-w`, which its documentation already listed. See
   Upgrading.
+- fix(cross): `emb cross --build --offline` and `--offline-strict` downloaded
+  the engine SDK from GitHub when it was not cached (193 MB for
+  release/x86_64). The engine is emb's own download, so the network namespace
+  that confines build subprocesses does not cover it, and the engine's
+  content store was never told the build was offline. It is now, for the
+  bundle and for the AOT step's gen_snapshot lookup, and the build stops with
+  the mode and what to run. `emb fetch` did not fetch the engine either, so
+  the download was what made a fetched build work: with an app it now fetches
+  the engine for each `--mode` (default `release`). See Upgrading.
 - fix(bundle): a profile or release bundle shipped files no AOT engine reads.
   Its assets come from a debug-mode `flutter build bundle`, and the whole
   directory was copied with only `kernel_blob.bin` removed. That left the JIT

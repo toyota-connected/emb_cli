@@ -61,6 +61,7 @@ class EngineArtifacts {
     HttpClient? httpClient,
     Cas? cas,
     Store? store,
+    this.offline = false,
   }) : _http = httpClient ?? HttpClient(),
        _casOverride = cas,
        _storeOverride = store;
@@ -68,13 +69,18 @@ class EngineArtifacts {
   final Workspace workspace;
   final HttpClient _http;
 
+  /// Never download: [fetch] serves an SDK already in the shared store and
+  /// fails for one that is not.
+  final bool offline;
+
   final Cas? _casOverride;
   final Store? _storeOverride;
 
   /// Content-addressed download cache and extracted-tree store, rooted at the
   /// shared cache dir. Built lazily; injectable for tests.
   late final Cas _cas =
-      _casOverride ?? Cas(ensureCacheDir(), httpClient: _http);
+      _casOverride ??
+      Cas(ensureCacheDir(), httpClient: _http, offline: offline);
   late final Store _store = _storeOverride ?? Store(ensureCacheDir());
 
   static const _releaseBase =
@@ -213,7 +219,11 @@ class EngineArtifacts {
         arch: arch,
         status: EngineFetchStatus.unavailable,
         url: url,
-        message: 'No published prebuilt for $runtime/$arch@$commit',
+        message: offline
+            ? 'offline: the engine SDK for $runtime/$arch@$commit is not '
+                  'cached. Run "emb fetch" (with --mode $runtime) or '
+                  '"emb engine" once online.'
+            : 'No published prebuilt for $runtime/$arch@$commit',
       );
     }
     _store.materialize(kind: 'engine', key: key, linkPath: restoreLink);

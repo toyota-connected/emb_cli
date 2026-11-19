@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/cache/cache_dir.dart';
 import 'package:emb_cli/src/cross/cargo_vendor.dart';
+import 'package:emb_cli/src/cross/cross_arch.dart';
 import 'package:emb_cli/src/cross/cross_cache.dart';
 import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_project.dart';
@@ -13,6 +14,7 @@ import 'package:emb_cli/src/cross/flutter_provision.dart';
 import 'package:emb_cli/src/cross/lock_sync.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/cross/source_checkout.dart';
+import 'package:emb_cli/src/engine/engine_artifacts.dart';
 import 'package:emb_cli/src/flutter/flutter_sdk.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/host/preflight.dart';
@@ -40,7 +42,9 @@ class FetchCommand extends Command<int> {
     ProcessRunner? processRunner,
     ToolProbe toolProbe = whichProbe,
     GitRunner sdkGitRunner = defaultGitRunner,
+    EngineArtifacts Function(Workspace ws)? engineFactory,
   }) : _logger = logger,
+       _engineFactory = engineFactory ?? EngineArtifacts.new,
        _gitRunner = sdkGitRunner,
        _host = host,
        _toolProbe = toolProbe,
@@ -69,6 +73,15 @@ class FetchCommand extends Command<int> {
             'them in PUB_CACHE. Replaces a declared cross.app, which is '
             'otherwise cloned and prefetched.',
       )
+      ..addMultiOption(
+        'mode',
+        abbr: 'm',
+        allowed: ['debug', 'profile', 'release'],
+        defaultsTo: ['release'],
+        help:
+            'Runtime mode(s) the app will be built in: the engine for each is '
+            'fetched. Match the --mode given to emb cross.',
+      )
       ..addFlag(
         'update-lock',
         negatable: false,
@@ -91,6 +104,7 @@ class FetchCommand extends Command<int> {
 
   /// Runs git for the Flutter SDK install.
   final GitRunner _gitRunner;
+  final EngineArtifacts Function(Workspace ws) _engineFactory;
 
   late final ProcessRunner _runProcess =
       _injectedRunner ?? makeProcessRunner(verbosity: embVerbosity);
@@ -275,6 +289,8 @@ class FetchCommand extends Command<int> {
     // A cross target resolves a toolchain + sysroot into the store; a native
     // (`local`/`host`) build has none, so skip straight to the cargo/pub
     // prefetch below (which an offline host build still needs).
+    // The arch the app is built for, which names its engine.
+    var engineArch = host.machineArch;
     if (selection.isNative) {
       _logger.info(
         'Native (${selection.name}) — no toolchain/sysroot to fetch.',
@@ -316,6 +332,9 @@ class FetchCommand extends Command<int> {
             : ExitCode.software.code;
       }
       progress.complete('Fetched ${provider.name} closure');
+      if (result.profile case final profile?) {
+        engineArch = archOfTriple(profile.targetTriple);
+      }
 
       // Pin what resolution produced, exactly as `emb cross` does.
       if (result.lockEntry case final resolved?) {
@@ -378,10 +397,63 @@ class FetchCommand extends Command<int> {
       if (rc != ExitCode.success.code) return rc;
     }
 
+    // The engine the bundle ships and gen_snapshot comes from is emb's own
+    // download, made by the build when it is missing: fetch it here instead.
+    if (appArg != null) {
+      final rc = await _fetchEngine(
+        workspace,
+        engineArch,
+        args['mode'] as List<String>,
+      );
+      if (rc != ExitCode.success.code) return rc;
+    }
+
     _logger.success(
       'Closure ready for "${selection.name}". Build it offline with: '
       'emb cross $inputPath --target ${selection.name} --build --offline',
     );
+    return ExitCode.success.code;
+  }
+
+  /// Put the engine SDK for each of [modes] in the shared store and stage it
+  /// in [workspace], as the build would on its first run.
+  ///
+  /// The engine is named by the commit of the workspace's Flutter SDK. With
+  /// no SDK there is no commit, and the build will not get as far as the
+  /// engine either, so that is a warning here.
+  Future<int> _fetchEngine(
+    Workspace workspace,
+    String arch,
+    List<String> modes,
+  ) async {
+    final commit = workspace.engineCommit();
+    if (commit == null) {
+      _logger.warn(
+        'No Flutter SDK in ${workspace.root.path}: the engine is not '
+        'fetched, and an offline build needs it. Pin flutter_version: or run '
+        '"emb flutter", then fetch again.',
+      );
+      return ExitCode.success.code;
+    }
+    final engine = _engineFactory(workspace);
+    try {
+      for (final mode in modes) {
+        final token = EngineArtifacts.engineArch(arch);
+        final progress = _steps.start('Fetching engine ($mode/$token)');
+        final r = await engine.fetch(
+          runtime: mode,
+          arch: token,
+          commit: commit,
+        );
+        if (!r.ok) {
+          progress.fail(r.message ?? 'engine ($mode/$token) fetch failed');
+          return ExitCode.software.code;
+        }
+        progress.complete('Engine ($mode/$token) ready');
+      }
+    } finally {
+      engine.close();
+    }
     return ExitCode.success.code;
   }
 
