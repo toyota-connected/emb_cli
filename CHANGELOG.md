@@ -282,6 +282,15 @@ version is unaffected.
   bundle is complete and loads the app's native module, and a Flutter app
   with that module. Built with `--target local`, from an empty workspace.
 
+- ci(init): an `init flatpak (generated repo, cold build)` job generates a
+  repo with `emb init flatpak` and builds it from an empty workspace with the
+  commands its README gives (#310). The unit tests only showed that the
+  output parses. The job installs the bundle, checks it holds the launcher,
+  the embedder, `libapp.so`, the engine, the metainfo, the desktop file and
+  the icon, and runs it. The embedder and app are the ones under
+  `examples/cross/app-bundle/`, served from git repositories made in the job;
+  ivi-homescreen, the default embedder, is not built there.
+
 - test(aot): `emb aot` had two tests and now has 22, over the container path
   and the native path (#300, fixes #287).
 

@@ -16,6 +16,10 @@ on:
       - "lib/src/bundle/**"
       - "lib/src/engine/**"
       - "lib/src/flutter/**"
+      # The init-flatpak job below is the only one that builds what
+      # `emb init flatpak` writes.
+      - "lib/src/init/**"
+      - "lib/src/commands/init_command.dart"
       - "examples/cross/**"
       - "pubspec.yaml"
   push:
@@ -31,6 +35,10 @@ on:
       - "lib/src/bundle/**"
       - "lib/src/engine/**"
       - "lib/src/flutter/**"
+      # The init-flatpak job below is the only one that builds what
+      # `emb init flatpak` writes.
+      - "lib/src/init/**"
+      - "lib/src/commands/init_command.dart"
       - "examples/cross/**"
       - "pubspec.yaml"
   workflow_dispatch:
@@ -155,6 +163,122 @@ jobs:
                    lib/libhello.so data/icudtl.dat; do
             echo "$listing" | grep -qE "(^|/)$f\$" || {
               echo "::error::$f is not in $tarball"; exit 1; }
+          done
+
+  # ── A repo `emb init flatpak` generated builds from nothing ──────────────
+  # The unit tests render the templates and resolve the manifest; that proves
+  # the output parses. This generates a repo with the emb under test and runs
+  # the build command its README gives, from an empty workspace: clone the
+  # embedder and the app, install the Flutter SDK, build, package. A build by
+  # hand found what no unit test showed (no icon, no description, the wrong
+  # binary packaged, a path too long for appstreamcli).
+  #
+  # The embedder and the app are the ones under examples/cross/app-bundle,
+  # served from git repositories made here: `--embedder` and `--app` take a
+  # URI, and cross.source cannot name a subdirectory of this repository.
+  # ivi-homescreen, the default embedder, is not built: it would tie this job
+  # to another repository and to the -dev packages it needs on the runner.
+  init-flatpak:
+    name: init flatpak (generated repo, cold build)
+    runs-on: ubuntu-latest
+    env:
+      # emb's default, as in emb_cli.yaml's flatpak job. Pinned so a new
+      # branch appearing on flathub does not move this job.
+      FREEDESKTOP_BRANCH: "25.08"
+      APP_ID: com.example.InitCi
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dart-lang/setup-dart@v1.8.2
+        with:
+          sdk: "stable"
+      - name: 🔧 Install build tools, flatpak and flatpak-builder
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libsystemd-dev cmake ninja-build \
+            flatpak flatpak-builder binutils
+      # As the generated workflow installs it, from this checkout: `emb` on
+      # PATH, run from the generated repo and not from the package.
+      - name: 📦 Install the emb under test
+        run: |
+          dart pub global activate --source path "$GITHUB_WORKSPACE"
+          emb --version
+      - name: 🗂️ Serve the example embedder and app from git
+        run: |
+          for name in embedder app; do
+            dir="$RUNNER_TEMP/src/$name"
+            mkdir -p "$dir"
+            cp -r "examples/cross/app-bundle/$name/." "$dir/"
+            git -C "$dir" init -q -b main
+            git -C "$dir" add -A
+            git -C "$dir" -c user.name=ci -c user.email=ci@example.invalid \
+              commit -q -m init
+          done
+      # runner.temp is not available to the job's env:, so the repo's path is
+      # spelled out where it is used.
+      - name: 🧬 Generate the repo
+        run: |
+          REPO="$RUNNER_TEMP/repo"
+          emb init flatpak "$REPO" --app-id "$APP_ID" \
+            --embedder "file://$RUNNER_TEMP/src/embedder" \
+            --embedder-bin hello-embedder \
+            --app "file://$RUNNER_TEMP/src/app" \
+            --flutter-version 3.47.9 \
+            --runtime-version "$FREEDESKTOP_BRANCH"
+          cat "$REPO"/*.emb.yaml
+      # The install lines the generated README gives, run as written.
+      - name: 🗃️ Install the runtime the README names
+        working-directory: ${{ runner.temp }}/repo
+        run: |
+          grep -E '^flatpak (remote-add|install .* org\.freedesktop\.Platform//)' \
+            README.md > install.sh
+          cat install.sh
+          test "$(wc -l < install.sh)" -eq 2 || {
+            echo "::error::expected a remote-add and an install in README.md"
+            exit 1; }
+          sed -i 's/^flatpak install /flatpak install --noninteractive /' \
+            install.sh
+          sh -e install.sh
+      # No FLUTTER_WORKSPACE: the manifest's own workspace: is what a user
+      # gets, and it starts empty.
+      - name: 🏗️ Build with the command the README gives
+        working-directory: ${{ runner.temp }}/repo
+        run: |
+          cmd=$(grep -m1 -E '^emb cross .* --target local ' README.md)
+          test -n "$cmd" || {
+            echo "::error::no native build command in README.md"; exit 1; }
+          echo "$cmd"
+          $cmd
+      - name: ✅ Assert the bundle holds what a flatpak needs
+        working-directory: ${{ runner.temp }}/repo
+        run: |
+          bundle=$(ls workspace/.config/flutter_workspace/cross-build-*/dist/"$APP_ID"_stable_*.flatpak)
+          flatpak install --user -y --noninteractive "$bundle"
+          files="$(flatpak info --user --show-location "$APP_ID")/files"
+          (cd "$files" && find . -type f | sort)
+          for f in "bin/hello-embedder" \
+                   "$APP_ID/hello-embedder" \
+                   "$APP_ID/lib/libapp.so" \
+                   "$APP_ID/lib/libflutter_engine.so" \
+                   "$APP_ID/data/icudtl.dat" \
+                   "share/metainfo/$APP_ID.metainfo.xml" \
+                   "share/applications/$APP_ID.desktop" \
+                   "share/icons/hicolor/256x256/apps/$APP_ID.png"; do
+            test -s "$files/$f" || {
+              echo "::error::$f is not in the installed flatpak"; exit 1; }
+          done
+      # The launcher starts the embedder inside the sandbox and hands it the
+      # bundle. The stand-in then looks for the app's native module, which a
+      # generated manifest does not build, and exits 1: the exit code says
+      # nothing here, the lines before it do.
+      - name: ✅ Assert the launcher runs the embedder on the bundle
+        run: |
+          out=$(flatpak run --user "$APP_ID" 2>&1 || true)
+          echo "$out"
+          for f in data/flutter_assets/AssetManifest.bin data/icudtl.dat \
+                   lib/libflutter_engine.so lib/libapp.so; do
+            echo "$out" | grep -q "found:   $f" || {
+              echo "::error::the embedder did not find $f in the bundle"
+              exit 1; }
           done
 
   # ── Stage 3 (opt-in): real cross build ──────────────────────────────────
