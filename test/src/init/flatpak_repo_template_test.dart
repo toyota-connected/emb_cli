@@ -33,6 +33,11 @@ const exampleSpec = FlatpakRepoSpec(
   flutterVersion: '3.47.9',
   embVersion: '0.5.0',
   releaseDate: '2026-01-02',
+  // One board, as `--target rpi5-trixie` with the default embedder writes it.
+  targets: ['rpi5-trixie'],
+  backend: defaultEmbedderBackend,
+  targetDefines: defaultEmbedderTargetDefines,
+  targetDefinesWhy: defaultEmbedderTargetDefinesWhy,
 );
 
 final _exampleDir = Directory(p.join('examples', 'cross', 'init-flatpak'));
@@ -46,6 +51,9 @@ FlatpakRepoSpec _spec({
   String? embedderBin,
   bool githubCi = true,
   PinnedRepo embedder = const PinnedRepo(uri: defaultEmbedderUri, rev: 'abc1'),
+  List<String> targets = const [],
+  String? backend,
+  Map<String, String> targetDefines = const {},
 }) => FlatpakRepoSpec(
   appId: 'com.example.MyApp',
   id: id,
@@ -58,6 +66,9 @@ FlatpakRepoSpec _spec({
   embVersion: embVersion,
   releaseDate: '2026-01-02',
   githubCi: githubCi,
+  targets: targets,
+  backend: backend,
+  targetDefines: targetDefines,
 );
 
 const _app = PinnedRepo(uri: 'https://example.com/app.git', rev: 'def2');
@@ -118,7 +129,9 @@ void main() {
         const {},
       );
       final manifest = p.join(_exampleDir.path, exampleSpec.manifestName);
-      final project = resolver.resolve(manifest)!;
+      // The board target extends into the embedder, which is not cloned
+      // here: it is set aside, and the native build resolves without it.
+      final project = resolver.resolve(manifest, deferExtends: true)!;
 
       expect(project.id, 'my-app');
       expect(project.flutterVersion, '3.47.9');
@@ -126,9 +139,12 @@ void main() {
         project.workspaceDir,
         p.normalize(p.absolute(_exampleDir.path, 'workspace')),
       );
-      // No `targets:` block. A flat manifest is one implicit target named
-      // after the id; the build a generated repo documents is `local`.
-      expect(project.targets.keys, ['my-app']);
+      expect(project.targets, isEmpty);
+      expect(project.unresolved.keys, ['rpi5-trixie']);
+      final board = project.unresolved['rpi5-trixie']!.block;
+      expect(board['extends'], 'source#rpi5-trixie');
+      expect(board['defines'], {'DISABLE_PLUGINS': 'ON'});
+      expect(CrossTarget.repoFrom(board['source'])!.uri, defaultEmbedderUri);
 
       for (final name in ['local']) {
         final selection = project.selectTarget(name)!;
@@ -446,6 +462,86 @@ void main() {
           expect(run, isNot(contains('<')));
         }
       });
+    });
+  });
+
+  group('board targets', () {
+    test('none: no targets block and no README section', () {
+      final spec = _spec(app: _app);
+      expect(_manifest(spec)['cross'], isNot(contains('targets')));
+      final readme = renderFlatpakRepo(spec)['README.md']!;
+      expect(readme, isNot(contains('Build for a board')));
+      expect(
+        readme,
+        contains('flatpak run com.example.MyApp\n```\n\n## Before'),
+      );
+    });
+
+    test('each extends source#<name>, in order', () {
+      final spec = _spec(targets: ['b-board', 'a-board']);
+      final targets = (_manifest(spec)['cross'] as Map)['targets'] as Map;
+      expect(targets.keys, ['b-board', 'a-board']);
+      expect(targets['b-board'], {'extends': 'source#b-board'});
+      expect(targets['a-board'], {'extends': 'source#a-board'});
+    });
+
+    // `ON` unquoted is a YAML boolean, and a define is a string to CMake.
+    test('defines are written as strings', () {
+      final spec = _spec(
+        targets: ['pi'],
+        targetDefines: {'A': 'ON', 'B': '1', 'C': "it's"},
+      );
+      final target =
+          ((_manifest(spec)['cross'] as Map)['targets'] as Map)['pi'] as Map;
+      expect(target['defines'], {'A': 'ON', 'B': '1', 'C': "it's"});
+    });
+
+    test('the README command names the backend when there is one', () {
+      final withBackend = renderFlatpakRepo(
+        _spec(app: _app, targets: ['pi'], backend: 'wayland-egl'),
+      )['README.md']!;
+      expect(
+        withBackend,
+        contains(
+          'emb cross my-app.emb.yaml --target pi --backend wayland-egl '
+          '--build --flatpak',
+        ),
+      );
+      final without = renderFlatpakRepo(
+        _spec(app: _app, targets: ['pi']),
+      )['README.md']!;
+      expect(
+        without,
+        contains('emb cross my-app.emb.yaml --target pi --build --flatpak'),
+      );
+      expect(without, contains('add `--backend <name>`'));
+    });
+
+    test('the native command never names a backend', () {
+      final spec = _spec(app: _app, targets: ['pi'], backend: 'wayland-egl');
+      expect(
+        spec.buildCommand,
+        'emb cross my-app.emb.yaml --target local --build --flatpak',
+      );
+    });
+
+    test('the README names the runtime for the board, at the same branch', () {
+      final readme = renderFlatpakRepo(_spec(targets: ['pi']))['README.md']!;
+      expect(readme, contains('org.freedesktop.Platform/aarch64/25.08'));
+      expect(readme, contains('org.freedesktop.Sdk/aarch64/25.08'));
+      expect(readme, contains('qemu-user'));
+    });
+
+    test('says CI builds the native one, when there is CI', () {
+      const note = 'The CI workflow builds `--target local` only.';
+      expect(
+        renderFlatpakRepo(_spec(app: _app, targets: ['pi']))['README.md'],
+        contains(note),
+      );
+      expect(
+        renderFlatpakRepo(_spec(targets: ['pi']))['README.md'],
+        isNot(contains(note)),
+      );
     });
   });
 

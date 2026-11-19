@@ -1615,6 +1615,8 @@ is no wrapper script.
 | `--embedder-rev` | HEAD, resolved now | as `--app-rev` |
 | `--embedder-bin` | `shell/homescreen` for ivi-homescreen | the embedder binary, relative to its build dir; becomes `package.bin` |
 | `--provider` | `arm-gnu` | |
+| `--target <name>` | none | a board target, by the name the embedder gives it in its `.emb/`; written as `extends: 'source#<name>'`. Repeatable. Not checked until the first build clones the embedder |
+| `--backend <name>` | `wayland-egl` for ivi-homescreen | the backend a `--target` build is for; goes into the build command the README gives, not the manifest |
 | `--runtime-version` | newest on flathub, else `25.08` | `YY.MM`; always written, never left to emb's default |
 | `--flutter-version` | `stable` | a branch or a tag |
 | `--ci <none\|github>` | `github` | |
@@ -1638,9 +1640,16 @@ What it decides for you, and why:
 - **A local `--app` is not written down.** A path is this machine's. The
   manifest then names no app, the build takes `--app <dir>`, and no workflow is
   generated, since a runner would have nothing to build.
-- **Native only.** The one build is `--target local`. A board needs the
-  embedder's own cross layer, which cannot be named before the embedder is
-  cloned; see [A flatpak for a Raspberry Pi](#a-flatpak-for-a-raspberry-pi).
+- **Native, unless you name a board.** The one build is `--target local`.
+  `--target <name>` adds a board target that extends the embedder's own target
+  of that name, not the board alone; see
+  [A flatpak for a Raspberry Pi](#a-flatpak-for-a-raspberry-pi). The workflow
+  still builds `--target local` only.
+- **What is known about ivi-homescreen, and about no other embedder.** Where
+  its binary is, that `wayland-egl` is the backend for a compositor, and that
+  its board layer turns plugins on and expects a checkout a generated repo
+  does not have (`DISABLE_PLUGINS: 'ON'` is written into a board target). For
+  another embedder none of this is assumed.
 - **Nothing site-specific.** No `sysroot.host`, no ssh options, no board file,
   no `finish_args` beyond the packager's default sandbox.
 - **Your files are yours.** A non-empty directory is refused without `--force`
@@ -1669,9 +1678,15 @@ credentials, since the job builds code from three other places.
 
 #### A flatpak for a Raspberry Pi
 
-A generated repo builds for the machine you are on (`--target local`), and
-`emb init flatpak` writes no other target. A flatpak for a board is a cross
-target you add to the manifest, and three things differ.
+A generated repo builds for the machine you are on (`--target local`).
+`--target` adds a board:
+
+```sh
+emb init flatpak my-app-flatpak --app-id com.example.MyApp \
+  --app https://github.com/me/my_flutter_app.git --target rpi5-trixie
+```
+
+Three things differ from the native build.
 
 **The embedder's own layer, not just the board.** A board (`rpi5-trixie`) is the
 toolchain, the sysroot image and the CPU flags. An embedder usually needs more
@@ -1679,12 +1694,12 @@ to cross-build: ivi-homescreen needs a host-built `wayland-cxx-scanner`, its own
 `-dev` packages in the sysroot, and its backend definitions, all of which it
 ships in its `.emb/` directory as a project layer. A target that extends the
 board alone stops in the configure step at
-`Could not find ... wayland-cxx-scanner`, which is why none is generated.
-Extend the embedder's target, in the generated manifest:
+`Could not find ... wayland-cxx-scanner`. So the generated target extends the
+embedder's:
 
 ```yaml
 cross:
-  # ... as generated ...
+  # ...
   targets:
     rpi5-trixie:
       # ivi-homescreen's project layer for this board, which extends the board.
@@ -1697,7 +1712,9 @@ cross:
 
 `source#` is the embedder `cross.source` names, at the commit it pins. `emb
 cross` clones it before it resolves the target, so there is nothing to check
-out by hand.
+out by hand. `--target` takes the name on trust, since the embedder is not
+cloned when the repo is generated: a name the embedder does not define is
+reported by the first build, with the names it does.
 
 **The runtime for the board's architecture, and a way to run it.**
 flatpak-builder runs the runtime's own tools while it packages, so the build

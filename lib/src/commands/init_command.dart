@@ -116,6 +116,7 @@ final _commitPattern = RegExp(r'^[0-9a-fA-F]+$');
 final _runtimePattern = RegExp(r'^\d\d\.\d\d$');
 final _flutterVersionPattern = RegExp(r'^[A-Za-z0-9][\w.+-]*$');
 final _binPattern = RegExp(r'^[\w.+-]+(/[\w.+-]+)*$');
+final _targetPattern = RegExp(r'^[A-Za-z0-9][\w.-]*$');
 final _pubNamePattern = RegExp(r'^[A-Za-z_][A-Za-z0-9_]*$');
 final _pubVersionPattern = RegExp(r'^[0-9A-Za-z][0-9A-Za-z.+-]*$');
 
@@ -204,6 +205,19 @@ class InitFlatpakCommand extends Command<int> {
         help: 'Cross provider the manifest declares.',
         allowed: [for (final k in CrossProviderKind.values) k.token],
         defaultsTo: CrossProviderKind.armGnu.token,
+      )
+      ..addMultiOption(
+        'target',
+        help:
+            'A board target to add, by the name the embedder gives it in '
+            "its .emb/ (extends: 'source#<name>'). Repeatable. Not checked "
+            'until the first build clones the embedder.',
+      )
+      ..addOption(
+        'backend',
+        help:
+            'The embedder backend a --target build is for (default for '
+            'ivi-homescreen: $defaultEmbedderBackend).',
       )
       ..addOption(
         'runtime-version',
@@ -330,6 +344,38 @@ class InitFlatpakCommand extends Command<int> {
         "embedder's build directory, e.g. $defaultEmbedderBin.",
       );
     }
+    // A target is named after the embedder's own, which is not there to look
+    // at until a build clones it. Only the shape can be held here.
+    final targets = args['target'] as List<String>;
+    for (final target in targets) {
+      if (!_targetPattern.hasMatch(target)) {
+        return _usage(
+          '--target "$target": expected the name of a target the embedder '
+          'defines, e.g. rpi5-trixie.',
+        );
+      }
+      if (target == 'local' || target == 'host') {
+        return _usage(
+          '--target $target: "$target" is the built-in native build, which '
+          'every generated repo already has. Name a board target.',
+        );
+      }
+    }
+    if (targets.toSet().length != targets.length) {
+      return _usage('--target: a name is given more than once.');
+    }
+    final backendArg = args['backend'] as String?;
+    if (backendArg != null && !_targetPattern.hasMatch(backendArg)) {
+      return _usage(
+        '--backend "$backendArg": expected a backend name, e.g. '
+        '$defaultEmbedderBackend.',
+      );
+    }
+    if (backendArg != null && targets.isEmpty) {
+      return _usage(
+        '--backend needs --target: the native build is not given one.',
+      );
+    }
     final embedderUri = args['embedder'] as String;
     final embedderProblem = _uriProblem(embedderUri);
     if (embedderProblem != null) {
@@ -392,6 +438,10 @@ class InitFlatpakCommand extends Command<int> {
     }
 
     final wantsCi = args['ci'] == 'github';
+    // Only ivi-homescreen's layout is known: where its binary is, which
+    // backend runs under a compositor, and what its board layer expects that
+    // a generated repo does not have.
+    final knownEmbedder = embedder.uri == defaultEmbedderUri;
     final spec = FlatpakRepoSpec(
       appId: appId,
       id: pubspec == null ? idFromAppId(appId) : kebabCase(pubspec.name),
@@ -399,11 +449,19 @@ class InitFlatpakCommand extends Command<int> {
       version: pubspec?.version ?? '0.1.0',
       summary: pubspec?.description,
       embedder: embedder,
-      // Only ivi-homescreen's layout is known. For any other embedder the
-      // manifest says the binary should be named, and why.
-      embedderBin:
-          binArg ??
-          (embedder.uri == defaultEmbedderUri ? defaultEmbedderBin : null),
+      // For any other embedder the manifest says the binary should be
+      // named, and why.
+      embedderBin: binArg ?? (knownEmbedder ? defaultEmbedderBin : null),
+      targets: targets,
+      backend: targets.isEmpty
+          ? null
+          : backendArg ?? (knownEmbedder ? defaultEmbedderBackend : null),
+      targetDefines: knownEmbedder && targets.isNotEmpty
+          ? defaultEmbedderTargetDefines
+          : const {},
+      targetDefinesWhy: knownEmbedder && targets.isNotEmpty
+          ? defaultEmbedderTargetDefinesWhy
+          : const [],
       app: app,
       provider: args['provider'] as String,
       runtimeVersion: runtimeArg ?? await _newestRuntime(),
@@ -481,6 +539,16 @@ class InitFlatpakCommand extends Command<int> {
       ..info('')
       ..info('Next, in ${dir.path}:')
       ..info('  ${spec.buildCommand}');
+    for (final target in spec.targets) {
+      _logger.info('  ${spec.buildCommandFor(target)}');
+    }
+    if (spec.targets.isNotEmpty) {
+      _logger.info(
+        '\n${spec.targets.join(', ')}: not checked against the embedder, '
+        'which is cloned by the first build. See README.md for the runtime '
+        'a board build needs.',
+      );
+    }
     return ExitCode.success.code;
   }
 
@@ -596,13 +664,32 @@ class InitFlatpakCommand extends Command<int> {
     try {
       final manifest = File(p.join(scratch.path, spec.manifestName))
         ..writeAsStringSync(files[spec.manifestName]!);
-      final project = _resolver.resolve(manifest.path);
+      // A board target extends into the embedder, which is not cloned here,
+      // so it cannot resolve yet. It is set aside, and held to having been
+      // written as what it was meant to be.
+      final project = _resolver.resolve(manifest.path, deferExtends: true);
       if (project == null) return 'no manifest was produced';
       final selection = project.selectTarget('local');
       if (selection == null) return 'target "local" is missing';
       final target = CrossTarget.fromMap(selection.cross);
       if (target.package?.flatpak?.appId != spec.appId) {
         return 'package.flatpak.app_id did not survive';
+      }
+      for (final name in spec.targets) {
+        final pending = project.unresolved[name];
+        if (pending == null) return 'target "$name" is missing';
+        if (pending.block['extends'] != 'source#$name') {
+          return 'target "$name" does not extend source#$name';
+        }
+        if (CrossTarget.repoFrom(pending.block['source']) == null) {
+          return 'target "$name" has no cross.source to extend into';
+        }
+      }
+      // With no targets a flat manifest is one implicit target of its own.
+      if (spec.targets.isNotEmpty &&
+          (project.targets.isNotEmpty ||
+              project.unresolved.length != spec.targets.length)) {
+        return 'the manifest has targets that were not asked for';
       }
       return null;
     } on CrossProjectException catch (e) {
