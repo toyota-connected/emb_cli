@@ -50,6 +50,17 @@ fails if that does; without one it warns and carries on. `emb cross
 --fetch-only` clones both and resolves no packages. `--app` replaces the
 declared app, as before.
 
+**`emb fetch` installs the Flutter SDK a manifest pins.** With
+`flutter_version:` set and no SDK in the workspace, it clones that SDK and runs
+`flutter precache`, as `emb cross --build` does, and fails if it cannot. This is a
+large download a fetch did not make before. An SDK already in the workspace
+is left alone.
+
+**`emb fetch` resolves the closure with the app's `.emb/` layer merged.** With
+`--app` or a declared `cross.app`, sysroot packages and cargo modules that
+only the app declares are now fetched, so `emb.lock` can gain what the build
+would have added on its first run.
+
 **`emb fetch --app` runs the workspace's Flutter SDK when there is one.** It
 ran `flutter` from `PATH` regardless, which is not the SDK the build uses.
 
@@ -169,6 +180,13 @@ version is unaffected.
   checkout that is there. Both take the workspace the way `emb cross` does,
   and `emb fetch` accepts `-w`, which its documentation already listed. See
   Upgrading.
+- fix(fetch): `emb fetch` left out two things `emb cross --build --offline`
+  cannot get for itself. It resolved the target without the app's `.emb/`
+  layer, so a `-dev` package or cargo module only the app declares was not
+  in the closure; `emb cross` and `emb fetch` now resolve the target through
+  the same code. And it did not install the SDK pinned by `flutter_version:`,
+  so a cold workspace stopped the offline build at once; it now installs it
+  and runs `flutter precache`. See Upgrading.
 - feat(fetch): `emb fetch` clones a declared `cross.app` and prefetches its
   pub packages. It cloned `cross.source` and left the app out, so `emb cross
   --build --offline` after a fetch stopped at the app clone unless the app had

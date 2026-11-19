@@ -165,6 +165,78 @@ cross:
         expect((merged['sysroot']! as Map)['snapshot'], '2026-04-22');
       });
 
+      // What `emb cross` and `emb fetch` both resolve a target from.
+      group('layered', () {
+        ({
+          Map<String, dynamic> cross,
+          bool isNative,
+          String name,
+          String? sourcePath,
+        })
+        selection() => (
+          cross: {
+            ...projectCross(),
+            // Untyped, as YAML yields it.
+            'augment': <dynamic>[
+              <String, dynamic>{
+                'name': 'base-lib',
+                'url': 'https://example/base.tar.gz',
+              },
+            ],
+          },
+          isNative: false,
+          name: 'rpi5-trixie',
+          sourcePath: '/project/.emb/board.emb.yaml',
+        );
+
+        test('merges the app layer and resolves against its file', () {
+          writeApp('.emb/raspberry-pi.emb.yaml', '''
+id: my-app
+cross:
+  targets:
+    rpi5-trixie:
+      sysroot: {dev_packages: [libflatpak-dev]}
+      augment:
+        - {name: app-lib, url: https://example/app.tar.gz}
+''');
+          final layer = CrossProjectResolver().layered(
+            selection(),
+            appDir: appDir.path,
+          );
+          final appFile = p.join(appDir.path, '.emb', 'raspberry-pi.emb.yaml');
+          expect(layer.sourcePath, appFile);
+          expect(
+            (layer.cross['sysroot']! as Map)['dev_packages'],
+            contains('libflatpak-dev'),
+          );
+          // Each augment keeps the file that declared it.
+          final sources = {
+            for (final a in layer.cross['augment']! as List)
+              (a as Map)['name']: a['_source'],
+          };
+          expect(sources, {
+            'base-lib': '/project/.emb/board.emb.yaml',
+            'app-lib': appFile,
+          });
+        });
+
+        test('is the selection itself with no app, or no layer', () {
+          final none = CrossProjectResolver().layered(selection());
+          expect(none.sourcePath, '/project/.emb/board.emb.yaml');
+          expect(none.cross['provider'], 'arm-gnu');
+
+          final bare = CrossProjectResolver().layered(
+            selection(),
+            appDir: appDir.path,
+          );
+          expect(bare.sourcePath, '/project/.emb/board.emb.yaml');
+          expect((bare.cross['sysroot']! as Map)['dev_packages'], [
+            'libdrm-dev',
+            'libglib2.0-dev',
+          ]);
+        });
+      });
+
       test('a target the app does not name is untouched', () {
         writeApp('.emb/raspberry-pi.emb.yaml', '''
 id: my-app
