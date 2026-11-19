@@ -18,6 +18,10 @@ class _CaptureLogger extends Logger {
   final StringBuffer buffer = StringBuffer();
   @override
   void info(String? message, {LogStyle? style}) => buffer.writeln(message);
+
+  final StringBuffer errors = StringBuffer();
+  @override
+  void err(String? message, {LogStyle? style}) => errors.writeln(message);
 }
 
 const _host = HostInfo(
@@ -319,6 +323,60 @@ cross:
 
     test('an unknown target is a usage error', () async {
       expect(await runTarget('nope'), ExitCode.usage.code);
+    });
+
+    // doctor fetches nothing. A target that extends into cross.source
+    // resolves against a checkout that is already in the workspace.
+    group('a target that extends into cross.source', () {
+      setUp(() {
+        File(manifest).writeAsStringSync('''
+id: doctor-fixture
+workspace: ws
+cross:
+  provider: arm-gnu
+  source: {uri: https://invalid.example/embedder.git}
+  targets:
+    pi5: {extends: 'source#rpi'}
+    plain: {image_url: https://example/os.img.xz}
+    broken: {extends: 'nowhere#x'}
+''');
+      });
+
+      void writeCheckout() {
+        final emb = Directory(p.join(tmp.path, 'ws', 'app', 'embedder', '.emb'))
+          ..createSync(recursive: true);
+        File(p.join(emb.path, 'rpi.emb.yaml')).writeAsStringSync('''
+id: embedder
+cross:
+  targets:
+    rpi:
+      triple: aarch64-none-linux-gnu
+      image_url: https://example/os.img.xz
+''');
+      }
+
+      test('says the source is not fetched, and fetches nothing', () async {
+        final logger = _CaptureLogger();
+        expect(await runTarget('pi5', logger: logger), ExitCode.usage.code);
+        expect(logger.errors.toString(), contains('is not fetched'));
+        expect(Directory(p.join(tmp.path, 'ws')).existsSync(), isFalse);
+      });
+
+      test('resolves against a checkout that is there', () async {
+        writeCheckout();
+        expect(await runTarget('pi5'), ExitCode.success.code);
+      });
+
+      test('does not stop the targets that do resolve', () async {
+        expect(await runTarget('plain'), ExitCode.success.code);
+        expect(await runTarget('local'), ExitCode.success.code);
+      });
+
+      test('a target that cannot resolve says why when selected', () async {
+        final logger = _CaptureLogger();
+        expect(await runTarget('broken', logger: logger), ExitCode.usage.code);
+        expect(logger.errors.toString(), contains('no emb project'));
+      });
     });
 
     test('--json carries target.preflight.{ok, missing}', () async {

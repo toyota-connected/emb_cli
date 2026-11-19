@@ -1275,15 +1275,14 @@ clone coming first:
 
 - `--dry-run`, `--json`, `--clean` and `--list-targets` fetch nothing. They
   use a checkout that is already there; without one, `--list-targets` shows
-  the target as not resolved and the others say to run `--prepare` or
-  `--build` once.
+  the target as not resolved and the others say to run `emb fetch`,
+  `--prepare` or `--build` once.
 - A target that does not resolve stops only itself. `--target local` and the
   other targets build, where a bad `extends:` used to fail every command.
-- Only `emb cross` does this. `emb fetch` and `emb doctor --target` do not
-  clone and stop on a manifest that has a `source#` target; `emb matrix`
-  skips the target with a warning. A path into the workspace
-  (`workspace/app/<name>#<target>`) works with all of them once the embedder
-  is cloned, but it names where the clone lands, so it breaks under `-w`.
+- `emb fetch` clones `cross.source` the same way. `emb doctor --target`
+  fetches nothing and resolves against a checkout that is already there, or
+  says to fetch it. `emb matrix` does not clone and skips a `source#` target
+  with a warning.
 
 A directory that is itself called `source` is written `./source#<target>`.
 
@@ -1745,10 +1744,11 @@ byte for byte, so the example cannot drift from what the command writes.
 
 Materialize a cross target's toolchain + sysroot closure into the shared store
 and pin `emb.lock`, then stop — the online acquisition step for an
-[offline build](#offline-builds). It resolves the toolchain + sysroot (no
-configure/build), vendors each `build: cargo` module's crates, and with
-`--app` prefetches the app's pub packages — so `emb cross … --build --offline`
-afterwards needs no network. Native (`local`/`host`) targets skip the toolchain
+[offline build](#offline-builds). It clones a declared `cross.source`,
+resolves the toolchain + sysroot (no configure/build), vendors each
+`build: cargo` module's crates, and with `--app` prefetches the app's pub
+packages — so `emb cross … --build --offline` afterwards needs no network. A
+declared `cross.app` is not cloned; pass the app with `--app`. Native (`local`/`host`) targets skip the toolchain
 resolve but still vendor crates and prefetch pub.
 
 ```sh
@@ -1759,7 +1759,7 @@ emb fetch <project-dir|manifest.yaml> [options]
 |---|---|---|
 | `<project-dir\|manifest>` | **mandatory (positional)** | Project dir or manifest file (same resolution as `emb cross`). |
 | `-t`, `--target <name>` | manifest default | Target to fetch; a `cross.targets` entry or a per-board `.emb/` file. |
-| `-w`, `--workspace <dir>` | resolution order | Workspace root. |
+| `-w`, `--workspace <dir>` | manifest `workspace:`, then `$FLUTTER_WORKSPACE`, then cwd | Workspace root, resolved as `emb cross` does, so what is fetched is where the build looks. |
 | `--app <dir>` | — | Also prefetch this Flutter app's pub packages (`flutter pub get --enforce-lockfile`) into the store-rooted `PUB_CACHE`, so they are part of the offline closure the escrow archives. |
 | `--update-lock` | off | Regenerate this target's `emb.lock` entry from the resolved toolchain/sysroot. |
 | `--no-verify` | off | Skip `emb.lock` verification for this resolve. |

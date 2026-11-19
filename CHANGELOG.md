@@ -30,11 +30,21 @@ used to mean a directory called `source` beside the manifest. Write
 
 **`emb cross` no longer fails on a target it was not asked to build.** A
 target whose `extends:` does not resolve is reported when it is selected, and
-`--list-targets` lists it as not resolved, with the reason, and exits 0. Before, one such target failed
-every `emb cross` run on the manifest, `--target local` included. A script
-that used `emb cross --list-targets` or `--dry-run` to validate every target
-of a manifest has to select each target to get the error. `emb fetch`,
-`emb doctor` and `emb matrix` are unchanged.
+`--list-targets` lists it as not resolved, with the reason, and exits 0.
+Before, one such target failed every `emb cross` run on the manifest,
+`--target local` included. A script that used `emb cross --list-targets` or
+`--dry-run` to validate every target of a manifest has to select each target
+to get the error. `emb fetch` and `emb doctor --target` do the same;
+`emb matrix` is unchanged.
+
+**`emb fetch` and `emb doctor --target` use the manifest's `workspace:`.**
+They resolved the workspace from `-w`/`$FLUTTER_WORKSPACE`/cwd and ignored the
+manifest, where `emb cross` puts the manifest ahead of the environment. With
+a `workspace:` that differs from where you ran `emb fetch`, the fetch now
+lands in the manifest's workspace. `--workspace` still wins.
+
+**`emb fetch` clones a declared `cross.source`.** It needs git and network
+access to the embedder, and fails if the clone does.
 
 **A flatpak with no `runtime_version` now builds against freedesktop `25.08`,
 not `23.08`.** A manifest that sets `cross.package.flatpak` and omits the key
@@ -112,6 +122,16 @@ version is unaffected.
   way on a fresh checkout, though it breaks under `-w`. `--dry-run`, `--json`,
   `--clean` and `--list-targets` still fetch nothing and use a checkout that
   is already there. See Upgrading.
+- fix(fetch): `emb fetch` and `emb doctor --target` stopped on any manifest
+  with an `extends: 'source#<target>'` target, since only `emb cross` cloned
+  `cross.source`. `emb fetch` now clones it, before the resolve when the
+  target needs it, and for every target that declares one: `emb cross
+  --offline` reuses the checkout and cannot make it, so a fetch that left it
+  out did not make an offline build possible. `emb cross --fetch-only` does
+  the same. `emb doctor --target` fetches nothing and resolves against a
+  checkout that is there. Both take the workspace the way `emb cross` does,
+  and `emb fetch` accepts `-w`, which its documentation already listed. See
+  Upgrading.
 - fix(cross): the default flatpak `runtime_version` was `23.08`, which flatpak
   reports end-of-life (#311). A manifest that omitted the key built against a
   runtime the user is warned about on install and that can leave flathub. The

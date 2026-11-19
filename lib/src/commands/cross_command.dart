@@ -40,6 +40,7 @@ import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/cross/rpm_packager.dart';
 import 'package:emb_cli/src/cross/run_command.dart';
 import 'package:emb_cli/src/cross/runnable_bundle.dart';
+import 'package:emb_cli/src/cross/source_checkout.dart';
 import 'package:emb_cli/src/cross/tarball_packager.dart';
 import 'package:emb_cli/src/engine/engine_artifacts.dart';
 import 'package:emb_cli/src/env/env_script.dart';
@@ -51,7 +52,6 @@ import 'package:emb_cli/src/json_output.dart';
 import 'package:emb_cli/src/manifest/build_config.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
 import 'package:emb_cli/src/manifest/source_repo.dart';
-import 'package:emb_cli/src/repo/git_repo.dart';
 import 'package:emb_cli/src/step_reporter.dart';
 import 'package:emb_cli/src/verbosity.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
@@ -564,7 +564,7 @@ class CrossCommand extends Command<int> {
     // --list-targets: print the targets this project defines, then exit.
     if (args['list-targets'] == true) {
       // Fetches nothing, but a cross.source already cloned is there to read.
-      final cloned = _clonedSources(
+      final cloned = clonedSources(
         project,
         _resolveWorkspace(project, args['workspace'] as String?),
       );
@@ -774,7 +774,9 @@ class CrossCommand extends Command<int> {
       return ExitCode.usage.code;
     }
 
-    if (compiling) {
+    // --fetch-only clones it too: an offline build reuses the checkout and
+    // cannot make one.
+    if (compiling || (args['fetch-only'] == true && !inspecting)) {
       final declaredSource = CrossTarget.repoFrom(selection.cross['source']);
       if (declaredSource != null) {
         // Already synced when resolving `extends:` needed the checkout.
@@ -1275,21 +1277,6 @@ class CrossCommand extends Command<int> {
     }
   }
 
-  /// Where the `cross.source` of each unresolved target is already cloned,
-  /// by target name. Targets with no source, or none cloned yet, are absent.
-  Map<String, String> _clonedSources(CrossProject project, Workspace ws) {
-    final out = <String, String>{};
-    for (final t in project.unresolved.values) {
-      final repo = CrossTarget.repoFrom(t.block['source']);
-      if (repo == null) continue;
-      final dest = Directory(
-        p.join(ws.appDir.path, GitRepo.fromSource(repo).folderName),
-      );
-      if (dest.existsSync()) out[t.name] = dest.path;
-    }
-    return out;
-  }
-
   /// The checkout of [repo], the `cross.source` of a target whose `extends:`
   /// needs it to resolve; null after reporting why it could not be had.
   ///
@@ -1308,15 +1295,13 @@ class CrossCommand extends Command<int> {
         args['clean'] == true ||
         args['clean-all'] == true;
     if (inspecting && !offline) {
-      final dest = Directory(
-        p.join(workspace.appDir.path, GitRepo.fromSource(repo).folderName),
-      );
+      final dest = sourceCheckoutDir(repo, workspace);
       if (dest.existsSync()) return dest;
       _logger.err(
         'Target "${pending.name}" extends a target in cross.source '
         '(${repo.uri}), which is not fetched yet, and this mode fetches '
-        'nothing. Run `emb cross --prepare` or `--build` once, or clone it '
-        'to ${dest.path}.',
+        'nothing. Run `emb fetch`, or `emb cross --prepare` or `--build`, '
+        'once, or clone it to ${dest.path}.',
       );
       return null;
     }
@@ -2279,60 +2264,30 @@ class CrossCommand extends Command<int> {
     return true;
   }
 
-  /// Clone or update a manifest-declared repo into `<workspace>/app`, or null
-  /// after reporting why it could not be had. Uses the same [GitRepo] machinery
-  /// as `emb sync`. [sourcePath] is the declaring manifest, which relative
-  /// `patches:` resolve against. Offline reuses an existing checkout.
+  /// [syncSourceRepo] with this command's logger.
   Future<Directory?> _syncRepo(
     SourceRepo repo,
     Workspace workspace, {
     required String what,
     required String? sourcePath,
     required bool offline,
-  }) async {
-    final git = GitRepo.fromSource(repo).resolvePatchesAgainst(sourcePath);
-    final dest = Directory(p.join(workspace.appDir.path, git.folderName));
-    if (offline) {
-      if (dest.existsSync()) {
-        _logger.detail('  offline: reusing ${dest.path}');
-        return dest;
-      }
-      _logger.err(
-        '  --offline cannot fetch the $what (${repo.uri}) — '
-        'run once online, or clone it to ${dest.path} yourself.',
+  }) => syncSourceRepo(
+    repo,
+    workspace,
+    logger: _logger,
+    what: what,
+    sourcePath: sourcePath,
+    offline: offline,
+  );
+
+  /// [resolveBuildWorkspace] with this command's environment.
+  Workspace _resolveWorkspace(CrossProject project, String? override) =>
+      resolveBuildWorkspace(
+        project,
+        override: override,
+        environment: _environment,
+        logger: _logger,
       );
-      return null;
-    }
-
-    final progress = _steps.start('Fetching $what (${git.folderName})');
-    final result = await git.sync(
-      workspace.ensureAppDir(),
-      patchBase: sourcePath == null
-          ? null
-          : Directory(p.dirname(p.absolute(sourcePath))),
-    );
-    if (!result.success) {
-      progress.fail('$what: ${result.message ?? "git failed"}');
-      return null;
-    }
-    progress.complete('$what → ${dest.path}');
-    return dest;
-  }
-
-  /// The workspace this build runs in: `-w` → the manifest's `workspace:` →
-  /// `$FLUTTER_WORKSPACE` → cwd. The manifest beats the environment on purpose,
-  /// so a repo can pin where it builds regardless of the calling shell.
-  Workspace _resolveWorkspace(CrossProject project, String? override) {
-    final declared = project.workspaceDir;
-    if (override == null && declared != null) {
-      final env = _environment['FLUTTER_WORKSPACE'];
-      if (env != null && env.isNotEmpty && p.normalize(env) != declared) {
-        _logger.detail('  ignoring inherited FLUTTER_WORKSPACE=$env');
-      }
-      return Workspace(Directory(declared));
-    }
-    return Workspace.resolve(override: override);
-  }
 
   /// First [name] on PATH, or null.
   static String? _which(String name) {

@@ -11,12 +11,12 @@ import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/cross/emb_lock.dart';
 import 'package:emb_cli/src/cross/lock_sync.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
+import 'package:emb_cli/src/cross/source_checkout.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/host/preflight.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
 import 'package:emb_cli/src/step_reporter.dart';
 import 'package:emb_cli/src/verbosity.dart';
-import 'package:emb_cli/src/workspace/workspace.dart';
 import 'package:mason_logger/mason_logger.dart';
 import 'package:path/path.dart' as p;
 
@@ -48,7 +48,10 @@ class FetchCommand extends Command<int> {
       )
       ..addOption(
         'workspace',
-        help: r'Workspace root (defaults to $FLUTTER_WORKSPACE or cwd).',
+        abbr: 'w',
+        help:
+            "Workspace root (defaults to the manifest's workspace:, then "
+            r'$FLUTTER_WORKSPACE, then cwd).',
       )
       ..addOption(
         'app',
@@ -86,6 +89,26 @@ class FetchCommand extends Command<int> {
   );
   StepReporter get _steps => StepReporter(_logger);
 
+  /// The project at [inputPath] with unresolvable targets set aside, or null
+  /// after reporting why there is none.
+  CrossProject? _resolveProject(
+    String inputPath, {
+    Map<String, String> sourceDirs = const {},
+  }) {
+    try {
+      final resolved = _project.resolve(
+        inputPath,
+        deferExtends: true,
+        sourceDirs: sourceDirs,
+      );
+      if (resolved == null) _logger.err('No emb manifest at $inputPath.');
+      return resolved;
+    } on CrossProjectException catch (e) {
+      _logger.err(e.message);
+      return null;
+    }
+  }
+
   @override
   String get name => 'fetch';
 
@@ -105,20 +128,51 @@ class FetchCommand extends Command<int> {
     }
 
     final inputPath = args.rest.first;
-    final CrossProject project;
-    try {
-      final resolved = _project.resolve(inputPath);
-      if (resolved == null) {
-        _logger.err('No emb manifest at $inputPath.');
+    // A target whose `extends:` does not resolve is set aside: it may be
+    // another target's problem, or need `cross.source` cloned first.
+    var project = _resolveProject(inputPath);
+    if (project == null) return ExitCode.usage.code;
+    final workspace = resolveBuildWorkspace(
+      project,
+      override: args['workspace'] as String?,
+      logger: _logger,
+    );
+
+    final targetArg = args['target'] as String?;
+    var picked = project.selectTarget(targetArg);
+    // The checkout of cross.source, once it has been synced.
+    Directory? source;
+    final pending = project.unresolved[targetArg ?? project.defaultTarget];
+    if (picked == null && pending != null) {
+      // `extends: 'source#<target>'` names a target inside the embedder, so
+      // the embedder is fetched before the target can be resolved.
+      final repo = CrossTarget.repoFrom(pending.block['source']);
+      if (repo == null) {
+        _logger.err(pending.message);
         return ExitCode.usage.code;
       }
-      project = resolved;
-    } on CrossProjectException catch (e) {
-      _logger.err(e.message);
-      return ExitCode.usage.code;
+      source = await syncSourceRepo(
+        repo,
+        workspace,
+        logger: _logger,
+        what: 'embedder source',
+        sourcePath: pending.sourcePath,
+        offline: false,
+      );
+      if (source == null) return ExitCode.software.code;
+      project = _resolveProject(
+        inputPath,
+        sourceDirs: {pending.name: source.path},
+      );
+      if (project == null) return ExitCode.usage.code;
+      picked = project.selectTarget(targetArg);
+      final still = project.unresolved[pending.name];
+      if (picked == null && still != null) {
+        _logger.err(still.message);
+        return ExitCode.usage.code;
+      }
     }
-
-    final selection = project.selectTarget(args['target'] as String?);
+    final selection = picked;
     if (selection == null) {
       _logger.err(
         'Unknown target "${args['target']}". '
@@ -153,7 +207,21 @@ class FetchCommand extends Command<int> {
     }
 
     final host = _host ?? HostInfo.detect();
-    final workspace = Workspace.resolve(override: args['workspace'] as String?);
+
+    // An offline build reuses the embedder checkout and cannot make one, so
+    // a declared cross.source is part of what there is to fetch.
+    final declaredSource = CrossTarget.repoFrom(selection.cross['source']);
+    if (declaredSource != null && source == null) {
+      source = await syncSourceRepo(
+        declaredSource,
+        workspace,
+        logger: _logger,
+        what: 'embedder source',
+        sourcePath: selection.sourcePath,
+        offline: false,
+      );
+      if (source == null) return ExitCode.software.code;
+    }
 
     // A cross target resolves a toolchain + sysroot into the store; a native
     // (`local`/`host`) build has none, so skip straight to the cargo/pub

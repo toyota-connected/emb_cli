@@ -9,6 +9,18 @@ import 'package:test/test.dart';
 
 class _MockLogger extends Mock implements Logger {}
 
+/// A real logger, so progress output works, that keeps what it was told.
+class _CaptureLogger extends Logger {
+  final errors = StringBuffer();
+  final infos = StringBuffer();
+
+  @override
+  void err(String? message, {LogStyle? style}) => errors.writeln(message);
+
+  @override
+  void info(String? message, {LogStyle? style}) => infos.writeln(message);
+}
+
 void main() {
   late Logger logger;
   late CommandRunner<int> runner;
@@ -80,5 +92,106 @@ cross:
     ]);
     expect(code, ExitCode.usage.code);
     verify(() => logger.err(any(that: contains('no pubspec.yaml')))).called(1);
+  });
+
+  // An offline build reuses the embedder checkout and cannot make one, and a
+  // target can extend one inside it (`source#<target>`), so fetch clones
+  // cross.source: before the resolve when the resolve needs it.
+  group('cross.source', () {
+    late _CaptureLogger log;
+    late Directory origin;
+
+    Future<int?> fetch(List<String> args) {
+      final r = CommandRunner<int>('emb', 'test')
+        ..addCommand(FetchCommand(logger: log));
+      return r.run(['fetch', ...args]);
+    }
+
+    /// A git repository holding an embedder project with one target, `rpi`.
+    Future<void> makeOrigin({required String provider}) async {
+      origin = Directory(p.join(tmp.path, 'origin', 'embedder'));
+      Directory(p.join(origin.path, '.emb')).createSync(recursive: true);
+      File(p.join(origin.path, '.emb', 'rpi.emb.yaml')).writeAsStringSync(
+        'id: embedder\ncross:\n  targets:\n    rpi:\n'
+        '      provider: $provider\n'
+        '      image_url: https://example/os.img.xz\n',
+      );
+      for (final args in [
+        ['init', '-q'],
+        ['add', '-A'],
+        ['commit', '-q', '-m', 'init'],
+      ]) {
+        final r = await Process.run('git', [
+          '-c',
+          'user.name=t',
+          '-c',
+          'user.email=t@example.invalid',
+          '-c',
+          'init.defaultBranch=main',
+          ...args,
+        ], workingDirectory: origin.path);
+        expect(r.exitCode, 0, reason: '${r.stderr}');
+      }
+    }
+
+    // [native] gives the shared block a provider, which the native build
+    // needs and which would otherwise hide the cloned target's own.
+    File manifest(String uri, {bool native = true}) =>
+        File(p.join(tmp.path, 'app.emb.yaml'))..writeAsStringSync(
+          'id: app\nworkspace: ws\ncross:\n'
+          '${native ? '  provider: arm-gnu\n' : ''}'
+          '  source: { uri: $uri }\n'
+          '  targets:\n'
+          "    pi: { extends: 'source#rpi' }\n"
+          "    broken: { extends: 'nowhere#x' }\n",
+        );
+
+    /// The clone, in the workspace the manifest declares.
+    File cloned() =>
+        File(p.join(tmp.path, 'ws', 'app', 'embedder', '.emb', 'rpi.emb.yaml'));
+
+    setUp(() => log = _CaptureLogger());
+
+    // The cloned target names a provider emb does not have, which stops the
+    // run right after the resolve with a value only the clone holds.
+    test('is cloned first for a target that extends into it', () async {
+      await makeOrigin(provider: 'only-in-the-clone');
+      final f = manifest(origin.path, native: false);
+      expect(await fetch([f.path, '-t', 'pi']), ExitCode.usage.code);
+      expect(log.errors.toString(), contains('only-in-the-clone'));
+      expect(cloned().existsSync(), isTrue);
+    });
+
+    test('is cloned for a target that does not need it to resolve', () async {
+      await makeOrigin(provider: 'arm-gnu');
+      final f = manifest(origin.path);
+      expect(await fetch([f.path, '-t', 'local']), ExitCode.success.code);
+      expect(cloned().existsSync(), isTrue);
+    });
+
+    test('a failed clone fails the fetch', () async {
+      final f = manifest(p.join(tmp.path, 'no-such-repo'));
+      expect(await fetch([f.path, '-t', 'pi']), ExitCode.software.code);
+      expect(await fetch([f.path, '-t', 'local']), ExitCode.software.code);
+    });
+
+    test('a target that cannot resolve says why when selected', () async {
+      await makeOrigin(provider: 'arm-gnu');
+      final f = manifest(origin.path);
+      expect(await fetch([f.path, '-t', 'broken']), ExitCode.usage.code);
+      expect(log.errors.toString(), contains('no emb project'));
+    });
+
+    test('-w outranks the workspace the manifest declares', () async {
+      await makeOrigin(provider: 'arm-gnu');
+      final f = manifest(origin.path);
+      final other = p.join(tmp.path, 'other');
+      expect(
+        await fetch([f.path, '-t', 'local', '--workspace', other]),
+        ExitCode.success.code,
+      );
+      expect(cloned().existsSync(), isFalse);
+      expect(Directory(p.join(other, 'app', 'embedder')).existsSync(), isTrue);
+    });
   });
 }
