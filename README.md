@@ -1225,12 +1225,13 @@ cross:
       sysroot:  { dev_packages: [ libgstreamer1.0-dev ] }   # added to the board's
 ```
 
-`extends` takes two forms:
+`extends` takes three forms:
 
 | Form | Resolves to |
 |---|---|
 | `<board>` | a target in emb's board library (the **hardware** layer) |
 | `<dir>#<target>` | a target in another emb project at `<dir>` (the **project** layer) |
+| `source#<target>` | a target in the project this target's own `cross.source` clones |
 
 The second form lets an **app** build on a project (e.g. ivi-homescreen) and add
 only what is app-specific — typically **plugin configuration**, which depends on
@@ -1254,6 +1255,37 @@ adds to the stack below it; an `augment` entry for a `pkg` already present
 replaces it). `<dir>` is resolved relative to the extending manifest's project
 root (the `.emb/` parent, else the file's directory); cross-project reference
 cycles are rejected.
+
+The third form is for a manifest that clones its embedder. The project layer
+is then inside the clone, and `source#<target>` names it without a path into
+the workspace:
+
+```yaml
+cross:
+  source:
+    uri: https://github.com/toyota-connected/ivi-homescreen.git
+  targets:
+    rpi5-trixie:
+      extends: 'source#rpi5-trixie'   # ← ivi-homescreen's own target (→ board)
+```
+
+`emb cross` clones `cross.source` first and resolves the target against the
+checkout, wherever `-w` or `workspace:` put it. Three things follow from the
+clone coming first:
+
+- `--dry-run`, `--json`, `--clean` and `--list-targets` fetch nothing. They
+  use a checkout that is already there; without one, `--list-targets` shows
+  the target as not resolved and the others say to run `--prepare` or
+  `--build` once.
+- A target that does not resolve stops only itself. `--target local` and the
+  other targets build, where a bad `extends:` used to fail every command.
+- Only `emb cross` does this. `emb fetch` and `emb doctor --target` do not
+  clone and stop on a manifest that has a `source#` target; `emb matrix`
+  skips the target with a warning. A path into the workspace
+  (`workspace/app/<name>#<target>`) works with all of them once the embedder
+  is cloned, but it names where the clone lands, so it breaks under `-w`.
+
+A directory that is itself called `source` is written `./source#<target>`.
 
 ##### Where the board library lives
 
@@ -1657,21 +1689,16 @@ cross:
   targets:
     rpi5-trixie:
       # ivi-homescreen's project layer for this board, which extends the board.
-      extends: 'workspace/app/ivi-homescreen#rpi5-trixie'
+      extends: 'source#rpi5-trixie'
       defines:
         # The project layer turns plugins on and expects ivi-homescreen-plugins
         # checked out beside the embedder. Off, unless you add that checkout.
         DISABLE_PLUGINS: 'ON'
 ```
 
-That path is inside the workspace, and emb resolves `extends:` before it clones
-anything, so on a fresh checkout nothing resolves, `--target local` included,
-until the embedder is there. Clone it once, at the commit the manifest pins:
-
-```sh
-git clone https://github.com/toyota-connected/ivi-homescreen.git workspace/app/ivi-homescreen
-git -C workspace/app/ivi-homescreen checkout <cross.source.rev>
-```
+`source#` is the embedder `cross.source` names, at the commit it pins. `emb
+cross` clones it before it resolves the target, so there is nothing to check
+out by hand.
 
 **The runtime for the board's architecture, and a way to run it.**
 flatpak-builder runs the runtime's own tools while it packages, so the build

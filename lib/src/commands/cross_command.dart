@@ -555,21 +555,23 @@ class CrossCommand extends Command<int> {
         FileSystemEntity.typeSync(inputPath) == FileSystemEntityType.file
         ? File(inputPath).absolute.parent
         : Directory(inputPath).absolute;
-    final CrossProject project;
-    try {
-      final resolved = _project.resolve(inputPath);
-      if (resolved == null) {
-        _logger.err('No emb manifest at $inputPath.');
-        return ExitCode.usage.code;
-      }
-      project = resolved;
-    } on CrossProjectException catch (e) {
-      _logger.err(e.message);
-      return ExitCode.usage.code;
-    }
+    // A target whose `extends:` does not resolve is set aside, not fatal:
+    // it may be another target's problem, or need `cross.source` fetched
+    // first (below).
+    var project = _resolveProject(inputPath);
+    if (project == null) return ExitCode.usage.code;
 
     // --list-targets: print the targets this project defines, then exit.
     if (args['list-targets'] == true) {
+      // Fetches nothing, but a cross.source already cloned is there to read.
+      final cloned = _clonedSources(
+        project,
+        _resolveWorkspace(project, args['workspace'] as String?),
+      );
+      if (cloned.isNotEmpty) {
+        project = _resolveProject(inputPath, sourceDirs: cloned);
+        if (project == null) return ExitCode.usage.code;
+      }
       _listTargets(project);
       return ExitCode.success.code;
     }
@@ -578,7 +580,39 @@ class CrossCommand extends Command<int> {
     // it is the default when selection is required but no --target is given.
     // Native uses the shared fields (backends / defines / package); the
     // cross-only fields (image_url, toolchain, cpu_flags) don't apply.
-    final selection = project.selectTarget(args['target'] as String?);
+    final targetArg = args['target'] as String?;
+    var picked = project.selectTarget(targetArg);
+    // The checkout of cross.source, when resolving the target needed it.
+    Directory? fetchedSource;
+    final pending = project.unresolved[targetArg ?? project.defaultTarget];
+    if (picked == null && pending != null) {
+      // `extends:` can name a target inside the embedder cross.source clones,
+      // so the clone has to come first. The source is read from the target's
+      // own block, which is known before what it extends.
+      final repo = CrossTarget.repoFrom(pending.block['source']);
+      if (repo == null) {
+        _logger.err(pending.message);
+        return ExitCode.usage.code;
+      }
+      fetchedSource = await _sourceForExtends(
+        repo,
+        pending,
+        _resolveWorkspace(project, args['workspace'] as String?),
+      );
+      if (fetchedSource == null) return ExitCode.software.code;
+      project = _resolveProject(
+        inputPath,
+        sourceDirs: {pending.name: fetchedSource.path},
+      );
+      if (project == null) return ExitCode.usage.code;
+      picked = project.selectTarget(targetArg);
+      final still = project.unresolved[pending.name];
+      if (picked == null && still != null) {
+        _logger.err(still.message);
+        return ExitCode.usage.code;
+      }
+    }
+    final selection = picked;
     if (selection == null) {
       _logger.err(
         'Unknown target "${args['target']}". '
@@ -743,13 +777,16 @@ class CrossCommand extends Command<int> {
     if (compiling) {
       final declaredSource = CrossTarget.repoFrom(selection.cross['source']);
       if (declaredSource != null) {
-        final dir = await _syncRepo(
-          declaredSource,
-          workspace,
-          what: 'embedder source',
-          sourcePath: selection.sourcePath,
-          offline: offline,
-        );
+        // Already synced when resolving `extends:` needed the checkout.
+        final dir =
+            fetchedSource ??
+            await _syncRepo(
+              declaredSource,
+              workspace,
+              what: 'embedder source',
+              sourcePath: selection.sourcePath,
+              offline: offline,
+            );
         if (dir == null) return ExitCode.software.code;
         _sourceOverride = dir;
       }
@@ -1218,10 +1255,84 @@ class CrossCommand extends Command<int> {
     return ok ? null : ExitCode.unavailable.code;
   }
 
+  /// The project at [inputPath] with unresolvable targets set aside, or null
+  /// after reporting why there is none.
+  CrossProject? _resolveProject(
+    String inputPath, {
+    Map<String, String> sourceDirs = const {},
+  }) {
+    try {
+      final resolved = _project.resolve(
+        inputPath,
+        deferExtends: true,
+        sourceDirs: sourceDirs,
+      );
+      if (resolved == null) _logger.err('No emb manifest at $inputPath.');
+      return resolved;
+    } on CrossProjectException catch (e) {
+      _logger.err(e.message);
+      return null;
+    }
+  }
+
+  /// Where the `cross.source` of each unresolved target is already cloned,
+  /// by target name. Targets with no source, or none cloned yet, are absent.
+  Map<String, String> _clonedSources(CrossProject project, Workspace ws) {
+    final out = <String, String>{};
+    for (final t in project.unresolved.values) {
+      final repo = CrossTarget.repoFrom(t.block['source']);
+      if (repo == null) continue;
+      final dest = Directory(
+        p.join(ws.appDir.path, GitRepo.fromSource(repo).folderName),
+      );
+      if (dest.existsSync()) out[t.name] = dest.path;
+    }
+    return out;
+  }
+
+  /// The checkout of [repo], the `cross.source` of a target whose `extends:`
+  /// needs it to resolve; null after reporting why it could not be had.
+  ///
+  /// Reporting and cleaning modes touch no network, so they use a checkout
+  /// that is already there and do not make one.
+  Future<Directory?> _sourceForExtends(
+    SourceRepo repo,
+    UnresolvedTarget pending,
+    Workspace workspace,
+  ) async {
+    final args = argResults!;
+    final offline = args['offline'] == true || args['offline-strict'] == true;
+    final inspecting =
+        args['dry-run'] == true ||
+        args['json'] == true ||
+        args['clean'] == true ||
+        args['clean-all'] == true;
+    if (inspecting && !offline) {
+      final dest = Directory(
+        p.join(workspace.appDir.path, GitRepo.fromSource(repo).folderName),
+      );
+      if (dest.existsSync()) return dest;
+      _logger.err(
+        'Target "${pending.name}" extends a target in cross.source '
+        '(${repo.uri}), which is not fetched yet, and this mode fetches '
+        'nothing. Run `emb cross --prepare` or `--build` once, or clone it '
+        'to ${dest.path}.',
+      );
+      return null;
+    }
+    return _syncRepo(
+      repo,
+      workspace,
+      what: 'embedder source',
+      sourcePath: pending.sourcePath,
+      offline: offline,
+    );
+  }
+
   /// Print the project's selectable targets (grouped by their family file when
   /// they came from a `cross.targets` block), plus the built-in native build.
   void _listTargets(CrossProject project) {
-    if (project.targets.isEmpty) {
+    if (project.targets.isEmpty && project.unresolved.isEmpty) {
       _logger.info('Targets: (none)  (plus the built-in: local)');
       return;
     }
@@ -1240,6 +1351,13 @@ class CrossCommand extends Command<int> {
         '  ${ref.name.padRight(16)} ${arch.padRight(8)} '
         '${provider.padRight(13)} $be$group'
         '${desc != null ? '  — $desc' : ''}',
+      );
+    }
+    for (final t in project.unresolved.values) {
+      final ext = t.block['extends'];
+      _logger.info(
+        '  ${t.name.padRight(16)} ${'?'.padRight(8)} '
+        '(extends $ext, not resolved)',
       );
     }
     _logger.info(

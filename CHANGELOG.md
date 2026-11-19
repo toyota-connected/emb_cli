@@ -24,6 +24,18 @@ the same everywhere. Use an absolute path, or accept the per-clone key.
 An earlier version of this entry claimed no key moved. That was wrong: it
 conflated how the provider resolves the value with how the key hashes it.
 
+**`extends: 'source#<target>'` now means the checkout of `cross.source`.** It
+used to mean a directory called `source` beside the manifest. Write
+`./source#<target>` for the directory.
+
+**`emb cross` no longer fails on a target it was not asked to build.** A
+target whose `extends:` does not resolve is reported when it is selected, and
+`--list-targets` lists it as not resolved. Before, one such target failed
+every `emb cross` run on the manifest, `--target local` included. A script
+that used `emb cross --list-targets` or `--dry-run` to validate every target
+of a manifest has to select each target to get the error. `emb fetch`,
+`emb doctor` and `emb matrix` are unchanged.
+
 **A flatpak with no `runtime_version` now builds against freedesktop `25.08`,
 not `23.08`.** A manifest that sets `cross.package.flatpak` and omits the key
 needs `org.freedesktop.Platform//25.08` and `org.freedesktop.Sdk//25.08`
@@ -89,6 +101,17 @@ version is unaffected.
 
 **Cross.**
 
+- feat(cross): `extends: 'source#<target>'` extends a target in the project
+  the target's own `cross.source` clones (#309). A manifest that clones its
+  embedder could not build it for a board: the embedder's project layer is
+  inside the clone, `extends:` was resolved before anything was cloned, and
+  the only way to name the layer was a path into the workspace that did not
+  exist yet. `emb cross` now sets aside a target that does not resolve,
+  clones the selected one's `cross.source`, and resolves again against the
+  checkout. The path form (`workspace/app/<name>#<target>`) resolves the same
+  way on a fresh checkout, though it breaks under `-w`. `--dry-run`, `--json`,
+  `--clean` and `--list-targets` still fetch nothing and use a checkout that
+  is already there. See Upgrading.
 - fix(cross): the default flatpak `runtime_version` was `23.08`, which flatpak
   reports end-of-life (#311). A manifest that omitted the key built against a
   runtime the user is warned about on install and that can leave flathub. The
