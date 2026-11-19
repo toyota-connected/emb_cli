@@ -96,12 +96,9 @@ class BundleBuilder {
     if (isDebug) {
       // JIT runs from kernel_blob.bin; nothing else to add.
     } else {
-      // AOT runs from libapp.so — drop the now-redundant JIT kernel so it
-      // isn't shipped in a profile/release bundle.
       libapp.copySync(p.join(libDir.path, 'libapp.so'));
-      final kernelBlob = File(p.join(outAssets.path, 'kernel_blob.bin'));
-      if (kernelBlob.existsSync()) kernelBlob.deleteSync();
     }
+    _pruneBuildResidue(outAssets, aot: !isDebug);
     engineSo.copySync(p.join(libDir.path, 'libflutter_engine.so'));
     _stageCodeAssets(outAssets, libDir);
 
@@ -164,6 +161,44 @@ class BundleBuilder {
         entity.copySync(dest);
       }
     }
+  }
+
+  /// What `flutter build bundle` writes for a JIT run and an AOT image does
+  /// not read. The assets of a profile/release bundle come from a debug-mode
+  /// `flutter build bundle` (the image itself is gen_snapshot's), so they
+  /// arrive with the kernel and the JIT isolate snapshot, which is larger than
+  /// most apps' `libapp.so`.
+  static const jitOnlyAssets = [
+    'kernel_blob.bin',
+    'vm_snapshot_data',
+    'isolate_snapshot_data',
+  ];
+
+  /// Remove from the copied [assets] what is left over from building them and
+  /// no engine reads: Flutter's incremental-build stamp, the `CMakeCache.txt`
+  /// emb writes so build hooks can find a compiler (which also names paths on
+  /// the build host), and, for an [aot] bundle, the [jitOnlyAssets].
+  ///
+  /// The app's `build/flutter_assets` is left as it is: the next
+  /// `flutter build bundle` wants its stamp.
+  static void _pruneBuildResidue(Directory assets, {required bool aot}) {
+    for (final name in ['.last_build_id', if (aot) ...jitOnlyAssets]) {
+      final f = File(p.join(assets.path, name));
+      if (f.existsSync()) f.deleteSync();
+    }
+    // `linux/<arch>/<mode>/CMakeCache.txt`, and the directories that held
+    // only it. An app asset under `linux/` is not touched.
+    final linux = Directory(p.join(assets.path, 'linux'));
+    if (!linux.existsSync()) return;
+    for (final arch in linux.listSync().whereType<Directory>()) {
+      for (final mode in arch.listSync().whereType<Directory>()) {
+        final cache = File(p.join(mode.path, 'CMakeCache.txt'));
+        if (cache.existsSync()) cache.deleteSync();
+        if (mode.listSync().isEmpty) mode.deleteSync();
+      }
+      if (arch.listSync().isEmpty) arch.deleteSync();
+    }
+    if (linux.listSync().isEmpty) linux.deleteSync();
   }
 
   static void _copyDir(Directory src, Directory dst) {

@@ -180,6 +180,16 @@ version is unaffected.
   checkout that is there. Both take the workspace the way `emb cross` does,
   and `emb fetch` accepts `-w`, which its documentation already listed. See
   Upgrading.
+- fix(bundle): a profile or release bundle shipped files no AOT engine reads.
+  Its assets come from a debug-mode `flutter build bundle`, and the whole
+  directory was copied with only `kernel_blob.bin` removed. That left the JIT
+  `isolate_snapshot_data` (11.6 MB for the example app) and
+  `vm_snapshot_data`, Flutter's `.last_build_id`, and the
+  `linux/<arch>/<mode>/CMakeCache.txt` emb writes for build hooks, which names
+  compiler paths on the build host. All are dropped from the assembled bundle,
+  so from the tarball, flatpak and deploy too; a debug bundle keeps the
+  snapshots it runs from. Applies to `emb cross`, `emb bundle` and
+  `emb build`.
 - fix(fetch): `emb fetch` left out two things `emb cross --build --offline`
   cannot get for itself. It resolved the target without the app's `.emb/`
   layer, so a `-dev` package or cargo module only the app declares was not

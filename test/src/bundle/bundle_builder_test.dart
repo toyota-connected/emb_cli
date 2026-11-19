@@ -124,6 +124,110 @@ void main() {
     );
   });
 
+  // The assets of an AOT bundle come from a debug-mode `flutter build
+  // bundle`, so they arrive with what only a JIT run reads, Flutter's build
+  // stamp, and the CMakeCache.txt emb writes for build hooks.
+  group('build residue', () {
+    /// Adds to the staged assets everything a real build leaves there.
+    Directory withResidue(Directory app) {
+      final assets = Directory(p.join(app.path, 'build', 'flutter_assets'));
+      for (final name in [
+        'vm_snapshot_data',
+        'isolate_snapshot_data',
+        '.last_build_id',
+        'AssetManifest.bin',
+        'linux/x64/debug/CMakeCache.txt',
+        // An asset the app itself declared under linux/.
+        'linux/logo.png',
+      ]) {
+        File(p.join(assets.path, name))
+          ..createSync(recursive: true)
+          ..writeAsStringSync('x');
+      }
+      return assets;
+    }
+
+    List<String> assembled(String out) {
+      final root = p.join(out, 'data', 'flutter_assets');
+      return [
+        for (final e in Directory(root).listSync(recursive: true))
+          if (e is File) p.relative(e.path, from: root),
+      ]..sort();
+    }
+
+    test('an AOT bundle keeps only what the engine reads', () {
+      final s = stageInputs();
+      final assets = withResidue(s.app);
+      final out = p.join(tmp.path, 'out');
+
+      final result = BundleBuilder(Workspace(s.ws)).assemble(
+        appPath: s.app.path,
+        mode: 'release',
+        arch: 'x86_64',
+        outputDir: out,
+      );
+
+      expect(result.success, isTrue);
+      expect(assembled(out), [
+        'AssetManifest.bin',
+        'fonts/MaterialIcons.ttf',
+        'linux/logo.png',
+      ]);
+      expect(
+        Directory(
+          p.join(out, 'data', 'flutter_assets', 'linux', 'x64'),
+        ).existsSync(),
+        isFalse,
+      );
+      // The app's own build tree is not edited: the next build wants it.
+      expect(File(p.join(assets.path, '.last_build_id')).existsSync(), isTrue);
+      expect(
+        File(
+          p.join(assets.path, 'linux/x64/debug/CMakeCache.txt'),
+        ).existsSync(),
+        isTrue,
+      );
+    });
+
+    test('a debug bundle keeps what a JIT run reads', () {
+      final s = stageInputs();
+      withResidue(s.app);
+      final eng = Directory(
+        p.join(
+          s.ws.path,
+          '.config',
+          'flutter_workspace',
+          'flutter-engine',
+          'bundle-debug-x86_64',
+        ),
+      );
+      File(p.join(eng.path, 'data', 'icudtl.dat'))
+        ..createSync(recursive: true)
+        ..writeAsStringSync('ICU');
+      File(p.join(eng.path, 'lib', 'libflutter_engine.so'))
+        ..createSync(recursive: true)
+        ..writeAsStringSync('ENG');
+      final out = p.join(tmp.path, 'out');
+
+      final result = BundleBuilder(Workspace(s.ws)).assemble(
+        appPath: s.app.path,
+        mode: 'debug',
+        arch: 'x86_64',
+        outputDir: out,
+      );
+
+      expect(result.success, isTrue);
+      expect(assembled(out), [
+        'AssetManifest.bin',
+        'fonts/MaterialIcons.ttf',
+        'isolate_snapshot_data',
+        'kernel_blob.bin',
+        'linux/logo.png',
+        'vm_snapshot_data',
+      ]);
+    });
+  });
+
   test('maps arch token to the engine bundle dir (arm64)', () {
     final s = stageInputs();
     // Rename engine dir to the arm64 token to prove arch mapping is used.
