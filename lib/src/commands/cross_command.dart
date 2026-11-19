@@ -2416,7 +2416,7 @@ class CrossCommand extends Command<int> {
 
     // Build any app-owned native modules once and stage their declared `.so`
     // artifacts into the bundle's lib/ (next to libapp.so). Done before the
-    // per-backend copy below, so `_copyTree` propagates them to every runnable
+    // per-backend copy below, so the copy propagates them to every runnable
     // dir, tarball, flatpak, and deploy.
     if (target.modules.isNotEmpty) {
       final libDir = Directory(p.join(appBundle.path, 'lib'))
@@ -2482,9 +2482,8 @@ class CrossCommand extends Command<int> {
       final outDir = Directory(
         p.join(buildRoot.path, multi ? 'runnable-${r.backend}' : 'runnable'),
       );
-      if (outDir.existsSync()) outDir.deleteSync(recursive: true);
-      await _copyTree(appBundle, outDir);
       try {
+        await runnable.stage(appBundle, outDir);
         final bin = await runnable.install(binary, outDir);
         // Ride-along project libraries: copy the embedder's DT_NEEDED shared
         // objects that resolve inside the backend's build tree (e.g.
@@ -2924,20 +2923,6 @@ class CrossCommand extends Command<int> {
     } on ProcessException catch (e) {
       _logger.err('run failed: ${e.message}');
       return ExitCode.software.code;
-    }
-  }
-
-  /// Recursively copy the contents of [src] into [dst] (preserving symlinks +
-  /// mode), via `cp -a`.
-  Future<void> _copyTree(Directory src, Directory dst) async {
-    dst.createSync(recursive: true);
-    final r = await Process.run('cp', [
-      '-a',
-      '.',
-      dst.path,
-    ], workingDirectory: src.path);
-    if (r.exitCode != 0) {
-      throw RunnableBundleException('copy failed: ${r.stderr}');
     }
   }
 
