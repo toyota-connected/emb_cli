@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/commands/fetch_command.dart';
+import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:mason_logger/mason_logger.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:path/path.dart' as p;
@@ -13,6 +14,11 @@ class _MockLogger extends Mock implements Logger {}
 class _CaptureLogger extends Logger {
   final errors = StringBuffer();
   final infos = StringBuffer();
+  final warnings = StringBuffer();
+
+  @override
+  void warn(String? message, {String? tag, LogStyle? style}) =>
+      warnings.writeln(message);
 
   @override
   void err(String? message, {LogStyle? style}) => errors.writeln(message);
@@ -192,6 +198,150 @@ cross:
       );
       expect(cloned().existsSync(), isFalse);
       expect(Directory(p.join(other, 'app', 'embedder')).existsSync(), isTrue);
+    });
+  });
+
+  // The app is the other checkout an offline build reuses and cannot make, so
+  // fetch clones a declared cross.app and resolves its pub packages.
+  group('cross.app', () {
+    late _CaptureLogger log;
+    late Directory origin;
+    late List<({String exe, List<String> args, String? cwd})> calls;
+    var onPath = false;
+
+    Future<RunResult> fake(
+      String exe,
+      List<String> args, {
+      String? workingDirectory,
+      Map<String, String>? environment,
+      bool includeParentEnvironment = true,
+      bool runInShell = false,
+      ProcessOutputMode output = ProcessOutputMode.capture,
+      String? label,
+    }) async {
+      calls.add((exe: exe, args: args, cwd: workingDirectory));
+      return const RunResult(0, '', '');
+    }
+
+    Future<int?> fetch(List<String> args) {
+      final r = CommandRunner<int>('emb', 'test')
+        ..addCommand(
+          FetchCommand(
+            logger: log,
+            processRunner: fake,
+            toolProbe: (tool) async => onPath,
+          ),
+        );
+      return r.run(['fetch', ...args]);
+    }
+
+    /// A git repository holding a Flutter app at [sub] (the root when empty).
+    Future<void> makeOrigin({bool lock = true, String sub = ''}) async {
+      origin = Directory(p.join(tmp.path, 'origin', 'my_app'));
+      final app = Directory(p.join(origin.path, sub))
+        ..createSync(recursive: true);
+      File(p.join(app.path, 'pubspec.yaml')).writeAsStringSync('name: a\n');
+      if (lock) File(p.join(app.path, 'pubspec.lock')).writeAsStringSync('');
+      for (final args in [
+        ['init', '-q'],
+        ['add', '-A'],
+        ['commit', '-q', '-m', 'init'],
+      ]) {
+        final r = await Process.run('git', [
+          '-c',
+          'user.name=t',
+          '-c',
+          'user.email=t@example.invalid',
+          '-c',
+          'init.defaultBranch=main',
+          ...args,
+        ], workingDirectory: origin.path);
+        expect(r.exitCode, 0, reason: '${r.stderr}');
+      }
+    }
+
+    File manifest(String uri, {String extra = ''}) =>
+        File(p.join(tmp.path, 'app.emb.yaml'))..writeAsStringSync(
+          'id: app\nworkspace: ws\ncross:\n  provider: arm-gnu\n'
+          '  app: { uri: $uri$extra }\n',
+        );
+
+    String clone() => p.join(tmp.path, 'ws', 'app', 'my_app');
+
+    /// The SDK `emb flutter` would have put in the workspace.
+    String workspaceSdk() {
+      final bin = File(p.join(tmp.path, 'ws', 'flutter', 'bin', 'flutter'))
+        ..createSync(recursive: true);
+      return bin.path;
+    }
+
+    setUp(() {
+      log = _CaptureLogger();
+      calls = [];
+      onPath = false;
+    });
+
+    test('is cloned and resolved with the workspace SDK', () async {
+      await makeOrigin();
+      final sdk = workspaceSdk();
+      final f = manifest(origin.path);
+      expect(await fetch([f.path, '-t', 'local']), ExitCode.success.code);
+      expect(File(p.join(clone(), 'pubspec.yaml')).existsSync(), isTrue);
+      expect(calls, hasLength(1));
+      expect(calls.single.exe, sdk);
+      expect(calls.single.args, ['pub', 'get', '--enforce-lockfile']);
+      expect(calls.single.cwd, clone());
+    });
+
+    test('falls back to flutter on PATH', () async {
+      await makeOrigin();
+      onPath = true;
+      final f = manifest(origin.path);
+      expect(await fetch([f.path, '-t', 'local']), ExitCode.success.code);
+      expect(calls.single.exe, 'flutter');
+    });
+
+    test('pubspec_path names the app inside the repo', () async {
+      await makeOrigin(sub: 'packages/ui');
+      workspaceSdk();
+      final f = manifest(origin.path, extra: ', pubspec_path: packages/ui');
+      expect(await fetch([f.path, '-t', 'local']), ExitCode.success.code);
+      expect(calls.single.cwd, p.join(clone(), 'packages', 'ui'));
+    });
+
+    test('with no Flutter SDK it is cloned, and the gap is named', () async {
+      await makeOrigin();
+      final f = manifest(origin.path);
+      expect(await fetch([f.path, '-t', 'local']), ExitCode.success.code);
+      expect(Directory(clone()).existsSync(), isTrue);
+      expect(calls, isEmpty);
+      expect(log.warnings.toString(), contains('are not fetched'));
+    });
+
+    test('with no pubspec.lock it resolves unpinned and says so', () async {
+      await makeOrigin(lock: false);
+      workspaceSdk();
+      final f = manifest(origin.path);
+      expect(await fetch([f.path, '-t', 'local']), ExitCode.success.code);
+      expect(calls.single.args, ['pub', 'get']);
+      expect(log.warnings.toString(), contains('no pubspec.lock'));
+    });
+
+    test('--app replaces it: nothing is cloned', () async {
+      await makeOrigin();
+      onPath = true;
+      final f = manifest(origin.path);
+      expect(
+        await fetch([f.path, '-t', 'local', '--app', origin.path]),
+        ExitCode.success.code,
+      );
+      expect(Directory(clone()).existsSync(), isFalse);
+      expect(calls.single.cwd, origin.path);
+    });
+
+    test('a failed clone fails the fetch', () async {
+      final f = manifest(p.join(tmp.path, 'no-such-repo'));
+      expect(await fetch([f.path, '-t', 'local']), ExitCode.software.code);
     });
   });
 }

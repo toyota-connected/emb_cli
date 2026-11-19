@@ -43,8 +43,15 @@ manifest, where `emb cross` puts the manifest ahead of the environment. With
 a `workspace:` that differs from where you ran `emb fetch`, the fetch now
 lands in the manifest's workspace. `--workspace` still wins.
 
-**`emb fetch` clones a declared `cross.source`.** It needs git and network
-access to the embedder, and fails if the clone does.
+**`emb fetch` clones a declared `cross.source` and `cross.app`.** It needs
+git and network access to both, and fails if a clone does. With a Flutter SDK
+in the workspace or on `PATH` it also runs `flutter pub get` in the app, and
+fails if that does; without one it warns and carries on. `emb cross
+--fetch-only` clones both and resolves no packages. `--app` replaces the
+declared app, as before.
+
+**`emb fetch --app` runs the workspace's Flutter SDK when there is one.** It
+ran `flutter` from `PATH` regardless, which is not the SDK the build uses.
 
 **A flatpak with no `runtime_version` now builds against freedesktop `25.08`,
 not `23.08`.** A manifest that sets `cross.package.flatpak` and omits the key
@@ -162,6 +169,14 @@ version is unaffected.
   checkout that is there. Both take the workspace the way `emb cross` does,
   and `emb fetch` accepts `-w`, which its documentation already listed. See
   Upgrading.
+- feat(fetch): `emb fetch` clones a declared `cross.app` and prefetches its
+  pub packages. It cloned `cross.source` and left the app out, so `emb cross
+  --build --offline` after a fetch stopped at the app clone unless the app had
+  been built online once. `pubspec_path` is honored, and the clone is the
+  `${app_root}` that module paths resolve against. `emb cross --fetch-only`
+  clones it as well, and so resolves the closure with the app's own `.emb/`
+  layer merged, as the build does. The prefetch uses the workspace's Flutter
+  SDK ahead of `PATH`. See Upgrading.
 - fix(cross): the default flatpak `runtime_version` was `23.08`, which flatpak
   reports end-of-life (#311). A manifest that omitted the key built against a
   runtime the user is warned about on install and that can leave flathub. The

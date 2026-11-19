@@ -785,7 +785,7 @@ emb cross <project-dir|manifest.yaml> [options]
 | `--clean-all` | off | Also remove the downloaded / extracted toolchain + sysroot and the apt / deb caches, then exit. |
 | `--update-lock` | off | Regenerate this target's `emb.lock` entry from the resolved toolchain/sysroot (accepts an intentional URL / version change). See [Reproducible builds](#reproducible-builds-emblock). |
 | `--no-verify` | off | Skip `emb.lock` verification for this resolve (don't fail on a drifted artifact sha or version). |
-| `--fetch-only` | off | Resolve and materialize the toolchain + sysroot closure (and pin `emb.lock`), then stop before configuring or building — the online acquisition step. Same work as [`emb fetch`](#emb-fetch). See [Offline builds](#offline-builds). |
+| `--fetch-only` | off | Resolve and materialize the toolchain + sysroot closure (and pin `emb.lock`), then stop before configuring or building — the online acquisition step. Clones a declared `cross.source` and `cross.app`. Same work as [`emb fetch`](#emb-fetch), short of the pub prefetch. See [Offline builds](#offline-builds). |
 | `--offline` | off | Deny all network access: reuse already-cached toolchain/sysroot inputs and fail on a miss (run `--fetch-only` online first). Cargo modules build against their vendored crates (`CARGO_HOME`/`CARGO_NET_OFFLINE`). See [Offline builds](#offline-builds). |
 | `--offline-strict` | off | Like `--offline`, but also run build subprocesses inside a network namespace, and **refuse to build** when that isolation is unavailable instead of degrading to input-level denial. See [Offline builds](#offline-builds). |
 | `--host-tools` | off | With `--build`: use the host's `cmake`/`meson` instead of the SDK's, for OE SDKs that pin an old one (e.g. AGL ships cmake 3.16.5). The OE env + toolchain/cross file are unchanged. Also set via `cross.host_build_tools`. |
@@ -1497,8 +1497,9 @@ archive.
   `emb cross … --fetch-only`) resolves and materializes the toolchain + sysroot
   closure — including the apt `-dev` set — into the shared store and pins
   `emb.lock`. It also vendors each `build: cargo` module's crates
-  (`cargo vendor --locked`, keyed by its `Cargo.lock`) into the store, and with
-  `--app` runs `flutter pub get --enforce-lockfile` into a store-rooted
+  (`cargo vendor --locked`, keyed by its `Cargo.lock`) into the store, clones a
+  declared `cross.source` and `cross.app`, and for the app (declared, or passed
+  with `--app`) runs `flutter pub get --enforce-lockfile` into a store-rooted
   `PUB_CACHE`. Then it stops. Everything now lives under the shared cache, so
   one [`emb cache export`](#emb-cache) escrows the whole closure.
 - `emb cross … --build --offline` then builds with all network access denied:
@@ -1764,9 +1765,19 @@ and pin `emb.lock`, then stop — the online acquisition step for an
 [offline build](#offline-builds). It clones a declared `cross.source`,
 resolves the toolchain + sysroot (no configure/build), vendors each
 `build: cargo` module's crates, and with `--app` prefetches the app's pub
-packages — so `emb cross … --build --offline` afterwards needs no network. A
-declared `cross.app` is not cloned; pass the app with `--app`. Native (`local`/`host`) targets skip the toolchain
-resolve but still vendor crates and prefetch pub.
+packages — so `emb cross … --build --offline` afterwards needs no network.
+Native (`local`/`host`) targets skip the toolchain resolve but still vendor
+crates and prefetch pub.
+
+A declared `cross.app` is cloned too, into `<workspace>/app`, and its pub
+packages are prefetched as if it had been passed with `--app`, which replaces
+it. Two things differ for an app the manifest named rather than the command
+line: with no Flutter SDK to run, the clone is kept and a warning says the
+packages are missing, and an app with no `pubspec.lock` is resolved unpinned,
+with a warning, where `--app` fails. The SDK is the one in the workspace when
+there is one (what the build runs), else `flutter` on `PATH`. `emb fetch`
+does not install the SDK a manifest pins with `flutter_version:`; run
+`emb flutter` first on a cold workspace.
 
 ```sh
 emb fetch <project-dir|manifest.yaml> [options]
@@ -1777,7 +1788,7 @@ emb fetch <project-dir|manifest.yaml> [options]
 | `<project-dir\|manifest>` | **mandatory (positional)** | Project dir or manifest file (same resolution as `emb cross`). |
 | `-t`, `--target <name>` | manifest default | Target to fetch; a `cross.targets` entry or a per-board `.emb/` file. |
 | `-w`, `--workspace <dir>` | manifest `workspace:`, then `$FLUTTER_WORKSPACE`, then cwd | Workspace root, resolved as `emb cross` does, so what is fetched is where the build looks. |
-| `--app <dir>` | — | Also prefetch this Flutter app's pub packages (`flutter pub get --enforce-lockfile`) into the store-rooted `PUB_CACHE`, so they are part of the offline closure the escrow archives. |
+| `--app <dir>` | a declared `cross.app` | Prefetch this Flutter app's pub packages (`flutter pub get --enforce-lockfile`) into the store-rooted `PUB_CACHE`, so they are part of the offline closure the escrow archives. Replaces a declared `cross.app`. |
 | `--update-lock` | off | Regenerate this target's `emb.lock` entry from the resolved toolchain/sysroot. |
 | `--no-verify` | off | Skip `emb.lock` verification for this resolve. |
 
