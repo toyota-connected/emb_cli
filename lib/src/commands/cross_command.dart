@@ -25,6 +25,7 @@ import 'package:emb_cli/src/cross/emb_lock.dart';
 import 'package:emb_cli/src/cross/embedder_artifact.dart';
 import 'package:emb_cli/src/cross/flatpak_packager.dart';
 import 'package:emb_cli/src/cross/flatpak_vendor.dart';
+import 'package:emb_cli/src/cross/flutter_provision.dart';
 import 'package:emb_cli/src/cross/hook_cargo.dart';
 import 'package:emb_cli/src/cross/image_publisher.dart';
 import 'package:emb_cli/src/cross/ipk_packager.dart';
@@ -43,7 +44,6 @@ import 'package:emb_cli/src/cross/runnable_bundle.dart';
 import 'package:emb_cli/src/cross/source_checkout.dart';
 import 'package:emb_cli/src/cross/tarball_packager.dart';
 import 'package:emb_cli/src/engine/engine_artifacts.dart';
-import 'package:emb_cli/src/env/env_script.dart';
 import 'package:emb_cli/src/flutter/flutter_sdk.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/host/interactivity.dart';
@@ -684,28 +684,8 @@ class CrossCommand extends Command<int> {
     // apply to a host build exactly as they do to a cross one.
     CrossTarget? resolveTarget() {
       final appDir = appDirArg;
-      // Stamp embedder augments with their declaring file so per-augment
-      // provenance survives the app-layer union merge.
-      final cross = _stampAugmentSource(selection.cross, selection.sourcePath);
-      final selected = appDir == null
-          ? cross
-          : _project.applyAppLayer(
-              cross: cross,
-              appDir: appDir,
-              targetName: effectiveTarget,
-              native: isNative,
-            );
-      final appLayerSource = appDir == null
-          ? null
-          : _project.appLayerSourcePath(
-              appDir: appDir,
-              targetName: effectiveTarget,
-              native: isNative,
-            );
-      // Augments added by the app layer have no _source yet — stamp them now.
-      if (appLayerSource != null) {
-        _stampAugmentSource(selected, appLayerSource, onlyUnstamped: true);
-      }
+      final layer = _project.layered(selection, appDir: appDir);
+      final selected = layer.cross;
       final CrossTarget t;
       try {
         final patchVars = {
@@ -713,10 +693,7 @@ class CrossCommand extends Command<int> {
           if (appDir != null) 'app_root': _appDir(appDir)!,
         };
         t = CrossTarget.fromMap(selected)
-            .withResolvedPaths(
-              appLayerSource ?? selection.sourcePath,
-              vars: patchVars,
-            )
+            .withResolvedPaths(layer.sourcePath, vars: patchVars)
             .withDefineOverrides(cliDefines);
         // fromMap throws ArgumentError on an unknown provider token,
         // FormatException on a malformed run: block.
@@ -2146,74 +2123,19 @@ class CrossCommand extends Command<int> {
     }
   }
 
-  /// Provision the Flutter SDK the manifest pins, when the workspace has none.
-  /// An SDK already there is left alone; use `emb flutter` to change it.
   Future<bool> _ensureFlutterSdk(
     CrossProject project,
     Workspace workspace,
     HostInfo host,
     bool offline,
-  ) async {
-    final version = project.flutterVersion;
-    if (version == null || version.isEmpty) return true;
-    final sdk = FlutterSdk(workspace, host: host);
-
-    if (!File(sdk.flutterBin).existsSync()) {
-      if (offline) {
-        _logger.err(
-          '  --offline cannot install Flutter SDK $version into '
-          '${workspace.flutterDir.path} — run once online, or run '
-          '"emb flutter" first.',
-        );
-        return false;
-      }
-      final progress = _steps.start('Installing Flutter SDK $version');
-      final result = await sdk.install(version);
-      if (!result.success) {
-        progress.fail('Flutter SDK $version: ${result.message ?? "failed"}');
-        return false;
-      }
-      progress.complete('Flutter SDK $version → ${workspace.flutterDir.path}');
-      File(p.join(workspace.root.path, 'setup_env.sh')).writeAsStringSync(
-        generateSetupEnv(
-          workspace: workspace,
-          host: host,
-          engineVersion: result.engineCommit,
-        ),
-      );
-    }
-
-    // emb picks its frontend_server by probing bin/cache before it invokes
-    // flutter, and a fresh clone has none — so a cold workspace takes the wrong
-    // branch and the kernel snapshot fails. No-op once populated.
-    final snapshot = File(
-      p.join(
-        workspace.flutterDir.path,
-        'bin/cache/dart-sdk/bin/snapshots/frontend_server_aot.dart.snapshot',
-      ),
-    );
-    if (!snapshot.existsSync()) {
-      if (offline) {
-        _logger.err(
-          '  --offline cannot precache the Flutter SDK in '
-          '${workspace.flutterDir.path} — run once online.',
-        );
-        return false;
-      }
-      final progress = _steps.start('Precaching Flutter artifacts');
-      final r = await _runProcess(sdk.flutterBin, [
-        'precache',
-        '--linux',
-        '--no-universal',
-      ], output: ProcessOutputMode.stream);
-      if (r.exitCode != 0) {
-        progress.fail('flutter precache failed');
-        return false;
-      }
-      progress.complete('Flutter artifacts precached');
-    }
-    return true;
-  }
+  ) => ensureFlutterSdk(
+    project.flutterVersion,
+    workspace,
+    host: host,
+    logger: _logger,
+    run: _runProcess,
+    offline: offline,
+  );
 
   /// `flutter pub get` the app when its `.dart_tool/package_config.json` is
   /// missing or older than its pubspec, which the AOT step would otherwise
@@ -3674,26 +3596,6 @@ class CrossCommand extends Command<int> {
         multi ? 'runnable-$backend' : 'runnable',
       ),
   };
-
-  /// Tag each augment map in [cross] with `_source: [sourcePath]` so
-  /// [AugmentLib.fromMap] can recover per-augment provenance after union
-  /// merges. When [onlyUnstamped] is true, only entries missing `_source` are
-  /// stamped (used to tag app-layer additions after the merge).
-  static Map<String, dynamic> _stampAugmentSource(
-    Map<String, dynamic> cross,
-    String? sourcePath, {
-    bool onlyUnstamped = false,
-  }) {
-    final augments = cross['augment'];
-    if (augments is! List || sourcePath == null) return cross;
-    for (var i = 0; i < augments.length; i++) {
-      final a = augments[i];
-      if (a is Map && !(onlyUnstamped && a.containsKey('_source'))) {
-        augments[i] = {...a, '_source': sourcePath};
-      }
-    }
-    return cross;
-  }
 
   /// Derive the app project directory from the `--app` argument, which may be
   /// a directory path or a manifest file path. Always returns an absolute path.

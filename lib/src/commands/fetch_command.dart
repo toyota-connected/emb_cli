@@ -9,6 +9,7 @@ import 'package:emb_cli/src/cross/cross_project.dart';
 import 'package:emb_cli/src/cross/cross_provider.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/cross/emb_lock.dart';
+import 'package:emb_cli/src/cross/flutter_provision.dart';
 import 'package:emb_cli/src/cross/lock_sync.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/cross/source_checkout.dart';
@@ -16,6 +17,7 @@ import 'package:emb_cli/src/flutter/flutter_sdk.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/host/preflight.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
+import 'package:emb_cli/src/repo/git_repo.dart';
 import 'package:emb_cli/src/step_reporter.dart';
 import 'package:emb_cli/src/verbosity.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
@@ -37,7 +39,9 @@ class FetchCommand extends Command<int> {
     ManifestLoader loader = const ManifestLoader(),
     ProcessRunner? processRunner,
     ToolProbe toolProbe = whichProbe,
+    GitRunner sdkGitRunner = defaultGitRunner,
   }) : _logger = logger,
+       _gitRunner = sdkGitRunner,
        _host = host,
        _toolProbe = toolProbe,
        _project = CrossProjectResolver(loader),
@@ -84,6 +88,9 @@ class FetchCommand extends Command<int> {
   final CrossProjectResolver _project;
   final ProcessRunner? _injectedRunner;
   final ToolProbe _toolProbe;
+
+  /// Runs git for the Flutter SDK install.
+  final GitRunner _gitRunner;
 
   late final ProcessRunner _runProcess =
       _injectedRunner ?? makeProcessRunner(verbosity: embVerbosity);
@@ -231,10 +238,13 @@ class FetchCommand extends Command<int> {
         : FileSystemEntity.typeSync(appArg) == FileSystemEntityType.file
         ? p.dirname(p.absolute(appArg))
         : p.absolute(appArg);
+    // The app can add to the sysroot the build needs (a `-dev` package its
+    // hooks link against), so the closure is resolved with its layer merged.
+    final layer = _project.layered(selection, appDir: appArg);
     final CrossTarget target;
     try {
-      target = CrossTarget.fromMap(selection.cross).withResolvedPaths(
-        selection.sourcePath,
+      target = CrossTarget.fromMap(layer.cross).withResolvedPaths(
+        layer.sourcePath,
         vars: {
           'embedder_root': embedderRoot,
           if (appDir != null) 'app_root': appDir,
@@ -248,6 +258,19 @@ class FetchCommand extends Command<int> {
     }
 
     final host = _host ?? HostInfo.detect();
+
+    // `--build --offline` cannot install the SDK the manifest pins either.
+    if (!await ensureFlutterSdk(
+      project.flutterVersion,
+      workspace,
+      host: host,
+      logger: _logger,
+      run: _runProcess,
+      offline: false,
+      gitRunner: _gitRunner,
+    )) {
+      return ExitCode.software.code;
+    }
 
     // A cross target resolves a toolchain + sysroot into the store; a native
     // (`local`/`host`) build has none, so skip straight to the cargo/pub

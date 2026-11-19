@@ -320,8 +320,9 @@ class AugmentLib {
   bool get isLocal => path != null && path!.isNotEmpty;
 
   /// The manifest file this augment was declared in, when known. Set by
-  /// `_stampAugmentSource` so that after union merges augments still resolve
-  /// against their own manifest, not a blanket caller-supplied declaring file.
+  /// `CrossProjectResolver.layered` so that after union merges augments still
+  /// resolve against their own manifest, not a blanket caller-supplied
+  /// declaring file.
   final String? declaringFile;
 
   /// A copy with relative [patches] rewritten to resolve against the

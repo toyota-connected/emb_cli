@@ -280,6 +280,65 @@ class CrossProjectResolver {
     return _mergeCross(cross, layer);
   }
 
+  /// [selection]'s `cross:` block as a build of [appDir] sees it: the app's
+  /// own `.emb/` layer merged over the project's, and `sourcePath` the manifest
+  /// that relative paths in the result resolve against. With no [appDir], or
+  /// an app that has no layer for this target, that is [selection] itself.
+  ///
+  /// Each augment is stamped with its declaring file, so its relative paths
+  /// survive the union merge.
+  ///
+  /// `emb cross` and `emb fetch` share this, so the closure a fetch
+  /// materializes is the one the build asks for.
+  ({Map<String, dynamic> cross, String? sourcePath}) layered(
+    ({
+      Map<String, dynamic> cross,
+      bool isNative,
+      String name,
+      String? sourcePath,
+    })
+    selection, {
+    String? appDir,
+  }) {
+    final cross = _stampAugmentSource(selection.cross, selection.sourcePath);
+    if (appDir == null) return (cross: cross, sourcePath: selection.sourcePath);
+    final merged = applyAppLayer(
+      cross: cross,
+      appDir: appDir,
+      targetName: selection.name,
+      native: selection.isNative,
+    );
+    final layerSource = appLayerSourcePath(
+      appDir: appDir,
+      targetName: selection.name,
+      native: selection.isNative,
+    );
+    // Augments the app layer added have no stamp yet.
+    if (layerSource != null) {
+      _stampAugmentSource(merged, layerSource, onlyUnstamped: true);
+    }
+    return (cross: merged, sourcePath: layerSource ?? selection.sourcePath);
+  }
+
+  /// Tag each augment map in [cross] with `_source: [sourcePath]` so
+  /// `AugmentLib.fromMap` can recover per-augment provenance after union
+  /// merges. With [onlyUnstamped], entries that have one keep it.
+  static Map<String, dynamic> _stampAugmentSource(
+    Map<String, dynamic> cross,
+    String? sourcePath, {
+    bool onlyUnstamped = false,
+  }) {
+    final augments = cross['augment'];
+    if (augments is! List || sourcePath == null) return cross;
+    for (var i = 0; i < augments.length; i++) {
+      final a = augments[i];
+      if (a is Map && !(onlyUnstamped && a.containsKey('_source'))) {
+        augments[i] = {...a, '_source': sourcePath};
+      }
+    }
+    return cross;
+  }
+
   /// The source path of [appDir]'s layer for [targetName], or null when it has
   /// none. Lets a caller resolve the app layer's relative `patches:` against
   /// the manifest that declared them rather than the project's.

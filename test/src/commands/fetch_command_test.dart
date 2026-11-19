@@ -236,10 +236,19 @@ cross:
     }
 
     /// A git repository holding a Flutter app at [sub] (the root when empty).
-    Future<void> makeOrigin({bool lock = true, String sub = ''}) async {
+    Future<void> makeOrigin({
+      bool lock = true,
+      String sub = '',
+      String? layer,
+    }) async {
       origin = Directory(p.join(tmp.path, 'origin', 'my_app'));
       final app = Directory(p.join(origin.path, sub))
         ..createSync(recursive: true);
+      if (layer != null) {
+        File(p.join(app.path, '.emb', 'base.emb.yaml'))
+          ..createSync(recursive: true)
+          ..writeAsStringSync(layer);
+      }
       File(p.join(app.path, 'pubspec.yaml')).writeAsStringSync('name: a\n');
       if (lock) File(p.join(app.path, 'pubspec.lock')).writeAsStringSync('');
       for (final args in [
@@ -342,6 +351,131 @@ cross:
     test('a failed clone fails the fetch', () async {
       final f = manifest(p.join(tmp.path, 'no-such-repo'));
       expect(await fetch([f.path, '-t', 'local']), ExitCode.software.code);
+    });
+
+    // The app's own `.emb/` layer is part of what the build resolves, so it
+    // is part of what is fetched. Here it adds a cargo module, which makes
+    // the fetch ask for cargo; the project alone has none. A native build
+    // reads the layer's shared block, which `.emb/` keeps in base.emb.yaml.
+    const cargoLayer =
+        'id: my_app\ncross:\n  modules:\n'
+        '    - { name: m, path: native/m, build: cargo, '
+        'artifacts: [libm.so] }\n';
+
+    test("its .emb/ layer is merged into the target's closure", () async {
+      await makeOrigin(layer: cargoLayer);
+      final f = manifest(origin.path);
+      expect(await fetch([f.path, '-t', 'local']), ExitCode.unavailable.code);
+      expect(log.errors.toString(), contains('cargo not found'));
+    });
+
+    test('so is the layer of an app passed with --app', () async {
+      await makeOrigin(layer: cargoLayer);
+      final f = File(p.join(tmp.path, 'app.emb.yaml'))
+        ..writeAsStringSync(
+          'id: app\nworkspace: ws\ncross:\n'
+          '  provider: arm-gnu\n',
+        );
+      expect(
+        await fetch([f.path, '-t', 'local', '--app', origin.path]),
+        ExitCode.unavailable.code,
+      );
+      expect(log.errors.toString(), contains('cargo not found'));
+    });
+  });
+
+  // `--build --offline` cannot install the SDK a manifest pins, so fetch
+  // does: the clone, then the precache the build's frontend_server needs.
+  group('flutter_version', () {
+    late _CaptureLogger log;
+    late List<List<String>> git;
+    late List<List<String>> ran;
+    var gitExit = 0;
+
+    Future<int?> fetch(File manifest) {
+      final r = CommandRunner<int>('emb', 'test')
+        ..addCommand(
+          FetchCommand(
+            logger: log,
+            toolProbe: (tool) async => false,
+            sdkGitRunner: (args, {required workingDirectory}) async {
+              git.add(args);
+              return ProcessResult(0, gitExit, '', 'no network');
+            },
+            processRunner:
+                (
+                  exe,
+                  args, {
+                  workingDirectory,
+                  environment,
+                  includeParentEnvironment = true,
+                  runInShell = false,
+                  output = ProcessOutputMode.capture,
+                  label,
+                }) async {
+                  ran.add([exe, ...args]);
+                  return const RunResult(0, '', '');
+                },
+          ),
+        );
+      return r.run(['fetch', manifest.path, '-t', 'local']);
+    }
+
+    File manifest({bool pinned = true}) =>
+        File(p.join(tmp.path, 'app.emb.yaml'))..writeAsStringSync(
+          'id: app\nworkspace: ws\n'
+          '${pinned ? 'flutter_version: 3.47.9\n' : ''}'
+          'cross:\n  provider: arm-gnu\n',
+        );
+
+    String sdkBin() => p.join(tmp.path, 'ws', 'flutter', 'bin', 'flutter');
+
+    setUp(() {
+      log = _CaptureLogger();
+      git = [];
+      ran = [];
+      gitExit = 0;
+    });
+
+    test('installs the pinned SDK into a cold workspace', () async {
+      expect(await fetch(manifest()), ExitCode.success.code);
+      expect(
+        git.any(
+          (a) => a.contains('clone') && a.any((s) => s.contains('3.47.9')),
+        ),
+        isTrue,
+        reason: '$git',
+      );
+      expect(ran, [
+        [sdkBin(), 'precache', '--linux', '--no-universal'],
+      ]);
+      expect(File(p.join(tmp.path, 'ws', 'setup_env.sh')).existsSync(), isTrue);
+    });
+
+    test('leaves an SDK that is there alone', () async {
+      File(sdkBin()).createSync(recursive: true);
+      File(
+        p.join(
+          tmp.path,
+          'ws/flutter/bin/cache/dart-sdk/bin/snapshots',
+          'frontend_server_aot.dart.snapshot',
+        ),
+      ).createSync(recursive: true);
+      expect(await fetch(manifest()), ExitCode.success.code);
+      expect(git, isEmpty);
+      expect(ran, isEmpty);
+    });
+
+    test('a failed install fails the fetch', () async {
+      gitExit = 128;
+      expect(await fetch(manifest()), ExitCode.software.code);
+      expect(ran, isEmpty);
+    });
+
+    test('installs nothing when the manifest pins no version', () async {
+      expect(await fetch(manifest(pinned: false)), ExitCode.success.code);
+      expect(git, isEmpty);
+      expect(ran, isEmpty);
     });
   });
 }
