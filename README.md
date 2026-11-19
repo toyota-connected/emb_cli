@@ -1600,6 +1600,10 @@ What it decides for you, and why:
   `appstreamcli`, which fails the build of a desktop application whose metadata
   has no icon or no description. Both are generated as placeholders so the repo
   builds as written; replace them before shipping.
+- **A release dated the day it was generated.** `metainfo.xml` needs a date on
+  its release: without one `appstreamcli` reports `release-time-missing` and
+  flatpak drops the release on install. It is the generation date, in UTC, and
+  a comment says to set the release's own.
 - **A local `--app` is not written down.** A path is this machine's. The
   manifest then names no app, the build takes `--app <dir>`, and no workflow is
   generated, since a runner would have nothing to build.

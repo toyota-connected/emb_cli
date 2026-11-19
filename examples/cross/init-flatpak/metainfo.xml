@@ -14,6 +14,7 @@
   <project_license>TODO</project_license>
   <launchable type="desktop-id">com.example.MyApp.desktop</launchable>
   <releases>
-    <release version="0.1.0"/>
+    <!-- The day this repo was generated. Set it to the release's own. -->
+    <release version="0.1.0" date="2026-01-02"/>
   </releases>
 </component>

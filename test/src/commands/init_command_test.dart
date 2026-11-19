@@ -119,6 +119,7 @@ class _Harness {
       logger: logger,
       processRunner: _run,
       resolver: resolver,
+      now: () => DateTime.utc(2027, 1, 1, 4, 30),
     );
     return (CommandRunner<int>('emb', 'test')..addCommand(command)).run([
       'init',
@@ -350,7 +351,8 @@ void main() {
         final xml = h.read('metainfo.xml');
         expect(xml, contains('<name>kiosk_app</name>'));
         expect(xml, contains('<summary>A kiosk.</summary>'));
-        expect(xml, contains('<release version="2.3.4"/>'));
+        // Dated the day it was generated.
+        expect(xml, contains('<release version="2.3.4" date="2027-01-01"/>'));
       });
 
       // A local path is this machine's, so it must not reach the manifest;

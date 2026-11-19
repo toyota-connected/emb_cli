@@ -84,6 +84,7 @@ class FlatpakRepoSpec {
     required this.embedder,
     required this.runtimeVersion,
     required this.embVersion,
+    required this.releaseDate,
     this.version = '0.1.0',
     this.summary,
     this.app,
@@ -102,6 +103,16 @@ class FlatpakRepoSpec {
   /// Human-readable name for AppStream and the README.
   final String name;
   final String version;
+
+  /// The date AppStream gives [version]'s release, `YYYY-MM-DD`: the day the
+  /// repo was generated.
+  ///
+  /// A release needs one. Without it `appstreamcli` warns
+  /// (`release-time-missing`) and flatpak drops the element on install
+  /// ("Ignoring release element without timestamp or date"), so the version
+  /// never reaches a software center. Passed in, not read from the clock
+  /// here, so the same spec still renders the same files.
+  final String releaseDate;
 
   /// One-line description for AppStream; null leaves a placeholder.
   final String? summary;
@@ -379,7 +390,8 @@ String _metainfo(FlatpakRepoSpec s) =>
   <project_license>TODO</project_license>
   <launchable type="desktop-id">${_xml(s.appId)}.desktop</launchable>
   <releases>
-    <release version="${_xml(s.version)}"/>
+    <!-- The day this repo was generated. Set it to the release's own. -->
+    <release version="${_xml(s.version)}" date="${_xml(s.releaseDate)}"/>
   </releases>
 </component>
 ''';

@@ -131,12 +131,14 @@ class InitCommand extends Command<int> {
     required Logger logger,
     InitProcessRunner? processRunner,
     CrossProjectResolver? resolver,
+    DateTime Function()? now,
   }) {
     addSubcommand(
       InitFlatpakCommand(
         logger: logger,
         processRunner: processRunner,
         resolver: resolver,
+        now: now,
       ),
     );
   }
@@ -160,9 +162,11 @@ class InitFlatpakCommand extends Command<int> {
     required Logger logger,
     InitProcessRunner? processRunner,
     CrossProjectResolver? resolver,
+    DateTime Function()? now,
   }) : _logger = logger,
        _run = processRunner ?? runInitTool,
-       _resolver = resolver ?? CrossProjectResolver() {
+       _resolver = resolver ?? CrossProjectResolver(),
+       _now = now ?? DateTime.now {
     argParser
       ..addOption(
         'app-id',
@@ -230,6 +234,18 @@ class InitFlatpakCommand extends Command<int> {
   final Logger _logger;
   final InitProcessRunner _run;
   final CrossProjectResolver _resolver;
+
+  /// The clock the release date in `metainfo.xml` is read from.
+  final DateTime Function() _now;
+
+  /// [when] as AppStream wants a release date: `YYYY-MM-DD`, in UTC so the
+  /// same instant gives the same file on every machine.
+  static String _isoDate(DateTime when) {
+    final utc = when.toUtc();
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${utc.year.toString().padLeft(4, '0')}-${two(utc.month)}-'
+        '${two(utc.day)}';
+  }
 
   @override
   String get description =>
@@ -394,6 +410,7 @@ class InitFlatpakCommand extends Command<int> {
       flutterVersion: flutterVersion,
       githubCi: wantsCi,
       embVersion: packageVersion,
+      releaseDate: _isoDate(_now()),
     );
     if (spec.id.isEmpty) {
       _logger.err('Could not derive a package name from "$appId".');
