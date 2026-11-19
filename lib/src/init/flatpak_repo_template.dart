@@ -53,6 +53,24 @@ final Uint8List flatpakPlaceholderIcon = base64Decode(_placeholderIconBase64);
 /// directory.
 const defaultEmbedderBin = 'shell/homescreen';
 
+/// What a board target of a generated repo sets over ivi-homescreen's own
+/// layer, and the comment that says why.
+///
+/// That layer turns plugins on and expects ivi-homescreen-plugins checked
+/// out beside the embedder, which a generated repo does not have.
+const defaultEmbedderTargetDefines = {'DISABLE_PLUGINS': 'ON'};
+
+/// See [defaultEmbedderTargetDefines].
+const defaultEmbedderTargetDefinesWhy = [
+  "ivi-homescreen's layer turns plugins on and expects",
+  'ivi-homescreen-plugins checked out beside the embedder. Off, unless',
+  'you add that checkout.',
+];
+
+/// The ivi-homescreen backend a board flatpak is built for when none is
+/// named: the one that runs under a compositor.
+const defaultEmbedderBackend = 'wayland-egl';
+
 /// A git source pinned at generate time: [rev] is what the manifest builds,
 /// [branch] is where that commit was found, kept as a comment beside it so the
 /// thing to edit when updating is in view.
@@ -85,6 +103,10 @@ class FlatpakRepoSpec {
     this.provider = 'arm-gnu',
     this.flutterVersion = 'stable',
     this.githubCi = true,
+    this.targets = const [],
+    this.backend,
+    this.targetDefines = const {},
+    this.targetDefinesWhy = const [],
   });
 
   /// Reverse-DNS flatpak app id, e.g. `com.example.MyApp`.
@@ -136,14 +158,44 @@ class FlatpakRepoSpec {
 
   bool get emitsWorkflow => githubCi && app != null;
 
+  /// Board targets, by name. Each is written as
+  /// `extends: 'source#<name>'`: the embedder's own target of that name, in
+  /// the `.emb/` of the checkout `cross.source` clones. The board alone is
+  /// not enough for an embedder that needs more to cross-build (a host tool,
+  /// `-dev` packages, backend definitions), and that layer is where it says
+  /// so.
+  ///
+  /// Not checked when the repo is generated: the embedder is not cloned
+  /// until the first build.
+  final List<String> targets;
+
+  /// The backend a board build names (`--backend`). An embedder's layer can
+  /// define several, and a flatpak built for more than one is packaged under
+  /// `<app_id>.<backend>`, not the id in `metainfo.xml`.
+  final String? backend;
+
+  /// `defines:` every board target sets over the embedder's layer, with the
+  /// comment lines that say why.
+  final Map<String, String> targetDefines;
+
+  /// See [targetDefines].
+  final List<String> targetDefinesWhy;
+
   /// The emb that generated the repo; the workflow installs this one.
   final String embVersion;
 
   String get manifestName => '$id.emb.yaml';
 
-  /// `emb cross …` as the README and the workflow spell it.
-  String get buildCommand => [
-    'emb cross $manifestName --target local --build',
+  /// `emb cross …` for the native build, as the README and the workflow
+  /// spell it.
+  String get buildCommand => buildCommandFor('local');
+
+  /// `emb cross …` for [target]: `local`, or one of [targets], which also
+  /// names [backend].
+  String buildCommandFor(String target) => [
+    'emb cross $manifestName --target $target',
+    if (target != 'local' && backend != null) '--backend $backend',
+    '--build',
     if (app == null) '--app <path-to-your-flutter-app>',
     '--flatpak',
   ].join(' ');
@@ -303,8 +355,81 @@ String _manifest(FlatpakRepoSpec s) {
     '      app_id: ${s.appId}',
     _line('      ', 'icon', 'icon.png', 'a placeholder; replace it'),
     '      runtime_version: ${_yaml(s.runtimeVersion)}',
+    if (s.targets.isNotEmpty) ...[
+      '  targets:',
+      "    # Each extends the embedder's own target of that name: the board,",
+      '    # plus what the embedder needs to cross-build for it. `source#` is',
+      '    # the checkout of cross.source above, which emb clones first.',
+      for (final t in s.targets) ...[
+        '    ${_yaml(t)}:',
+        '      extends: ${_yaml('source#$t')}',
+        if (s.targetDefines.isNotEmpty) ...[
+          '      defines:',
+          for (final why in s.targetDefinesWhy) '        # $why',
+          for (final d in s.targetDefines.entries)
+            '        ${_yaml(d.key)}: ${_yamlString(d.value)}',
+        ],
+      ],
+    ],
   ];
   return '${lines.join('\n')}\n';
+}
+
+/// A YAML scalar that is always quoted. A define's value is a string to
+/// CMake whatever it looks like: `ON` unquoted is a YAML boolean.
+String _yamlString(String value) => "'${value.replaceAll("'", "''")}'";
+
+String _boardSection(FlatpakRepoSpec s) {
+  if (s.targets.isEmpty) return '';
+  final first = s.targets.first;
+  final commands = [for (final t in s.targets) s.buildCommandFor(t)].join('\n');
+  final backendNote = s.backend == null
+      ? '''
+If the embedder's layer defines several backends, add `--backend <name>`. Built
+together, each is packaged under its own app id (`${s.appId}.<backend>`), which
+is not the id in `metainfo.xml`.
+'''
+      : '''
+`--backend ${s.backend}` is the one backend this flatpak is for. The embedder's
+layer can define several, and built together each is packaged under its own app
+id (`${s.appId}.<backend>`), which is not the id in `metainfo.xml`.
+''';
+  return '''
+
+## Build for a board
+
+`${s.manifestName}` also has ${s.targets.length == 1 ? 'a cross target' : 'cross targets'}: ${s.targets.map((t) => '`$t`').join(', ')}. ${s.targets.length == 1 ? 'It extends' : 'Each extends'} the embedder's own
+target of that name (`source#$first`), which emb finds in the embedder once it
+has cloned it. The name was not checked when this repo was generated; if the
+embedder defines no such target, the first build says so.
+
+The runtime has to be the one for the board's architecture, not this machine's,
+and flatpak-builder runs that runtime's tools while it packages. So this machine
+needs the runtime for that architecture and `qemu-user` registered with
+binfmt_misc (`qemu-user-static` on Fedora and Ubuntu). For an aarch64 board:
+
+```sh
+flatpak install --user -y flathub org.freedesktop.Platform/aarch64/${s.runtimeVersion} org.freedesktop.Sdk/aarch64/${s.runtimeVersion}
+```
+
+Then:
+
+```sh
+$commands
+```
+
+$backendNote
+The first build also downloads the toolchain and the image the sysroot is made
+from. Copy the bundle from `workspace/.config/flutter_workspace/cross-build-*/dist/`
+to the board and install it there; the board needs the same
+`org.freedesktop.Platform` branch.
+
+If you edit a target after it has been built, the next build stops on `emb.lock`
+drift; `--update-lock` accepts the change.${s.emitsWorkflow ? '''
+
+
+The CI workflow builds `--target local` only.''' : ''}
+''';
 }
 
 String _readme(FlatpakRepoSpec s) {
@@ -343,7 +468,7 @@ The first build clones the embedder${s.app == null ? '' : ' and the app'} and in
 flatpak install --user workspace/.config/flutter_workspace/cross-build-*/dist/${s.appId}_stable_*.flatpak
 flatpak run ${s.appId}
 ```
-
+${_boardSection(s)}
 ## Before publishing
 
 - `icon.png` is a placeholder. Replace it with a 256×256 PNG of your own.

@@ -194,8 +194,9 @@ void main() {
       expect(project.workspaceDir, p.join(h.out.absolute.path, 'workspace'));
       final target = CrossTarget.fromMap(project.selectTarget('local')!.cross);
       expect(target.package!.flatpak!.appId, 'com.example.MyApp');
-      // Native only: a board build is a target the user adds.
+      // Native only, unless --target asks for a board.
       expect(h.cross().containsKey('targets'), isFalse);
+      expect(h.read('README.md'), isNot(contains('Build for a board')));
     });
 
     test('the workflow installs the emb that generated it', () async {
@@ -395,16 +396,186 @@ void main() {
       });
     });
 
-    // A cross target was generated once, as `extends: <board>`. With
-    // ivi-homescreen that does not configure: the embedder's own layer is
-    // needed too, and it cannot be named before the embedder is cloned.
-    test('--target is not an option', () async {
-      final h = _Harness();
-      await expectLater(
-        h.run(['--target', 'rpi5-trixie']),
-        throwsA(isA<UsageException>()),
-      );
-      expect(h.written, isEmpty);
+    // A board target extends the embedder's own target of that name, in the
+    // checkout cross.source clones. `extends: <board>` alone was generated
+    // once and did not configure ivi-homescreen, which needs its own layer.
+    group('--target', () {
+      const other = 'https://example.com/embedder.git';
+
+      Map<dynamic, dynamic> targets(_Harness h) => h.cross()['targets'] as Map;
+
+      test("extends the embedder's target of that name", () async {
+        final h = _Harness();
+        expect(await h.run(['--target', 'rpi5-trixie']), ExitCode.success.code);
+        expect(targets(h).keys, ['rpi5-trixie']);
+        final target = targets(h)['rpi5-trixie'] as Map;
+        expect(target['extends'], 'source#rpi5-trixie');
+        // Nothing else: the board and the embedder's needs come from there.
+        expect(target.keys.toSet(), {'extends', 'defines'});
+      });
+
+      // What is known about ivi-homescreen and about no other embedder.
+      test('ivi-homescreen: plugins off, built for wayland-egl', () async {
+        final h = _Harness();
+        await h.run(['--target', 'rpi5-trixie', '--app', _appUri]);
+        final target = targets(h)['rpi5-trixie'] as Map;
+        // A string to CMake. Unquoted, YAML would hand over a boolean.
+        expect(target['defines'], {'DISABLE_PLUGINS': 'ON'});
+        const command =
+            'emb cross my-app.emb.yaml --target rpi5-trixie '
+            '--backend wayland-egl --build --flatpak';
+        expect(h.infos, contains('  $command'));
+        expect(h.read('README.md'), contains(command));
+      });
+
+      test('another embedder: nothing is assumed about it', () async {
+        final h = _Harness();
+        await h.run(['--target', 'board-a', '--embedder', other]);
+        final target = targets(h)['board-a'] as Map;
+        expect(target.keys, ['extends']);
+        final readme = h.read('README.md');
+        expect(readme, contains('--target board-a --build'));
+        expect(readme, contains('add `--backend <name>`'));
+      });
+
+      test('--backend names the backend, for any embedder', () async {
+        final h = _Harness();
+        await h.run([
+          '--target',
+          'board-a',
+          '--embedder',
+          other,
+          '--backend',
+          'drm-kms-egl',
+        ]);
+        expect(
+          h.read('README.md'),
+          contains('--target board-a --backend drm-kms-egl --build'),
+        );
+        final ivi = _Harness();
+        await ivi.run(['--target', 'rpi5-trixie', '--backend', 'software']);
+        expect(
+          ivi.read('README.md'),
+          contains('--target rpi5-trixie --backend software --build'),
+        );
+      });
+
+      test('is repeatable, in the order given', () async {
+        final h = _Harness();
+        await h.run(['--target', 'rpi5-trixie', '--target', 'rpi4-bookworm']);
+        expect(targets(h).keys, ['rpi5-trixie', 'rpi4-bookworm']);
+        final readme = h.read('README.md');
+        expect(readme, contains('--target rpi5-trixie --backend'));
+        expect(readme, contains('--target rpi4-bookworm --backend'));
+      });
+
+      test('the native build is still there, and still the first', () async {
+        final h = _Harness();
+        await h.run(['--target', 'rpi5-trixie', '--app', _appUri]);
+        expect(
+          h.infos,
+          contains(
+            '  emb cross my-app.emb.yaml --target local --build --flatpak',
+          ),
+        );
+        // CI builds the native one: a runner has no board runtime.
+        final workflow = h.read('.github/workflows/flatpak.yml');
+        expect(workflow, contains('--target local --build'));
+        expect(workflow, isNot(contains('rpi5-trixie')));
+      });
+
+      test('says the name was taken on trust', () async {
+        final h = _Harness();
+        await h.run(['--target', 'rpi5-trixie']);
+        expect(
+          h.infos.join('\n'),
+          contains('rpi5-trixie: not checked against the embedder'),
+        );
+        expect(h.read('README.md'), contains('was not checked'));
+        // And nothing was cloned to find out.
+        expect(h.callsTo('git').every((c) => c.contains('ls-remote')), isTrue);
+      });
+
+      // The whole point: once the embedder is there, the target resolves
+      // through its layer, the way `emb cross` resolves it after cloning.
+      test('resolves against the embedder once it is cloned', () async {
+        final h = _Harness();
+        await h.run(['--target', 'rpi5-trixie']);
+        final checkout = Directory(p.join(h.tmp.path, 'embedder', '.emb'))
+          ..createSync(recursive: true);
+        File(p.join(checkout.path, 'rpi.emb.yaml')).writeAsStringSync('''
+id: embedder
+cross:
+  targets:
+    rpi5-trixie:
+      triple: aarch64-none-linux-gnu
+      defines: {DISABLE_PLUGINS: 'OFF', FROM_THE_LAYER: '1'}
+''');
+        final manifest = h.file('my-app.emb.yaml').path;
+        final before = h.resolver.resolve(manifest, deferExtends: true)!;
+        expect(before.unresolved.keys, ['rpi5-trixie']);
+        expect(before.selectTarget('local'), isNotNull);
+
+        final after = h.resolver.resolve(
+          manifest,
+          sourceDirs: {'rpi5-trixie': checkout.parent.path},
+        )!;
+        final cross = after.targets['rpi5-trixie']!.cross;
+        expect(cross['triple'], 'aarch64-none-linux-gnu');
+        expect(cross['defines'], {
+          'DISABLE_PLUGINS': 'ON',
+          'FROM_THE_LAYER': '1',
+        });
+        // The package and the flatpak come from the generated manifest.
+        final target = CrossTarget.fromMap(cross);
+        expect(target.package!.flatpak!.appId, 'com.example.MyApp');
+      });
+
+      const bad = ['a b', '-x', 'a/b', "a'b", 'a#b', 'x; id', ''];
+      for (final value in bad) {
+        test('"$value" is a usage error', () async {
+          final h = _Harness();
+          expect(await h.run(['--target=$value']), ExitCode.usage.code);
+          expect(h.errors.single, contains('--target'));
+          expect(h.calls, isEmpty);
+          expect(h.written, isEmpty);
+        });
+      }
+
+      for (final name in ['local', 'host']) {
+        test('$name is the native build, not a board', () async {
+          final h = _Harness();
+          expect(await h.run(['--target', name]), ExitCode.usage.code);
+          expect(h.errors.single, contains('built-in native build'));
+          expect(h.written, isEmpty);
+        });
+      }
+
+      test('a name given twice is a usage error', () async {
+        final h = _Harness();
+        expect(
+          await h.run(['--target', 'a', '--target', 'a']),
+          ExitCode.usage.code,
+        );
+        expect(h.written, isEmpty);
+      });
+
+      test('--backend without --target is a usage error', () async {
+        final h = _Harness();
+        expect(await h.run(['--backend', 'wayland-egl']), ExitCode.usage.code);
+        expect(h.errors.single, contains('needs --target'));
+        expect(h.written, isEmpty);
+      });
+
+      test('--backend of the wrong shape is a usage error', () async {
+        final h = _Harness();
+        expect(
+          await h.run(['--target', 'a', '--backend=x; id']),
+          ExitCode.usage.code,
+        );
+        expect(h.errors.single, contains('--backend'));
+        expect(h.written, isEmpty);
+      });
     });
 
     group('runtime version', () {

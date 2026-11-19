@@ -33,6 +33,42 @@ flatpak install --user workspace/.config/flutter_workspace/cross-build-*/dist/co
 flatpak run com.example.MyApp
 ```
 
+## Build for a board
+
+`my-app.emb.yaml` also has a cross target: `rpi5-trixie`. It extends the embedder's own
+target of that name (`source#rpi5-trixie`), which emb finds in the embedder once it
+has cloned it. The name was not checked when this repo was generated; if the
+embedder defines no such target, the first build says so.
+
+The runtime has to be the one for the board's architecture, not this machine's,
+and flatpak-builder runs that runtime's tools while it packages. So this machine
+needs the runtime for that architecture and `qemu-user` registered with
+binfmt_misc (`qemu-user-static` on Fedora and Ubuntu). For an aarch64 board:
+
+```sh
+flatpak install --user -y flathub org.freedesktop.Platform/aarch64/25.08 org.freedesktop.Sdk/aarch64/25.08
+```
+
+Then:
+
+```sh
+emb cross my-app.emb.yaml --target rpi5-trixie --backend wayland-egl --build --flatpak
+```
+
+`--backend wayland-egl` is the one backend this flatpak is for. The embedder's
+layer can define several, and built together each is packaged under its own app
+id (`com.example.MyApp.<backend>`), which is not the id in `metainfo.xml`.
+
+The first build also downloads the toolchain and the image the sysroot is made
+from. Copy the bundle from `workspace/.config/flutter_workspace/cross-build-*/dist/`
+to the board and install it there; the board needs the same
+`org.freedesktop.Platform` branch.
+
+If you edit a target after it has been built, the next build stops on `emb.lock`
+drift; `--update-lock` accepts the change.
+
+The CI workflow builds `--target local` only.
+
 ## Before publishing
 
 - `icon.png` is a placeholder. Replace it with a 256×256 PNG of your own.

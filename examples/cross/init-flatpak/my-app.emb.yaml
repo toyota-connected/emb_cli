@@ -29,3 +29,14 @@ cross:
       app_id: com.example.MyApp
       icon: icon.png               # a placeholder; replace it
       runtime_version: '25.08'
+  targets:
+    # Each extends the embedder's own target of that name: the board,
+    # plus what the embedder needs to cross-build for it. `source#` is
+    # the checkout of cross.source above, which emb clones first.
+    rpi5-trixie:
+      extends: 'source#rpi5-trixie'
+      defines:
+        # ivi-homescreen's layer turns plugins on and expects
+        # ivi-homescreen-plugins checked out beside the embedder. Off, unless
+        # you add that checkout.
+        DISABLE_PLUGINS: 'ON'
