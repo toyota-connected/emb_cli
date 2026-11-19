@@ -186,7 +186,6 @@ jobs:
       # branch appearing on flathub does not move this job.
       FREEDESKTOP_BRANCH: "25.08"
       APP_ID: com.example.InitCi
-      REPO: ${{ runner.temp }}/repo
     steps:
       - uses: actions/checkout@v7
       - uses: dart-lang/setup-dart@v1.8.2
@@ -214,8 +213,11 @@ jobs:
             git -C "$dir" -c user.name=ci -c user.email=ci@example.invalid \
               commit -q -m init
           done
+      # runner.temp is not available to the job's env:, so the repo's path is
+      # spelled out where it is used.
       - name: 🧬 Generate the repo
         run: |
+          REPO="$RUNNER_TEMP/repo"
           emb init flatpak "$REPO" --app-id "$APP_ID" \
             --embedder "file://$RUNNER_TEMP/src/embedder" \
             --embedder-bin hello-embedder \
@@ -225,7 +227,7 @@ jobs:
           cat "$REPO"/*.emb.yaml
       # The install lines the generated README gives, run as written.
       - name: 🗃️ Install the runtime the README names
-        working-directory: ${{ env.REPO }}
+        working-directory: ${{ runner.temp }}/repo
         run: |
           grep -E '^flatpak (remote-add|install .* org\.freedesktop\.Platform//)' \
             README.md > install.sh
@@ -239,7 +241,7 @@ jobs:
       # No FLUTTER_WORKSPACE: the manifest's own workspace: is what a user
       # gets, and it starts empty.
       - name: 🏗️ Build with the command the README gives
-        working-directory: ${{ env.REPO }}
+        working-directory: ${{ runner.temp }}/repo
         run: |
           cmd=$(grep -m1 -E '^emb cross .* --target local ' README.md)
           test -n "$cmd" || {
@@ -247,7 +249,7 @@ jobs:
           echo "$cmd"
           $cmd
       - name: ✅ Assert the bundle holds what a flatpak needs
-        working-directory: ${{ env.REPO }}
+        working-directory: ${{ runner.temp }}/repo
         run: |
           bundle=$(ls workspace/.config/flutter_workspace/cross-build-*/dist/"$APP_ID"_stable_*.flatpak)
           flatpak install --user -y --noninteractive "$bundle"
