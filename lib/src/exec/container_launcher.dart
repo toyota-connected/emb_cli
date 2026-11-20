@@ -179,8 +179,11 @@ class ContainerLauncher {
   final bool? _tty;
 
   /// The container runtime argv (everything after the executable):
-  /// `run --rm [-i] [-t] [-v mount…] [-w workdir] -e EMB_IN_CONTAINER=1
-  /// <image> emb <embArgs> --exec-native`.
+  ///
+  /// ```text
+  /// run --rm [-i] [-t] [-v mount…] [-w workdir] -e EMB_IN_CONTAINER=1
+  ///   <image> emb <embArgs> --exec-native
+  /// ```
   ///
   /// [interactive] keeps the container's stdin open (`-i`); without it a read
   /// inside the container gets EOF. [tty] allocates a pseudo-terminal (`-t`);
