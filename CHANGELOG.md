@@ -1,4 +1,8 @@
-# Unreleased
+# 0.5.0
+
+Released from `main`, which is what CI validates. Upgrading from 0.4.x needs
+the notes below. Upgrading from 0.3.x needs the Upgrading section under 0.4.0
+as well.
 
 ## Upgrading
 
