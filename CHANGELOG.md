@@ -1,6 +1,28 @@
-# Unreleased
+# 0.5.0
+
+Released from `main`, which is what CI validates. Upgrading from 0.4.x needs
+the notes below. Upgrading from 0.3.x needs the Upgrading section under 0.4.0
+as well.
 
 ## Upgrading
+
+These change what an existing manifest, script or CI job gets. The first two
+can fail a build that passes on 0.4.1.
+
+**A project that builds more than one executable must set
+`cross.package.bin`.** With it unset, emb took the first ELF file with an
+execute bit, which could be a shared library, in filesystem order. It now takes
+programs only, and stops with the list when there is more than one. A manifest
+that sets `cross.package.bin` is unaffected. See the entry under Cross.
+
+**A flatpak with no `runtime_version` now builds against freedesktop `25.08`,
+not `23.08`.** A manifest that sets `cross.package.flatpak` and omits the key
+needs `org.freedesktop.Platform//25.08` and `org.freedesktop.Sdk//25.08`
+installed on the build machine, and the device needs the `25.08` Platform to
+run the result. With `vendor_libs`, the set of libraries copied into the
+bundle is worked out against the new runtime, so it can change. To stay on the
+old branch, set `runtime_version: '23.08'`; a manifest that already names a
+version is unaffected.
 
 **A relative `cross.sdk_path` or `cross.sdk_env_setup` changes your sysroot
 key.** `_sysrootParts` hashes these values as stored, so a relative one used to
@@ -21,12 +43,36 @@ so a project sharing `emb.lock` between a developer and CI at different paths
 will see drift on yocto-sdk targets where a relative value previously hashed
 the same everywhere. Use an absolute path, or accept the per-clone key.
 
-An earlier version of this entry claimed no key moved. That was wrong: it
-conflated how the provider resolves the value with how the key hashes it.
-
 **`extends: 'source#<target>'` now means the checkout of `cross.source`.** It
 used to mean a directory called `source` beside the manifest. Write
 `./source#<target>` for the directory.
+
+**`emb fetch` fetches what an offline build needs, so it downloads more and
+can fail in more places.** With a manifest it now:
+
+- takes the workspace from the manifest's `workspace:` ahead of
+  `$FLUTTER_WORKSPACE` and the working directory, as `emb cross` does, so a
+  fetch run elsewhere lands in the manifest's workspace. `--workspace` still
+  wins;
+- clones a declared `cross.source` and `cross.app`, which needs git and
+  network access to both. `--app` replaces the declared app, as before;
+- installs the Flutter SDK `flutter_version:` pins when the workspace has
+  none, and runs `flutter precache`. This is a large download. An SDK already
+  in the workspace is left alone;
+- with an app, runs `flutter pub get` with the workspace's Flutter SDK ahead
+  of the one on `PATH` (with neither it warns and carries on), and fetches the
+  engine SDK for each `--mode`, `release` by default;
+- resolves the closure with the app's `.emb/` layer merged, so sysroot
+  packages and cargo modules only the app declares are fetched and `emb.lock`
+  can gain what the build would have added on its first run.
+
+Each step fails the fetch if it fails. `emb cross --fetch-only` now does all
+of it too.
+
+**`emb cross --build --offline` no longer downloads the engine SDK.** It
+did, silently, when the SDK was not in the store. It now stops and names the
+mode. `emb fetch` fetches the engine for `release` unless told otherwise, so a
+build in another mode needs `emb fetch --mode <mode>` first.
 
 **`emb cross` no longer fails on a target it was not asked to build.** A
 target whose `extends:` does not resolve is reported when it is selected, and
@@ -34,55 +80,26 @@ target whose `extends:` does not resolve is reported when it is selected, and
 Before, one such target failed every `emb cross` run on the manifest,
 `--target local` included. A script that used `emb cross --list-targets` or
 `--dry-run` to validate every target of a manifest has to select each target
-to get the error. `emb fetch` and `emb doctor --target` do the same;
-`emb matrix` is unchanged.
+to get the error. `emb fetch` and `emb doctor --target` do the same, and
+`emb matrix` warns and skips such a target.
 
-**`emb fetch` and `emb doctor --target` use the manifest's `workspace:`.**
-They resolved the workspace from `-w`/`$FLUTTER_WORKSPACE`/cwd and ignored the
-manifest, where `emb cross` puts the manifest ahead of the environment. With
-a `workspace:` that differs from where you ran `emb fetch`, the fetch now
-lands in the manifest's workspace. `--workspace` still wins.
+**`emb matrix` reads `.emb/` projects.** A directory holding a `.emb/`
+project now renders a cell per target where it rendered none, with `manifest`
+set to the board file and `args` to `<project> --target <name>`. Naming the
+`.emb/` directory itself no longer renders a `base` cell, or board cells
+without the base merged. A directory of flat manifests renders the same cells
+as before. A CI job that fans out over `emb matrix` gains the project's cells.
 
-**`emb fetch` clones a declared `cross.source` and `cross.app`.** It needs
-git and network access to both, and fails if a clone does. With a Flutter SDK
-in the workspace or on `PATH` it also runs `flutter pub get` in the app, and
-fails if that does; without one it warns and carries on. `--app` replaces the
-declared app, as before.
+**Modules build during `--prepare`, and `build.app_path` is deprecated.**
+`emb cross --prepare` and `--build` without `--app` now build `cross.modules`,
+so a module that fails to build fails them; a module whose path uses
+`${app_root}` is skipped with a message when there is no app. Pass `--app`
+instead of setting `build.app_path`.
 
-**`emb cross --fetch-only` fetches everything `emb fetch` does.** It now
-installs the Flutter SDK a manifest pins, and with an app (`--app` or a
-declared `cross.app`) runs `flutter pub get` and fetches the engine SDK for
-`--mode`. Each is a download or a step it did not make before, and each can
-fail it.
-
-**`emb cross --build --offline` no longer downloads the engine SDK.** It
-did, silently, when the SDK was not in the store. It now stops and names the
-mode. `emb fetch` fetches the engine for an app, for `release` unless told
-otherwise with `--mode`: a build in another mode needs `emb fetch --mode
-<mode>` first.
-
-**`emb fetch` installs the Flutter SDK a manifest pins.** With
-`flutter_version:` set and no SDK in the workspace, it clones that SDK and runs
-`flutter precache`, as `emb cross --build` does, and fails if it cannot. This is a
-large download a fetch did not make before. An SDK already in the workspace
-is left alone.
-
-**`emb fetch` resolves the closure with the app's `.emb/` layer merged.** With
-`--app` or a declared `cross.app`, sysroot packages and cargo modules that
-only the app declares are now fetched, so `emb.lock` can gain what the build
-would have added on its first run.
-
-**`emb fetch --app` runs the workspace's Flutter SDK when there is one.** It
-ran `flutter` from `PATH` regardless, which is not the SDK the build uses.
-
-**A flatpak with no `runtime_version` now builds against freedesktop `25.08`,
-not `23.08`.** A manifest that sets `cross.package.flatpak` and omits the key
-needs `org.freedesktop.Platform//25.08` and `org.freedesktop.Sdk//25.08`
-installed on the build machine, and the device needs the `25.08` Platform to
-run the result. With `vendor_libs`, the set of libraries copied into the
-bundle is worked out against the new runtime, so it can change. To stay on the
-old branch, set `runtime_version: '23.08'`; a manifest that already names a
-version is unaffected.
+**A profile or release bundle no longer carries the JIT snapshots.**
+`isolate_snapshot_data`, `vm_snapshot_data`, `.last_build_id` and
+`linux/<arch>/<mode>/CMakeCache.txt` are dropped from the bundle, and so from
+the tarball, the flatpak and a deploy. Nothing an AOT engine runs needs them.
 
 **Init.**
 
@@ -129,45 +146,6 @@ version is unaffected.
   `git checkout <rev> --` also stops a `rev` that is a file name from
   restoring the file and reporting success.
 
-**Container re-entry.**
-
-- fix(exec): Forward host credentials (SSH agent, `~/.netrc`, `GH_TOKEN`) into
-  Docker/Podman containers so authenticated artifact fetches work on container
-  re-entry. On macOS/Windows with Docker Desktop, the SSH agent socket is
-  forwarded via Docker Desktop's VM-side socket.
-
-- fix(exec): Use Docker Desktop's `/run/host-services/ssh-auth.sock` only when
-  running Docker; Podman on macOS falls back to direct socket bind-mount.
-
-- feat(exec): Set `EMB_FORWARD_TOKEN=0` to suppress forwarding `GH_TOKEN` /
-  `GITHUB_TOKEN` via Docker `-e` flags (visible in `ps aux` on shared
-  workstations). Prefer `~/.netrc` when possible.
-
-- feat(exec): the container gets a TTY and stdin when emb has them (#297,
-  fixes #293). The container was run with neither `-i` nor `-t`, so inside it
-  stdout was a pipe and stdin was closed: the inner emb, flutter, ninja and git
-  ran without color or progress, and anything that prompted read EOF. `-i -t`
-  are now passed together, and only when stdin, stdout and stderr are all
-  terminals and emb is the foreground job. Redirected, piped, in the
-  background or in CI, neither is passed and the run is as before.
-
-- fix(exec): interrupting emb stops the container (#299, fixes #298). Ctrl-C
-  on a containerized run with no TTY killed the host emb and left the
-  container building: the signal reached the inner emb as PID 1, and the
-  kernel drops a signal PID 1 has no handler for. The inner emb now exits 130
-  on SIGINT and 143 on SIGTERM when it is PID 1. The host emb passes both on
-  to the container client and waits for it, so `kill <emb pid>` and a CI
-  cancel reach the container too; a second signal kills the client and stops
-  waiting. A client that died of a signal is reported as 128 + n. An image
-  whose emb predates this still ignores the first signal, so a container
-  image that carries its own emb has to be rebuilt to get it.
-
-- fix(aot): a relative `--gen-snapshot` or `--glibc-sysroot` named nothing
-  inside the container (#300). The path was forwarded as typed while its
-  mount was made at the absolute path, and the inner emb runs in the image's
-  working directory. Both are made absolute before forwarding and mounting.
-  The native path is unchanged.
-
 **Cross.**
 
 - feat(cross): `extends: 'source#<target>'` extends a target in the project
@@ -181,85 +159,7 @@ version is unaffected.
   way on a fresh checkout, though it breaks under `-w`. `--dry-run`, `--json`,
   `--clean` and `--list-targets` still fetch nothing and use a checkout that
   is already there. See Upgrading.
-- fix(fetch): `emb fetch` and `emb doctor --target` stopped on any manifest
-  with an `extends: 'source#<target>'` target, since only `emb cross` cloned
-  `cross.source`. `emb fetch` now clones it, before the resolve when the
-  target needs it, and for every target that declares one: `emb cross
-  --offline` reuses the checkout and cannot make it, so a fetch that left it
-  out did not make an offline build possible. `emb cross --fetch-only` does
-  the same. `emb doctor --target` fetches nothing and resolves against a
-  checkout that is there. Both take the workspace the way `emb cross` does,
-  and `emb fetch` accepts `-w`, which its documentation already listed. See
-  Upgrading.
-- fix(matrix): `emb matrix` did not read `.emb/` projects. It globbed a
-  directory's top-level `*.emb.yaml` files and read each alone, so a project
-  directory rendered no cells, and its `.emb/` directory rendered
-  `base.emb.yaml` as a target and every board file without the base merged
-  under it. It now resolves each path as `emb cross` does, so its cells are
-  the targets `emb cross --list-targets` shows; a board file that names no
-  `supported_host_types` takes the base's. The matrix of a directory of flat
-  manifests is unchanged (this repository's 30 cells are identical). The
-  README gains an `emb matrix` reference section, and CI's matrix now
-  includes `examples/cross/project`.
-- fix(matrix): `emb matrix` skipped every `extends: 'source#<target>'`
-  target, with the checkout of `cross.source` on disk or not, so a repo from
-  `emb init flatpak --target <board>` rendered a matrix with no board in it.
-  It now resolves such a target against a checkout in the workspace, which
-  it finds the way `emb cross` does (new `-w`, then the manifest's
-  `workspace:`, `$FLUTTER_WORKSPACE`, cwd). `--fetch` (new, off by default)
-  clones a `cross.source` that is missing; without it the matrix still
-  downloads nothing and the skip warning says how to get the cell.
-- fix(cross): `emb cross --fetch-only` is documented as the same step as
-  `emb fetch` and had fallen behind it: it installed no Flutter SDK, resolved
-  no pub packages and fetched no engine, so an offline build prepared with it
-  stopped at the first of those. The pub prefetch and the engine fetch move
-  out of `emb fetch` into functions both commands call. See Upgrading.
-- fix(cross): `emb cross --build --offline` and `--offline-strict` downloaded
-  the engine SDK from GitHub when it was not cached (193 MB for
-  release/x86_64). The engine is emb's own download, so the network namespace
-  that confines build subprocesses does not cover it, and the engine's
-  content store was never told the build was offline. It is now, for the
-  bundle and for the AOT step's gen_snapshot lookup, and the build stops with
-  the mode and what to run. `emb fetch` did not fetch the engine either, so
-  the download was what made a fetched build work: with an app it now fetches
-  the engine for each `--mode` (default `release`). See Upgrading.
-- fix(bundle): a profile or release bundle shipped files no AOT engine reads.
-  Its assets come from a debug-mode `flutter build bundle`, and the whole
-  directory was copied with only `kernel_blob.bin` removed. That left the JIT
-  `isolate_snapshot_data` (11.6 MB for the example app) and
-  `vm_snapshot_data`, Flutter's `.last_build_id`, and the
-  `linux/<arch>/<mode>/CMakeCache.txt` emb writes for build hooks, which names
-  compiler paths on the build host. All are dropped from the assembled bundle,
-  so from the tarball, flatpak and deploy too; a debug bundle keeps the
-  snapshots it runs from. Applies to `emb cross`, `emb bundle` and
-  `emb build`.
-- fix(fetch): `emb fetch` left out two things `emb cross --build --offline`
-  cannot get for itself. It resolved the target without the app's `.emb/`
-  layer, so a `-dev` package or cargo module only the app declares was not
-  in the closure; `emb cross` and `emb fetch` now resolve the target through
-  the same code. And it did not install the SDK pinned by `flutter_version:`,
-  so a cold workspace stopped the offline build at once; it now installs it
-  and runs `flutter precache`. See Upgrading.
-- feat(fetch): `emb fetch` clones a declared `cross.app` and prefetches its
-  pub packages. It cloned `cross.source` and left the app out, so `emb cross
-  --build --offline` after a fetch stopped at the app clone unless the app had
-  been built online once. `pubspec_path` is honored, and the clone is the
-  `${app_root}` that module paths resolve against. `emb cross --fetch-only`
-  clones it as well, and so resolves the closure with the app's own `.emb/`
-  layer merged, as the build does. The prefetch uses the workspace's Flutter
-  SDK ahead of `PATH`. See Upgrading.
-- fix(cross): a failed copy of the app bundle into the runnable directory
-  ended `emb cross --build` with an unhandled exception. The copy ran outside
-  the block that reports bundle errors, so a full disk or an exceeded quota
-  printed a stack trace. It now fails with one line naming both paths and the
-  reason, as does a failure to copy the embedder in or to clear the previous
-  runnable directory.
-- fix(cross): the default flatpak `runtime_version` was `23.08`, which flatpak
-  reports end-of-life (#311). A manifest that omitted the key built against a
-  runtime the user is warned about on install and that can leave flathub. The
-  default is now `25.08`, held in one constant that `emb init flatpak` also
-  falls back to, and a test fails if CI's flatpak job installs a different
-  branch. See Upgrading.
+
 - fix(cross): with `cross.package.bin` unset, a shared library could be taken
   for the embedder, packaged and launched (#304). The search took the first
   file with the ELF magic and an execute bit, which a `.so` has too, in
@@ -271,23 +171,6 @@ version is unaffected.
   is an error that lists them and asks for `cross.package.bin`. **A project
   that builds several executables and relied on the pick must now set
   `cross.package.bin`.** A manifest that sets it is unaffected.
-
-- fix(cross): `--flatpak` no longer depends on where the project is checked
-  out. flatpak-builder ran in `<build>/dist/<app_id>.flatpak-ctx`, and
-  AppStream's compose step cannot write an icon to a path of 256 characters or
-  more: it fails with `icon-write-error`, which names neither the path nor the
-  limit. For an aarch64 build with a 24-character app id that path ran 216
-  characters below the manifest's directory, which leaves 39 for the
-  directory: a GitHub checkout (`/home/runner/work/<repo>/<repo>`) passes
-  that with a repo name of 11 characters. The
-  context now lives in `<cache>/tmp/fp-<hash>`, and a cache directory deep
-  enough to hit the limit is refused up front with the path and the limit.
-
-- feat(cross): modules are now built during `--prepare` (staged into
-  `<buildRoot>/modules/`) and during `--build` without `--app` (standalone
-  module build). Modules whose path references `${app_root}` are skipped with
-  an informational message when `--app` is absent. `build.app_path` is
-  deprecated; pass `--app` on the command line instead.
 
 - feat(cross): `sdk_path` and `sdk_env_setup` may be written relative to the
   manifest that declares them, on the same rule `augment[].patches`,
@@ -310,11 +193,126 @@ version is unaffected.
   `extends:` it. An unexpanded `${…}` is refused at load, since nothing
   expands these two; an empty value is read as absent rather than as the
   manifest directory.
+
+- feat(cross): modules are now built during `--prepare` (staged into
+  `<buildRoot>/modules/`) and during `--build` without `--app` (standalone
+  module build). Modules whose path references `${app_root}` are skipped with
+  an informational message when `--app` is absent. `build.app_path` is
+  deprecated; pass `--app` on the command line instead.
+
+- fix(cross): a failed copy of the app bundle into the runnable directory
+  ended `emb cross --build` with an unhandled exception. The copy ran outside
+  the block that reports bundle errors, so a full disk or an exceeded quota
+  printed a stack trace. It now fails with one line naming both paths and the
+  reason, as does a failure to copy the embedder in or to clear the previous
+  runnable directory.
+
 - refactor(cross): `CrossTarget.withResolvedPatches` is now
   `withResolvedPaths`. It has resolved augment `path:` and `modules[].path`
   as well as patches for some time, and its own doc comment said so. Nothing
   under `lib/src/` is exported from `lib/emb_cli.dart`, so no public API
   changes.
+
+**Fetch and offline builds.**
+
+- feat(fetch): `emb fetch` clones a declared `cross.app` and prefetches its
+  pub packages. It cloned `cross.source` and left the app out, so `emb cross
+  --build --offline` after a fetch stopped at the app clone unless the app had
+  been built online once. `pubspec_path` is honored, and the clone is the
+  `${app_root}` that module paths resolve against. `emb cross --fetch-only`
+  clones it as well, and so resolves the closure with the app's own `.emb/`
+  layer merged, as the build does. The prefetch uses the workspace's Flutter
+  SDK ahead of `PATH`. See Upgrading.
+
+- fix(fetch): `emb fetch` left out two things `emb cross --build --offline`
+  cannot get for itself. It resolved the target without the app's `.emb/`
+  layer, so a `-dev` package or cargo module only the app declares was not
+  in the closure; `emb cross` and `emb fetch` now resolve the target through
+  the same code. And it did not install the SDK pinned by `flutter_version:`,
+  so a cold workspace stopped the offline build at once; it now installs it
+  and runs `flutter precache`. See Upgrading.
+
+- fix(fetch): `emb fetch` and `emb doctor --target` stopped on any manifest
+  with an `extends: 'source#<target>'` target, since only `emb cross` cloned
+  `cross.source`. `emb fetch` now clones it, before the resolve when the
+  target needs it, and for every target that declares one: `emb cross
+  --offline` reuses the checkout and cannot make it, so a fetch that left it
+  out did not make an offline build possible. `emb cross --fetch-only` does
+  the same. `emb doctor --target` fetches nothing and resolves against a
+  checkout that is there. Both take the workspace the way `emb cross` does,
+  and `emb fetch` accepts `-w`, which its documentation already listed. See
+  Upgrading.
+
+- fix(cross): `emb cross --fetch-only` is documented as the same step as
+  `emb fetch` and had fallen behind it: it installed no Flutter SDK, resolved
+  no pub packages and fetched no engine, so an offline build prepared with it
+  stopped at the first of those. The pub prefetch and the engine fetch move
+  out of `emb fetch` into functions both commands call. See Upgrading.
+
+- fix(cross): `emb cross --build --offline` and `--offline-strict` downloaded
+  the engine SDK from GitHub when it was not cached (193 MB for
+  release/x86_64). The engine is emb's own download, so the network namespace
+  that confines build subprocesses does not cover it, and the engine's
+  content store was never told the build was offline. It is now, for the
+  bundle and for the AOT step's gen_snapshot lookup, and the build stops with
+  the mode and what to run. `emb fetch` did not fetch the engine either, so
+  the download was what made a fetched build work: with an app it now fetches
+  the engine for each `--mode` (default `release`). See Upgrading.
+
+**Matrix.**
+
+- fix(matrix): `emb matrix` did not read `.emb/` projects. It globbed a
+  directory's top-level `*.emb.yaml` files and read each alone, so a project
+  directory rendered no cells, and its `.emb/` directory rendered
+  `base.emb.yaml` as a target and every board file without the base merged
+  under it. It now resolves each path as `emb cross` does, so its cells are
+  the targets `emb cross --list-targets` shows; a board file that names no
+  `supported_host_types` takes the base's. The matrix of a directory of flat
+  manifests is unchanged (this repository's 30 cells are identical). The
+  README gains an `emb matrix` reference section, and CI's matrix now
+  includes `examples/cross/project`.
+
+- fix(matrix): `emb matrix` skipped every `extends: 'source#<target>'`
+  target, with the checkout of `cross.source` on disk or not, so a repo from
+  `emb init flatpak --target <board>` rendered a matrix with no board in it.
+  It now resolves such a target against a checkout in the workspace, which
+  it finds the way `emb cross` does (new `-w`, then the manifest's
+  `workspace:`, `$FLUTTER_WORKSPACE`, cwd). `--fetch` (new, off by default)
+  clones a `cross.source` that is missing; without it the matrix still
+  downloads nothing and the skip warning says how to get the cell.
+
+**Bundle.**
+
+- fix(bundle): a profile or release bundle shipped files no AOT engine reads.
+  Its assets come from a debug-mode `flutter build bundle`, and the whole
+  directory was copied with only `kernel_blob.bin` removed. That left the JIT
+  `isolate_snapshot_data` (11.6 MB for the example app) and
+  `vm_snapshot_data`, Flutter's `.last_build_id`, and the
+  `linux/<arch>/<mode>/CMakeCache.txt` emb writes for build hooks, which names
+  compiler paths on the build host. All are dropped from the assembled bundle,
+  so from the tarball, flatpak and deploy too; a debug bundle keeps the
+  snapshots it runs from. Applies to `emb cross`, `emb bundle` and
+  `emb build`.
+
+**Flatpak.**
+
+- fix(cross): the default flatpak `runtime_version` was `23.08`, which flatpak
+  reports end-of-life (#311). A manifest that omitted the key built against a
+  runtime the user is warned about on install and that can leave flathub. The
+  default is now `25.08`, held in one constant that `emb init flatpak` also
+  falls back to, and a test fails if CI's flatpak job installs a different
+  branch. See Upgrading.
+
+- fix(cross): `--flatpak` no longer depends on where the project is checked
+  out. flatpak-builder ran in `<build>/dist/<app_id>.flatpak-ctx`, and
+  AppStream's compose step cannot write an icon to a path of 256 characters or
+  more: it fails with `icon-write-error`, which names neither the path nor the
+  limit. For an aarch64 build with a 24-character app id that path ran 216
+  characters below the manifest's directory, which leaves 39 for the
+  directory: a GitHub checkout (`/home/runner/work/<repo>/<repo>`) passes
+  that with a repo name of 11 characters. The
+  context now lives in `<cache>/tmp/fp-<hash>`, and a cache directory deep
+  enough to hit the limit is refused up front with the path and the limit.
 
 - fix(flatpak): the generated launcher takes its bundle flag from
   `cross.run.command` instead of writing `-b` a second time. `--run` became
@@ -363,6 +361,45 @@ version is unaffected.
   does not turn every requirement into a warning. The arch check stays a hard
   skip, because a wrong-arch library is never usable.
 
+**Container re-entry.**
+
+- fix(exec): Forward host credentials (SSH agent, `~/.netrc`, `GH_TOKEN`) into
+  Docker/Podman containers so authenticated artifact fetches work on container
+  re-entry. On macOS/Windows with Docker Desktop, the SSH agent socket is
+  forwarded via Docker Desktop's VM-side socket.
+
+- fix(exec): Use Docker Desktop's `/run/host-services/ssh-auth.sock` only when
+  running Docker; Podman on macOS falls back to direct socket bind-mount.
+
+- feat(exec): Set `EMB_FORWARD_TOKEN=0` to suppress forwarding `GH_TOKEN` /
+  `GITHUB_TOKEN` via Docker `-e` flags (visible in `ps aux` on shared
+  workstations). Prefer `~/.netrc` when possible.
+
+- feat(exec): the container gets a TTY and stdin when emb has them (#297,
+  fixes #293). The container was run with neither `-i` nor `-t`, so inside it
+  stdout was a pipe and stdin was closed: the inner emb, flutter, ninja and git
+  ran without color or progress, and anything that prompted read EOF. `-i -t`
+  are now passed together, and only when stdin, stdout and stderr are all
+  terminals and emb is the foreground job. Redirected, piped, in the
+  background or in CI, neither is passed and the run is as before.
+
+- fix(exec): interrupting emb stops the container (#299, fixes #298). Ctrl-C
+  on a containerized run with no TTY killed the host emb and left the
+  container building: the signal reached the inner emb as PID 1, and the
+  kernel drops a signal PID 1 has no handler for. The inner emb now exits 130
+  on SIGINT and 143 on SIGTERM when it is PID 1. The host emb passes both on
+  to the container client and waits for it, so `kill <emb pid>` and a CI
+  cancel reach the container too; a second signal kills the client and stops
+  waiting. A client that died of a signal is reported as 128 + n. An image
+  whose emb predates this still ignores the first signal, so a container
+  image that carries its own emb has to be rebuilt to get it.
+
+- fix(aot): a relative `--gen-snapshot` or `--glibc-sysroot` named nothing
+  inside the container (#300). The path was forwarded as typed while its
+  mount was made at the absolute path, and the inner emb runs in the image's
+  working directory. Both are made absolute before forwarding and mounting.
+  The native path is unchanged.
+
 **Tests and CI.**
 
 - ci(cross): the `app bundle` job boots the bundle it built. Its stand-in
@@ -371,6 +408,7 @@ version is unaffected.
   (`examples/cross/app-bundle/boot/boot.c`) now links the engine the bundle
   ships, loads `lib/libapp.so` into it on the software renderer and fails
   unless the app presents a frame.
+
 - ci(cross): an `app bundle (--app, native)` job builds an embedder and an
   app with `--app` on every PR (#302, refs #272). No cross job passed `--app`,
   so every cell stopped at the embedder and the runnable bundle path never
@@ -415,8 +453,6 @@ version is unaffected.
   `emb matrix` never read it — `build.app_path` is parsed by `BuildConfig` and
   consumed only by `emb build` — so eight example manifests declared a field
   with no effect on the command they demonstrate. #272.
-
-
 
 # 0.4.1
 
