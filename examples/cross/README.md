@@ -61,6 +61,10 @@ apart the way an embedder and an app are:
   app's native module.
 - `app/`: a Flutter app with a native library under `native/hello`, which the
   embedder manifest builds as a `cross.modules` entry through `${app_root}`.
+- `boot/`: one C file CI compiles after the build. It boots the bundle on the
+  engine the bundle ships, headless on the software renderer, and waits for
+  the app to present a frame: the check that the engine, the AOT image and
+  the assets work together, which the stand-in embedder cannot make.
 
 The embedder names no app; the app is chosen on the command line:
 

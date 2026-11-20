@@ -164,6 +164,23 @@ jobs:
             echo "$listing" | grep -qE "(^|/)$f\$" || {
               echo "::error::$f is not in $tarball"; exit 1; }
           done
+      # The stand-in embedder proves the files are there. This proves they
+      # work together: a headless embedder loads the AOT image into the engine
+      # the bundle ships, on the software renderer, and waits for a frame. It
+      # links that engine and takes only the header from the engine SDK.
+      - name: 🚀 Boot the bundle on its engine
+        run: |
+          state="$FLUTTER_WORKSPACE/.config/flutter_workspace"
+          bundle=$(ls -d "$state"/cross-build-*/runnable)
+          header=$(find -L "$state/flutter-engine" -name flutter_embedder.h \
+            -path '*release*' -print -quit)
+          test -n "$header" || {
+            echo "::error::no flutter_embedder.h in the engine SDK"; exit 1; }
+          cc -O1 -o boot "$EXAMPLE/boot/boot.c" -I"$(dirname "$header")" \
+            -L"$bundle/lib" -lflutter_engine -Wl,-rpath,"$bundle/lib"
+          ./boot "$bundle" | tee boot.log
+          grep -q '^booted: ' boot.log || {
+            echo "::error::the bundle did not boot on its engine"; exit 1; }
 
   # ── A repo `emb init flatpak` generated builds from nothing ──────────────
   # The unit tests render the templates and resolve the manifest; that proves
