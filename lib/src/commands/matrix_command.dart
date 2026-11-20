@@ -9,6 +9,7 @@ import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/cross/source_checkout.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/manifest/build_config.dart';
+import 'package:emb_cli/src/manifest/emb_manifest.dart';
 import 'package:emb_cli/src/manifest/manifest_loader.dart';
 import 'package:emb_cli/src/workspace/workspace.dart';
 import 'package:mason_logger/mason_logger.dart';
@@ -107,76 +108,71 @@ class MatrixCommand extends Command<int> {
     final fetch = args['fetch'] == true;
 
     final include = <Map<String, dynamic>>[];
-    for (final file in _collect(args.rest)) {
-      final manifest = _loader.loadManifestFile(file);
-      if (manifest == null) {
-        _logger.warn('skip ${file.path}: not a manifest');
-        continue;
+    for (final input in _collect(args.rest)) {
+      // Resolved as `emb cross` resolves it, so the cells are the targets
+      // `emb cross <input> --list-targets` shows: a `.emb/` project's base
+      // merged under each board file, `extends:` followed.
+      var project = _resolve(input);
+      if (project == null) continue;
+      final workspace = resolveBuildWorkspace(project, override: workspaceArg);
+
+      // `extends: 'source#<target>'` names a target inside the embedder's
+      // repo, so it resolves only once that repo is on disk.
+      final reasons = <String, String>{};
+      final sourceDirs = <String, String>{};
+      for (final pending in project.unresolved.values) {
+        if (targetFilter != null && pending.name != targetFilter) continue;
+        if (!_extendsSource(pending.block)) continue;
+        final found = await _sourceCheckout(
+          pending.block,
+          workspace,
+          pending.sourcePath,
+          fetch: fetch,
+        );
+        if (found.dir == null) {
+          reasons[pending.name] = found.why;
+        } else {
+          sourceDirs[pending.name] = found.dir!;
+        }
       }
-      final crossMap = manifest.raw['cross'];
-      if (crossMap is! Map) continue; // not a cross manifest — silently skip
-
-      // Hosts: the manifest's declared support, narrowed by --host. Empty
-      // supported_host_types falls back to ubuntu so a terse manifest emits.
-      final supported = manifest.supportedHostTypes.isEmpty
-          ? const ['ubuntu']
-          : manifest.supportedHostTypes;
-      final hosts = hostFilter.isEmpty
-          ? supported
-          : hostFilter.where(supported.contains).toList();
-      if (hosts.isEmpty) continue;
-
-      if (declaresAppPath(manifest.raw['build'])) {
+      if (sourceDirs.isNotEmpty) {
+        project = _resolve(input, sourceDirs: sourceDirs) ?? project;
+      }
+      for (final pending in project.unresolved.values) {
+        if (targetFilter != null && pending.name != targetFilter) continue;
         _logger.warn(
-          '${file.path}: build.app_path is deprecated and has no effect; '
-          'pass --app <path> on the command line instead.',
+          'skip $input#${pending.name}: '
+          '${reasons[pending.name] ?? pending.message}',
         );
       }
 
-      final workspace = _workspaceFor(file, workspaceArg);
+      final root = _projectRoot(input);
+      for (final ref in project.targets.values) {
+        // A flat manifest's one target is the one `emb cross <manifest>`
+        // builds with no --target: its cell is `default`, as it always was.
+        final flat = project.defaultTarget == ref.name;
+        final name = flat ? 'default' : ref.name;
+        if (targetFilter != null && name != targetFilter) continue;
 
-      for (final entry in _targets(crossMap)) {
-        if (targetFilter != null && entry.name != targetFilter) continue;
-        // `extends: 'source#<target>'` names a target inside the embedder's
-        // repo, so the cell exists only once that repo is on disk.
-        String? sourceDir;
-        if (_extendsSource(entry.merged)) {
-          final found = await _sourceCheckout(
-            entry.merged,
-            workspace,
-            file,
-            fetch: fetch,
+        final declaring = _manifestOf(ref.sourcePath, project);
+        final hosts = _hosts(declaring, hostFilter);
+        if (hosts.isEmpty) continue;
+        if (declaresAppPath(declaring?.raw['build'])) {
+          _logger.warn(
+            '${ref.sourcePath ?? input}: build.app_path is deprecated and has '
+            'no effect; pass --app <path> on the command line instead.',
           );
-          if (found.dir == null) {
-            _logger.warn('skip ${file.path}#${entry.name}: ${found.why}');
-            continue;
-          }
-          sourceDir = found.dir;
         }
+
         final CrossTarget target;
         try {
-          // Resolve the target's `extends` chain (board library / cross-project)
-          // first, so a target whose provider comes from a board — like the
-          // rpi family — yields a real cell instead of being skipped.
-          final resolved = _resolver.resolveExtends(
-            Map<String, dynamic>.from(entry.merged),
-            file.path,
-            sourceDir: sourceDir,
-          );
-          target = CrossTarget.fromMap(resolved).withResolvedPaths(
-            file.path,
-            vars: {
-              'embedder_root': p.normalize(p.dirname(p.absolute(file.path))),
-            },
-          );
-          // fromMap throws ArgumentError on an unknown/missing provider token;
-          // extends resolution throws CrossProjectException (bad board/ref).
+          target = CrossTarget.fromMap(
+            ref.cross,
+          ).withResolvedPaths(ref.sourcePath, vars: {'embedder_root': root});
+          // fromMap throws ArgumentError on an unknown/missing provider token.
           // ignore: avoid_catching_errors
         } on ArgumentError catch (e) {
-          _logger.warn('skip ${file.path}#${entry.name}: ${e.message}');
-          continue;
-        } on CrossProjectException catch (e) {
-          _logger.warn('skip ${file.path}#${entry.name}: ${e.message}');
+          _logger.warn('skip $input#$name: ${e.message}');
           continue;
         }
         final provider = CrossProvider.forTarget(
@@ -184,15 +180,11 @@ class MatrixCommand extends Command<int> {
           workspace: workspace,
           host: host,
         );
-        // `default` is the single-target shape (no cross.targets); it needs no
-        // --target. A named target does.
-        final crossArgs = entry.name == 'default'
-            ? file.path
-            : '${file.path} --target ${entry.name}';
+        final crossArgs = flat ? input : '$input --target $name';
 
         if (target.hasUnresolvedKeyPaths) {
           _logger.warn(
-            '${file.path}#${entry.name}: augment/module paths contain '
+            '$input#$name: augment/module paths contain '
             r'unbound ${app_root} — sysroot_key/build_key omitted '
             '(they require --app to resolve)',
           );
@@ -201,9 +193,9 @@ class MatrixCommand extends Command<int> {
         for (final h in hosts) {
           final runner = _runner(h);
           include.add({
-            'id': manifest.id,
-            'manifest': file.path,
-            'target': entry.name,
+            'id': project.id,
+            'manifest': ref.sourcePath ?? input,
+            'target': name,
             'host': h,
             'runs_on': runner.runsOn,
             if (runner.container != null) 'container': runner.container,
@@ -236,19 +228,66 @@ class MatrixCommand extends Command<int> {
     return ExitCode.success.code;
   }
 
-  /// The workspace [file] builds in, by the rule `emb cross` uses: `-w`, the
-  /// manifest's `workspace:`, `$FLUTTER_WORKSPACE`, cwd. A manifest that does
-  /// not resolve as a project still has the last three.
-  Workspace _workspaceFor(File file, String? override) {
-    try {
-      final project = _resolver.resolve(file.path, deferExtends: true);
-      if (project != null) {
-        return resolveBuildWorkspace(project, override: override);
+  /// [input] as a project, with targets that do not resolve set aside, or
+  /// null after saying why there is none. A manifest with no `cross:` block
+  /// is not a cross project and is passed over quietly.
+  CrossProject? _resolve(
+    String input, {
+    Map<String, String> sourceDirs = const {},
+  }) {
+    if (FileSystemEntity.isFileSync(input)) {
+      final manifest = _loader.loadManifestFile(File(input));
+      if (manifest == null) {
+        _logger.warn('skip $input: not a manifest');
+        return null;
       }
-    } on CrossProjectException {
-      // Reported per target below, where it can name the target.
+      if (manifest.raw['cross'] is! Map) return null;
     }
-    return Workspace.resolve(override: override);
+    try {
+      final project = _resolver.resolve(
+        input,
+        deferExtends: true,
+        sourceDirs: sourceDirs,
+      );
+      if (project == null) _logger.warn('skip $input: no emb project');
+      return project;
+    } on CrossProjectException catch (e) {
+      _logger.warn('skip $input: ${e.message}');
+      return null;
+    }
+  }
+
+  /// The manifest whose `supported_host_types` and `build:` apply to a
+  /// target: the file that declared it, unless that names no hosts and the
+  /// project has a base manifest that does (a `.emb/` board file and its
+  /// `base.emb.yaml`).
+  EmbManifest? _manifestOf(String? sourcePath, CrossProject project) {
+    EmbManifest? load(String? path) =>
+        path == null ? null : _loader.loadManifestFile(File(path));
+    final own = load(sourcePath);
+    if (own != null && own.supportedHostTypes.isNotEmpty) return own;
+    final base = project.nativeSourcePath == sourcePath
+        ? null
+        : load(project.nativeSourcePath);
+    if (base != null && base.supportedHostTypes.isNotEmpty) return base;
+    return own ?? base;
+  }
+
+  /// [manifest]'s `supported_host_types`, `ubuntu` when it names none,
+  /// narrowed by `--host`.
+  static List<String> _hosts(EmbManifest? manifest, List<String> filter) {
+    final declared = manifest?.supportedHostTypes ?? const <String>[];
+    final supported = declared.isEmpty ? const ['ubuntu'] : declared;
+    return filter.isEmpty
+        ? supported
+        : filter.where(supported.contains).toList();
+  }
+
+  /// The directory `${embedder_root}` names for [input]: the project
+  /// directory, or the directory of a manifest given as a file.
+  static String _projectRoot(String input) {
+    final abs = p.normalize(p.absolute(input));
+    return FileSystemEntity.isDirectorySync(abs) ? abs : p.dirname(abs);
   }
 
   static bool _extendsSource(Map<dynamic, dynamic> block) {
@@ -262,7 +301,7 @@ class MatrixCommand extends Command<int> {
   Future<({String? dir, String why})> _sourceCheckout(
     Map<dynamic, dynamic> block,
     Workspace workspace,
-    File file, {
+    String? sourcePath, {
     required bool fetch,
   }) async {
     final repo = CrossTarget.repoFrom(block['source']);
@@ -288,7 +327,7 @@ class MatrixCommand extends Command<int> {
     final cloned = await cloneSourceRepo(
       repo,
       workspace,
-      sourcePath: file.path,
+      sourcePath: sourcePath,
     );
     return cloned.dir == null
         ? (
@@ -300,59 +339,48 @@ class MatrixCommand extends Command<int> {
         : (dir: cloned.dir!.path, why: '');
   }
 
-  /// Expand a `cross:` map into its targets. A `cross.targets` map yields one
-  /// entry per named target (shared fields merged under each override); a flat
-  /// `cross:` yields a single synthetic `default` target.
-  List<({String name, Map<dynamic, dynamic> merged})> _targets(
-    Map<dynamic, dynamic> crossMap,
-  ) {
-    final targets = crossMap['targets'];
-    if (targets is Map && targets.isNotEmpty) {
-      return [
-        for (final e in targets.entries)
-          if (e.value is Map)
-            (
-              name: e.key.toString(),
-              merged: <dynamic, dynamic>{
-                for (final s in crossMap.entries)
-                  if (s.key != 'targets') s.key: s.value,
-                ...e.value as Map,
-              },
-            ),
-      ];
-    }
-    return [(name: 'default', merged: Map<dynamic, dynamic>.from(crossMap))];
-  }
-
-  /// Gather manifest files from the given paths: a file is taken as-is; a
-  /// directory contributes its `emb.yaml` (if any) plus every `*.emb.yaml`
-  /// (sorted). Deduplicated by absolute path.
-  List<File> _collect(List<String> paths) {
+  /// What to render, from the given paths:
+  ///
+  /// - a file is one manifest;
+  /// - a directory holding a `.emb/` is one project, as `emb cross` reads it;
+  /// - a `.emb/` directory itself is the project that holds it;
+  /// - any other directory contributes its `emb.yaml` and every `*.emb.yaml`
+  ///   directly inside it, sorted, each read as a manifest.
+  ///
+  /// Deduplicated by absolute path.
+  List<String> _collect(List<String> paths) {
     final seen = <String>{};
-    final files = <File>[];
-    void add(File f) {
-      if (seen.add(p.absolute(f.path))) files.add(f);
+    final inputs = <String>[];
+    void add(String path) {
+      if (seen.add(p.normalize(p.absolute(path)))) inputs.add(path);
     }
 
     for (final path in paths) {
       final type = FileSystemEntity.typeSync(path);
       if (type == FileSystemEntityType.file) {
-        add(File(path));
+        add(path);
       } else if (type == FileSystemEntityType.directory) {
-        final embYaml = File(p.join(path, 'emb.yaml'));
-        if (embYaml.existsSync()) add(embYaml);
-        Directory(path)
-            .listSync()
-            .whereType<File>()
-            .where((f) => f.path.endsWith('.emb.yaml'))
-            .toList()
-          ..sort((a, b) => a.path.compareTo(b.path))
-          ..forEach(add);
+        if (p.basename(p.normalize(p.absolute(path))) == '.emb') {
+          add(p.dirname(p.normalize(p.absolute(path))));
+        } else if (Directory(p.join(path, '.emb')).existsSync()) {
+          add(path);
+        } else {
+          final embYaml = File(p.join(path, 'emb.yaml'));
+          if (embYaml.existsSync()) add(embYaml.path);
+          (Directory(path)
+                  .listSync()
+                  .whereType<File>()
+                  .where((f) => f.path.endsWith('.emb.yaml'))
+                  .map((f) => f.path)
+                  .toList()
+                ..sort())
+              .forEach(add);
+        }
       } else {
         _logger.warn('skip: no such path $path');
       }
     }
-    return files;
+    return inputs;
   }
 
   /// Map a host type to a GitHub Actions runner. Distros without a hosted

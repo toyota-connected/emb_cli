@@ -436,4 +436,90 @@ cross:
       expect(logger.warnings.toString(), contains('declares none'));
     });
   });
+
+  // A `.emb/` project is read as `emb cross` reads it: the base merged under
+  // each board file, one cell per board target, and no cell for the base.
+  group('a .emb/ project', () {
+    late Directory project;
+
+    setUp(() {
+      project = Directory(p.join(tmp.path, 'proj'));
+      final emb = Directory(p.join(project.path, '.emb'))
+        ..createSync(recursive: true);
+      File(p.join(emb.path, 'base.emb.yaml')).writeAsStringSync(
+        'id: proj\nsupported_host_types: [ubuntu, fedora]\ncross:\n'
+        '  provider: arm-gnu\n  toolchain_version: 12.3.rel1\n',
+      );
+      File(p.join(emb.path, 'rpi.emb.yaml')).writeAsStringSync(
+        'id: rpi\ncross:\n  targets:\n'
+        '    rpi5:\n'
+        '      triple: aarch64-none-linux-gnu\n'
+        '      image_url: https://example.com/os.img.xz\n'
+        '      cpu_flags: [-mcpu=cortex-a76]\n'
+        '    rpi4:\n'
+        '      triple: aarch64-none-linux-gnu\n'
+        '      image_url: https://example.com/os.img.xz\n'
+        '      cpu_flags: [-mcpu=cortex-a72]\n',
+      );
+    });
+
+    test('yields its board targets with the base merged under them', () async {
+      final include = await render([project.path, '--host', 'ubuntu']);
+      expect(
+        include.map((c) => c['target']),
+        unorderedEquals(['rpi5', 'rpi4']),
+      );
+      final rpi5 = include.firstWhere((c) => c['target'] == 'rpi5');
+      // The provider and toolchain come from base.emb.yaml.
+      expect(rpi5['provider'], 'arm-gnu');
+      expect(rpi5['triple'], 'aarch64-none-linux-gnu');
+      expect(rpi5['args'], '${project.path} --target rpi5');
+      expect(rpi5['manifest'], p.join(project.path, '.emb', 'rpi.emb.yaml'));
+      expect(rpi5['id'], 'proj');
+    });
+
+    test("a board file naming no hosts takes the base's", () async {
+      final include = await render([project.path]);
+      expect(
+        include.where((c) => c['target'] == 'rpi5').map((c) => c['host']),
+        unorderedEquals(['ubuntu', 'fedora']),
+      );
+    });
+
+    test('the .emb directory itself is the same project', () async {
+      final viaDir = await render([project.path, '--host', 'ubuntu']);
+      final viaEmb = await render([
+        p.join(project.path, '.emb'),
+        '--host',
+        'ubuntu',
+      ]);
+      expect(viaEmb, viaDir);
+    });
+
+    test('--target picks one board target', () async {
+      final include = await render([
+        project.path,
+        '--host',
+        'ubuntu',
+        '--target',
+        'rpi4',
+      ]);
+      expect(include.single['target'], 'rpi4');
+    });
+
+    test('beside flat manifests, each is rendered once', () async {
+      final f = write('pi5.emb.yaml', _singleTarget);
+      final include = await render([
+        project.path,
+        f.path,
+        project.path,
+        '--host',
+        'ubuntu',
+      ]);
+      expect(
+        include.map((c) => c['target']),
+        unorderedEquals(['rpi5', 'rpi4', 'default']),
+      );
+    });
+  });
 }
