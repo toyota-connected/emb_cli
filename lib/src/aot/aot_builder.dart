@@ -572,9 +572,9 @@ class AotBuilder {
   ///
   /// * the **pub workspace root**, the ancestor whose `pubspec.yaml` declares a
   ///   `workspace:` list. That is the marker pub itself uses; "nearest ancestor
-  ///   with a pubspec.yaml" is not, because in the common `packages/<pkg>/
-  ///   example` layout the app's parent is the library package, one level below
-  ///   the root that owns the config.
+  ///   with a pubspec.yaml" is not, because in the common
+  ///   `packages/<pkg>/example` layout the app's parent is the library package,
+  ///   one level below the root that owns the config.
   /// * the **emb workspace root**, for an app that is not in a pub workspace at
   ///   all.
   /// * the filesystem root.
