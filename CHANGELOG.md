@@ -1,3 +1,9 @@
+# Unreleased
+
+Nothing yet. New entries go here, not under the heading below. The pubspec
+reads `0.6.0-dev`, and nobody can tell whether work recorded under a published
+version shipped.
+
 # 0.5.0
 
 Released from `main`, which is what CI validates. Upgrading from 0.4.x needs
