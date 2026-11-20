@@ -355,6 +355,12 @@ version is unaffected.
 
 **Tests and CI.**
 
+- ci(cross): the `app bundle` job boots the bundle it built. Its stand-in
+  embedder checks that the bundle's files exist, so a bundle whose engine
+  cannot load its AOT image passed. A headless embedder
+  (`examples/cross/app-bundle/boot/boot.c`) now links the engine the bundle
+  ships, loads `lib/libapp.so` into it on the software renderer and fails
+  unless the app presents a frame.
 - ci(cross): an `app bundle (--app, native)` job builds an embedder and an
   app with `--app` on every PR (#302, refs #272). No cross job passed `--app`,
   so every cell stopped at the embedder and the runnable bundle path never
