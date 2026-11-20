@@ -191,6 +191,16 @@ version is unaffected.
   checkout that is there. Both take the workspace the way `emb cross` does,
   and `emb fetch` accepts `-w`, which its documentation already listed. See
   Upgrading.
+- fix(matrix): `emb matrix` did not read `.emb/` projects. It globbed a
+  directory's top-level `*.emb.yaml` files and read each alone, so a project
+  directory rendered no cells, and its `.emb/` directory rendered
+  `base.emb.yaml` as a target and every board file without the base merged
+  under it. It now resolves each path as `emb cross` does, so its cells are
+  the targets `emb cross --list-targets` shows; a board file that names no
+  `supported_host_types` takes the base's. The matrix of a directory of flat
+  manifests is unchanged (this repository's 30 cells are identical). The
+  README gains an `emb matrix` reference section, and CI's matrix now
+  includes `examples/cross/project`.
 - fix(matrix): `emb matrix` skipped every `extends: 'source#<target>'`
   target, with the checkout of `cross.source` on disk or not, so a repo from
   `emb init flatpak --target <board>` rendered a matrix with no board in it.

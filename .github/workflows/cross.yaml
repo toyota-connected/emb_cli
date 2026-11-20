@@ -73,7 +73,10 @@ jobs:
       - name: 🧮 Render cross matrix
         id: gen
         run: |
-          dart run emb_cli:emb matrix examples/cross -o matrix.json
+          # examples/cross/project is the one .emb/ project. It is named on its
+          # own: a directory argument is not searched below its own level.
+          dart run emb_cli:emb matrix examples/cross examples/cross/project \
+            -o matrix.json
           echo "matrix=$(cat matrix.json)" >> "$GITHUB_OUTPUT"
       - name: 📋 Show matrix
         run: cat matrix.json

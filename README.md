@@ -1282,7 +1282,7 @@ clone coming first:
 - `emb fetch` clones `cross.source` the same way. `emb doctor --target`
   fetches nothing and resolves against a checkout that is already there, or
   says to fetch it.
-- `emb matrix` downloads nothing by default. It emits the cell for a
+- [`emb matrix`](#emb-matrix) downloads nothing by default. It emits the cell for a
   `source#` target when the checkout is in the workspace (`-w`, then the
   manifest's `workspace:`, `$FLUTTER_WORKSPACE`, cwd) and otherwise skips the
   target with a warning. `emb matrix --fetch` clones a missing `cross.source`
@@ -1818,6 +1818,68 @@ emb fetch <project-dir|manifest.yaml> [options]
 ```sh
 emb fetch . --target rpi5 --app ./app/my_app  # toolchain + sysroot + crates + pub
 emb cross . --target rpi5 --build --offline    # then build with no network
+```
+
+---
+
+### `emb matrix`
+
+Render a GitHub Actions build matrix from manifests' `cross:` blocks: one cell
+per manifest × target × host, as `{"include":[...]}` JSON. It parses manifests
+and plans providers, and downloads nothing unless `--fetch` asks, so it runs
+on any host. Pair each cell with `emb cross <args> --dry-run` as a PR gate, or
+`emb cross <args> --build` keyed on the cell's cache keys; this repository's
+`cross` workflow does the first.
+
+```sh
+emb matrix <manifest|dir>... [options]
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `<manifest\|dir>...` | **mandatory (positional)** | What to render. A manifest file, or a project directory with a `.emb/` (or that `.emb/` itself), is read as `emb cross` reads it. Any other directory contributes the `emb.yaml` and every `*.emb.yaml` directly inside it, sorted; subdirectories are not searched. |
+| `--host <type>` | every supported host | Keep only these host types (repeatable), intersected with each manifest's `supported_host_types`. |
+| `--target <name>` | all targets | Emit only this target's cells. |
+| `-w`, `--workspace <dir>` | manifest `workspace:`, then `$FLUTTER_WORKSPACE`, then cwd | Where the checkout of a `cross.source` is looked for. |
+| `--fetch` | off | Clone a `cross.source` that a `source#` target needs and the workspace does not have. |
+| `-o`, `--output <file>` | stdout | Write the JSON here. Prefer it in CI: nothing else can land in a file. |
+| `--pretty` | off | Indent the JSON (stdout only). |
+
+What becomes a cell:
+
+- **Targets.** The targets are the ones `emb cross <path> --list-targets`
+  shows: each `cross.targets` entry with the shared fields merged under it,
+  and in a `.emb/` project each board file's targets with `base.emb.yaml`
+  merged under them. Their cells carry `--target <name>` in `args`. A flat
+  `cross:` block is one target named `default`, whose `args` is the manifest
+  alone. The native `local` build gets no cell.
+- **`extends:`.** Board-library and `<dir>#<target>` references resolve as
+  they do for `emb cross`. A `source#<target>` reference needs the checkout of
+  `cross.source`; without one, and without `--fetch`, the target is skipped
+  with a warning that says so.
+- **Hosts.** The `supported_host_types` of the file that declares the target,
+  or of `base.emb.yaml` when a board file names none; `ubuntu` when neither
+  does. `ubuntu` and `debian` run on `ubuntu-latest`; `fedora` runs on
+  `ubuntu-latest` inside a `fedora:41` container; `darwin`/`macos` and
+  `windows` get their own runners.
+- **Skips.** A target that does not resolve, or names a provider emb does not
+  have, is left out with a warning. The rest are still emitted and the exit
+  code is 0.
+
+Each cell has:
+
+| Field | Meaning |
+|---|---|
+| `id`, `manifest`, `target`, `host` | What the cell is. |
+| `runs_on`, `container` | The runner, and the container image when the host has no runner of its own. |
+| `provider`, `triple` | The resolved provider and target triple. |
+| `preflight` | The host tools the provider needs, space-separated. |
+| `sysroot_key`, `build_key` | Content-addressed keys for `actions/cache`: targets that differ only in CPU tuning share a `sysroot_key`. Both are left out when an augment or module path uses `${app_root}`, which only `--app` binds. |
+| `args` | The `emb cross` arguments for this cell. |
+
+```sh
+emb matrix examples/cross examples/cross/project -o matrix.json   # what CI renders
+emb matrix my-app.emb.yaml --fetch -o matrix.json                # source# targets, fresh checkout
 ```
 
 ---
