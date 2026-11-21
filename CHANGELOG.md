@@ -1,8 +1,22 @@
 # Unreleased
 
-Nothing yet. New entries go here, not under the heading below. The pubspec
-reads `0.7.0-dev`, and nobody can tell whether work recorded under a published
+New entries go here, not under the heading below. The pubspec reads
+`0.7.0-dev`, and nobody can tell whether work recorded under a published
 version shipped.
+
+**Flatpak.**
+
+- feat(cross): a `flatpak-sdk` target whose `sdk_repo` cannot be pulled
+  builds from the cache. An unreachable server or a dropped connection failed
+  the build even with a usable commit cached. emb now uses the commit that
+  repo last served and warns that it may be stale. With nothing cached it
+  still fails. A commit cached under `sdk_repo_gpg_key` was verified when it
+  was pulled, and `emb.lock` still flags drift from a pinned commit.
+
+- fix(cross): an `sdk_repo` pull could hang a build indefinitely. It is now
+  killed after 30 minutes and handled as a failed pull. With libcurl, OSTree
+  already aborts a stalled transfer itself; the limit covers older OSTree,
+  its other HTTP backend and a hung local filesystem.
 
 # 0.6.0
 

@@ -16,13 +16,16 @@ class FlatpakSdkRepoException implements Exception {
 /// A flatpak ref checked out of an ostree repo: `files/` and `metadata`, the
 /// same shape `flatpak info --show-location` points at.
 class RepoCheckout {
-  const RepoCheckout(this.path, this.commit);
+  const RepoCheckout(this.path, this.commit, {this.warning});
 
   /// The checkout directory.
   final String path;
 
   /// The commit it holds, 64 hex characters.
   final String commit;
+
+  /// Set when the pull failed and the cached commit was used instead.
+  final String? warning;
 }
 
 /// Pulls flatpak refs from an ostree repo into a cache and checks them out,
@@ -40,13 +43,23 @@ class RepoCheckout {
 class FlatpakSdkRepo {
   FlatpakSdkRepo(
     this.cacheDir, {
-    required ProcessRunner runProcess,
+    required TimedProcessRunner runProcess,
     this.offline = false,
+    this.pullTimeout = defaultPullTimeout,
   }) : _run = runProcess;
 
   /// `<cache>/flatpak-sdk`.
   final Directory cacheDir;
-  final ProcessRunner _run;
+  final TimedProcessRunner _run;
+
+  /// The longest a pull may take before it is killed.
+  final Duration pullTimeout;
+
+  /// A backstop, not a stall detector: with libcurl, ostree already aborts a
+  /// transfer below 1000 B/s for 30 s and retries it. This catches what that
+  /// does not: older ostree, its other HTTP backend, a hung local filesystem.
+  /// An SDK and its runtime are about a gigabyte, so it is generous.
+  static const defaultPullTimeout = Duration(minutes: 30);
 
   /// When true, nothing is pulled: a ref must already be in the cache.
   final bool offline;
@@ -69,25 +82,39 @@ class FlatpakSdkRepo {
     final remote = 'emb-${contentHash([source, _keyDigest(gpgKey)])}';
     await _ensureRepo();
     await _ensureRemote(remote, local ? 'file://$source' : source, gpgKey);
+    String? warning;
     if (!offline) {
-      final r = local
-          ? await _ostree([
-              'pull-local',
-              '--remote=$remote',
-              if (gpgKey != null) '--gpg-verify',
-              source,
-              ref,
-            ])
-          : await _ostree(['pull', remote, ref]);
+      final r = await _ostree(
+        local
+            ? [
+                'pull-local',
+                '--remote=$remote',
+                if (gpgKey != null) '--gpg-verify',
+                source,
+                ref,
+              ]
+            : ['pull', remote, ref],
+        timeout: pullTimeout,
+      );
       if (r.exitCode != 0) {
-        throw FlatpakSdkRepoException(
-          'could not pull $ref from $source: ${_firstLine(r.stderr)}',
-        );
+        final why = r.exitCode == timedOutExitCode
+            ? 'timed out after ${_span(pullTimeout)}'
+            : _firstLine(r.stderr);
+        // A commit this source served before, verified then if a key was
+        // set. A network blip should not stop a build the cache can do.
+        final cached = await _revParse(remote, ref);
+        if (cached == null) {
+          throw FlatpakSdkRepoException(
+            'could not pull $ref from $source: $why',
+          );
+        }
+        warning =
+            'could not pull $ref from $source ($why); building with the '
+            'cached commit ${cached.substring(0, 12)}, which may be stale';
       }
     }
-    final rev = await _ostree(['rev-parse', '$remote:$ref']);
-    final commit = rev.stdout.trim();
-    if (rev.exitCode != 0 || !RegExp(r'^[0-9a-f]{64}$').hasMatch(commit)) {
+    final commit = await _revParse(remote, ref);
+    if (commit == null) {
       throw FlatpakSdkRepoException(
         offline
             ? '$ref from $source is not in the cache, and --offline forbids '
@@ -95,7 +122,20 @@ class FlatpakSdkRepo {
             : '$ref is not in $source',
       );
     }
-    return RepoCheckout(await _checkoutCommit(commit), commit);
+    return RepoCheckout(
+      await _checkoutCommit(commit),
+      commit,
+      warning: warning,
+    );
+  }
+
+  /// The commit [remote] last gave for [ref] in the cache, or null.
+  Future<String?> _revParse(String remote, String ref) async {
+    final rev = await _ostree(['rev-parse', '$remote:$ref']);
+    final commit = rev.stdout.trim();
+    return rev.exitCode == 0 && RegExp(r'^[0-9a-f]{64}$').hasMatch(commit)
+        ? commit
+        : null;
   }
 
   static String _keyDigest(String? gpgKey) {
@@ -191,13 +231,16 @@ class FlatpakSdkRepo {
     }
   }
 
-  Future<RunResult> _ostree(List<String> args) async {
+  Future<RunResult> _ostree(List<String> args, {Duration? timeout}) async {
     try {
-      return await _run('ostree', ['--repo=$_repo', ...args]);
+      return await _run('ostree', ['--repo=$_repo', ...args], timeout: timeout);
     } on ProcessException catch (e) {
       throw FlatpakSdkRepoException('could not run ostree: ${e.message}');
     }
   }
+
+  static String _span(Duration d) =>
+      d.inMinutes > 0 ? '${d.inMinutes} min' : '${d.inSeconds} s';
 
   static String _firstLine(String s) {
     final t = s.trim();

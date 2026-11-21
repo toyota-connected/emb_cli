@@ -970,6 +970,7 @@ class CrossCommand extends Command<int> {
     }
     final profile = result.profile!;
     progress.complete('Resolved ${provider.name}');
+    result.warnings.forEach(_logger.warn);
     _report(profile);
 
     // Reconcile emb.lock: pin the resolved toolchain/sysroot, or fail on drift
