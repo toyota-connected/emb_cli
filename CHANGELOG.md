@@ -28,6 +28,17 @@ version shipped.
 
 **Flatpak.**
 
+- feat(cache): `emb cache gc` prunes the `flatpak-sdk` OSTree cache. Nothing
+  removed from it before, and an SDK and its runtime are about a gigabyte, so
+  each update or `runtime_version` bump added that much for good. A build now
+  records when it used each commit. gc deletes a ref whose commit no build has
+  used for a week, a checkout unused for a week, and a dead run's partial
+  checkout, then has OSTree delete every object no remaining ref needs. A
+  later build pulls what it needs again. A commit cached before this has no
+  use recorded; gc records one and keeps it. Builds hold the cache's lock
+  shared and gc holds it exclusive, so gc waits for a pull in progress.
+  `--dry-run` reports without changing anything.
+
 - feat(cross): a `flatpak-sdk` target whose `sdk_repo` cannot be pulled
   builds from the cache. An unreachable server or a dropped connection failed
   the build even with a usable commit cached. emb now uses the commit that
