@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:emb_cli/src/cross/cross_keys.dart' show contentHash;
 import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:path/path.dart' as p;
@@ -52,6 +53,8 @@ class FlatpakSdkRepo {
 
   String get _repo => p.join(cacheDir.path, 'repo');
 
+  static var _partials = 0;
+
   /// Check out [ref] (`runtime/<id>/<arch>/<branch>`) from [source], a URL or
   /// an absolute path. With [gpgKey], its commits must be signed by that key.
   Future<RepoCheckout> checkout(
@@ -60,7 +63,10 @@ class FlatpakSdkRepo {
     String? gpgKey,
   }) async {
     final local = !source.contains('://');
-    final remote = 'emb-${contentHash([source, gpgKey ?? ''])}';
+    // The key's bytes, not its path: it is imported only when the remote is
+    // created, so a key rotated in place must name a new remote, or the old
+    // keyring would go on judging commits.
+    final remote = 'emb-${contentHash([source, _keyDigest(gpgKey)])}';
     await _ensureRepo();
     await _ensureRemote(remote, local ? 'file://$source' : source, gpgKey);
     if (!offline) {
@@ -90,6 +96,18 @@ class FlatpakSdkRepo {
       );
     }
     return RepoCheckout(await _checkoutCommit(commit), commit);
+  }
+
+  static String _keyDigest(String? gpgKey) {
+    if (gpgKey == null) return '';
+    try {
+      return sha256.convert(File(gpgKey).readAsBytesSync()).toString();
+    } on FileSystemException catch (e) {
+      throw FlatpakSdkRepoException(
+        'cannot read sdk_repo_gpg_key $gpgKey: '
+        '${e.osError?.message ?? e.message}',
+      );
+    }
   }
 
   Future<void> _ensureRepo() async {
@@ -129,9 +147,10 @@ class FlatpakSdkRepo {
     final dest = Directory(p.join(cacheDir.path, 'checkouts', commit));
     if (dest.existsSync()) return dest.path;
     dest.parent.createSync(recursive: true);
-    final tmp = Directory(
-      '${dest.path}.partial-$pid-${DateTime.now().microsecondsSinceEpoch}',
-    );
+    _dropStalePartials(dest);
+    // pid for other processes, a counter for this one: two checkouts started
+    // in the same microsecond would otherwise share a name.
+    final tmp = Directory('${dest.path}.partial-$pid-${_partials++}');
     final r = await _ostree(['checkout', '-U', commit, tmp.path]);
     if (r.exitCode != 0) {
       if (tmp.existsSync()) tmp.deleteSync(recursive: true);
@@ -146,6 +165,30 @@ class FlatpakSdkRepo {
       tmp.deleteSync(recursive: true);
     }
     return dest.path;
+  }
+
+  /// Remove what a run killed mid-checkout left beside [dest]: a partial
+  /// whose process is gone.
+  ///
+  /// Not by age: `ostree checkout` stamps what it writes with the epoch, so a
+  /// checkout in progress looks decades old.
+  static void _dropStalePartials(Directory dest) {
+    final prefix = '${p.basename(dest.path)}.partial-';
+    try {
+      for (final e in dest.parent.listSync()) {
+        final name = p.basename(e.path);
+        if (e is! Directory || !name.startsWith(prefix)) continue;
+        final owner = int.tryParse(
+          name.substring(prefix.length).split('-').first,
+        );
+        if (owner == null || owner == pid) continue;
+        if (!Directory('/proc/$owner').existsSync()) {
+          e.deleteSync(recursive: true);
+        }
+      }
+    } on FileSystemException {
+      // Another run removed it first, or it cannot be read: not this run's.
+    }
   }
 
   Future<RunResult> _ostree(List<String> args) async {

@@ -155,10 +155,9 @@ void main() {
     });
   });
 
-  test('a signing key turns on verification for that remote', () async {
-    // A fake: what matters is which flags reach ostree.
-    final calls = <List<String>>[];
-    Future<RunResult> run(
+  /// A fake ostree recording its argv; what matters is which flags reach it.
+  ProcessRunner fakeOstree(List<List<String>> calls) {
+    return (
       String exe,
       List<String> args, {
       String? workingDirectory,
@@ -173,18 +172,78 @@ void main() {
       return args.contains('rev-parse')
           ? RunResult(0, '${'a' * 64}\n', '')
           : const RunResult(0, '', '');
-    }
+    };
+  }
 
+  test('a signing key turns on verification for that remote', () async {
+    final calls = <List<String>>[];
+    final key = File(p.join(tmp.path, 'k.gpg'))..writeAsStringSync('key one');
     final repo = FlatpakSdkRepo(
       Directory(p.join(tmp.path, 'cache')),
-      runProcess: run,
+      runProcess: fakeOstree(calls),
     );
-    await repo.checkout('https://example.com/repo', _ref, gpgKey: '/k.gpg');
-    await repo.checkout('/srv/repo', _ref, gpgKey: '/k.gpg');
+    await repo.checkout('https://example.com/repo', _ref, gpgKey: key.path);
+    await repo.checkout('/srv/repo', _ref, gpgKey: key.path);
     final adds = calls.where((c) => c.contains('add'));
-    expect(adds, everyElement(contains('--gpg-import=/k.gpg')));
+    expect(adds, everyElement(contains('--gpg-import=${key.path}')));
     expect(adds, everyElement(isNot(contains('--no-gpg-verify'))));
     final pullLocal = calls.singleWhere((c) => c.contains('pull-local'));
     expect(pullLocal, contains('--gpg-verify'));
+  });
+
+  test('a key rotated in place gets a remote of its own', () async {
+    // The key is imported only when a remote is created, so the old keyring
+    // must not go on judging commits after the file changes.
+    final calls = <List<String>>[];
+    final key = File(p.join(tmp.path, 'k.gpg'))..writeAsStringSync('key one');
+    final repo = FlatpakSdkRepo(
+      Directory(p.join(tmp.path, 'cache')),
+      runProcess: fakeOstree(calls),
+    );
+    await repo.checkout('https://example.com/repo', _ref, gpgKey: key.path);
+    key.writeAsStringSync('key two');
+    await repo.checkout('https://example.com/repo', _ref, gpgKey: key.path);
+    final names = calls
+        .where((c) => c.contains('add'))
+        .map((c) => c[c.length - 2])
+        .toSet();
+    expect(names, hasLength(2));
+  });
+
+  test('an unreadable key is an error, not an unverified pull', () async {
+    await expectLater(
+      FlatpakSdkRepo(
+        Directory(p.join(tmp.path, 'cache')),
+        runProcess: fakeOstree([]),
+      ).checkout('https://example.com/repo', _ref, gpgKey: '/no/such.gpg'),
+      throwsA(
+        isA<FlatpakSdkRepoException>().having(
+          (e) => e.message,
+          'message',
+          contains('cannot read sdk_repo_gpg_key /no/such.gpg'),
+        ),
+      ),
+    );
+  });
+
+  test('clears checkouts a killed run left, but not one in progress', () async {
+    final commit = 'a' * 64;
+    final checkouts = Directory(p.join(tmp.path, 'cache', 'checkouts'))
+      ..createSync(recursive: true);
+    // A pid that has exited, so nothing owns its partial any more.
+    final dead = Process.runSync('true', const []).pid;
+    final stale = Directory(p.join(checkouts.path, '$commit.partial-$dead-0'))
+      ..createSync();
+    // A live process's, whatever its mtime: ostree stamps checkouts with the
+    // epoch, so age says nothing about whether it is still being written.
+    final live = Directory(p.join(checkouts.path, '$commit.partial-1-0'))
+      ..createSync();
+    Process.runSync('touch', ['-d', '@0', live.path]);
+    await FlatpakSdkRepo(
+      Directory(p.join(tmp.path, 'cache')),
+      runProcess: fakeOstree([]),
+    ).checkout('/srv/repo', _ref);
+    expect(stale.existsSync(), isFalse);
+    expect(live.existsSync(), isTrue);
   });
 }
