@@ -182,22 +182,8 @@ class CrossBuilder {
       // sysroot's (supersedes the profile's PKG_CONFIG_LIBDIR/SYSROOT_DIR).
       if (_separateOverlay case final ov?) ...ov.pkgConfigEnv(profile),
     };
-    if (_separateOverlay case final ov?) {
-      // The augment lives in a per-workspace overlay prefix *outside* the
-      // sysroot, so pkg-config's PKG_CONFIG_SYSROOT_DIR wrongly rebases the
-      // overlay's own .pc paths under the sysroot. Add the overlay include/lib
-      // dirs as real compiler flags too; cmake appends $CFLAGS/$LDFLAGS to the
-      // toolchain-file flags, so the header/lib are found regardless of what
-      // pkg-config reports. (These are emb-controlled, not host — safe to set
-      // over the neutralized blanks.)
-      final inc = ov.includeDirs.map((d) => '-I$d').join(' ');
-      final lib = ov.libDirs.map((d) => '-L$d').join(' ');
-      String prepend(String extra, String? cur) =>
-          [extra, cur ?? ''].where((s) => s.isNotEmpty).join(' ');
-      env['CFLAGS'] = prepend(inc, env['CFLAGS']);
-      env['CXXFLAGS'] = prepend(inc, env['CXXFLAGS']);
-      env['LDFLAGS'] = prepend(lib, env['LDFLAGS']);
-    }
+    // emb-controlled paths, not host ones: safe over the neutralized blanks.
+    _separateOverlay?.addSearchFlags(env);
     if (_hostToolBins.isNotEmpty) {
       // Prepend host-augment bin dirs so a cross `find_program` resolves the
       // build-machine tool. profile.buildEnv() may not set PATH, in which case

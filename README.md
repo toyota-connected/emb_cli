@@ -752,10 +752,12 @@ emb deps --packages example --dry-run
 Cross-compile a **native** embedder (e.g. ivi-homescreen) for an `arm64` /
 `riscv64` target from an `x86_64` host, driven by the manifest's `cross:` block.
 This is the C/C++ toolchain + sysroot path — distinct from the Dart AOT cross
-used by `emb build` / `emb bundle`. Three providers: `arm-gnu` (a downloaded ARM
+used by `emb build` / `emb bundle`. Four providers: `arm-gnu` (a downloaded ARM
 GNU toolchain plus a sysroot unpacked from a distro image or rsync'd from a
-device), `yocto-recipe` (a located OE `recipe-sysroot`), and `yocto-sdk` (a
-`populate_sdk` install). The input is a **positional** project dir (with a
+device), `yocto-recipe` (a located OE `recipe-sysroot`), `yocto-sdk` (a
+`populate_sdk` install), and `flatpak-sdk` (an installed flatpak SDK, compiled
+against with the host clang; see
+[Building against the flatpak SDK](#building-against-the-flatpak-sdk)). The input is a **positional** project dir (with a
 `.emb/` manifest directory or a top-level `emb.yaml`) or an explicit manifest
 file.
 
@@ -866,7 +868,7 @@ per board (`pi5` is the validated end-to-end example) and the full schema.
 
 ```yaml
 cross:
-  provider: arm-gnu               # arm-gnu | yocto-recipe | yocto-sdk
+  provider: arm-gnu               # arm-gnu | yocto-recipe | yocto-sdk | flatpak-sdk
   toolchain_version: 12.3.rel1    # pinned ARM GNU release (or version_policy: derive)
   image_url: https://.../raspios-bookworm-arm64-lite.img.xz
   cpu_flags: [-mcpu=cortex-a76]   # pi5; pi4=cortex-a72, pi-zero-2=cortex-a53
@@ -1459,6 +1461,7 @@ What each provider pins:
 | `arm-gnu` | sha256 of the toolchain tarball and the distro image (byte-exact); the resolved `-dev` package versions + digests; a device-sourced sysroot records provenance only — a live host can't be content-pinned. |
 | `yocto-sdk` | `OECORE_SDK_VERSION`, plus the sha256 of the `populate_sdk` installer when fetched from `sdk_url`. |
 | `yocto-recipe` | the located recipe version + the native gcc version (it downloads nothing, so there is no artifact to sha). |
+| `flatpak-sdk` | the SDK ref and its installed commit (`org.freedesktop.Sdk/x86_64/25.08@<commit>`) + the SDK's gcc version. A `flatpak update` that moves the SDK is drift. |
 
 The lock also records a root `env:` block — the host tool versions the resolve
 ran with (`emb`, the engine and Flutter commits, `rustc`) — so a rebuild years
@@ -1761,6 +1764,57 @@ Wayland compositor running for `wayland-egl`.
 
 If you edit a target after it has been built, the next build stops on
 `emb.lock` drift; `--update-lock` accepts the change.
+
+#### Building against the flatpak SDK
+
+`--target local --flatpak` compiles with the host's compiler and libraries.
+A host newer than the runtime can then build a flatpak that won't start: the
+app needs a glibc symbol (`GLIBC_2.43`) or a library the runtime does not
+have. The `flatpak-sdk` provider builds against the runtime's SDK instead:
+
+```yaml
+cross:
+  package:
+    flatpak:
+      runtime_version: '25.08'   # the SDK branch too; sdk: defaults to org.freedesktop.Sdk
+  targets:
+    flatpak:
+      provider: flatpak-sdk
+```
+
+```
+flatpak install --user flathub org.freedesktop.Sdk//25.08
+emb cross my-app.emb.yaml --target flatpak --build --flatpak
+```
+
+- **The SDK is the sysroot.** `resolve` finds the installed
+  `<sdk>/<arch>/<runtime_version>` with `flatpak info --show-location` and
+  links a sysroot to its `files/` under the workspace. The SDK is never
+  written to; augments go to a separate overlay.
+- **The compiler is the host clang.** The SDK's own gcc does not run outside
+  the sandbox. Clang takes `--target=<the SDK's gcc triple>`, finds the SDK's
+  gcc installation, and compiles against the SDK's glibc and libstdc++.
+  Linking uses lld, because bfd does not rebase the SDK's `libc.so` linker
+  script through a linked sysroot. The loader path comes from the SDK too,
+  since a runtime with no `lib64` has no `/lib64/ld-linux-x86-64.so.2`. Needs
+  `clang`, `lld` and `llvm` (for `llvm-ar`, `llvm-strip`, `llvm-readelf`) on
+  the host.
+- **Code that needs a newer glibc fails to compile, not to start.**
+- **The architecture comes from `triple:`.** It defaults to the host's
+  (`x86_64-flatpak-linux-gnu`); `triple: aarch64-flatpak-linux-gnu` builds
+  against the aarch64 SDK, which `flatpak install --arch=aarch64` installs.
+  The compiler's own triple is read from the SDK.
+- **Other SDKs work too.** A Yocto-built SDK (`sdk: org.flatpak_minimal.Sdk`,
+  `runtime: org.flatpak_minimal.Platform`) is read the same way: its library
+  directory, gcc triple and loader are probed, not assumed.
+- **A code-asset build hook** needs the `FLUTTER_HOOK_CC` patch to be pointed
+  at clang, as on every cross target. Without it the hook uses the host
+  compiler and emb says so.
+
+An augment the SDK already provides at `min` is skipped, even when only the
+SDK, not the runtime, ships it (libcurl and libarchive in a Yocto SDK, nss and
+SDL2 in freedesktop's). The build links it and the flatpak fails to start.
+Checking provided libraries against the runtime is the next step in #335.
 
 [`examples/cross/init-flatpak/`](examples/cross/init-flatpak) is the output for
 one fixed set of inputs, checked in. A test renders the same inputs and compares

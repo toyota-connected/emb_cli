@@ -25,6 +25,7 @@ import 'package:emb_cli/src/cross/elf_check.dart';
 import 'package:emb_cli/src/cross/emb_lock.dart';
 import 'package:emb_cli/src/cross/embedder_artifact.dart';
 import 'package:emb_cli/src/cross/flatpak_packager.dart';
+import 'package:emb_cli/src/cross/flatpak_sdk_cross_provider.dart';
 import 'package:emb_cli/src/cross/flatpak_vendor.dart';
 import 'package:emb_cli/src/cross/flutter_provision.dart';
 import 'package:emb_cli/src/cross/hook_cargo.dart';
@@ -3931,8 +3932,12 @@ class CrossCommand extends Command<int> {
   }
 
   /// Derive the cross `readelf` path from the profile's `gcc`.
+  /// The readelf matching the profile's compiler: `<triple>-readelf` beside
+  /// a cross gcc, `llvm-readelf` for clang, which reads any architecture.
   String _readelfFor(CrossProfile profile) =>
-      profile.cc.replaceFirst(RegExp(r'gcc$'), 'readelf');
+      p.basename(profile.cc).contains('clang')
+      ? 'llvm-readelf'
+      : profile.cc.replaceFirst(RegExp(r'gcc$'), 'readelf');
 
   void _report(CrossProfile p) {
     _logger
@@ -4003,6 +4008,12 @@ class CrossCommand extends Command<int> {
             ? '[download]'
             : (present ? '[present]' : '[absent]');
         _logger.info('  sdk           : ${loc ?? "(none!)"} $state');
+      case CrossProviderKind.flatpakSdk:
+        if (provider case final FlatpakSdkCrossProvider f) {
+          _logger.info(
+            '  sdk           : ${f.sdkRef} (located by flatpak info)',
+          );
+        }
     }
     if (target.augment.isNotEmpty) {
       _logger.info(
@@ -4083,6 +4094,10 @@ class CrossCommand extends Command<int> {
         data['sdkState'] = isUrl
             ? 'download'
             : (present ? 'present' : 'absent');
+      case CrossProviderKind.flatpakSdk:
+        if (provider case final FlatpakSdkCrossProvider f) {
+          data['sdk'] = f.sdkRef;
+        }
     }
     if (target.augment.isNotEmpty) {
       data['augment'] = target.augment.map((a) => a.pkg).toList();

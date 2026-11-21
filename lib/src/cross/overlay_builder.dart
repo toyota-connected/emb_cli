@@ -54,6 +54,23 @@ class OverlayPaths {
       'PKG_CONFIG_SYSROOT_DIR': pc.sysrootDir,
     };
   }
+
+  /// Prepend the overlay's include and library dirs to [env]'s
+  /// `CFLAGS`/`CXXFLAGS`/`LDFLAGS`, for an overlay *beside* a sysroot.
+  ///
+  /// pkg-config's `PKG_CONFIG_SYSROOT_DIR` rebases the overlay's own `.pc`
+  /// paths under the sysroot, where they don't exist. CMake and Meson append
+  /// these variables to the toolchain's flags, so the overlay's headers and
+  /// libraries are found whatever pkg-config reports.
+  void addSearchFlags(Map<String, String> env) {
+    final inc = includeDirs.map((d) => '-I$d').join(' ');
+    final lib = libDirs.map((d) => '-L$d').join(' ');
+    String prepend(String extra, String? cur) =>
+        [extra, cur ?? ''].where((s) => s.isNotEmpty).join(' ');
+    env['CFLAGS'] = prepend(inc, env['CFLAGS']);
+    env['CXXFLAGS'] = prepend(inc, env['CXXFLAGS']);
+    env['LDFLAGS'] = prepend(lib, env['LDFLAGS']);
+  }
 }
 
 /// Outcome of validating a downloaded tarball. `fatal` marks the results a
@@ -535,6 +552,12 @@ class OverlayBuilder {
   /// rather than only the sysroot's.
   Map<String, String> _augmentEnv(OverlayPaths paths) {
     final env = {...profile.buildEnv(), ...paths.pkgConfigEnv(profile)};
+    // Beside a sysroot (not staged into it, and not the native build, whose
+    // pkg-config has no sysroot to rebase against).
+    if (profile.targetSysroot.isNotEmpty &&
+        paths.prefix != profile.targetSysroot) {
+      paths.addSearchFlags(env);
+    }
     if (paths.binDirs.isNotEmpty) {
       final inherited = Platform.environment['PATH'];
       env['PATH'] = [
@@ -1181,6 +1204,12 @@ class OverlayBuilder {
           '-DCMAKE_FIND_ROOT_PATH=${overlay.path}',
           '-DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY',
         ],
+        // A cross toolchain confines find_* to CMAKE_SYSROOT. Augments staged
+        // into the sysroot are found there; an overlay beside it (a flatpak
+        // SDK, not ours to write) has to be named as a find root too, or an
+        // augment cannot find_package the ones built before it.
+        if (tc != null && overlay.path != profile.targetSysroot)
+          '-DCMAKE_FIND_ROOT_PATH=${overlay.path}',
         // Package-specific cache entries (e.g. BLEND2D_STATIC / BLEND2D_NO_JIT).
         ..._defineArgs(lib, overlay, hostBuildDir: hostBuildDir),
       ],

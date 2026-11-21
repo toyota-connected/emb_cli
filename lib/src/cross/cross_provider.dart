@@ -1,6 +1,7 @@
 import 'package:emb_cli/src/cross/arm_gnu_cross_provider.dart';
 import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
+import 'package:emb_cli/src/cross/flatpak_sdk_cross_provider.dart';
 import 'package:emb_cli/src/cross/yocto_recipe_cross_provider.dart';
 import 'package:emb_cli/src/cross/yocto_sdk_cross_provider.dart';
 import 'package:emb_cli/src/host/host_info.dart';
@@ -15,7 +16,8 @@ import 'package:emb_cli/src/workspace/workspace.dart';
 /// file emit, configure/build, augmentation, deploy) consumes the returned
 /// [CrossProfile] and never branches on which provider produced it.
 abstract class CrossProvider {
-  /// Provider token for diagnostics (`arm-gnu`, `yocto-recipe`, `yocto-sdk`).
+  /// Provider token for diagnostics (`arm-gnu`, `yocto-recipe`, `yocto-sdk`,
+  /// `flatpak-sdk`).
   String get name;
 
   /// The effective target triple used to name this provider's working dirs
@@ -69,6 +71,13 @@ abstract class CrossProvider {
       workspace: workspace,
       host: host,
       offline: offline,
+    ),
+    // Nothing to fetch: the SDK is already installed, or resolve says how to
+    // install it. Offline changes nothing.
+    CrossProviderKind.flatpakSdk => FlatpakSdkCrossProvider(
+      target,
+      workspace: workspace,
+      host: host,
     ),
   };
 }
