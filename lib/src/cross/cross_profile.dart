@@ -65,6 +65,9 @@ class CrossProfile {
     this.cmakeToolchainFile,
     this.mesonCrossFile,
     this.extraEnv = const {},
+    this.hostToolchain = false,
+    this.separateOverlay = false,
+    this.hostRunnable = false,
   });
 
   /// Provider token that produced this profile (`arm-gnu`, `yocto-recipe`,
@@ -111,6 +114,20 @@ class CrossProfile {
   /// pkg-config vars (carried via [pkgConfig]).
   final Map<String, String> extraEnv;
 
+  /// Builds with the host compiler and the caller's compiler environment:
+  /// no cross toolchain to neutralize the host env for, and no compiler
+  /// wrappers for code-asset build hooks. Only the native `local` build.
+  final bool hostToolchain;
+
+  /// Augments install into a per-workspace `overlay-<triple>` rather than into
+  /// [targetSysroot]: there is no sysroot to stage into (`local`), or the
+  /// sysroot is not ours to change.
+  final bool separateOverlay;
+
+  /// The build runs on this host, so `--run` without `--deploy` launches it
+  /// here. A cross build would fail with `Exec format error`.
+  final bool hostRunnable;
+
   bool get hasCMakeToolchain => cmakeToolchainFile != null;
   bool get hasMesonCross => mesonCrossFile != null;
 
@@ -142,6 +159,9 @@ class CrossProfile {
     cmakeToolchainFile: cmakeToolchainFile ?? this.cmakeToolchainFile,
     mesonCrossFile: mesonCrossFile ?? this.mesonCrossFile,
     extraEnv: extraEnv,
+    hostToolchain: hostToolchain,
+    separateOverlay: separateOverlay,
+    hostRunnable: hostRunnable,
   );
 
   @override

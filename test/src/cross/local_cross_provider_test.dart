@@ -22,6 +22,37 @@ void main() {
     expect(pf.targetTriple, 'x86_64-linux-gnu');
   });
 
+  test(
+    'is host-built, host-runnable, and keeps augments in an overlay',
+    () async {
+      final pf = (await LocalCrossProvider(_linux).resolve()).profile!;
+      expect(pf.hostToolchain, isTrue);
+      expect(pf.separateOverlay, isTrue);
+      expect(pf.hostRunnable, isTrue);
+
+      // An emitted toolchain file must not drop them.
+      final withTc = pf.withGenerators(cmakeToolchainFile: '/tc.cmake');
+      expect(withTc.hostToolchain, isTrue);
+      expect(withTc.separateOverlay, isTrue);
+      expect(withTc.hostRunnable, isTrue);
+    },
+  );
+
+  test('a cross profile defaults to none of them', () {
+    const pf = CrossProfile(
+      providerName: 'arm-gnu',
+      targetTriple: 'aarch64-none-linux-gnu',
+      cc: 'gcc',
+      cxx: 'g++',
+      ar: 'ar',
+      strip: 'strip',
+      targetSysroot: '/sysroot',
+    );
+    expect(pf.hostToolchain, isFalse);
+    expect(pf.separateOverlay, isFalse);
+    expect(pf.hostRunnable, isFalse);
+  });
+
   test('triple + debArch reflect the host', () {
     final lp = LocalCrossProvider(_linux);
     expect(lp.triple, 'x86_64-linux-gnu');
