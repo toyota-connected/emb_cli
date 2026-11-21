@@ -4,6 +4,47 @@ import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:test/test.dart';
 
 void main() {
+  group('CrossTarget.fromMap triple', () {
+    CrossTarget parse(String triple, {String key = 'triple'}) =>
+        CrossTarget.fromMap({'provider': 'arm-gnu', key: triple});
+
+    test('takes a real triple', () {
+      for (final t in [
+        'aarch64-none-linux-gnu',
+        'aarch64-agl-linux',
+        'x86_64-flatpak-linux-gnu',
+        'armv7l-poky-linux-gnueabi',
+        'riscv64-oe-linux',
+      ]) {
+        expect(parse(t).targetTriple, t);
+      }
+    });
+
+    test('refuses one that would leave the workspace', () {
+      // It names directories that --clean deletes recursively.
+      for (final t in ['x/../../../tmp/y', '/tmp/y', '..', 'a b', r'a\b']) {
+        expect(
+          () => parse(t),
+          throwsA(
+            isA<ArgumentError>().having(
+              (e) => '${e.message}',
+              'message',
+              contains('names directories in the workspace'),
+            ),
+          ),
+          reason: t,
+        );
+      }
+    });
+
+    test('checks the target_triple spelling too', () {
+      expect(
+        () => parse('../x', key: 'target_triple'),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+  });
+
   group('CrossTarget.withDefineOverrides', () {
     final base = CrossTarget.fromMap(const {
       'provider': 'arm-gnu',

@@ -122,6 +122,40 @@ export CMAKE_TOOLCHAIN_FILE="\$OECORE_NATIVE_SYSROOT/usr/share/cmake/OEToolchain
     expect(r.ok, isTrue, reason: r.message);
   });
 
+  test('derives the triple from the SDK env without a triple:', () async {
+    final sdk = fixtureSdk();
+    final provider = YoctoSdkCrossProvider(
+      CrossTarget.fromMap({'provider': 'yocto-sdk', 'sdk_path': sdk.path}),
+      workspace: Workspace(tmp),
+      host: _host,
+    );
+    final r = await provider.resolve();
+    provider.close();
+    expect(r.ok, isTrue, reason: r.message);
+    expect(r.profile!.targetTriple, 'aarch64-linux');
+  });
+
+  test('refuses a derived triple that would leave the workspace', () async {
+    final sdk = fixtureSdk();
+    final env = File(p.join(sdk.path, 'environment-setup-aarch64-agl-linux'));
+    env.writeAsStringSync(
+      env.readAsStringSync().replaceFirst(
+        'OECORE_TARGET_OS="linux"',
+        'OECORE_TARGET_OS="x/../../escape"',
+      ),
+    );
+    final provider = YoctoSdkCrossProvider(
+      CrossTarget.fromMap({'provider': 'yocto-sdk', 'sdk_path': sdk.path}),
+      workspace: Workspace(tmp),
+      host: _host,
+    );
+    final r = await provider.resolve();
+    provider.close();
+    expect(r.status, CrossResolveStatus.failed);
+    expect(r.message, contains('aarch64-x/../../escape'));
+    expect(r.message, contains('set cross.triple'));
+  });
+
   test('unavailable when no SDK location resolves', () async {
     final provider = YoctoSdkCrossProvider(
       CrossTarget.fromMap({

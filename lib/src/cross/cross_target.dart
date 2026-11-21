@@ -1139,8 +1139,9 @@ class CrossTarget {
     final run = _runBlock(map['run']);
     return CrossTarget(
       provider: provider,
-      targetTriple:
-          map['triple']?.toString() ?? map['target_triple']?.toString(),
+      targetTriple: _triple(
+        map['triple']?.toString() ?? map['target_triple']?.toString(),
+      ),
       cpuFlags: _stringList(map['cpu_flags'] ?? map['tuning']),
       toolchainVersion: map['toolchain_version']?.toString(),
       toolchainUrl: map['toolchain_url']?.toString(),
@@ -1193,6 +1194,30 @@ class CrossTarget {
       aotStrip: map['aot_strip'] as bool?,
     );
   }
+
+  /// `triple:` checked to be a plain token.
+  ///
+  /// It names workspace directories (`cross-<triple>-…`, `overlay-<triple>`,
+  /// `cross-build-<triple>-…`), which `--clean` deletes recursively, so a
+  /// value with a `/` could aim both the writes and the deletes outside the
+  /// workspace. It is also written into emitted CMake and Meson files. Every
+  /// real triple fits, so the value is refused rather than sanitized, as an
+  /// augment's `pkg` and `min` are.
+  static String? _triple(String? v) {
+    if (v == null) return null;
+    if (!isPlainTriple(v)) {
+      throw ArgumentError(
+        'triple "$v" must match [A-Za-z0-9._-] — it names directories in '
+        'the workspace',
+      );
+    }
+    return v;
+  }
+
+  /// Whether [v] is safe to name a workspace directory with: a plain
+  /// `[A-Za-z0-9._-]` token, not `.` or `..`.
+  static bool isPlainTriple(String v) =>
+      RegExp(r'^[A-Za-z0-9._-]+$').hasMatch(v) && v != '.' && v != '..';
 
   /// A single `uri`/`rev` git entry (`source:` / `app:`), or null when absent.
   static SourceRepo? repoFrom(Object? raw) {
