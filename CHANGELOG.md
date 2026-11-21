@@ -1,3 +1,9 @@
+# Unreleased
+
+Nothing yet. New entries go here, not under the heading below. The pubspec
+reads `0.6.0-dev`, and nobody can tell whether work recorded under a published
+version shipped.
+
 # 0.5.1
 
 Released from `main`, which holds 0.5.0 plus the two fixes below and nothing
