@@ -17,6 +17,15 @@ unchanged.
 
 **Flatpak.**
 
+- feat(cross): a `flatpak-sdk` target can take its SDK from an OSTree repo
+  (#335). `package.flatpak.sdk_repo:` names one, as a URL or a path relative
+  to the manifest: a Yocto build's `repo-dev`, or another architecture's SDK,
+  with no `flatpak install`. emb pulls the SDK and its runtime into one
+  `bare-user` repo in its cache and checks each commit out once, hard-linked.
+  `sdk_repo_gpg_key:` requires signed commits; a URL without one is pulled
+  with a warning. `--offline` uses the cached commit, `emb fetch` pulls ahead,
+  and `emb.lock` pins the commit. Needs the OSTree command-line tool on the host.
+
 - feat(cross): a `flatpak-sdk` build skips an augment only when the runtime
   has its libraries too (#335). The SDK ships libraries its runtime does not
   (pkgconf in freedesktop's; curl, systemd, uuid in a Yocto-built one), and an

@@ -807,6 +807,8 @@ class FlatpakPackageSpec {
     this.runtime = 'org.freedesktop.Platform',
     this.runtimeVersion = defaultFlatpakRuntimeVersion,
     this.sdk = 'org.freedesktop.Sdk',
+    this.sdkRepo,
+    this.sdkRepoGpgKey,
     this.finishArgs = const [],
     this.icon,
     this.categories = const ['Utility'],
@@ -823,6 +825,8 @@ class FlatpakPackageSpec {
         runtimeVersion: (map['runtime_version'] ?? defaultFlatpakRuntimeVersion)
             .toString(),
         sdk: (map['sdk'] ?? 'org.freedesktop.Sdk').toString(),
+        sdkRepo: _nonEmpty(map['sdk_repo']),
+        sdkRepoGpgKey: _nonEmpty(map['sdk_repo_gpg_key']),
         finishArgs: (map['finish_args'] as List<dynamic>? ?? const [])
             .map((e) => e.toString())
             .toList(),
@@ -866,6 +870,21 @@ class FlatpakPackageSpec {
   final String runtime;
   final String runtimeVersion;
   final String sdk;
+
+  /// An ostree repo holding [sdk] and its runtime, as a URL or a path
+  /// relative to the manifest: the `flatpak-sdk` provider pulls from it
+  /// rather than asking `flatpak info` for an installed SDK. A Yocto build's
+  /// `repo-dev` is one.
+  final String? sdkRepo;
+
+  /// A GPG public key file, relative to the manifest, that [sdkRepo]'s
+  /// commits must be signed with.
+  final String? sdkRepoGpgKey;
+
+  static String? _nonEmpty(Object? v) {
+    final s = v?.toString().trim() ?? '';
+    return s.isEmpty ? null : s;
+  }
 
   /// Sandbox `finish-args`; empty falls back to the packager's Wayland default.
   final List<String> finishArgs;

@@ -574,6 +574,11 @@ class DoctorCommand extends Command<int> {
         workspace: Workspace.resolve(),
         host: host,
         offline: true,
+        manifestDir: Directory(
+          FileSystemEntity.typeSync(inputPath) == FileSystemEntityType.file
+              ? p.dirname(p.absolute(inputPath))
+              : p.absolute(inputPath),
+        ),
       );
       CrossResolveResult result;
       try {

@@ -300,6 +300,7 @@ class FetchCommand extends Command<int> {
         target,
         workspace: workspace,
         host: host,
+        manifestDir: Directory(embedderRoot),
       );
 
       final missing = await _preflight.missingTools(provider.preflightTools);
