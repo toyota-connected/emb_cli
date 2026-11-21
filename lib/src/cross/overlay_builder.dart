@@ -364,9 +364,20 @@ class OverlayBuilder {
   /// instead of a separate overlay prefix — used to stage an augment straight
   /// into a private, regenerable sysroot so pkg-config finds it with the
   /// sysroot's own search env (no second `PKG_CONFIG_SYSROOT_DIR`).
+  ///
+  /// [confinePackages] keeps a native CMake augment's config-mode
+  /// `find_package` inside the overlay. A native build has no toolchain file,
+  /// so without it `find_package` searches the host's `/usr`. There, an
+  /// augment's dependency (Fedora's abseil, say) resolves to a host package the
+  /// flatpak runtime does not ship, and the bundle links it. A cross build
+  /// already gets this from its toolchain file. Module-mode finds and
+  /// pkg-config are untouched. An augment that does need a host package can
+  /// set `CMAKE_FIND_ROOT_PATH_MODE_PACKAGE: BOTH` in its `defines:`, which
+  /// come later on the command line and so win.
   Future<OverlayPaths> build(
     List<AugmentLib> libs, {
     Directory? stageInto,
+    bool confinePackages = false,
   }) async {
     final overlay =
         stageInto ??
@@ -449,6 +460,7 @@ class OverlayBuilder {
                 overlay,
                 soFar,
                 hostBuildDir: hostBuildDir,
+                confinePackages: confinePackages,
                 onStep: onStep,
               );
           }
@@ -1139,6 +1151,7 @@ class OverlayBuilder {
     Directory overlay,
     OverlayPaths soFar, {
     String? hostBuildDir,
+    bool confinePackages = false,
     StepHandle? onStep,
   }) async {
     final src = await _fetchSource(lib, onStep: onStep);
@@ -1162,6 +1175,12 @@ class OverlayBuilder {
         // Honor the augment's `static` flag for libraries that defer to
         // BUILD_SHARED_LIBS (no explicit STATIC/SHARED on add_library).
         '-DBUILD_SHARED_LIBS=${lib.staticLink ? 'OFF' : 'ON'}',
+        // What a cross toolchain file says, for a native build that has none.
+        // Before the augment's defines, so they can override it.
+        if (confinePackages && tc == null) ...[
+          '-DCMAKE_FIND_ROOT_PATH=${overlay.path}',
+          '-DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY',
+        ],
         // Package-specific cache entries (e.g. BLEND2D_STATIC / BLEND2D_NO_JIT).
         ..._defineArgs(lib, overlay, hostBuildDir: hostBuildDir),
       ],
