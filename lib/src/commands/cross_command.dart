@@ -1390,10 +1390,6 @@ class CrossCommand extends Command<int> {
     bool allowNoSource = false,
     bool flatpak = false,
   }) async {
-    // A native `local` build: no sysroot; host toolchain; augments stage into
-    // a separate overlay rather than the sysroot.
-    final native = profile.providerName == 'local';
-
     // --backend filters the matrix (validated in run()); merge shared
     // cross.defines into each backend (a backend define wins on a clash), over
     // the bundle-relative rpath defaults.
@@ -1440,10 +1436,12 @@ class CrossCommand extends Command<int> {
         // handler) resolves without touching the host root.
         overlayPaths = await overlay.build(
           augments,
-          stageInto: native ? null : Directory(profile.targetSysroot),
+          stageInto: profile.separateOverlay
+              ? null
+              : Directory(profile.targetSysroot),
           // A flatpak runs against its runtime, not this host: a host
           // package an augment finds here is missing there (#335).
-          confinePackages: native && flatpak,
+          confinePackages: profile.hostToolchain && flatpak,
         );
         hostToolBins = overlayPaths.binDirs;
       } on OverlayBuildException catch (e) {
@@ -1460,7 +1458,7 @@ class CrossCommand extends Command<int> {
 
     // Where a staged dependency goes: the same rule the augments above follow,
     // named once so embedder_exports lands beside them rather than guessing.
-    final stageDir = native
+    final stageDir = profile.separateOverlay
         ? workspace.ensurePlatformDir('overlay-${profile.targetTriple}')
         : Directory(profile.targetSysroot);
 
@@ -1484,7 +1482,7 @@ class CrossCommand extends Command<int> {
       // — cmake/ninja and any child a build script spawns — runs in a network
       // namespace, not just the cargo modules.
       runProcess: _offlineWrap ? netnsRunner(_runProcess) : _runProcess,
-      neutralizeHostEnv: !native,
+      neutralizeHostEnv: !profile.hostToolchain,
       hostTools: hostTools,
       hostToolBins: hostToolBins,
       launcher: launcher,
@@ -2323,9 +2321,6 @@ class CrossCommand extends Command<int> {
     String defaultName = 'app',
   }) async {
     final arch = EngineArtifacts.engineArch(archOfTriple(profile.targetTriple));
-    // A native (`--target local`) build is host-runnable, so `--run` without
-    // `--deploy` launches it here; a cross-build is not.
-    final native = profile.providerName == 'local';
 
     // Build the app bundle once (engine fetch + AOT + assemble).
     final appBundle = Directory(
@@ -2342,7 +2337,7 @@ class CrossCommand extends Command<int> {
     // It still needs to be told where augments were installed, though: that
     // travels in the same `cmake` wrapper, and dropping the whole thing left a
     // hook's find_package() unable to see an overlay emb had just built for it.
-    if (!native) {
+    if (!profile.hostToolchain) {
       _warnIfSdkIgnoresHookToolchain(workspace);
       appRunner = withEnv(
         appRunner,
@@ -2544,7 +2539,6 @@ class CrossCommand extends Command<int> {
           deployHost: deployHost,
           run: run,
           single: built.length == 1,
-          native: native,
         );
         if (rc != ExitCode.success.code) return rc;
       } on RunnableBundleException catch (e) {
@@ -2618,7 +2612,6 @@ class CrossCommand extends Command<int> {
       );
     }
 
-    final native = profile.providerName == 'local';
     for (final r in found) {
       final bin = _artifactFor(r.dir.path, target.package?.bin);
       if (bin == null) {
@@ -2640,7 +2633,6 @@ class CrossCommand extends Command<int> {
         deployHost: deployHost,
         run: run,
         single: found.length == 1,
-        native: native,
       );
       if (rc != ExitCode.success.code) return rc;
     }
@@ -2662,7 +2654,6 @@ class CrossCommand extends Command<int> {
     required String? deployHost,
     required bool run,
     required bool single,
-    required bool native,
   }) async {
     if (deployHost != null) {
       final dest = multi ? '$deployDir/$backend' : deployDir;
@@ -2680,9 +2671,9 @@ class CrossCommand extends Command<int> {
     }
     if (run && single) {
       // No --deploy: launch the embedder against the app bundle on this host.
-      // Only a native (--target local) build is host-runnable; a cross-build
-      // would hit `Exec format error`.
-      if (native) {
+      // Only a host-runnable build; a cross-build would hit
+      // `Exec format error`.
+      if (profile.hostRunnable) {
         // The assembled bundle's copy, not the build tree's: the embedder's
         // RUNPATH is $ORIGIN/lib, which only resolves from here. See #185.
         return _runLocal(

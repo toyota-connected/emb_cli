@@ -48,6 +48,9 @@ class LocalCrossProvider implements CrossProvider {
         ar: 'ar',
         strip: 'strip',
         targetSysroot: '',
+        hostToolchain: true,
+        separateOverlay: true,
+        hostRunnable: true,
       ),
     );
   }
