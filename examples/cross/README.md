@@ -419,12 +419,20 @@ package:
     app_id: com.toyota.ivi.Homescreen
     runtime_version: '25.08'
     finish_args: [--share=ipc, --socket=wayland, --device=dri]
+    name: Homescreen                       # launcher Name=; else package.name
+    comment: The in-vehicle home screen    # launcher Comment=; omitted if unset
     vendor_libs: auto                      # see below
     # sdk_repo: ../repo-dev                # flatpak-sdk target: SDK from an OSTree repo
     # sdk_repo_gpg_key: repo-dev.gpg       # require signed commits from it
     env: {XDG_DATA_HOME: $HOME/.local/share}
     args: [--shell=xdg]
 ```
+
+`name:` and `comment:` go into the generated `.desktop` entry only, as `Name=`
+and `Comment=`. Without `name:`, the launcher shows `package.name`, which for an
+app built onto an embedder names the embedder; setting `name:` in the app's
+layer fixes that without renaming the deb or rpm. Each must be one line: a
+newline would start another key in the entry, so the manifest is refused.
 
 `env:` and `args:` are carried by the generated `/app/bin/<command>` launcher —
 the environment the embedder expects, and the flags describing *this* app,
