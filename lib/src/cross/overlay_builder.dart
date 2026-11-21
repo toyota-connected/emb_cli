@@ -401,8 +401,12 @@ class OverlayBuilder {
         stageInto ??
         workspace.ensurePlatformDir('overlay-${profile.targetTriple}');
     final binDirs = <String>[];
+    // The augments ahead of each one, which it may have been built against.
+    final before = <String>[];
 
     for (final lib in libs) {
+      final ahead = List.of(before);
+      before.add(augmentIdentity(lib));
       // Host tools (e.g. a code generator the cross build runs via
       // find_program) are built with the host toolchain and exposed on PATH,
       // not cross-compiled into the sysroot. They have no pkg-config presence,
@@ -439,8 +443,22 @@ class OverlayBuilder {
       // A local augment is always built: the developer is editing that tree,
       // and a previously installed copy satisfying `min` is exactly when the
       // edit under way would be skipped. See AugmentLib.path.
+      final stamp = _stampFor(lib, overlay);
+      final key = _overlayKey(lib, confinePackages, ahead);
       try {
-        if (lib.isLocal || !await _satisfied(lib)) {
+        final String? cachedBy;
+        if (lib.isLocal) {
+          cachedBy = null;
+        } else if (await _builtInto(lib, overlay, stamp, key)) {
+          cachedBy = 'overlay has ${lib.minVersion}';
+        } else if (await _satisfied(lib)) {
+          cachedBy = 'sysroot satisfies ${lib.minVersion}';
+        } else {
+          cachedBy = null;
+        }
+        if (cachedBy == null) {
+          // Gone before the build starts, so a failed one leaves no hit.
+          if (stamp != null && stamp.existsSync()) stamp.deleteSync();
           // A two-pass augment builds its generators with the host toolchain
           // first, then hands the target pass their prefix and build tree. Both
           // passes come from this one entry, so they share url, min and the
@@ -482,13 +500,17 @@ class OverlayBuilder {
                 onStep: onStep,
               );
           }
+          if (stamp != null) {
+            _io(lib, 'stamping the overlay', () {
+              stamp.parent.createSync(recursive: true);
+              stamp.writeAsStringSync(key);
+            });
+          }
           onStep?.complete(
             '${lib.pkg}: installed to ${overlay.path}', //
           );
         } else {
-          onStep?.complete(
-            '${lib.pkg}: cached (sysroot satisfies ${lib.minVersion})',
-          );
+          onStep?.complete('${lib.pkg}: cached ($cachedBy)');
         }
       } catch (e) {
         onStep?.fail(e is OverlayBuildException ? e.message : '$e');
@@ -666,6 +688,71 @@ class OverlayBuilder {
         : Directory(p.join(src.path, '_build$suffix'));
     if (bld.existsSync()) bld.deleteSync(recursive: true);
     return bld..createSync(recursive: true);
+  }
+
+  /// Where the overlay records that it holds [lib], or null when the overlay
+  /// is the sysroot: what is staged there is found by [_satisfied].
+  File? _stampFor(AugmentLib lib, Directory overlay) =>
+      p.equals(overlay.path, profile.targetSysroot)
+      ? null
+      : File(p.join(overlay.path, '.emb-augments', lib.pkg));
+
+  /// What an overlay copy of [lib] was built from and for. The toolchain and
+  /// sysroot are in it because one `overlay-<triple>` serves more than one
+  /// build: `--target local` with and without `--flatpak`, whose
+  /// [confinePackages] differ, and flatpak-sdk targets of one triple on
+  /// different runtimes.
+  ///
+  /// [before] are the identities of the augments ahead of it: one of those
+  /// changing may change what this one built against, so it is built again.
+  String _overlayKey(
+    AugmentLib lib,
+    bool confinePackages,
+    List<String> before,
+  ) => [
+    augmentIdentity(lib),
+    for (final b in before) 'after:$b',
+    'provider:${profile.providerName}',
+    'cc:${profile.cc}',
+    'sysroot:${profile.targetSysroot}',
+    'confine:$confinePackages',
+  ].join('\n');
+
+  /// True when an earlier run built [lib] into a separate [overlay] from the
+  /// same inputs, and its `.pc` is still there at >= `min`.
+  ///
+  /// [_satisfied] cannot see it: it searches the sysroot, and a native
+  /// profile has none, so every `--target local` run rebuilt every augment.
+  /// The stamp is what keeps a copy built for another configuration (a
+  /// native build's, linked against the host) from being taken for this one.
+  Future<bool> _builtInto(
+    AugmentLib lib,
+    Directory overlay,
+    File? stamp,
+    String key,
+  ) async {
+    if (stamp == null) return false;
+    try {
+      if (!stamp.existsSync() || stamp.readAsStringSync() != key) return false;
+    } on FileSystemException {
+      return false;
+    }
+    final usr = p.join(overlay.path, 'usr');
+    final r = await _run(
+      'pkg-config',
+      ['--atleast-version=${lib.minVersion}', lib.pkg],
+      environment: {
+        'PKG_CONFIG_LIBDIR': [
+          for (final d in ['lib', 'lib64', 'share'])
+            p.join(usr, d, 'pkgconfig'),
+        ].join(':'),
+        // Nothing else: a host `.pc` on PKG_CONFIG_PATH must not vouch for
+        // the overlay's copy. Only the version is asked, so no rebasing.
+        'PKG_CONFIG_PATH': '',
+        'PKG_CONFIG_SYSROOT_DIR': '',
+      },
+    );
+    return r.exitCode == 0;
   }
 
   /// True when the sysroot already provides [lib] at >= its `min` version,
