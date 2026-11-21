@@ -1,3 +1,9 @@
+# Unreleased
+
+Nothing yet. New entries go here, not under the heading below. The pubspec
+reads `0.7.0-dev`, and nobody can tell whether work recorded under a published
+version shipped.
+
 # 0.6.0
 
 Released from `main`. The headline is the `flatpak-sdk` cross provider: a
