@@ -106,6 +106,8 @@ class FlatpakSdkCrossProvider implements CrossProvider {
       layout = FlatpakSdkLayout.probe(files, flatpakArch(triple));
     } on FormatException catch (e) {
       return CrossResolveResult.failed('$ref: ${e.message}');
+    } on FileSystemException catch (e) {
+      return CrossResolveResult.failed('$ref: ${e.message}: ${e.path}');
     }
     final commit = await _flatpakInfo('--show-commit', ref);
 
@@ -114,7 +116,16 @@ class FlatpakSdkCrossProvider implements CrossProvider {
     final dir = workspace.ensurePlatformDir(
       'cross-$triple-${sysrootKey(target)}',
     );
-    final sysroot = linkSysroot(Directory(p.join(dir.path, 'sysroot')), files);
+    final Directory sysroot;
+    try {
+      sysroot = linkSysroot(Directory(p.join(dir.path, 'sysroot')), files);
+    } on FileSystemException catch (e) {
+      // A real directory where a link belongs, or a second emb relinking
+      // the same sysroot at once.
+      return CrossResolveResult.failed(
+        'could not link the sysroot to $ref: ${e.message}: ${e.path}',
+      );
+    }
 
     final cpuFlags = [...target.cpuFlags, '--target=${layout.gccTriple}'];
     final linkFlags = ['-fuse-ld=lld', '-Wl,--dynamic-linker=${layout.loader}'];
@@ -259,6 +270,10 @@ class FlatpakSdkLayout {
       );
     }
     final gccTriple = triples.first;
+    // Both go into the emitted CMake and Meson files, inside quotes.
+    if (!_safeToken.hasMatch(gccTriple)) {
+      throw FormatException('unexpected gcc triple "$gccTriple"');
+    }
     final versions =
         Directory(p.join(gccRoot.path, gccTriple))
             .listSync()
@@ -314,14 +329,23 @@ class FlatpakSdkLayout {
       // FileSystemException, or a FormatException from a binary file.
       throw FormatException('${libcSo.path} is not a readable linker script');
     }
-    final m = RegExp(r'AS_NEEDED\s*\(\s*(/\S*ld-linux\S*)').firstMatch(text);
+    // `)` ends the path even with no space before it: `AS_NEEDED (/lib/ld.so)`.
+    final m = RegExp(
+      r'AS_NEEDED\s*\(\s*(/[^\s)]*ld-linux[^\s)]*)',
+    ).firstMatch(text);
     if (m == null) {
       throw FormatException(
         '${p.basename(libcSo.path)} names no ld-linux loader',
       );
     }
-    return m.group(1)!;
+    final loader = m.group(1)!;
+    if (!RegExp(r'^/[A-Za-z0-9_./+-]+$').hasMatch(loader)) {
+      throw FormatException('unexpected loader path "$loader"');
+    }
+    return loader;
   }
+
+  static final _safeToken = RegExp(r'^[A-Za-z0-9_.+-]+$');
 
   static int _compareVersions(String a, String b) {
     List<int> parts(String v) =>

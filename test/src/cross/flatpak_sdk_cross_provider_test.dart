@@ -352,6 +352,61 @@ void main() {
       expect(r.message, contains('names no ld-linux loader'));
     });
 
+    test('reads a loader with no space before the closing paren', () async {
+      final sdk = freedesktopSdk();
+      File(
+        p.join(sdk.path, 'files/lib/x86_64-linux-gnu/libc.so'),
+      ).writeAsStringSync(
+        'GROUP ( /usr/lib/x86_64-linux-gnu/libc.so.6 '
+        'AS_NEEDED (/lib64/ld-linux-x86-64.so.2))\n',
+      );
+      final r = await FlatpakSdkCrossProvider(
+        target(),
+        workspace: Workspace(tmp),
+        host: _host,
+        runProcess: flatpak('org.freedesktop.Sdk/x86_64/25.08', sdk),
+      ).resolve();
+      expect(
+        r.profile!.ldFlags,
+        contains('-Wl,--dynamic-linker=/lib64/ld-linux-x86-64.so.2'),
+      );
+    });
+
+    test('refuses a loader path it would have to quote', () async {
+      // It is written into the CMake and Meson files inside quotes.
+      final sdk = freedesktopSdk();
+      File(
+        p.join(sdk.path, 'files/lib/x86_64-linux-gnu/libc.so'),
+      ).writeAsStringSync('GROUP ( AS_NEEDED ( /lib64/ld-linux"x.so ) )\n');
+      final r = await FlatpakSdkCrossProvider(
+        target(),
+        workspace: Workspace(tmp),
+        host: _host,
+        runProcess: flatpak('org.freedesktop.Sdk/x86_64/25.08', sdk),
+      ).resolve();
+      expect(r.status, CrossResolveStatus.failed);
+      expect(r.message, contains('unexpected loader path'));
+    });
+
+    test('fails cleanly when the sysroot cannot be linked', () async {
+      final sdk = freedesktopSdk();
+      final ws = Workspace(tmp);
+      final pr = FlatpakSdkCrossProvider(
+        target(),
+        workspace: ws,
+        host: _host,
+        runProcess: flatpak('org.freedesktop.Sdk/x86_64/25.08', sdk),
+      );
+      final first = (await pr.resolve()).profile!;
+      // A real directory where the usr link belongs.
+      final usr = p.join(first.targetSysroot, 'usr');
+      Link(usr).deleteSync();
+      Directory(usr).createSync();
+      final r = await pr.resolve();
+      expect(r.status, CrossResolveStatus.failed);
+      expect(r.message, contains('could not link the sysroot'));
+    });
+
     test('is Linux-only', () async {
       const mac = HostInfo(
         os: HostOs.macos,
