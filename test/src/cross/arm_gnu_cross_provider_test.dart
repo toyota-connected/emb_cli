@@ -251,11 +251,9 @@ void main() {
 
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     var hits = 0;
-    server.listen((req) {
+    server.listen((req) async {
       hits++;
-      req.response
-        ..add(body)
-        ..close();
+      await (req.response..add(body)).close();
     });
     addTearDown(() => server.close(force: true));
     final url = 'http://127.0.0.1:${server.port}/tc.tar.xz';

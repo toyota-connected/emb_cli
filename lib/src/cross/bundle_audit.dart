@@ -38,7 +38,7 @@ class BundleLibProblem {
         'bundle lib/ is on the loader path, so it would shadow the system '
         'copy at runtime';
     final why = <String>[
-      if (archReason != null) archReason!,
+      ?archReason,
       if (stray) strayWhy,
     ];
     return '$name: ${why.join('; ')}';

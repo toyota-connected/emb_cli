@@ -304,7 +304,7 @@ class BoardsSyncCommand extends Command<int> {
   /// on a dead connection still waited forever.
   static const _gitProbeTimeout = Duration(minutes: 1);
   static const _gitTransferTimeout = Duration(minutes: 10);
-  static const _maxBodyBytes = 8 * 1024 * 1024;
+  static const int _maxBodyBytes = 8 * 1024 * 1024;
   static const _bodyTimeout = Duration(seconds: 60);
 
   /// Git env that cannot stop for input: a prompt in CI is an indefinite hang.
@@ -1005,6 +1005,7 @@ class BoardsCustomDevicesCommand extends Command<int> {
       final CrossTarget t;
       try {
         t = CrossTarget.fromMap(e.value.cross);
+        // CrossTarget.fromMap reports a bad cross: block as ArgumentError.
         // ignore: avoid_catching_errors
       } on ArgumentError catch (err) {
         _logger.err('${e.key}: invalid cross: block — ${err.message}');

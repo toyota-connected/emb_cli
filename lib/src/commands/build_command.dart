@@ -159,9 +159,9 @@ class BuildCommand extends Command<int> {
         if (args['no-build'] as bool) '--no-build',
         if (args.wasParsed('obfuscate') && args['obfuscate'] as bool)
           '--obfuscate',
-        if (args.wasParsed('obfuscate') && args['obfuscate'] as bool == false)
+        if (args.wasParsed('obfuscate') && !(args['obfuscate'] as bool))
           '--no-obfuscate',
-        if (args['strip'] as bool == false) '--no-strip',
+        if (!(args['strip'] as bool)) '--no-strip',
       ],
       // Container output streams directly via inherited stdio.
       onError: _logger.err,

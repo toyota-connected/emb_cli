@@ -144,9 +144,9 @@ class BundleCommand extends Command<int> {
         if (args['build'] as bool) '--build',
         if (args.wasParsed('obfuscate') && args['obfuscate'] as bool)
           '--obfuscate',
-        if (args.wasParsed('obfuscate') && args['obfuscate'] as bool == false)
+        if (args.wasParsed('obfuscate') && !(args['obfuscate'] as bool))
           '--no-obfuscate',
-        if (args['strip'] as bool == false) '--no-strip',
+        if (!(args['strip'] as bool)) '--no-strip',
         if (explicitOutput != null) ...[
           '--output',
           Directory(explicitOutput).absolute.path,

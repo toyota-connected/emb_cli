@@ -278,7 +278,7 @@ void main() {
         'cpu_flags': const ['-mcpu=cortex-a76'],
         'sysroot': {
           'dev_packages': const ['libdrm-dev'],
-          if (date != null) 'snapshot': date,
+          'snapshot': ?date,
         },
       });
       // A different pin date must re-key so the sysroot re-extracts against the
@@ -653,7 +653,7 @@ void main() {
   group('buildKey source', () {
     CrossTarget t([Map<String, dynamic>? source]) => CrossTarget.fromMap({
       'provider': 'arm-gnu',
-      if (source != null) 'source': source,
+      'source': ?source,
     });
 
     test('a declared source gets its own build dir', () {

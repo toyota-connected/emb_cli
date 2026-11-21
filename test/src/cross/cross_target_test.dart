@@ -693,7 +693,7 @@ void main() {
     CrossTarget targetOf(Object? raw) => CrossTarget.fromMap({
       'provider': 'arm-gnu',
       'triple': 'aarch64-none-linux-gnu',
-      if (raw != null) 'embedder_exports': raw,
+      'embedder_exports': ?raw,
     });
 
     test('absent means nothing is staged out of the embedder build', () {
@@ -727,7 +727,7 @@ void main() {
   group('FlatpakPackageSpec.vendorLibs', () {
     bool vendorOf(Object? raw) => FlatpakPackageSpec.fromMap({
       'app_id': 'com.example.App',
-      if (raw != null) 'vendor_libs': raw,
+      'vendor_libs': ?raw,
     }).vendorLibs;
 
     test('absent is off', () {

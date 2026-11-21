@@ -505,14 +505,14 @@ void main() {
               triple: triple,
               runProcess:
                   (
-                    String exe,
-                    List<String> args, {
-                    String? workingDirectory,
-                    Map<String, String>? environment,
-                    bool includeParentEnvironment = true,
-                    bool runInShell = false,
-                    ProcessOutputMode output = ProcessOutputMode.capture,
-                    String? label,
+                    exe,
+                    args, {
+                    workingDirectory,
+                    environment,
+                    includeParentEnvironment = true,
+                    runInShell = false,
+                    output = ProcessOutputMode.capture,
+                    label,
                   }) {
                     if (args.contains('-V')) read.add(args.last);
                     return inner(exe, args, environment: environment);

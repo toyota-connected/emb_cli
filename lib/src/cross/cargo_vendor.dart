@@ -158,7 +158,7 @@ Future<String?> vendorTargetCargo({
 }) async {
   final moduleVars = {
     'embedder_root': p.normalize(manifestDir.absolute.path),
-    if (appDir != null) 'app_root': appDir,
+    'app_root': ?appDir,
   };
   final vendor = CargoVendor(run: run);
   for (final m in target.modules) {

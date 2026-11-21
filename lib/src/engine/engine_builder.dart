@@ -183,7 +183,7 @@ class EngineBuilder {
         if (wantOffline) 'EMB_OFFLINE': '1',
         if (closure.existsSync()) 'EMB_SRC_DIR': closure.path,
         if (profile.sysrootId != null) 'EMB_SYSROOT_ID': profile.sysrootId!,
-        if (sysrootDir != null) 'EMB_SYSROOT_DIR': sysrootDir,
+        'EMB_SYSROOT_DIR': ?sysrootDir,
       },
     );
     if (result.exitCode != 0) {

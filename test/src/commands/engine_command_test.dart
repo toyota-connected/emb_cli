@@ -9,7 +9,6 @@ import 'package:emb_cli/src/engine/engine_toolchain.dart';
 import 'package:emb_cli/src/exec/container_launcher.dart';
 import 'package:emb_cli/src/host/host_info.dart';
 import 'package:emb_cli/src/verbosity.dart';
-import 'package:emb_cli/src/workspace/workspace.dart';
 import 'package:mason_logger/mason_logger.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:path/path.dart' as p;
@@ -155,7 +154,7 @@ class _Harness {
     final command = EngineCommand(
       logger: logger,
       host: host,
-      engineFactory: (Workspace ws) {
+      engineFactory: (ws) {
         final e = _FakeEngine(ws, fetch, published: published);
         engines.add(e);
         return e;

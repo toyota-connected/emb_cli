@@ -92,7 +92,7 @@ void main() {
           logger: logger,
           host: _host,
           environment: env,
-          provisionerFactory: (_, {bool interactive = true}) {
+          provisionerFactory: (_, {interactive = true}) {
             final p = prov ?? _FakeProvisioner();
             return p..interactiveSeen = interactive;
           },

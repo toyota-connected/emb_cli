@@ -132,9 +132,7 @@ class Cas {
     final input = sha256.startChunkedConversion(
       ChunkedConversionSink<Digest>.withCallback((ds) => digest = ds.single),
     );
-    await for (final chunk in f.openRead()) {
-      input.add(chunk);
-    }
+    await f.openRead().forEach(input.add);
     input.close();
     return digest.toString();
   }

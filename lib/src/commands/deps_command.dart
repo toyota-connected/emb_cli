@@ -253,12 +253,10 @@ class DepsCommand extends Command<int> {
       if (progress == null) _logger.err('Install failed');
       if (result.message != null) _logger.err(result.message);
       if (result.kind == ProvisionFailure.notAuthorized) {
-        for (final line in authFailureHint(
+        authFailureHint(
           host,
           interactive: interactivity.interactive,
-        )) {
-          _logger.info(line);
-        }
+        ).forEach(_logger.info);
       }
       return ExitCode.software.code;
     } finally {

@@ -76,6 +76,8 @@ class Preflight {
     HostProvisioner? provisioner;
     try {
       provisioner = _provisionerFor(host);
+      // _provisionerFor reports a host it has no provisioner for as
+      // UnsupportedError.
       // ignore: avoid_catching_errors
     } on UnsupportedError {
       return null; // platform backend not compiled into this build
@@ -126,6 +128,8 @@ class Preflight {
     HostProvisioner? provisioner;
     try {
       provisioner = _provisionerFor(host, interactive: interactive);
+      // _provisionerFor reports a host it has no provisioner for as
+      // UnsupportedError.
       // ignore: avoid_catching_errors
     } on UnsupportedError {
       provisioner = null;

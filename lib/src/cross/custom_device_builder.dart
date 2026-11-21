@@ -77,10 +77,10 @@ Map<String, dynamic> buildCustomDevice({
     'sdkNameAndVersion':
         spec.sdkNameAndVersion ??
         [
-          if (targetName != null) targetName,
+          ?targetName,
           if (triple != null) '($triple)',
         ].join(' ').trim(),
-    if (platform != null) 'platform': platform,
+    'platform': ?platform,
     'enabled': spec.enabled,
     'ping': _ping(device),
     'install': _install(device, assets),

@@ -52,9 +52,9 @@ class LockedArtifact {
 
   Map<String, String> toMap() => {
     'kind': kind.token,
-    if (url != null) 'url': url!,
-    if (sha256 != null) 'sha256': sha256!,
-    if (host != null) 'host': host!,
+    'url': ?url,
+    'sha256': ?sha256,
+    'host': ?host,
   };
 }
 
@@ -77,8 +77,8 @@ class LockedPackage {
 
   Map<String, String> toMap() => {
     'name': name,
-    if (version != null) 'version': version!,
-    if (sha256 != null) 'sha256': sha256!,
+    'version': ?version,
+    'sha256': ?sha256,
   };
 }
 

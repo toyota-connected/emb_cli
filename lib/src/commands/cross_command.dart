@@ -3335,7 +3335,7 @@ class CrossCommand extends Command<int> {
         files: files,
         fileModes: ef.modes,
         run: _runProcess,
-        fail: (String m) => throw RunnableBundleException(m),
+        fail: (m) => throw RunnableBundleException(m),
       );
     } on RunnableBundleException catch (e) {
       _logger.err('  package.files: ${e.message}');
@@ -3627,7 +3627,7 @@ class CrossCommand extends Command<int> {
     required String? backend,
   }) => {
     'embedder_root': p.normalize(manifestDir.path),
-    if (appDir != null) 'app_root': appDir,
+    'app_root': ?appDir,
     if (appDir != null)
       'runnable': p.join(
         buildRoot.path,
@@ -3738,7 +3738,7 @@ class CrossCommand extends Command<int> {
   }) async {
     final moduleVars = {
       'embedder_root': p.normalize(manifestDir.path),
-      if (appDir != null) 'app_root': appDir,
+      'app_root': ?appDir,
     };
     for (final m in target.modules) {
       final expanded = expandManifestVars(m.path, moduleVars);
@@ -4220,7 +4220,7 @@ class CrossCommand extends Command<int> {
 
   /// First of [override], `docker`, `podman` that responds to `--version`.
   Future<String?> _resolveContainerTool(String? override) async {
-    for (final tool in [if (override != null) override, 'docker', 'podman']) {
+    for (final tool in [?override, 'docker', 'podman']) {
       if (await _hasExecutable(tool)) return tool;
     }
     return null;

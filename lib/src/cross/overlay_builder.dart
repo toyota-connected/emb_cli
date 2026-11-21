@@ -224,20 +224,20 @@ enum _ArchiveType {
 /// Bytes to read from the head of a download: enough to cover the deepest
 /// signature in the table (tar's `ustar` at 257). Computed once — it is a
 /// property of the table, not of the file.
-final _magicWindow = _ArchiveType.values
+final int _magicWindow = _ArchiveType.values
     .expand((t) => [for (final m in t.magics) t.magicOffset + m.length])
     .reduce(max);
 
 /// A body shorter than the shortest signature in the table cannot be any
 /// archive, so it is corrupt rather than unsupported.
-final _magicFloor = _ArchiveType.values
+final int _magicFloor = _ArchiveType.values
     .expand((t) => [for (final m in t.magics) m.length])
     .reduce(min);
 
 /// Ceiling on a single augment download. Source tarballs are megabytes; this is
 /// only here so a hostile or misconfigured origin cannot stream until the cache
 /// disk is full.
-const _maxDownloadBytes = 4 * 1024 * 1024 * 1024;
+const int _maxDownloadBytes = 4 * 1024 * 1024 * 1024;
 
 /// Whether the first [length] valid bytes of [head] begin with [signature].
 bool _startsWith(Uint8List head, int length, List<int> signature) {

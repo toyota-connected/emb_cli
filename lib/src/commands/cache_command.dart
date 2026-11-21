@@ -465,7 +465,7 @@ class CachePushCommand extends _CacheOciCommand {
               'org.opencontainers.image.title': p.basename(layer.path),
               'dev.emb.cache.kind': e.kind,
               'dev.emb.cache.key': e.key,
-              if (e.meta?.sourceUrl case final u?) 'dev.emb.cache.source': u,
+              'dev.emb.cache.source': ?e.meta?.sourceUrl,
               if (e.meta?.sizeBytes case final s?) 'dev.emb.cache.size': '$s',
             },
           );

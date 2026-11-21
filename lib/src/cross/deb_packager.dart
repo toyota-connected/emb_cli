@@ -68,7 +68,7 @@ class DebPackager extends ControlArchivePackager {
 
   /// The dpkg maintainer-script names, in the order dpkg runs them across an
   /// install/upgrade/remove cycle. Any subset may be passed to `build`.
-  static const maintainerScriptNames =
+  static const List<String> maintainerScriptNames =
       ControlArchivePackager.maintainerScriptNames;
 
   /// Package [binary] to `<outDir>/<name>_<version>_<arch>.deb`, installing it
