@@ -17,6 +17,17 @@ unchanged.
 
 **Flatpak.**
 
+- feat(cross): a `flatpak-sdk` provider builds against the runtime's SDK
+  rather than the host (#335). A host newer than the runtime built a flatpak
+  that would not start: firebase_ffi's demo needed `GLIBC_2.43` on a 25.08
+  runtime with 2.42. The installed `<sdk>/<arch>/<runtime_version>` becomes
+  the sysroot, and the host clang compiles against its glibc and libstdc++,
+  linking with lld. The gcc triple, library directory and loader are read from
+  the SDK, so a Yocto-built SDK works as well as freedesktop's, and `triple:`
+  selects another architecture's SDK. `emb.lock` records the SDK commit.
+  Augments go to a separate overlay, which a cross toolchain now names as a
+  find root. See [Building against the flatpak SDK](README.md#building-against-the-flatpak-sdk).
+
 - fix(flatpak): a native `--flatpak` build linked host libraries the runtime
   does not ship (#335). With no toolchain file, a CMake augment's config-mode
   `find_package` searched the host's `/usr`. firebase_ffi's SDK found Fedora's

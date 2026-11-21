@@ -18,13 +18,20 @@ enum CrossProviderKind {
   /// A relocatable `populate_sdk` installer: one `environment-setup-*` script
   /// supplies the compiler, both sysroots, the flags, and the SDK's own
   /// `OEToolchainConfig.cmake` + meson cross file.
-  yoctoSdk;
+  yoctoSdk,
+
+  /// An installed flatpak SDK (`package.flatpak.sdk`, at the
+  /// `runtime_version` branch) used as the sysroot, compiled against with the
+  /// host clang and lld. The build links the runtime's glibc and libstdc++,
+  /// not the host's. We emit the CMake/Meson toolchain file.
+  flatpakSdk;
 
   static CrossProviderKind fromToken(String token) =>
       switch (token.toLowerCase()) {
         'arm-gnu' || 'arm_gnu' || 'armgnu' => CrossProviderKind.armGnu,
         'yocto-recipe' || 'recipe' => CrossProviderKind.yoctoRecipe,
         'yocto-sdk' || 'sdk' || 'esdk' => CrossProviderKind.yoctoSdk,
+        'flatpak-sdk' || 'flatpak_sdk' => CrossProviderKind.flatpakSdk,
         _ => throw ArgumentError('unknown cross provider: $token'),
       };
 
@@ -32,6 +39,7 @@ enum CrossProviderKind {
     CrossProviderKind.armGnu => 'arm-gnu',
     CrossProviderKind.yoctoRecipe => 'yocto-recipe',
     CrossProviderKind.yoctoSdk => 'yocto-sdk',
+    CrossProviderKind.flatpakSdk => 'flatpak-sdk',
   };
 }
 

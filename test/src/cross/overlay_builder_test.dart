@@ -280,6 +280,8 @@ void main() {
       CrossProfile profile, {
       required bool confine,
       Map<String, String> defines = const {},
+      Directory? stageInto,
+      Map<String, String>? env,
     }) async {
       prestage('vulkan-headers-1.4.309');
       final calls = <List<String>>[];
@@ -294,20 +296,25 @@ void main() {
         String? label,
       }) async {
         calls.add([exe, ...args]);
+        if (exe == 'cmake' && args.contains('-S')) env?.addAll(environment!);
         if (exe == 'pkg-config') return const RunResult(1, '', '');
         return const RunResult(0, '', '');
       }
 
       final ob = OverlayBuilder(Workspace(tmp), profile, runProcess: run);
-      await ob.build([
-        AugmentLib.fromMap({
-          'pkg': 'vulkan-headers',
-          'min': '1.4.309',
-          'url': 'https://x/vulkan-headers-1.4.309.tar.gz',
-          'build': 'cmake',
-          'defines': defines,
-        }),
-      ], confinePackages: confine);
+      await ob.build(
+        [
+          AugmentLib.fromMap({
+            'pkg': 'vulkan-headers',
+            'min': '1.4.309',
+            'url': 'https://x/vulkan-headers-1.4.309.tar.gz',
+            'build': 'cmake',
+            'defines': defines,
+          }),
+        ],
+        confinePackages: confine,
+        stageInto: stageInto,
+      );
       ob.close();
       return calls.firstWhere((c) => c.first == 'cmake' && c.contains('-S'));
     }
@@ -328,9 +335,55 @@ void main() {
       expect(cfg.where((a) => a.startsWith('-DCMAKE_FIND_ROOT_PATH')), isEmpty);
     });
 
-    test('adds nothing to a cross build, whose toolchain says it', () async {
-      final cfg = await configure(_profile, confine: true);
+    // A cross profile whose sysroot is a real directory, so staging into it
+    // can create what it needs.
+    CrossProfile crossAt(String sysroot) => CrossProfile(
+      providerName: 'flatpak-sdk',
+      targetTriple: 'x86_64-flatpak-linux-gnu',
+      cc: 'clang',
+      cxx: 'clang++',
+      ar: 'llvm-ar',
+      strip: 'llvm-strip',
+      targetSysroot: sysroot,
+      pkgConfig: PkgConfig(
+        sysrootDir: sysroot,
+        libdir: ['$sysroot/usr/lib/pkgconfig'],
+      ),
+      cmakeToolchainFile: '/tc.cmake',
+    );
+
+    test('adds nothing to a cross build staged into its sysroot', () async {
+      final sysroot = Directory(p.join(tmp.path, 'sr'))..createSync();
+      final env = <String, String>{};
+      final cfg = await configure(
+        crossAt(sysroot.path),
+        confine: true,
+        stageInto: sysroot,
+        env: env,
+      );
       expect(cfg.where((a) => a.startsWith('-DCMAKE_FIND_ROOT_PATH')), isEmpty);
+      expect(env['CFLAGS'] ?? '', isNot(contains('-I')));
+    });
+
+    test('names an overlay beside a cross sysroot as a find root', () async {
+      // The flatpak SDK case: a toolchain confines find_package to
+      // CMAKE_SYSROOT, so an overlay outside it is invisible unless named.
+      final sysroot = p.join(tmp.path, 'sdk-sysroot');
+      final env = <String, String>{};
+      final cfg = await configure(crossAt(sysroot), confine: true, env: env);
+      final overlay = p.join(
+        Workspace(tmp).platformDir('overlay-x86_64-flatpak-linux-gnu').path,
+      );
+      expect(cfg, contains('-DCMAKE_FIND_ROOT_PATH=$overlay'));
+      // The toolchain file already sets the find modes.
+      expect(
+        cfg.where((a) => a.startsWith('-DCMAKE_FIND_ROOT_PATH_MODE')),
+        isEmpty,
+      );
+      // pkg-config rebases the overlay's .pc paths under the sysroot, so its
+      // headers and libraries travel as flags too.
+      expect(env['CFLAGS'], contains('-I$overlay/usr/include'));
+      expect(env['LDFLAGS'], contains('-L$overlay/usr/lib'));
     });
 
     test("an augment's own define comes later, so it wins", () async {

@@ -28,6 +28,25 @@ void main() {
     expect(text, contains('set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)'));
   });
 
+  test('emitCMake adds no linker flags unless given some', () {
+    final text = File(
+      emitter.emitCMake(
+        outDir: tmp,
+        triple: 'aarch64-none-linux-gnu',
+        crossBin: '/tc/bin',
+        sysroot: '/sr',
+        cpuFlags: const [],
+      ),
+    ).readAsStringSync();
+    expect(text, isNot(contains('LINKER_FLAGS_INIT')));
+    expect(
+      text,
+      contains(
+        r'set(CMAKE_C_COMPILER   "${_xc_bin}/aarch64-none-linux-gnu-gcc")',
+      ),
+    );
+  });
+
   test('emitMeson writes binaries + host_machine + cross args', () {
     final path = emitter.emitMeson(
       outDir: tmp,
