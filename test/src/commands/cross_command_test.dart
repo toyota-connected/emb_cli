@@ -556,6 +556,93 @@ void main() {
     });
   });
 
+  // #335: a native build has no toolchain file, so an augment's find_package
+  // searched the host's /usr. A flatpak runs against its runtime, where those
+  // host packages are missing.
+  group('a native --flatpak build confines augment packages', () {
+    late Directory ws;
+    late Directory pkg;
+
+    setUp(() {
+      ws = Directory(p.join(tmp.path, 'ws'))..createSync();
+      pkg = pkgWith(
+        'confined',
+        'id: confined\ntype: app\ncross:\n  provider: arm-gnu\n'
+            '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n'
+            '  augment:\n'
+            '    - pkg: vulkan-headers\n'
+            '      min: 1.4.309\n'
+            '      url: https://x/vulkan-headers-1.4.309.tar.gz\n'
+            '      build: cmake\n',
+      );
+      // The source as an earlier fetch left it, so nothing is downloaded.
+      final src = Directory(p.join(pkg.path, '.cache', 'overlay-src'))
+        ..createSync(recursive: true);
+      File(
+        p.join(src.path, 'vulkan-headers-vulkan-headers-1.4.309.tar.gz'),
+      ).writeAsBytesSync(gzip.encode(utf8.encode('stub\n')));
+      final tree = Directory(p.join(src.path, 'vulkan-headers-1.4.309'))
+        ..createSync();
+      File(p.join(tree.path, '.emb-patch-stamp')).writeAsStringSync(
+        contentHash(['https://x/vulkan-headers-1.4.309.tar.gz', '', '']),
+      );
+    });
+
+    /// The augment's cmake configure under [flags], which is the first cmake
+    /// call: the run stops there.
+    Future<List<String>> augmentConfigure(List<String> flags) async {
+      final calls = <List<String>>[];
+      Future<RunResult> runner(
+        String exe,
+        List<String> args, {
+        String? workingDirectory,
+        Map<String, String>? environment,
+        bool includeParentEnvironment = true,
+        bool runInShell = false,
+        ProcessOutputMode output = ProcessOutputMode.capture,
+        String? label,
+      }) async {
+        calls.add([exe, ...args]);
+        if (exe.endsWith('cmake')) throw const _Stop();
+        return const RunResult(1, '', '');
+      }
+
+      final crossRunner = CommandRunner<int>('emb', 'test')
+        ..addCommand(
+          CrossCommand(
+            logger: _CaptureLogger(),
+            host: _host,
+            processRunner: runner,
+          ),
+        );
+      await expectLater(
+        crossRunner.run([
+          'cross',
+          ...flags,
+          '-t',
+          'local',
+          '-w',
+          ws.path,
+          pkg.path,
+        ]),
+        throwsA(isA<_Stop>()),
+      );
+      final cfg = calls.firstWhere((c) => c.first.endsWith('cmake'));
+      expect(cfg, contains('-DCMAKE_INSTALL_PREFIX=/usr'));
+      return cfg;
+    }
+
+    test('with --flatpak', () async {
+      final cfg = await augmentConfigure(['--prepare', '--flatpak']);
+      expect(cfg, contains('-DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY'));
+    });
+
+    test('and not without it', () async {
+      final cfg = await augmentConfigure(['--prepare']);
+      expect(cfg.where((a) => a.startsWith('-DCMAKE_FIND_ROOT_PATH')), isEmpty);
+    });
+  });
+
   // --dry-run/--json promise to report the plan without touching the network.
   // cross.source:/cross.app: would otherwise clone on the way past.
   test('--json does not fetch a declared cross.source', () async {

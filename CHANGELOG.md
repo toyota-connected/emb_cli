@@ -4,7 +4,27 @@ New entries go here, not under the heading below. The pubspec reads
 `0.6.0-dev`, and nobody can tell whether work recorded under a published
 version shipped.
 
+## Upgrading
+
+**A native `--flatpak` build no longer lets an augment's `find_package`
+reach the host.** With `--target local --flatpak`, a CMake augment's
+config-mode `find_package` now searches only the augment overlay. An augment
+that found a dependency in the host's `/usr`, and did not bundle its own copy,
+now fails to configure. Before, it linked a library the runtime does not ship.
+To keep the host package, set `CMAKE_FIND_ROOT_PATH_MODE_PACKAGE: BOTH` in that
+augment's `defines:`. Builds without `--flatpak`, and cross builds, are
+unchanged.
+
 **Flatpak.**
+
+- fix(flatpak): a native `--flatpak` build linked host libraries the runtime
+  does not ship (#335). With no toolchain file, a CMake augment's config-mode
+  `find_package` searched the host's `/usr`. firebase_ffi's SDK found Fedora's
+  abseil there and linked about 100 abseil libraries. For `--target local
+  --flatpak`, augments now configure with `CMAKE_FIND_ROOT_PATH` set to the
+  overlay and `CMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY`, as a cross toolchain
+  file already does. Module-mode finds and pkg-config are unchanged, and an
+  augment's own `defines:` can override the mode. See Upgrading.
 
 - fix(flatpak): the symbol-version check for `vendor_libs` could read the
   build host's library in place of the runtime's. Since 0.5.1 a runtime

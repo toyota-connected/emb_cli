@@ -264,6 +264,92 @@ void main() {
     expect(inst.join(' '), contains('overlay-'));
   });
 
+  group('confinePackages', () {
+    // The local provider's profile: no toolchain file, no sysroot.
+    const native = CrossProfile(
+      providerName: 'local',
+      targetTriple: 'x86_64-linux-gnu',
+      cc: 'gcc',
+      cxx: 'g++',
+      ar: 'ar',
+      strip: 'strip',
+      targetSysroot: '',
+    );
+
+    Future<List<String>> configure(
+      CrossProfile profile, {
+      required bool confine,
+      Map<String, String> defines = const {},
+    }) async {
+      prestage('vulkan-headers-1.4.309');
+      final calls = <List<String>>[];
+      Future<RunResult> run(
+        String exe,
+        List<String> args, {
+        String? workingDirectory,
+        Map<String, String>? environment,
+        bool includeParentEnvironment = true,
+        bool runInShell = false,
+        ProcessOutputMode output = ProcessOutputMode.capture,
+        String? label,
+      }) async {
+        calls.add([exe, ...args]);
+        if (exe == 'pkg-config') return const RunResult(1, '', '');
+        return const RunResult(0, '', '');
+      }
+
+      final ob = OverlayBuilder(Workspace(tmp), profile, runProcess: run);
+      await ob.build([
+        AugmentLib.fromMap({
+          'pkg': 'vulkan-headers',
+          'min': '1.4.309',
+          'url': 'https://x/vulkan-headers-1.4.309.tar.gz',
+          'build': 'cmake',
+          'defines': defines,
+        }),
+      ], confinePackages: confine);
+      ob.close();
+      return calls.firstWhere((c) => c.first == 'cmake' && c.contains('-S'));
+    }
+
+    test('keeps a native find_package inside the overlay', () async {
+      // #335: with no toolchain file, find_package searched the host's /usr
+      // and an augment linked Fedora's abseil, which the runtime lacks.
+      final cfg = await configure(native, confine: true);
+      final root = cfg.singleWhere(
+        (a) => a.startsWith('-DCMAKE_FIND_ROOT_PATH='),
+      );
+      expect(root, contains('overlay-x86_64-linux-gnu'));
+      expect(cfg, contains('-DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY'));
+    });
+
+    test('leaves a native build alone when not asked', () async {
+      final cfg = await configure(native, confine: false);
+      expect(cfg.where((a) => a.startsWith('-DCMAKE_FIND_ROOT_PATH')), isEmpty);
+    });
+
+    test('adds nothing to a cross build, whose toolchain says it', () async {
+      final cfg = await configure(_profile, confine: true);
+      expect(cfg.where((a) => a.startsWith('-DCMAKE_FIND_ROOT_PATH')), isEmpty);
+    });
+
+    test("an augment's own define comes later, so it wins", () async {
+      // CMake takes the last -D for a cache entry.
+      final cfg = await configure(
+        native,
+        confine: true,
+        defines: {'CMAKE_FIND_ROOT_PATH_MODE_PACKAGE': 'BOTH'},
+      );
+      final modes = cfg
+          .where((a) => a.startsWith('-DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE='))
+          .toList();
+      expect(modes, [
+        '-DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY',
+        '-DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH',
+      ]);
+    });
+  });
+
   test('surfaces a failed build step (G-07)', () async {
     prestage('libdisplay-info-0.2.0');
     Future<RunResult> run(

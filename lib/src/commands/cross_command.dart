@@ -1133,6 +1133,7 @@ class CrossCommand extends Command<int> {
         // cross.source is a claim that there is one, so a checkout with
         // nothing to configure stays an error rather than a quiet skip.
         allowNoSource: !doBuild && _sourceOverride == null,
+        flatpak: args['flatpak'] == true,
       );
       if (preparedEmbedder == null) return ExitCode.software.code;
       if (target.modules.isNotEmpty) {
@@ -1387,6 +1388,7 @@ class CrossCommand extends Command<int> {
     List<String> selectedBackends = const [],
     bool skipIfBuilt = false,
     bool allowNoSource = false,
+    bool flatpak = false,
   }) async {
     // A native `local` build: no sysroot; host toolchain; augments stage into
     // a separate overlay rather than the sysroot.
@@ -1439,6 +1441,9 @@ class CrossCommand extends Command<int> {
         overlayPaths = await overlay.build(
           augments,
           stageInto: native ? null : Directory(profile.targetSysroot),
+          // A flatpak runs against its runtime, not this host: a host
+          // package an augment finds here is missing there (#335).
+          confinePackages: native && flatpak,
         );
         hostToolBins = overlayPaths.binDirs;
       } on OverlayBuildException catch (e) {
@@ -1665,6 +1670,7 @@ class CrossCommand extends Command<int> {
           hostTools: hostTools,
           selectedBackends: selectedBackends,
           skipIfBuilt: true,
+          flatpak: flatpak,
         );
     if (emb == null) return ExitCode.software.code;
 
