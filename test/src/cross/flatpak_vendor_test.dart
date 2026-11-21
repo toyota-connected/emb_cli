@@ -471,6 +471,111 @@ void main() {
       },
     );
 
+    group('a runtime soname link', () {
+      /// Builds the bundle and runtime of [run] with libc.so.6 a link to
+      /// [libcTarget], and returns the report and every `readelf -V` path.
+      Future<(VendorReport, List<String>)> runWithLibcLink(
+        String libcTarget,
+      ) async {
+        final bundle = dir('runnable');
+        elf('runnable/homescreen');
+        Directory(p.join(bundle.path, 'lib')).createSync();
+        elf('runtime/files/lib/aarch64-linux-gnu/libc-2.40.so');
+        Link(
+          p.join(tmp.path, 'runtime/files/lib/aarch64-linux-gnu/libc.so.6'),
+        ).createSync(libcTarget);
+        elf('sysroot/usr/lib/aarch64-linux-gnu/libinput.so.10');
+        final read = <String>[];
+        final inner = readelfWithVersions(
+          needed: {
+            'homescreen': ['libc.so.6', 'libinput.so.10'],
+          },
+          needs: {
+            'libinput.so.10': {
+              'libc.so.6': ['GLIBC_2.38'],
+            },
+          },
+          defs: {
+            'libc-2.40.so': ['GLIBC_2.17'],
+          },
+        );
+        final report =
+            await FlatpakLibVendor(
+              readelf: 'readelf',
+              triple: triple,
+              runProcess:
+                  (
+                    String exe,
+                    List<String> args, {
+                    String? workingDirectory,
+                    Map<String, String>? environment,
+                    bool includeParentEnvironment = true,
+                    bool runInShell = false,
+                    ProcessOutputMode output = ProcessOutputMode.capture,
+                    String? label,
+                  }) {
+                    if (args.contains('-V')) read.add(args.last);
+                    return inner(exe, args, environment: environment);
+                  },
+            ).vendor(
+              bundleDir: bundle,
+              command: 'homescreen',
+              runtimeFiles: dir('runtime/files'),
+              searchPaths: [dir('sysroot/usr/lib')],
+            );
+        return (report, read);
+      }
+
+      final runtimeLibc = p.join(
+        'runtime',
+        'files',
+        'lib',
+        'aarch64-linux-gnu',
+        'libc-2.40.so',
+      );
+
+      test('with an absolute target is read inside the runtime', () async {
+        // In the sandbox the runtime's files/ is /usr. On the build host the
+        // same target names the host's own libc.
+        final (report, read) = await runWithLibcLink(
+          '/usr/lib/aarch64-linux-gnu/libc-2.40.so',
+        );
+        expect(report.provided, ['libc.so.6']);
+        expect(read, contains(p.join(tmp.path, runtimeLibc)));
+        expect(read.where((r) => !p.isWithin(tmp.path, r)), isEmpty);
+        expect(report.symbolGaps.single.version, 'GLIBC_2.38');
+      });
+
+      test('with a /lib target is read inside the runtime', () async {
+        // /lib links to /usr/lib in the sandbox.
+        final (report, read) = await runWithLibcLink(
+          '/lib/aarch64-linux-gnu/libc-2.40.so',
+        );
+        expect(read, contains(p.join(tmp.path, runtimeLibc)));
+        expect(report.symbolGaps.single.version, 'GLIBC_2.38');
+      });
+
+      test('that dangles is provided and read as unknown', () async {
+        final (report, read) = await runWithLibcLink(
+          '/usr/lib/aarch64-linux-gnu/libc-missing.so',
+        );
+        expect(report.provided, ['libc.so.6']);
+        expect(report.staged, ['libinput.so.10']);
+        expect(read.where((r) => p.basename(r).startsWith('libc')), isEmpty);
+        expect(report.symbolGaps, isEmpty);
+      });
+
+      test('that climbs out of the runtime is read as unknown', () async {
+        final (report, read) = await runWithLibcLink(
+          '../../../../sysroot/usr/lib/aarch64-linux-gnu/libinput.so.10',
+        );
+        // Reading the link itself would follow it out of the runtime.
+        expect(report.provided, ['libc.so.6']);
+        expect(read.where((r) => p.basename(r).startsWith('libc')), isEmpty);
+        expect(report.symbolGaps, isEmpty);
+      });
+    });
+
     test('a runtime library with no version defs produces no gap', () async {
       // Covers both ways of learning nothing: readelf failing, and a library
       // with no .gnu.version_d. Comparing against an empty set would invent a
