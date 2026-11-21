@@ -170,7 +170,7 @@ class FlatpakLibVendor {
   Future<List<SymbolVersionGap>> _symbolGaps(
     List<String> staged,
     Directory libDir,
-    Map<String, File> runtimeIndex,
+    Map<String, File?> runtimeIndex,
   ) async {
     final gaps = <SymbolVersionGap>[];
     final defsCache = <String, Set<String>?>{};
@@ -236,8 +236,10 @@ class FlatpakLibVendor {
   ///
   /// The path is kept, not just the name: the symbol-version check has to read
   /// the runtime's own copy of a library to learn which versions it defines.
-  Map<String, File> _indexRuntime(Directory runtimeFiles) {
-    final names = <String, File>{};
+  /// A soname link is followed to that copy by [_inRuntime]; null means the
+  /// runtime provides the name but its file cannot be found on the build host.
+  Map<String, File?> _indexRuntime(Directory runtimeFiles) {
+    final names = <String, File?>{};
     for (final rel in ['lib', 'lib64', 'usr/lib']) {
       final d = Directory(p.join(runtimeFiles.path, rel));
       if (!d.existsSync()) continue;
@@ -248,7 +250,7 @@ class FlatpakLibVendor {
           // answers the same question. Sonames are usually symlinks
           // (libEGL.so.1 -> libEGL.so.1.0.0), so count links too.
           if ((e is File || e is Link) && _soName.hasMatch(base)) {
-            names.putIfAbsent(base, () => File(e.path));
+            names.putIfAbsent(base, () => _inRuntime(e.path, runtimeFiles));
           }
         }
       } on FileSystemException {
@@ -256,6 +258,33 @@ class FlatpakLibVendor {
       }
     }
     return names;
+  }
+
+  /// The runtime file [path] names, following links as the sandbox would. The
+  /// runtime's `files/` is `/usr` there, and `/lib` links to `/usr/lib`, so an
+  /// absolute target resolves against [root]. Following the link on the
+  /// build host instead reads the host's library at that path.
+  ///
+  /// Null when the chain dangles, leaves [root], or exceeds the kernel's 40
+  /// hops: the name is still provided, but nothing here can be read for it.
+  static File? _inRuntime(String path, Directory root) {
+    var current = path;
+    for (var hop = 0; hop <= 40; hop++) {
+      if (!p.isWithin(root.path, current)) return null;
+      final type = FileSystemEntity.typeSync(current, followLinks: false);
+      if (type == FileSystemEntityType.file) return File(current);
+      if (type != FileSystemEntityType.link) return null;
+      final target = p.normalize(Link(current).targetSync());
+      if (!p.isAbsolute(target)) {
+        current = p.normalize(p.join(p.dirname(current), target));
+      } else {
+        final usr = p.isWithin('/usr', target) || target == '/usr';
+        current = p.normalize(
+          p.join(root.path, p.relative(target, from: usr ? '/usr' : '/')),
+        );
+      }
+    }
+    return null;
   }
 
   File? _resolve(String soname, List<Directory> searchPaths) {

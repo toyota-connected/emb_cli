@@ -1,8 +1,20 @@
 # Unreleased
 
-Nothing yet. New entries go here, not under the heading below. The pubspec
-reads `0.6.0-dev`, and nobody can tell whether work recorded under a published
+New entries go here, not under the heading below. The pubspec reads
+`0.6.0-dev`, and nobody can tell whether work recorded under a published
 version shipped.
+
+**Flatpak.**
+
+- fix(flatpak): the symbol-version check for `vendor_libs` could read the
+  build host's library in place of the runtime's. Since 0.5.1 a runtime
+  soname symlink counts as provided, and the check read the link on the build
+  host. An absolute target (`/usr/lib/...`) names the runtime's file inside
+  the sandbox, where the runtime is `/usr`, but the host's own file outside it,
+  so a gap could be missed or invented. The link is now followed inside the
+  runtime, with `/usr` and `/lib` mapped to its root. A link that dangles or
+  leaves the runtime still counts as provided, and its versions read as
+  unknown.
 
 # 0.5.1
 
