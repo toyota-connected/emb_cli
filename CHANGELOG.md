@@ -4,6 +4,20 @@ New entries go here, not under the heading below. The pubspec reads
 `0.7.0-dev`, and nobody can tell whether work recorded under a published
 version shipped.
 
+**Cross.**
+
+- fix(cross): `--target local` rebuilt every augment on every run (#339). The
+  check for an augment already built asked pkg-config about the sysroot, and
+  a native build has none, so it never saw the overlay's own `.pc`. With an
+  overlay restored from a CI cache, firebase_ffi rebuilt its Firebase SDK,
+  4 to 20 min, each run. An augment built into an overlay beside the sysroot
+  now leaves a stamp of what it was built from: its inputs, the augments
+  ahead of it, the toolchain and sysroot, and whether `find_package` was
+  confined. A later run with the same stamp, and the `.pc` still in the
+  overlay at `min` or later, skips it. The stamp keeps a native build's copy,
+  linked against the host, from serving `--flatpak`, which shares the overlay.
+  An overlay from before this has no stamps and is built once more.
+
 **Flatpak.**
 
 - feat(cross): a `flatpak-sdk` target whose `sdk_repo` cannot be pulled

@@ -490,6 +490,181 @@ void main() {
     });
   });
 
+  group('an augment already in an overlay beside the sysroot (#339)', () {
+    // The local provider's profile: no sysroot, so the sysroot probe finds
+    // nothing and only the overlay can say the augment is there.
+    const native = CrossProfile(
+      providerName: 'local',
+      targetTriple: 'x86_64-linux-gnu',
+      cc: 'gcc',
+      cxx: 'g++',
+      ar: 'ar',
+      strip: 'strip',
+      targetSysroot: '',
+    );
+    final havePkgConfig = () {
+      try {
+        return Process.runSync('pkg-config', ['--version']).exitCode == 0;
+      } on ProcessException {
+        return false;
+      }
+    }();
+
+    String overlayOf(CrossProfile profile) => Workspace(
+      tmp,
+    ).platformDir('overlay-${profile.targetTriple}').path;
+
+    /// Build vulkan-headers once and return how many times it was configured.
+    /// The fake install writes the `.pc` a real one would; pkg-config is real.
+    Future<int> build(
+      CrossProfile profile, {
+      bool confine = false,
+      bool fail = false,
+      Directory? stageInto,
+      String? ahead,
+    }) async {
+      prestage('vulkan-headers-1.4.309');
+      if (ahead != null) prestage('libdisplay-info-$ahead');
+      var configured = 0;
+      Future<RunResult> run(
+        String exe,
+        List<String> args, {
+        String? workingDirectory,
+        Map<String, String>? environment,
+        bool includeParentEnvironment = true,
+        bool runInShell = false,
+        ProcessOutputMode output = ProcessOutputMode.capture,
+        String? label,
+      }) async {
+        if (exe == 'pkg-config') {
+          return defaultProcessRunner(exe, args, environment: environment);
+        }
+        if (exe == 'cmake' && args.contains('-S')) {
+          configured++;
+          if (fail) return const RunResult(1, '', 'configure failed');
+        }
+        if (exe == 'cmake' && args.contains('--install')) {
+          File(
+              p.join(
+                environment!['DESTDIR']!,
+                'usr/share/pkgconfig/vulkan-headers.pc',
+              ),
+            )
+            ..createSync(recursive: true)
+            ..writeAsStringSync(
+              'Name: vulkan-headers\nDescription: x\nVersion: 1.4.309\n',
+            );
+        }
+        return const RunResult(0, '', '');
+      }
+
+      final ob = OverlayBuilder(Workspace(tmp), profile, runProcess: run);
+      try {
+        await ob.build(
+          [
+            // An augment ahead of it, whose version stands for any input.
+            if (ahead != null)
+              AugmentLib.fromMap({
+                'pkg': 'libdisplay-info',
+                'min': ahead,
+                'url': 'https://x/libdisplay-info-$ahead.tar.gz',
+                'build': 'meson',
+              }),
+            _lib(build: 'cmake', static: false),
+          ],
+          confinePackages: confine,
+          stageInto: stageInto,
+        );
+      } finally {
+        ob.close();
+      }
+      return configured;
+    }
+
+    test(
+      'a local target builds it once, then finds it',
+      skip: havePkgConfig ? false : 'pkg-config not installed',
+      () async {
+        expect(await build(native), 1);
+        expect(await build(native), 0);
+      },
+    );
+
+    test(
+      'one built for another configuration is built again',
+      skip: havePkgConfig ? false : 'pkg-config not installed',
+      () async {
+        // `--target local` and `--target local --flatpak` share the overlay;
+        // a copy linked against the host must not serve the flatpak.
+        expect(await build(native), 1);
+        expect(await build(native, confine: true), 1);
+        expect(await build(native, confine: true), 0);
+        expect(await build(native), 1);
+      },
+    );
+
+    test(
+      'a stamp whose .pc is gone is built again',
+      skip: havePkgConfig ? false : 'pkg-config not installed',
+      () async {
+        expect(await build(native), 1);
+        File(
+          p.join(overlayOf(native), 'usr/share/pkgconfig/vulkan-headers.pc'),
+        ).deleteSync();
+        expect(await build(native), 1);
+      },
+    );
+
+    test(
+      'a failed rebuild leaves no stamp behind',
+      skip: havePkgConfig ? false : 'pkg-config not installed',
+      () async {
+        expect(await build(native), 1);
+        // Another configuration's build fails after removing the stamp, so
+        // the next run cannot take the overlay's copy as done.
+        await expectLater(
+          build(native, confine: true, fail: true),
+          throwsA(isA<OverlayBuildException>()),
+        );
+        expect(await build(native), 1);
+      },
+    );
+
+    test(
+      'a change to an augment ahead of it builds it again',
+      skip: havePkgConfig ? false : 'pkg-config not installed',
+      () async {
+        expect(await build(native), 1);
+        expect(await build(native, ahead: '1.0.0'), 1);
+        expect(await build(native, ahead: '1.0.0'), 0);
+        expect(await build(native, ahead: '2.0.0'), 1);
+      },
+    );
+
+    test('one staged into the sysroot gets no stamp', () async {
+      final sysroot = Directory(p.join(tmp.path, 'sr'))..createSync();
+      final profile = CrossProfile(
+        providerName: 'yocto-sdk',
+        targetTriple: 'aarch64-poky-linux',
+        cc: 'gcc',
+        cxx: 'g++',
+        ar: 'ar',
+        strip: 'strip',
+        targetSysroot: sysroot.path,
+        pkgConfig: PkgConfig(
+          sysrootDir: sysroot.path,
+          libdir: ['${sysroot.path}/usr/lib/pkgconfig'],
+        ),
+        cmakeToolchainFile: '/tc.cmake',
+      );
+      expect(await build(profile, stageInto: sysroot), 1);
+      expect(
+        Directory(p.join(sysroot.path, '.emb-augments')).existsSync(),
+        isFalse,
+      );
+    });
+  });
+
   test('surfaces a failed build step (G-07)', () async {
     prestage('libdisplay-info-0.2.0');
     Future<RunResult> run(

@@ -165,11 +165,18 @@ void main() {
     test('a pull over its limit is killed, and the cache used', () async {
       final src = sourceRepo('src');
       final first = await cache().checkout(src, _ref);
+      // A pull that cannot finish: opening a FIFO blocks until a writer comes,
+      // and none will. A short limit alone races a pull with nothing new.
+      final config = p.join(src, 'config');
+      File(config).deleteSync();
+      expect(Process.runSync('mkfifo', [config]).exitCode, 0);
+      final sw = Stopwatch()..start();
       final again = await cache(
-        pullTimeout: const Duration(milliseconds: 1),
+        pullTimeout: const Duration(seconds: 1),
       ).checkout(src, _ref);
       expect(again.commit, first.commit);
-      expect(again.warning, contains('(timed out after 0 s)'));
+      expect(again.warning, contains('(timed out after 1 s)'));
+      expect(sw.elapsed, lessThan(const Duration(seconds: 20)));
     });
 
     test('pulls a repo by URL', () async {
