@@ -261,7 +261,7 @@ class FetchCommand extends Command<int> {
         layer.sourcePath,
         vars: {
           'embedder_root': embedderRoot,
-          if (appDir != null) 'app_root': appDir,
+          'app_root': ?appDir,
         },
       );
       // fromMap throws ArgumentError on an unknown provider token.

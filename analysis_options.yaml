@@ -1,4 +1,4 @@
-include: package:very_good_analysis/analysis_options.6.0.0.yaml
+include: package:very_good_analysis/analysis_options.10.3.0.yaml
 analyzer:
   exclude:
     # A Flutter app, resolved by the Flutter SDK emb provisions, not by this
@@ -7,6 +7,3 @@ analyzer:
 linter:
   rules:
     public_member_api_docs: false
-    # pana scores with it on, and the 6.0.0 rule set included above leaves it
-    # off: one hit costs 10 pub points.
-    unintended_html_in_doc_comment: true

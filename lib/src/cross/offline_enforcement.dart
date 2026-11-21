@@ -42,14 +42,14 @@ List<String> netnsWrap(List<String> argv) => [
 /// build's runner with this when [OfflineEnforcement.wrap] is set.
 ProcessRunner netnsRunner(ProcessRunner inner) =>
     (
-      String executable,
-      List<String> arguments, {
-      String? workingDirectory,
-      Map<String, String>? environment,
-      bool includeParentEnvironment = true,
-      bool runInShell = false,
-      ProcessOutputMode output = ProcessOutputMode.capture,
-      String? label,
+      executable,
+      arguments, {
+      workingDirectory,
+      environment,
+      includeParentEnvironment = true,
+      runInShell = false,
+      output = ProcessOutputMode.capture,
+      label,
     }) {
       final wrapped = netnsWrap([executable, ...arguments]);
       return inner(

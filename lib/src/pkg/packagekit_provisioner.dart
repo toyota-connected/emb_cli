@@ -25,7 +25,7 @@ class PackageKitProvisioner implements HostProvisioner {
 
   PkClient? _client;
 
-  static const _installableFilters = [
+  static const List<PkFilter> _installableFilters = [
     PkFilter.notInstalled,
     PkFilter.arch,
     PkFilter.newest,
@@ -287,10 +287,7 @@ class PackageKitProvisioner implements HostProvisioner {
   }
 
   Future<List<PkPackage>> _collectPackages(PkTransaction tx) async {
-    final out = <PkPackage>[];
-    await for (final p in tx.packages) {
-      out.add(p);
-    }
+    final out = await tx.packages.toList();
     await tx.result;
     return out;
   }

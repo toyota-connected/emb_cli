@@ -248,6 +248,8 @@ class EmbCliCommandRunner extends CompletionCommandRunner<int> {
 ${lightYellow.wrap('Update available!')} ${lightCyan.wrap(packageVersion)} \u2192 ${lightCyan.wrap(latestVersion)}
 Run ${lightCyan.wrap('$executableName update')} to update''');
       }
-    } catch (_) {}
+    } on Object catch (_) {
+      // Best effort: a failed update check must never fail the command.
+    }
   }
 }

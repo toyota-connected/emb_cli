@@ -66,7 +66,7 @@ void main() {
         SetupCommand(
           logger: logger,
           host: _host,
-          provisionerFactory: (_, {bool interactive = true}) => prov,
+          provisionerFactory: (_, {interactive = true}) => prov,
         ),
       );
     return runner;

@@ -227,9 +227,7 @@ class RpmPackager extends PackageStager {
     }
 
     b.writeln('%files');
-    for (final path in paths) {
-      b.writeln(path);
-    }
+    paths.forEach(b.writeln);
     return b.toString();
   }
 

@@ -546,14 +546,14 @@ void main() {
 
       ProcessRunner runWith(String compilerVersion) =>
           (
-            String exe,
-            List<String> args, {
-            String? workingDirectory,
-            Map<String, String>? environment,
-            bool includeParentEnvironment = true,
-            bool runInShell = false,
-            ProcessOutputMode output = ProcessOutputMode.capture,
-            String? label,
+            exe,
+            args, {
+            workingDirectory,
+            environment,
+            includeParentEnvironment = true,
+            runInShell = false,
+            output = ProcessOutputMode.capture,
+            label,
           }) async {
             if (exe == 'cmake' && args.contains('-S')) buildCount++;
             final stdout = args.contains('--version') ? compilerVersion : '';

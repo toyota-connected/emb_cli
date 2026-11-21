@@ -307,7 +307,7 @@ ProcessRunner makeProcessRunner({
 /// entire multi-minute build log in memory.
 class _TailBuffer {
   static const _maxLines = 200;
-  static const _maxBytes = 64 * 1024;
+  static const int _maxBytes = 64 * 1024;
 
   final List<String> _lines = [];
   int _bytes = 0;
@@ -330,14 +330,14 @@ class _TailBuffer {
 /// used to point a build's subprocesses at a store-rooted `PUB_CACHE`.
 ProcessRunner withEnv(ProcessRunner inner, Map<String, String> extra) =>
     (
-      String executable,
-      List<String> arguments, {
-      String? workingDirectory,
-      Map<String, String>? environment,
-      bool includeParentEnvironment = true,
-      bool runInShell = false,
-      ProcessOutputMode output = ProcessOutputMode.capture,
-      String? label,
+      executable,
+      arguments, {
+      workingDirectory,
+      environment,
+      includeParentEnvironment = true,
+      runInShell = false,
+      output = ProcessOutputMode.capture,
+      label,
     }) => inner(
       executable,
       arguments,

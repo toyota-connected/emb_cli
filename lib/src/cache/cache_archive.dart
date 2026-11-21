@@ -41,7 +41,7 @@ Map<String, dynamic> archiveManifest({
   'cas_only': casOnly,
   'dirs': dirs,
   'created': created,
-  if (envImage != null) 'env_image': envImage,
+  'env_image': ?envImage,
 };
 
 /// Whether [ref] is pinned to a content digest (`name@sha256:<hex>`) rather

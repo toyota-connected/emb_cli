@@ -62,7 +62,7 @@ String? _noTar() {
     return Process.runSync('tar', ['--version']).exitCode == 0
         ? null
         : 'tar not runnable';
-  } catch (_) {
+  } on ProcessException {
     return 'tar not installed';
   }
 }

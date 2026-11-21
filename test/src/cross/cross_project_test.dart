@@ -1530,7 +1530,7 @@ sources:
         declaring,
         vars: {
           'embedder_root': p.join(tmp.path, 'embedder'),
-          if (appDir != null) 'app_root': appDir,
+          'app_root': ?appDir,
         },
       );
     }

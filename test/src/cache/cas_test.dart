@@ -17,11 +17,9 @@ void main() {
   ) async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     var n = 0;
-    server.listen((req) {
+    server.listen((req) async {
       n++;
-      req.response
-        ..add(body)
-        ..close();
+      await (req.response..add(body)).close();
     });
     return ('http://127.0.0.1:${server.port}/blob', () => n, server);
   }
@@ -59,10 +57,8 @@ void main() {
 
   test('a non-200 response throws', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-    server.listen((req) {
-      req.response
-        ..statusCode = 404
-        ..close();
+    server.listen((req) async {
+      await (req.response..statusCode = 404).close();
     });
     addTearDown(() => server.close(force: true));
     final cas = Cas(tmp);

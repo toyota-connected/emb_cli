@@ -97,7 +97,7 @@ emb:
 
   group('select (load + enable/disable)', () {
     EmbManifest mk(String id, {Object? load}) => EmbManifest.fromMap(
-      <String, dynamic>{'id': id, if (load != null) 'load': load},
+      <String, dynamic>{'id': id, 'load': ?load},
     );
 
     test('defaults to only load:true manifests', () {

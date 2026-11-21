@@ -137,7 +137,7 @@ class AotCommand extends Command<int> {
         Directory(appPath).absolute.path,
         ensureCacheDir().path,
         if (genSnapshot != null) p.dirname(genSnapshot),
-        if (glibcSysroot != null) glibcSysroot,
+        ?glibcSysroot,
       ]),
       embArgs: [
         'aot',
@@ -152,10 +152,10 @@ class AotCommand extends Command<int> {
         if (glibcSysroot != null) ...['--glibc-sysroot', glibcSysroot],
         if (args.wasParsed('obfuscate') && args['obfuscate'] as bool)
           '--obfuscate',
-        if (args.wasParsed('obfuscate') && args['obfuscate'] as bool == false)
+        if (args.wasParsed('obfuscate') && !(args['obfuscate'] as bool))
           '--no-obfuscate',
         // strip defaults to true — false implies explicit --no-strip.
-        if (args['strip'] as bool == false) '--no-strip',
+        if (!(args['strip'] as bool)) '--no-strip',
       ],
       // Container output streams directly via inherited stdio.
       onError: _logger.err,
