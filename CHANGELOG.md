@@ -1,10 +1,15 @@
-# Unreleased
+# 0.6.0
 
-New entries go here, not under the heading below. The pubspec reads
-`0.6.0-dev`, and nobody can tell whether work recorded under a published
-version shipped.
+Released from `main`. The headline is the `flatpak-sdk` cross provider: a
+flatpak built against the runtime's own SDK, not the build host, so it starts
+on the runtime it names. Upgrading from 0.5.x needs the notes below.
 
 ## Upgrading
+
+**The `flatpak-sdk` provider needs LLVM on the build host.** It compiles with
+the host's `clang` and links with `lld`, using `llvm-ar`, `llvm-strip` and
+`llvm-readelf`. `sdk_repo:` also needs the OSTree command-line tool. Other
+providers do not need either, and `emb doctor` reports what is missing.
 
 **A native `--flatpak` build no longer lets an augment's `find_package`
 reach the host.** With `--target local --flatpak`, a CMake augment's
