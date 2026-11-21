@@ -1,8 +1,16 @@
-# Unreleased
+# 0.5.1
 
-New entries go here, not under the heading below. The pubspec reads
-`0.6.0-dev`, and nobody can tell whether work recorded under a published
-version shipped.
+Released from `main`, which holds 0.5.0 plus the two fixes below and nothing
+else.
+
+## Upgrading
+
+Rebuild any flatpak that sets `vendor_libs`. A 0.5.0 bundle carries the build
+host's copies of libraries the runtime already ships, and those copies take
+precedence over the runtime's. The rebuilt bundle vendors only what the
+runtime lacks. Nothing else needs a change.
+
+**Flatpak.**
 
 - fix(flatpak): `vendor_libs` copied the build host's copy of nearly every
   library the runtime ships into the bundle. It indexed only the runtime's
@@ -13,6 +21,13 @@ version shipped.
   the host's libEGL, libGLESv2, libgbm and libwayland-client, and aborted on a
   Raspberry Pi 5 with `Failed to choose EGL config`. Soname links now count as
   provided; that bundle vendors 22 libraries instead of 72.
+
+**Docs.**
+
+- fix(docs): three doc comments had a code span wrapped across lines, so
+  the doc generator read `<pkg>`, `<image>` and `<embArgs>` as HTML tags. This cost
+  0.5.0 10 pub points for static analysis. The
+  `unintended_html_in_doc_comment` lint is now on, so CI catches the next one.
 
 # 0.5.0
 
