@@ -15,6 +15,19 @@ To keep the host package, set `CMAKE_FIND_ROOT_PATH_MODE_PACKAGE: BOTH` in that
 augment's `defines:`. Builds without `--flatpak`, and cross builds, are
 unchanged.
 
+**A cross target's `triple:` must be a plain token.** It may hold only
+`A-Z a-z 0-9 . _ -`. Every real triple does; a value with a `/` now stops the
+build with the reason, where before it named directories outside the
+workspace.
+
+**Cross.**
+
+- fix(cross): refuse a `triple:` that would leave the workspace. It names
+  `cross-<triple>-…`, `overlay-<triple>` and `cross-build-<triple>-…`, which
+  `--clean` deletes recursively, so `triple: x/../../../y` aimed both the
+  writes and the deletes outside it. It is checked when the manifest loads,
+  for every provider, as an augment's `pkg` and `min` already are.
+
 **Flatpak.**
 
 - feat(cross): a `flatpak-sdk` target can take its SDK from an OSTree repo
