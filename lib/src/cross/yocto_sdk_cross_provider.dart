@@ -121,6 +121,14 @@ class YoctoSdkCrossProvider implements CrossProvider {
     final ccFull = env['CC'] ?? '';
     final cxxFull = env['CXX'] ?? '';
     final triple = target.targetTriple ?? _deriveTriple(env);
+    // The manifest's triple is checked when it loads; this one comes from
+    // the SDK, and names workspace directories just the same.
+    if (!CrossTarget.isPlainTriple(triple)) {
+      return CrossResolveResult.failed(
+        'SDK env gives triple "$triple" ($_targetArch-$_targetOs), which '
+        'must match [A-Za-z0-9._-]; set cross.triple (sourced: $envSetup)',
+      );
+    }
 
     final cmakeTc =
         env['CMAKE_TOOLCHAIN_FILE'] ??

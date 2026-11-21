@@ -26,7 +26,9 @@ workspace.
   `cross-<triple>-…`, `overlay-<triple>` and `cross-build-<triple>-…`, which
   `--clean` deletes recursively, so `triple: x/../../../y` aimed both the
   writes and the deletes outside it. It is checked when the manifest loads,
-  for every provider, as an augment's `pkg` and `min` already are.
+  for every provider, as an augment's `pkg` and `min` already are. A
+  yocto-sdk target without `triple:` takes it from the SDK's
+  `OECORE_TARGET_ARCH`/`OECORE_TARGET_OS`; that one is checked when resolved.
 
 **Flatpak.**
 

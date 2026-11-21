@@ -1205,7 +1205,7 @@ class CrossTarget {
   /// augment's `pkg` and `min` are.
   static String? _triple(String? v) {
     if (v == null) return null;
-    if (!RegExp(r'^[A-Za-z0-9._-]+$').hasMatch(v) || v == '.' || v == '..') {
+    if (!isPlainTriple(v)) {
       throw ArgumentError(
         'triple "$v" must match [A-Za-z0-9._-] — it names directories in '
         'the workspace',
@@ -1213,6 +1213,11 @@ class CrossTarget {
     }
     return v;
   }
+
+  /// Whether [v] is safe to name a workspace directory with: a plain
+  /// `[A-Za-z0-9._-]` token, not `.` or `..`.
+  static bool isPlainTriple(String v) =>
+      RegExp(r'^[A-Za-z0-9._-]+$').hasMatch(v) && v != '.' && v != '..';
 
   /// A single `uri`/`rev` git entry (`source:` / `app:`), or null when absent.
   static SourceRepo? repoFrom(Object? raw) {
