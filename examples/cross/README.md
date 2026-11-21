@@ -420,6 +420,8 @@ package:
     runtime_version: '25.08'
     finish_args: [--share=ipc, --socket=wayland, --device=dri]
     vendor_libs: auto                      # see below
+    # sdk_repo: ../repo-dev                # flatpak-sdk target: SDK from an OSTree repo
+    # sdk_repo_gpg_key: repo-dev.gpg       # require signed commits from it
     env: {XDG_DATA_HOME: $HOME/.local/share}
     args: [--shell=xdg]
 ```

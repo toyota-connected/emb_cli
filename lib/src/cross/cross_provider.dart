@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:emb_cli/src/cross/arm_gnu_cross_provider.dart';
 import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
@@ -49,11 +51,13 @@ abstract class CrossProvider {
   /// Select the provider for [target] on [host], rooted at [workspace]. When
   /// [offline] is set the provider denies every network fetch during resolve,
   /// reusing already-cached toolchain/sysroot inputs and failing on a miss.
+  /// [manifestDir] is what a relative path under `package:` is relative to.
   static CrossProvider forTarget(
     CrossTarget target, {
     required Workspace workspace,
     required HostInfo host,
     bool offline = false,
+    Directory? manifestDir,
   }) => switch (target.provider) {
     CrossProviderKind.armGnu => ArmGnuCrossProvider(
       target,
@@ -72,12 +76,12 @@ abstract class CrossProvider {
       host: host,
       offline: offline,
     ),
-    // Nothing to fetch: the SDK is already installed, or resolve says how to
-    // install it. Offline changes nothing.
     CrossProviderKind.flatpakSdk => FlatpakSdkCrossProvider(
       target,
       workspace: workspace,
       host: host,
+      offline: offline,
+      manifestDir: manifestDir,
     ),
   };
 }

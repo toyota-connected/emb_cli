@@ -1461,7 +1461,7 @@ What each provider pins:
 | `arm-gnu` | sha256 of the toolchain tarball and the distro image (byte-exact); the resolved `-dev` package versions + digests; a device-sourced sysroot records provenance only — a live host can't be content-pinned. |
 | `yocto-sdk` | `OECORE_SDK_VERSION`, plus the sha256 of the `populate_sdk` installer when fetched from `sdk_url`. |
 | `yocto-recipe` | the located recipe version + the native gcc version (it downloads nothing, so there is no artifact to sha). |
-| `flatpak-sdk` | the SDK ref and its installed commit (`org.freedesktop.Sdk/x86_64/25.08@<commit>`) + the SDK's gcc version. A `flatpak update` that moves the SDK is drift. |
+| `flatpak-sdk` | the SDK ref and its commit (`org.freedesktop.Sdk/x86_64/25.08@<commit>`) + the SDK's gcc version. A `flatpak update`, or an `sdk_repo` publishing a new commit, is drift. |
 
 The lock also records a root `env:` block — the host tool versions the resolve
 ran with (`emb`, the engine and Flutter commits, `rustc`) — so a rebuild years
@@ -1807,6 +1807,33 @@ emb cross my-app.emb.yaml --target flatpak --build --flatpak
 - **Other SDKs work too.** A Yocto-built SDK (`sdk: org.flatpak_minimal.Sdk`,
   `runtime: org.flatpak_minimal.Platform`) is read the same way: its library
   directory, gcc triple and loader are probed, not assumed.
+- **Or from an OSTree repo, with no `flatpak install`.** `sdk_repo:` names a
+  repo holding the SDK and its runtime, as a URL or a path relative to the
+  manifest; a Yocto build's `repo-dev` is one. emb pulls both refs into its
+  cache with OSTree and checks each commit out once, hard-linked, so this
+  also reaches another architecture's SDK without `--arch` installs. Pin
+  `sdk_repo_gpg_key:` (a key file) to require signed commits; a URL without
+  one is pulled unverified, with a warning. `--offline` uses the cached
+  commit; `emb fetch` pulls ahead. A target's `package:` replaces the shared
+  one, so give it the whole `flatpak:` block:
+
+  ```yaml
+  targets:
+    flatpak-a64:
+      provider: flatpak-sdk
+      triple: aarch64-flatpak-linux-gnu
+      package:
+        name: my-app
+        version: 1.0.0
+        flatpak:
+          app_id: com.example.MyApp
+          sdk: org.flatpak_minimal.Sdk
+          runtime: org.flatpak_minimal.Platform
+          runtime_version: '1.0'
+          sdk_repo: https://example.com/flatpak/repo-dev
+          sdk_repo_gpg_key: keys/repo-dev.gpg
+  ```
+
 - **A code-asset build hook** needs the `FLUTTER_HOOK_CC` patch to be pointed
   at clang, as on every cross target. Without it the hook uses the host
   compiler and emb says so.

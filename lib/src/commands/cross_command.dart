@@ -827,7 +827,11 @@ class CrossCommand extends Command<int> {
             workspace: workspace,
             host: host,
             offline: offline,
+            manifestDir: manifestDir,
           );
+    if (provider case final FlatpakSdkCrossProvider f) {
+      if (f.unverifiedRepoWarning case final w?) _logger.warn(w);
+    }
 
     // --clean / --clean-all: remove working dirs and exit (no download).
     if (args['clean'] == true || args['clean-all'] == true) {
@@ -4010,9 +4014,10 @@ class CrossCommand extends Command<int> {
         _logger.info('  sdk           : ${loc ?? "(none!)"} $state');
       case CrossProviderKind.flatpakSdk:
         if (provider case final FlatpakSdkCrossProvider f) {
-          _logger.info(
-            '  sdk           : ${f.sdkRef} (located by flatpak info)',
-          );
+          final from = f.repoSource == null
+              ? 'located by flatpak info'
+              : 'from ${f.repoSource}';
+          _logger.info('  sdk           : ${f.sdkRef} ($from)');
         }
     }
     if (target.augment.isNotEmpty) {
@@ -4097,6 +4102,7 @@ class CrossCommand extends Command<int> {
       case CrossProviderKind.flatpakSdk:
         if (provider case final FlatpakSdkCrossProvider f) {
           data['sdk'] = f.sdkRef;
+          data['sdkRepo'] = f.repoSource;
         }
     }
     if (target.augment.isNotEmpty) {

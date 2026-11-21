@@ -37,10 +37,11 @@ jobs:
       # packagekit_dart's native build hook (run by `dart test`) builds the
       # vendored sdbus-cpp, which needs libsystemd's sd-bus + a C toolchain.
       # Without these the hook degrades silently; install them so the Linux
-      # backend actually compiles.
+      # backend actually compiles. ostree: the flatpak-sdk repo tests run the
+      # real tool and skip without it.
       setup: |
         sudo apt-get update -qq
-        sudo apt-get install -y -qq libsystemd-dev cmake ninja-build
+        sudo apt-get install -y -qq libsystemd-dev cmake ninja-build ostree
 
   verify-version:
     runs-on: ubuntu-latest

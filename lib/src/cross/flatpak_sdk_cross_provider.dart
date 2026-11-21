@@ -1,11 +1,13 @@
 import 'dart:io';
 
+import 'package:emb_cli/src/cache/cache_dir.dart';
 import 'package:emb_cli/src/cross/cross_arch.dart';
 import 'package:emb_cli/src/cross/cross_keys.dart';
 import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_provider.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/cross/emb_lock.dart';
+import 'package:emb_cli/src/cross/flatpak_sdk_repo.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/cross/toolchain_emitter.dart';
 import 'package:emb_cli/src/host/host_info.dart';
@@ -44,14 +46,60 @@ class FlatpakSdkCrossProvider implements CrossProvider {
     required this.host,
     ProcessRunner? runProcess,
     ToolchainEmitter emitter = const ToolchainEmitter(),
+    this.manifestDir,
+    this.offline = false,
+    Directory? cacheDir,
   }) : _run = runProcess ?? defaultProcessRunner,
-       _emitter = emitter;
+       _emitter = emitter,
+       _cacheDirOverride = cacheDir;
 
   final CrossTarget target;
   final Workspace workspace;
   final HostInfo host;
   final ProcessRunner _run;
   final ToolchainEmitter _emitter;
+
+  /// What a relative `sdk_repo` / `sdk_repo_gpg_key` is relative to; the
+  /// working directory when null.
+  final Directory? manifestDir;
+
+  /// With `sdk_repo`, pull nothing: the SDK and runtime must be in the cache.
+  final bool offline;
+
+  final Directory? _cacheDirOverride;
+
+  FlatpakPackageSpec get _spec =>
+      target.package?.flatpak ?? const FlatpakPackageSpec();
+
+  /// `sdk_repo` as a URL, or a path made absolute; null without one.
+  String? get repoSource {
+    final v = _spec.sdkRepo;
+    if (v == null || v.contains('://')) return v;
+    return _absolute(v);
+  }
+
+  String? get _repoGpgKey {
+    final v = _spec.sdkRepoGpgKey;
+    return v == null ? null : _absolute(v);
+  }
+
+  String _absolute(String v) => p.isAbsolute(v)
+      ? v
+      : p.normalize(
+          p.join((manifestDir ?? Directory.current).absolute.path, v),
+        );
+
+  /// A warning for an `sdk_repo` URL pulled with no signature check, or null.
+  /// Whoever answers that URL chooses the compiler's sysroot; `emb.lock` pins
+  /// the commit afterwards, but not the first pull.
+  String? get unverifiedRepoWarning {
+    final src = _spec.sdkRepo;
+    if (src == null || !src.contains('://') || _spec.sdkRepoGpgKey != null) {
+      return null;
+    }
+    return 'flatpak sdk_repo $src is pulled without a signature check — '
+        'whoever answers it chooses the sysroot. Set sdk_repo_gpg_key.';
+  }
 
   @override
   String get name => 'flatpak-sdk';
@@ -64,8 +112,8 @@ class FlatpakSdkCrossProvider implements CrossProvider {
       target.targetTriple ?? '${host.machineArch}-flatpak-linux-gnu';
 
   @override
-  List<String> get preflightTools => const [
-    'flatpak',
+  List<String> get preflightTools => [
+    if (_spec.sdkRepo != null) 'ostree' else 'flatpak',
     'clang',
     'clang++',
     'ld.lld',
@@ -79,10 +127,51 @@ class FlatpakSdkCrossProvider implements CrossProvider {
 
   /// The SDK ref this target builds against, e.g.
   /// `org.freedesktop.Sdk/x86_64/25.08`.
-  String get sdkRef {
-    final fp = target.package?.flatpak ?? const FlatpakPackageSpec();
-    return '${fp.sdk}/${flatpakArch(triple)}/${fp.runtimeVersion}';
+  String get sdkRef =>
+      '${_spec.sdk}/${flatpakArch(triple)}/${_spec.runtimeVersion}';
+
+  /// Where [ref] is on disk and which commit, from the installation
+  /// (`flatpak info`) or, with `sdk_repo`, from a checkout of that repo.
+  /// Throws [_Unresolved] with the result to return.
+  ///
+  /// [forSdk] names the SDK when [ref] is the runtime it builds for.
+  Future<({String path, String? commit})> _locate(
+    String ref, {
+    String? forSdk,
+  }) async {
+    final source = repoSource;
+    if (source != null) {
+      try {
+        final c = await _repo.checkout(
+          source,
+          'runtime/$ref',
+          gpgKey: _repoGpgKey,
+        );
+        return (path: c.path, commit: c.commit);
+      } on FlatpakSdkRepoException catch (e) {
+        throw _Unresolved(CrossResolveResult.failed(e.message));
+      }
+    }
+    final loc = await _flatpakInfo('--show-location', ref);
+    if (loc == null) {
+      throw _Unresolved(
+        CrossResolveResult.unavailable(
+          '${forSdk == null ? ref : '$ref, the runtime $forSdk builds for,'} '
+          'is not installed. Install it from its remote, e.g. '
+          '`flatpak install flathub $ref`',
+        ),
+      );
+    }
+    return (path: loc, commit: await _flatpakInfo('--show-commit', ref));
   }
+
+  late final FlatpakSdkRepo _repo = FlatpakSdkRepo(
+    Directory(
+      p.join((_cacheDirOverride ?? ensureCacheDir()).path, 'flatpak-sdk'),
+    ),
+    runProcess: _run,
+    offline: offline,
+  );
 
   @override
   Future<CrossResolveResult> resolve() async {
@@ -92,13 +181,15 @@ class FlatpakSdkCrossProvider implements CrossProvider {
       );
     }
     final ref = sdkRef;
-    final loc = await _flatpakInfo('--show-location', ref);
-    if (loc == null) {
-      return CrossResolveResult.unavailable(
-        '$ref is not installed. Install it from its remote, e.g. '
-        '`flatpak install flathub $ref`',
-      );
+    try {
+      return await _resolve(ref);
+    } on _Unresolved catch (u) {
+      return u.result;
     }
+  }
+
+  Future<CrossResolveResult> _resolve(String ref) async {
+    final (path: loc, :commit) = await _locate(ref);
     final files = Directory(p.join(loc, 'files'));
     if (!files.existsSync()) {
       return CrossResolveResult.failed(
@@ -113,7 +204,6 @@ class FlatpakSdkCrossProvider implements CrossProvider {
     } on FileSystemException catch (e) {
       return CrossResolveResult.failed('$ref: ${e.message}: ${e.path}');
     }
-    final commit = await _flatpakInfo('--show-commit', ref);
 
     // The runtime the SDK pairs with, which is what the app runs on. The SDK
     // ships libraries the runtime does not, so whether an augment is already
@@ -124,13 +214,10 @@ class FlatpakSdkCrossProvider implements CrossProvider {
         '$ref: its metadata names no runtime',
       );
     }
-    final runtimeLoc = await _flatpakInfo('--show-location', runtimeRef);
-    if (runtimeLoc == null) {
-      return CrossResolveResult.unavailable(
-        '$runtimeRef, the runtime $ref builds for, is not installed. Install '
-        'it from its remote, e.g. `flatpak install flathub $runtimeRef`',
-      );
-    }
+    final (path: runtimeLoc, commit: _) = await _locate(
+      runtimeRef,
+      forSdk: ref,
+    );
     final runtimeFiles = p.join(runtimeLoc, 'files');
     final runtimeLibDirs = [
       for (final d in {layout.libDir, 'lib'})
@@ -410,4 +497,10 @@ class FlatpakSdkLayout {
     }
     return x.length.compareTo(y.length);
   }
+}
+
+/// A resolve that stopped early, carrying the result to return.
+class _Unresolved implements Exception {
+  const _Unresolved(this.result);
+  final CrossResolveResult result;
 }

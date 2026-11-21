@@ -144,6 +144,111 @@ void main() {
           'package': {'name': 'app', 'flatpak': flatpakSpec},
       });
 
+  group('sdk_repo', () {
+    final haveOstree = () {
+      try {
+        return Process.runSync('ostree', ['--version']).exitCode == 0;
+      } on ProcessException {
+        return false;
+      }
+    }();
+
+    /// Commit the fake freedesktop SDK and its runtime into an archive repo
+    /// at [repo], as flatpak tooling publishes them.
+    void publish(String repo) {
+      final sdk = freedesktopSdk();
+      Process.runSync('ostree', ['init', '--repo=$repo', '--mode=archive-z2']);
+      for (final (branch, tree) in [
+        ('runtime/org.freedesktop.Sdk/x86_64/25.08', sdk.path),
+        (
+          'runtime/org.freedesktop.Platform/x86_64/25.08',
+          '${sdk.path}-runtime',
+        ),
+      ]) {
+        final r = Process.runSync('ostree', [
+          'commit',
+          '--repo=$repo',
+          '--branch=$branch',
+          '--subject=test',
+          tree,
+        ]);
+        expect(r.exitCode, 0, reason: '${r.stderr}');
+      }
+    }
+
+    test(
+      'builds from a repo, relative to the manifest, without flatpak',
+      skip: haveOstree ? false : 'ostree not installed',
+      () async {
+        final manifestDir = Directory(p.join(tmp.path, 'project'))
+          ..createSync();
+        publish(p.join(manifestDir.path, 'repo-dev'));
+        final calls = <List<String>>[];
+        final pr = FlatpakSdkCrossProvider(
+          target(flatpakSpec: {'sdk_repo': 'repo-dev'}),
+          workspace: Workspace(tmp),
+          host: _host,
+          manifestDir: manifestDir,
+          cacheDir: Directory(p.join(tmp.path, 'cache')),
+          runProcess:
+              (
+                exe,
+                args, {
+                workingDirectory,
+                environment,
+                includeParentEnvironment = true,
+                runInShell = false,
+                output = ProcessOutputMode.capture,
+                label,
+              }) {
+                calls.add([exe, ...args]);
+                return defaultProcessRunner(exe, args);
+              },
+        );
+        expect(pr.preflightTools, contains('ostree'));
+        expect(pr.preflightTools, isNot(contains('flatpak')));
+
+        final r = await pr.resolve();
+        expect(r.ok, isTrue, reason: r.message);
+        expect(calls.map((c) => c.first), everyElement('ostree'));
+
+        final checkouts = p.join(tmp.path, 'cache', 'flatpak-sdk', 'checkouts');
+        final pf = r.profile!;
+        expect(
+          p.isWithin(
+            checkouts,
+            Link(p.join(pf.targetSysroot, 'usr')).targetSync(),
+          ),
+          isTrue,
+        );
+        expect(pf.runtimeLibDirs, everyElement(startsWith(checkouts)));
+        final commit = r.lockEntry!.toolchainVersion!.split('@').last;
+        expect(commit, matches(RegExp(r'^[0-9a-f]{64}$')));
+      },
+    );
+
+    test('warns about an unsigned repo URL, and only that', () {
+      String? warning(Map<String, Object> spec) => FlatpakSdkCrossProvider(
+        target(flatpakSpec: spec),
+        workspace: Workspace(tmp),
+        host: _host,
+      ).unverifiedRepoWarning;
+      expect(
+        warning({'sdk_repo': 'https://example.com/repo'}),
+        contains('without a signature check'),
+      );
+      expect(
+        warning({
+          'sdk_repo': 'https://example.com/repo',
+          'sdk_repo_gpg_key': 'key.gpg',
+        }),
+        isNull,
+      );
+      expect(warning({'sdk_repo': 'repo-dev'}), isNull);
+      expect(warning({}), isNull);
+    });
+  });
+
   test('the provider token parses', () {
     expect(
       CrossProviderKind.fromToken('flatpak-sdk'),
