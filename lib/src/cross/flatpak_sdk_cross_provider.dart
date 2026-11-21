@@ -30,6 +30,10 @@ import 'package:path/path.dart' as p;
 /// only when the script's real path is inside the sysroot, which a symlinked
 /// `usr` is not.
 ///
+/// The SDK ships libraries its runtime does not, so the profile also names
+/// the runtime's library dirs ([CrossProfile.runtimeLibDirs]): an augment the
+/// SDK satisfies is still built when the runtime lacks one of its libraries.
+///
 /// The loader path comes from the SDK too. Clang's default
 /// (`/lib64/ld-linux-x86-64.so.2`) is absent from a runtime with no `lib64`,
 /// and a binary naming it fails to start with "No such file or directory".
@@ -111,6 +115,29 @@ class FlatpakSdkCrossProvider implements CrossProvider {
     }
     final commit = await _flatpakInfo('--show-commit', ref);
 
+    // The runtime the SDK pairs with, which is what the app runs on. The SDK
+    // ships libraries the runtime does not, so whether an augment is already
+    // provided is asked of the runtime, not the SDK.
+    final runtimeRef = runtimeRefOf(File(p.join(loc, 'metadata')));
+    if (runtimeRef == null) {
+      return CrossResolveResult.failed(
+        '$ref: its metadata names no runtime',
+      );
+    }
+    final runtimeLoc = await _flatpakInfo('--show-location', runtimeRef);
+    if (runtimeLoc == null) {
+      return CrossResolveResult.unavailable(
+        '$runtimeRef, the runtime $ref builds for, is not installed. Install '
+        'it from its remote, e.g. `flatpak install flathub $runtimeRef`',
+      );
+    }
+    final runtimeFiles = p.join(runtimeLoc, 'files');
+    final runtimeLibDirs = [
+      for (final d in {layout.libDir, 'lib'})
+        if (Directory(p.join(runtimeFiles, d)).existsSync())
+          p.join(runtimeFiles, d),
+    ];
+
     // Where `emb cross --clean --all` looks. Deleting it removes the links,
     // never the SDK they point into.
     final dir = workspace.ensurePlatformDir(
@@ -180,6 +207,7 @@ class FlatpakSdkCrossProvider implements CrossProvider {
       mesonCrossFile: mesonCross,
       // The SDK is not ours to stage into.
       separateOverlay: true,
+      runtimeLibDirs: runtimeLibDirs,
     );
     return CrossResolveResult.ok(
       profile,
@@ -193,6 +221,31 @@ class FlatpakSdkCrossProvider implements CrossProvider {
         buildKey: buildKey(target),
       ),
     );
+  }
+
+  /// The `runtime` ref in a flatpak `metadata` file's `[Runtime]` group,
+  /// e.g. `org.freedesktop.Platform/x86_64/25.08`; null when absent.
+  static String? runtimeRefOf(File metadata) {
+    final List<String> lines;
+    try {
+      lines = metadata.readAsLinesSync();
+    } on Exception {
+      return null;
+    }
+    var inRuntime = false;
+    for (final raw in lines) {
+      final line = raw.trim();
+      if (line.startsWith('[')) {
+        inRuntime = line == '[Runtime]';
+      } else if (inRuntime) {
+        // GKeyFile allows spaces around `=`; freedesktop's SDK writes them.
+        final eq = line.indexOf('=');
+        if (eq < 0 || line.substring(0, eq).trim() != 'runtime') continue;
+        final v = line.substring(eq + 1).trim();
+        return v.isEmpty ? null : v;
+      }
+    }
+    return null;
   }
 
   /// `flatpak info <flag> <ref>`, trimmed; null when it fails or is empty.

@@ -1811,10 +1811,15 @@ emb cross my-app.emb.yaml --target flatpak --build --flatpak
   at clang, as on every cross target. Without it the hook uses the host
   compiler and emb says so.
 
-An augment the SDK already provides at `min` is skipped, even when only the
-SDK, not the runtime, ships it (libcurl and libarchive in a Yocto SDK, nss and
-SDL2 in freedesktop's). The build links it and the flatpak fails to start.
-Checking provided libraries against the runtime is the next step in #335.
+**An augment is skipped only when the runtime has it too.** The SDK ships
+libraries its runtime does not: freedesktop's, only toolchain internals (the
+linker's own libraries, pkgconf); a Yocto-built one, many more (curl, systemd,
+util-linux's uuid). So an augment the SDK satisfies at `min` is still built
+into the overlay, and ships with the app, when the runtime lacks one of its
+libraries. The runtime is the one the SDK's `metadata` names; resolve fails
+with the `flatpak install` line when it is not installed. Matching follows the
+SDK's `lib<name>.so` to the soname the runtime ships (`libSDL2.so` →
+`libSDL2-2.0.so.0`), and a header-only package always counts as provided.
 
 [`examples/cross/init-flatpak/`](examples/cross/init-flatpak) is the output for
 one fixed set of inputs, checked in. A test renders the same inputs and compares
