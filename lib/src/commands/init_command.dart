@@ -213,6 +213,14 @@ class InitFlatpakCommand extends Command<int> {
             "its .emb/ (extends: 'source#<name>'). Repeatable. Not checked "
             'until the first build clones the embedder.',
       )
+      ..addMultiOption(
+        'sdk',
+        help:
+            'An architecture to build against the flatpak SDK rather than '
+            'this machine, as target sdk-<arch>. Repeatable. With x86_64, '
+            'the CI workflow builds that target.',
+        allowed: const ['x86_64', 'aarch64'],
+      )
       ..addOption(
         'backend',
         help:
@@ -364,6 +372,18 @@ class InitFlatpakCommand extends Command<int> {
     if (targets.toSet().length != targets.length) {
       return _usage('--target: a name is given more than once.');
     }
+    final sdkArches = args['sdk'] as List<String>;
+    if (sdkArches.toSet().length != sdkArches.length) {
+      return _usage('--sdk: an architecture is given more than once.');
+    }
+    for (final a in sdkArches) {
+      final name = FlatpakRepoSpec.sdkTargetName(a);
+      if (targets.contains(name)) {
+        return _usage(
+          '--target $name: the name --sdk $a gives its own target.',
+        );
+      }
+    }
     final backendArg = args['backend'] as String?;
     if (backendArg != null && !_targetPattern.hasMatch(backendArg)) {
       return _usage(
@@ -453,6 +473,7 @@ class InitFlatpakCommand extends Command<int> {
       // named, and why.
       embedderBin: binArg ?? (knownEmbedder ? defaultEmbedderBin : null),
       targets: targets,
+      sdkArches: sdkArches,
       backend: targets.isEmpty
           ? null
           : backendArg ?? (knownEmbedder ? defaultEmbedderBackend : null),
@@ -539,7 +560,7 @@ class InitFlatpakCommand extends Command<int> {
       ..info('')
       ..info('Next, in ${dir.path}:')
       ..info('  ${spec.buildCommand}');
-    for (final target in spec.targets) {
+    for (final target in spec.allTargets) {
       _logger.info('  ${spec.buildCommandFor(target)}');
     }
     if (spec.targets.isNotEmpty) {
@@ -685,9 +706,25 @@ class InitFlatpakCommand extends Command<int> {
           return 'target "$name" has no cross.source to extend into';
         }
       }
+      for (final arch in spec.sdkArches) {
+        final name = FlatpakRepoSpec.sdkTargetName(arch);
+        final sdk = project.selectTarget(name);
+        if (sdk == null) return 'target "$name" is missing';
+        final t = CrossTarget.fromMap(sdk.cross);
+        if (t.provider != CrossProviderKind.flatpakSdk) {
+          return 'target "$name" is not a flatpak-sdk target';
+        }
+        if (t.targetTriple != '$arch-flatpak-linux-gnu') {
+          return 'target "$name" is not for $arch';
+        }
+        // A target's package: would replace the shared one wholesale.
+        if (t.package?.flatpak?.appId != spec.appId) {
+          return 'target "$name" lost package.flatpak';
+        }
+      }
       // With no targets a flat manifest is one implicit target of its own.
-      if (spec.targets.isNotEmpty &&
-          (project.targets.isNotEmpty ||
+      if (spec.allTargets.isNotEmpty &&
+          (project.targets.length != spec.sdkArches.length ||
               project.unresolved.length != spec.targets.length)) {
         return 'the manifest has targets that were not asked for';
       }

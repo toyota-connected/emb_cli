@@ -6,6 +6,14 @@ version shipped.
 
 **Cross.**
 
+- feat(init): `emb init flatpak --sdk <x86_64|aarch64>` adds a `flatpak-sdk`
+  target, `sdk-<arch>`, built against the flatpak SDK for that architecture.
+  Repeatable. The README says what it needs: clang, lld and llvm, the SDK and
+  runtime for each architecture, and QEMU for a foreign one. With `x86_64`
+  the CI workflow builds that target, so the job installs clang, lld and llvm
+  and needs none of the embedder's `-dev` packages, where the native build
+  left them as a TODO.
+
 - fix(cross): `--target local` rebuilt every augment on every run (#339). The
   check for an augment already built asked pkg-config about the sysroot, and
   a native build has none, so it never saw the overlay's own `.pc`. With an

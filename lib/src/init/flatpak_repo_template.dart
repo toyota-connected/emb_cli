@@ -104,6 +104,7 @@ class FlatpakRepoSpec {
     this.flutterVersion = 'stable',
     this.githubCi = true,
     this.targets = const [],
+    this.sdkArches = const [],
     this.backend,
     this.targetDefines = const {},
     this.targetDefinesWhy = const [],
@@ -169,6 +170,30 @@ class FlatpakRepoSpec {
   /// until the first build.
   final List<String> targets;
 
+  /// Architectures to build against the flatpak SDK (`x86_64`, `aarch64`),
+  /// each as a `flatpak-sdk` target named [sdkTargetName]. The host clang
+  /// compiles against `org.freedesktop.Sdk` for that architecture, so the
+  /// result runs on the runtime it names whatever the build host is, and a
+  /// build needs no `-dev` packages on the host.
+  final List<String> sdkArches;
+
+  /// The target [arch] is built under: `sdk-<arch>`.
+  static String sdkTargetName(String arch) => 'sdk-$arch';
+
+  /// Every target besides `local`: the board targets, then the SDK ones.
+  List<String> get allTargets => [
+    ...targets,
+    for (final a in sdkArches) sdkTargetName(a),
+  ];
+
+  /// The SDK target CI builds: the runner's own architecture, so the job
+  /// needs neither QEMU nor the embedder's `-dev` packages. Null without one.
+  String? get ciSdkTarget =>
+      sdkArches.contains('x86_64') ? sdkTargetName('x86_64') : null;
+
+  /// The target the CI workflow builds.
+  String get ciTarget => ciSdkTarget ?? 'local';
+
   /// The backend a board build names (`--backend`). An embedder's layer can
   /// define several, and a flatpak built for more than one is packaged under
   /// `<app_id>.<backend>`, not the id in `metainfo.xml`.
@@ -194,7 +219,7 @@ class FlatpakRepoSpec {
   /// names [backend].
   String buildCommandFor(String target) => [
     'emb cross $manifestName --target $target',
-    if (target != 'local' && backend != null) '--backend $backend',
+    if (targets.contains(target) && backend != null) '--backend $backend',
     '--build',
     if (app == null) '--app <path-to-your-flutter-app>',
     '--flatpak',
@@ -355,8 +380,8 @@ String _manifest(FlatpakRepoSpec s) {
     '      app_id: ${s.appId}',
     _line('      ', 'icon', 'icon.png', 'a placeholder; replace it'),
     '      runtime_version: ${_yaml(s.runtimeVersion)}',
+    if (s.allTargets.isNotEmpty) '  targets:',
     if (s.targets.isNotEmpty) ...[
-      '  targets:',
       "    # Each extends the embedder's own target of that name: the board,",
       '    # plus what the embedder needs to cross-build for it. `source#` is',
       '    # the checkout of cross.source above, which emb clones first.',
@@ -369,6 +394,16 @@ String _manifest(FlatpakRepoSpec s) {
           for (final d in s.targetDefines.entries)
             '        ${_yaml(d.key)}: ${_yamlString(d.value)}',
         ],
+      ],
+    ],
+    if (s.sdkArches.isNotEmpty) ...[
+      '    # Built against the flatpak SDK rather than this machine: the host',
+      '    # clang and lld compile against org.freedesktop.Sdk for that',
+      '    # architecture, so the app runs on the runtime named above.',
+      for (final a in s.sdkArches) ...[
+        '    ${FlatpakRepoSpec.sdkTargetName(a)}:',
+        '      provider: flatpak-sdk',
+        '      triple: $a-flatpak-linux-gnu',
       ],
     ],
   ];
@@ -428,8 +463,58 @@ If you edit a target after it has been built, the next build stops on `emb.lock`
 drift; `--update-lock` accepts the change.${s.emitsWorkflow ? '''
 
 
-The CI workflow builds `--target local` only.''' : ''}
+The CI workflow builds `--target ${s.ciTarget}` only.''' : ''}
 ''';
+}
+
+String _sdkSection(FlatpakRepoSpec s) {
+  if (s.sdkArches.isEmpty) return '';
+  final names = [
+    for (final a in s.sdkArches) '`${FlatpakRepoSpec.sdkTargetName(a)}`',
+  ];
+  final refs = [
+    for (final a in s.sdkArches) ...[
+      'org.freedesktop.Platform/$a/${s.runtimeVersion}',
+      'org.freedesktop.Sdk/$a/${s.runtimeVersion}',
+    ],
+  ].join(' ');
+  final commands = [
+    for (final a in s.sdkArches)
+      s.buildCommandFor(FlatpakRepoSpec.sdkTargetName(a)),
+  ].join('\n');
+  final foreign = s.sdkArches.any((a) => a != 'x86_64');
+  return '''
+
+## Build against the flatpak SDK
+
+${names.join(', ')} build against `org.freedesktop.Sdk` for that architecture
+instead of this machine's libraries. A native build on a host newer than the
+runtime can produce a flatpak that will not start, because it needs a newer
+glibc than the runtime has; these targets cannot. They also need none of the
+embedder's `-dev` packages here.
+
+This machine compiles with its own clang, so it needs `clang`, `lld` and
+`llvm` (the package names on Fedora and Ubuntu), plus the SDK and runtime for
+each architecture:
+
+```sh
+flatpak install --user -y flathub $refs
+```
+${foreign ? '''
+
+flatpak-builder runs the runtime's tools while it packages, so an architecture
+other than this machine's also needs `qemu-user` registered with binfmt_misc
+(`qemu-user-static` on Fedora and Ubuntu).
+''' : ''}
+Then:
+
+```sh
+$commands
+```
+${s.emitsWorkflow && s.ciSdkTarget != null && s.targets.isEmpty ? '''
+
+The CI workflow builds `--target ${s.ciSdkTarget}`.
+''' : ''}''';
 }
 
 String _readme(FlatpakRepoSpec s) {
@@ -468,7 +553,7 @@ The first build clones the embedder${s.app == null ? '' : ' and the app'} and in
 flatpak install --user workspace/.config/flutter_workspace/cross-build-*/dist/${s.appId}_stable_*.flatpak
 flatpak run ${s.appId}
 ```
-${_boardSection(s)}
+${_boardSection(s)}${_sdkSection(s)}
 ## Before publishing
 
 - `icon.png` is a placeholder. Replace it with a 256×256 PNG of your own.
@@ -559,18 +644,30 @@ String _workflow(FlatpakRepoSpec s) {
     '        with:',
     '          persist-credentials: false',
     '      - uses: dart-lang/setup-dart@v1',
-    '      # cmake and ninja build the embedder; libsystemd-dev is for a',
-    '      # native dependency of emb itself.',
-    '      - name: Install build tools',
-    '        run: |',
-    '          sudo apt-get update -qq',
-    r'          sudo apt-get install -y -qq flatpak flatpak-builder binutils \',
-    '            cmake ninja-build libsystemd-dev',
-    '      # TODO: the -dev packages your embedder links against. A native',
-    '      # build uses the host libraries, and emb cannot know them from',
-    '      # here.',
-    '      # - name: Install embedder dependencies',
-    '      #   run: sudo apt-get install -y -qq <packages>',
+    if (s.ciSdkTarget == null) ...[
+      '      # cmake and ninja build the embedder; libsystemd-dev is for a',
+      '      # native dependency of emb itself.',
+      '      - name: Install build tools',
+      '        run: |',
+      '          sudo apt-get update -qq',
+      r'          sudo apt-get install -y -qq flatpak flatpak-builder binutils \',
+      '            cmake ninja-build libsystemd-dev',
+      '      # TODO: the -dev packages your embedder links against. A native',
+      '      # build uses the host libraries, and emb cannot know them from',
+      '      # here.',
+      '      # - name: Install embedder dependencies',
+      '      #   run: sudo apt-get install -y -qq <packages>',
+    ] else ...[
+      '      # cmake and ninja build the embedder, clang, lld and llvm compile',
+      '      # it against the flatpak SDK, whose libraries it links, so no',
+      '      # -dev packages are needed. libsystemd-dev is for a native',
+      '      # dependency of emb itself.',
+      '      - name: Install build tools',
+      '        run: |',
+      '          sudo apt-get update -qq',
+      r'          sudo apt-get install -y -qq flatpak flatpak-builder binutils \',
+      '            cmake ninja-build libsystemd-dev clang lld llvm',
+    ],
     '      - name: Install the flatpak runtime',
     '        run: |',
     r'          flatpak remote-add --if-not-exists --user \',
@@ -582,7 +679,7 @@ String _workflow(FlatpakRepoSpec s) {
     ..._installEmb(s.embVersion),
     '      - name: Build the flatpak',
     '        run: >',
-    '          emb cross ${s.manifestName} --target local --build',
+    '          emb cross ${s.manifestName} --target ${s.ciTarget} --build',
     '          --flatpak',
     '      - uses: actions/upload-artifact@v4',
     '        with:',

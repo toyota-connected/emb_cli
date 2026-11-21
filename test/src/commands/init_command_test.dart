@@ -578,6 +578,105 @@ cross:
       });
     });
 
+    // A target built against the flatpak SDK, not the host: it needs neither
+    // the board layer nor the embedder's -dev packages on the build machine.
+    group('--sdk', () {
+      Map<dynamic, dynamic> targets(_Harness h) => h.cross()['targets'] as Map;
+      const workflow = '.github/workflows/flatpak.yml';
+
+      test('adds a flatpak-sdk target for the architecture', () async {
+        final h = _Harness();
+        expect(
+          await h.run(['--sdk', 'aarch64', '--app', _appUri]),
+          ExitCode.success.code,
+        );
+        expect(targets(h).keys, ['sdk-aarch64']);
+        expect(targets(h)['sdk-aarch64'], {
+          'provider': 'flatpak-sdk',
+          'triple': 'aarch64-flatpak-linux-gnu',
+        });
+        // No board layer, so no backend.
+        const command =
+            'emb cross my-app.emb.yaml --target sdk-aarch64 --build --flatpak';
+        expect(h.infos, contains('  $command'));
+        final readme = h.read('README.md');
+        expect(readme, contains(command));
+        expect(readme, contains('org.freedesktop.Sdk/aarch64/'));
+        expect(readme, contains('qemu-user'));
+        // The runner is x86_64: an aarch64 SDK target leaves CI native.
+        expect(h.read(workflow), contains('--target local --build'));
+      });
+
+      test('with x86_64, CI builds it and needs no -dev packages', () async {
+        final h = _Harness();
+        await h.run(['--sdk', 'x86_64', '--app', _appUri]);
+        final ci = h.read(workflow);
+        expect(ci, contains('--target sdk-x86_64 --build'));
+        expect(ci, contains('clang lld llvm'));
+        expect(ci, isNot(contains('TODO')));
+        final readme = h.read('README.md');
+        expect(
+          readme,
+          contains('The CI workflow builds `--target sdk-x86_64`'),
+        );
+        expect(readme, isNot(contains('qemu-user')));
+      });
+
+      test('sits beside board targets, which keep their backend', () async {
+        final h = _Harness();
+        await h.run([
+          '--target',
+          'rpi5-trixie',
+          '--sdk',
+          'x86_64',
+          '--app',
+          _appUri,
+        ]);
+        expect(targets(h).keys, ['rpi5-trixie', 'sdk-x86_64']);
+        const board =
+            '  emb cross my-app.emb.yaml --target rpi5-trixie '
+            '--backend wayland-egl --build --flatpak';
+        const sdk =
+            '  emb cross my-app.emb.yaml --target sdk-x86_64 --build --flatpak';
+        expect(h.infos, containsAll([board, sdk]));
+        final readme = h.read('README.md');
+        expect(
+          'The CI workflow builds'.allMatches(readme),
+          hasLength(1),
+          reason: 'said once, in the board section',
+        );
+        expect(readme, contains('builds `--target sdk-x86_64` only'));
+      });
+
+      test('an architecture given twice is a usage error', () async {
+        final h = _Harness();
+        expect(
+          await h.run(['--sdk', 'x86_64', '--sdk', 'x86_64']),
+          ExitCode.usage.code,
+        );
+        expect(h.written, isEmpty);
+      });
+
+      test('a --target of the same name is a usage error', () async {
+        final h = _Harness();
+        expect(
+          await h.run(['--sdk', 'x86_64', '--target', 'sdk-x86_64']),
+          ExitCode.usage.code,
+        );
+        expect(h.errors.single, contains('--sdk x86_64 gives its own'));
+        expect(h.written, isEmpty);
+      });
+
+      test('an architecture flatpak SDKs do not come in is rejected', () async {
+        final h = _Harness();
+        expect(
+          () => h.run(['--sdk', 'riscv64']),
+          throwsA(isA<UsageException>()),
+        );
+        expect(h.written, isEmpty);
+      });
+    });
+
     group('runtime version', () {
       const listing =
           'org.freedesktop.Platform\t24.08\n'
