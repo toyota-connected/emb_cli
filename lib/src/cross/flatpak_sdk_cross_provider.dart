@@ -50,6 +50,7 @@ class FlatpakSdkCrossProvider implements CrossProvider {
     this.offline = false,
     Directory? cacheDir,
   }) : _run = runProcess ?? defaultProcessRunner,
+       _injectedRun = runProcess,
        _emitter = emitter,
        _cacheDirOverride = cacheDir;
 
@@ -57,7 +58,11 @@ class FlatpakSdkCrossProvider implements CrossProvider {
   final Workspace workspace;
   final HostInfo host;
   final ProcessRunner _run;
+  final ProcessRunner? _injectedRun;
   final ToolchainEmitter _emitter;
+
+  /// Collected while resolving, returned on the result.
+  final _warnings = <String>[];
 
   /// What a relative `sdk_repo` / `sdk_repo_gpg_key` is relative to; the
   /// working directory when null.
@@ -147,6 +152,7 @@ class FlatpakSdkCrossProvider implements CrossProvider {
           'runtime/$ref',
           gpgKey: _repoGpgKey,
         );
+        if (c.warning case final w?) _warnings.add(w);
         return (path: c.path, commit: c.commit);
       } on FlatpakSdkRepoException catch (e) {
         throw _Unresolved(CrossResolveResult.failed(e.message));
@@ -169,9 +175,36 @@ class FlatpakSdkCrossProvider implements CrossProvider {
     Directory(
       p.join((_cacheDirOverride ?? ensureCacheDir()).path, 'flatpak-sdk'),
     ),
-    runProcess: _run,
+    // Only the repo's pull takes a time limit, and only the timed runner can
+    // kill a child that overruns. A test's runner is used as is.
+    runProcess: switch (_injectedRun) {
+      null => defaultTimedProcessRunner,
+      final run => _untimed(run),
+    },
     offline: offline,
   );
+
+  static TimedProcessRunner _untimed(ProcessRunner run) =>
+      (
+        executable,
+        arguments, {
+        workingDirectory,
+        environment,
+        includeParentEnvironment = true,
+        runInShell = false,
+        output = ProcessOutputMode.capture,
+        label,
+        timeout,
+      }) => run(
+        executable,
+        arguments,
+        workingDirectory: workingDirectory,
+        environment: environment,
+        includeParentEnvironment: includeParentEnvironment,
+        runInShell: runInShell,
+        output: output,
+        label: label,
+      );
 
   @override
   Future<CrossResolveResult> resolve() async {
@@ -181,6 +214,7 @@ class FlatpakSdkCrossProvider implements CrossProvider {
       );
     }
     final ref = sdkRef;
+    _warnings.clear();
     try {
       return await _resolve(ref);
     } on _Unresolved catch (u) {
@@ -307,6 +341,7 @@ class FlatpakSdkCrossProvider implements CrossProvider {
         sysrootKey: sysrootKey(target),
         buildKey: buildKey(target),
       ),
+      warnings: List.unmodifiable(_warnings),
     );
   }
 

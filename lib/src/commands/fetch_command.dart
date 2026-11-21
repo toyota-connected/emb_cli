@@ -333,6 +333,7 @@ class FetchCommand extends Command<int> {
             : ExitCode.software.code;
       }
       progress.complete('Fetched ${provider.name} closure');
+      result.warnings.forEach(_logger.warn);
       if (result.profile case final profile?) {
         engineArch = archOfTriple(profile.targetTriple);
       }

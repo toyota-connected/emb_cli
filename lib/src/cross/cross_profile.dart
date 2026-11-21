@@ -203,26 +203,32 @@ class CrossResolveResult {
     this.profile,
     this.message,
     this.lockEntry,
+    this.warnings = const [],
   });
 
   /// Convenience constructor for the success case. [lockEntry] carries the
   /// resolved facts (chosen version, fetched-artifact shas, …) for `emb.lock`;
   /// providers that don't yet capture them leave it null.
-  const CrossResolveResult.ok(CrossProfile this.profile, {this.lockEntry})
-    : status = CrossResolveStatus.resolved,
-      message = null;
+  const CrossResolveResult.ok(
+    CrossProfile this.profile, {
+    this.lockEntry,
+    this.warnings = const [],
+  }) : status = CrossResolveStatus.resolved,
+       message = null;
 
   /// Convenience constructor for [CrossResolveStatus.unavailable].
   const CrossResolveResult.unavailable(String this.message)
     : status = CrossResolveStatus.unavailable,
       profile = null,
-      lockEntry = null;
+      lockEntry = null,
+      warnings = const [];
 
   /// Convenience constructor for [CrossResolveStatus.failed].
   const CrossResolveResult.failed(String this.message)
     : status = CrossResolveStatus.failed,
       profile = null,
-      lockEntry = null;
+      lockEntry = null,
+      warnings = const [];
 
   final CrossResolveStatus status;
   final CrossProfile? profile;
@@ -230,6 +236,10 @@ class CrossResolveResult {
 
   /// The resolved facts to pin in `emb.lock`, when the provider captured them.
   final LockedTarget? lockEntry;
+
+  /// What resolved, but not as asked, for the command to print: an SDK taken
+  /// from the cache because its repo could not be reached.
+  final List<String> warnings;
 
   bool get ok => status == CrossResolveStatus.resolved;
 }

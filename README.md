@@ -1814,8 +1814,10 @@ emb cross my-app.emb.yaml --target flatpak --build --flatpak
   also reaches another architecture's SDK without `--arch` installs. Pin
   `sdk_repo_gpg_key:` (a key file) to require signed commits; a URL without
   one is pulled unverified, with a warning. `--offline` uses the cached
-  commit; `emb fetch` pulls ahead. A target's `package:` replaces the shared
-  one, so give it the whole `flatpak:` block:
+  commit; `emb fetch` pulls ahead. A pull that fails or runs past 30 minutes
+  falls back to the commit this repo last served, with a warning; `emb.lock`
+  still flags it if the lock pins a newer one. A target's `package:` replaces
+  the shared one, so give it the whole `flatpak:` block:
 
   ```yaml
   targets:

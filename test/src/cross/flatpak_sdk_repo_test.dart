@@ -48,10 +48,14 @@ void main() {
     return repo;
   }
 
-  FlatpakSdkRepo cache({bool offline = false}) => FlatpakSdkRepo(
+  FlatpakSdkRepo cache({
+    bool offline = false,
+    Duration pullTimeout = FlatpakSdkRepo.defaultPullTimeout,
+  }) => FlatpakSdkRepo(
     Directory(p.join(tmp.path, 'cache')),
-    runProcess: defaultProcessRunner,
+    runProcess: defaultTimedProcessRunner,
     offline: offline,
+    pullTimeout: pullTimeout,
   );
 
   group('with ostree', skip: _haveOstree ? false : 'ostree not installed', () {
@@ -148,6 +152,26 @@ void main() {
       );
     });
 
+    test('a source gone missing falls back to its cached commit', () async {
+      final src = sourceRepo('src');
+      final first = await cache().checkout(src, _ref);
+      Directory(src).deleteSync(recursive: true);
+      final again = await cache().checkout(src, _ref);
+      expect(again.commit, first.commit);
+      expect(again.path, first.path);
+      expect(again.warning, contains('cached commit'));
+    });
+
+    test('a pull over its limit is killed, and the cache used', () async {
+      final src = sourceRepo('src');
+      final first = await cache().checkout(src, _ref);
+      final again = await cache(
+        pullTimeout: const Duration(milliseconds: 1),
+      ).checkout(src, _ref);
+      expect(again.commit, first.commit);
+      expect(again.warning, contains('(timed out after 0 s)'));
+    });
+
     test('pulls a repo by URL', () async {
       final src = sourceRepo('src');
       final c = await cache().checkout('file://$src', _ref);
@@ -156,24 +180,115 @@ void main() {
   });
 
   /// A fake ostree recording its argv; what matters is which flags reach it.
-  ProcessRunner fakeOstree(List<List<String>> calls) {
+  /// [pull] is what a pull returns; [cached] is whether rev-parse finds the
+  /// ref. [timeouts] records the limit each call was given.
+  TimedProcessRunner fakeOstree(
+    List<List<String>> calls, {
+    RunResult pull = const RunResult(0, '', ''),
+    bool cached = true,
+    List<Duration?>? timeouts,
+  }) {
     return (
-      String exe,
-      List<String> args, {
-      String? workingDirectory,
-      Map<String, String>? environment,
-      bool includeParentEnvironment = true,
-      bool runInShell = false,
-      ProcessOutputMode output = ProcessOutputMode.capture,
-      String? label,
+      exe,
+      args, {
+      workingDirectory,
+      environment,
+      includeParentEnvironment = true,
+      runInShell = false,
+      output = ProcessOutputMode.capture,
+      label,
+      timeout,
     }) async {
       calls.add(args);
+      timeouts?.add(timeout);
       if (args.contains('checkout')) Directory(args.last).createSync();
-      return args.contains('rev-parse')
-          ? RunResult(0, '${'a' * 64}\n', '')
-          : const RunResult(0, '', '');
+      if (args.contains('pull') || args.contains('pull-local')) return pull;
+      if (args.contains('rev-parse')) {
+        return cached
+            ? RunResult(0, '${'a' * 64}\n', '')
+            : const RunResult(1, '', 'error: Refspec not found');
+      }
+      return const RunResult(0, '', '');
     };
   }
+
+  group('a pull that fails', () {
+    FlatpakSdkRepo repo(TimedProcessRunner run) =>
+        FlatpakSdkRepo(Directory(p.join(tmp.path, 'cache')), runProcess: run);
+
+    test('falls back to the cached commit, with a warning', () async {
+      final c = await repo(
+        fakeOstree(
+          [],
+          pull: const RunResult(1, '', 'error: Could not resolve host\nmore'),
+        ),
+      ).checkout('https://example.com/repo', _ref);
+      expect(c.commit, 'a' * 64);
+      expect(
+        c.warning,
+        allOf(
+          contains('could not pull $_ref from https://example.com/repo'),
+          contains('(error: Could not resolve host)'),
+          contains('cached commit aaaaaaaaaaaa'),
+        ),
+      );
+    });
+
+    test('with nothing cached is an error', () async {
+      await expectLater(
+        repo(
+          fakeOstree(
+            [],
+            pull: const RunResult(1, '', 'error: Could not resolve host'),
+            cached: false,
+          ),
+        ).checkout('https://example.com/repo', _ref),
+        throwsA(
+          isA<FlatpakSdkRepoException>().having(
+            (e) => e.message,
+            'message',
+            'could not pull $_ref from https://example.com/repo: '
+                'error: Could not resolve host',
+          ),
+        ),
+      );
+    });
+
+    test('says when it timed out', () async {
+      final c = await repo(
+        fakeOstree(
+          [],
+          pull: const RunResult(timedOutExitCode, '', 'timed out after 1800s'),
+        ),
+      ).checkout('/srv/repo', _ref);
+      expect(c.warning, contains('(timed out after 30 min)'));
+    });
+  });
+
+  test('only the pull has a time limit', () async {
+    final calls = <List<String>>[];
+    final timeouts = <Duration?>[];
+    await FlatpakSdkRepo(
+      Directory(p.join(tmp.path, 'cache')),
+      runProcess: fakeOstree(calls, timeouts: timeouts),
+    ).checkout('https://example.com/repo', _ref);
+    for (final (i, c) in calls.indexed) {
+      expect(
+        timeouts[i],
+        c.contains('pull') ? FlatpakSdkRepo.defaultPullTimeout : isNull,
+        reason: c.join(' '),
+      );
+    }
+    expect(calls.where((c) => c.contains('pull')), hasLength(1));
+  });
+
+  test('a successful pull carries no warning', () async {
+    final c = await FlatpakSdkRepo(
+      Directory(p.join(tmp.path, 'cache')),
+      runProcess: fakeOstree([]),
+    ).checkout('https://example.com/repo', _ref);
+    expect(c.warning, isNull);
+  });
 
   test('a signing key turns on verification for that remote', () async {
     final calls = <List<String>>[];

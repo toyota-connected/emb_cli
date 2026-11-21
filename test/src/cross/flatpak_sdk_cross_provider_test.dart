@@ -224,6 +224,24 @@ void main() {
         expect(pf.runtimeLibDirs, everyElement(startsWith(checkouts)));
         final commit = r.lockEntry!.toolchainVersion!.split('@').last;
         expect(commit, matches(RegExp(r'^[0-9a-f]{64}$')));
+        expect(r.warnings, isEmpty);
+
+        // The repo unreachable: the cache builds it, and says so for the SDK
+        // and its runtime.
+        Directory(p.join(manifestDir.path, 'repo-dev')).deleteSync(
+          recursive: true,
+        );
+        final again = await pr.resolve();
+        expect(again.ok, isTrue, reason: again.message);
+        expect(
+          again.lockEntry!.toolchainVersion,
+          r.lockEntry!.toolchainVersion,
+        );
+        expect(again.warnings, hasLength(2));
+        expect(
+          again.warnings,
+          everyElement(contains('building with the cached commit')),
+        );
       },
     );
 
