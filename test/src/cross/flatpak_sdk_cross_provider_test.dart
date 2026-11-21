@@ -29,6 +29,31 @@ void main() {
   setUp(() => tmp = Directory.systemTemp.createTempSync('emb_fpsdk_'));
   tearDown(() => tmp.deleteSync(recursive: true));
 
+  /// The SDK's `metadata`, naming [runtime]; and, unless [installed] is
+  /// false, that runtime at `<sdk>-runtime` with [libs] in [libDir].
+  ///
+  /// [spaced] writes `key = value`, as freedesktop's SDK does.
+  void pairRuntime(
+    Directory sdk,
+    String runtime,
+    String libDir, {
+    List<String> libs = const ['libc.so.6'],
+    bool installed = true,
+    bool spaced = false,
+  }) {
+    final eq = spaced ? ' = ' : '=';
+    File(p.join(sdk.path, 'metadata')).writeAsStringSync(
+      '[Runtime]\nname${eq}sdk\nruntime$eq$runtime\nsdk${eq}sdk\n\n'
+      '[Extension x]\nruntime${eq}not/this/one\n',
+    );
+    if (!installed) return;
+    for (final l in libs) {
+      File(
+        p.join('${sdk.path}-runtime', 'files', libDir, l),
+      ).createSync(recursive: true);
+    }
+  }
+
   /// The freedesktop SDK's layout: multiarch libdir, `lib64` for the
   /// loader, gcc under `x86_64-unknown-linux-gnu`.
   Directory freedesktopSdk({String name = 'deploy'}) {
@@ -43,6 +68,12 @@ void main() {
       ..writeAsStringSync(
         _libcScript('/usr/lib/x86_64-linux-gnu', '/lib64/ld-linux-x86-64.so.2'),
       );
+    pairRuntime(
+      files.parent,
+      'org.freedesktop.Platform/x86_64/25.08',
+      'lib/x86_64-linux-gnu',
+      spaced: true,
+    );
     return files.parent;
   }
 
@@ -60,10 +91,16 @@ void main() {
       ..writeAsStringSync(
         _libcScript('/usr/lib', '/usr/lib/ld-linux-aarch64.so.1'),
       );
+    pairRuntime(
+      files.parent,
+      'org.flatpak_minimal.Platform/aarch64/wrynose',
+      'lib',
+    );
     return files.parent;
   }
 
-  /// A fake `flatpak` that knows one installed ref.
+  /// A fake `flatpak` that knows one installed SDK, and the runtime its
+  /// metadata names when that is installed beside it (see [pairRuntime]).
   ProcessRunner flatpak(
     String ref,
     Directory? location, {
@@ -81,8 +118,15 @@ void main() {
       String? label,
     }) async {
       calls?.add([exe, ...args]);
-      if (exe != 'flatpak' || location == null || args.last != ref) {
-        return const RunResult(1, '', 'error: not installed');
+      const missing = RunResult(1, '', 'error: not installed');
+      if (exe != 'flatpak' || location == null) return missing;
+      if (args.last != ref) {
+        final rt = FlatpakSdkCrossProvider.runtimeRefOf(
+          File(p.join(location.path, 'metadata')),
+        );
+        final rtDir = Directory('${location.path}-runtime');
+        if (args.last != rt || !rtDir.existsSync()) return missing;
+        return RunResult(0, '${rtDir.path}\n', '');
       }
       return switch (args[1]) {
         '--show-location' => RunResult(0, '${location.path}\n', ''),
@@ -305,6 +349,53 @@ void main() {
         ).existsSync(),
         isTrue,
       );
+    });
+
+    test('points at the runtime the SDK metadata names', () async {
+      final sdk = freedesktopSdk();
+      final pf = (await FlatpakSdkCrossProvider(
+        target(),
+        workspace: Workspace(tmp),
+        host: _host,
+        runProcess: flatpak('org.freedesktop.Sdk/x86_64/25.08', sdk),
+      ).resolve()).profile!;
+      // The Platform's libdirs, not the SDK's: that is what the app runs on.
+      // Plain lib too, for a library kept outside the multiarch dir.
+      expect(pf.runtimeLibDirs, [
+        p.join('${sdk.path}-runtime', 'files', 'lib/x86_64-linux-gnu'),
+        p.join('${sdk.path}-runtime', 'files', 'lib'),
+      ]);
+    });
+
+    test('says how to install the runtime when only the SDK is', () async {
+      final sdk = freedesktopSdk();
+      Directory('${sdk.path}-runtime').deleteSync(recursive: true);
+      final r = await FlatpakSdkCrossProvider(
+        target(),
+        workspace: Workspace(tmp),
+        host: _host,
+        runProcess: flatpak('org.freedesktop.Sdk/x86_64/25.08', sdk),
+      ).resolve();
+      expect(r.status, CrossResolveStatus.unavailable);
+      expect(
+        r.message,
+        contains(
+          'flatpak install flathub org.freedesktop.Platform/x86_64/25.08',
+        ),
+      );
+    });
+
+    test('refuses an SDK whose metadata names no runtime', () async {
+      final sdk = freedesktopSdk();
+      File(p.join(sdk.path, 'metadata')).writeAsStringSync('[Runtime]\n');
+      final r = await FlatpakSdkCrossProvider(
+        target(),
+        workspace: Workspace(tmp),
+        host: _host,
+        runProcess: flatpak('org.freedesktop.Sdk/x86_64/25.08', sdk),
+      ).resolve();
+      expect(r.status, CrossResolveStatus.failed);
+      expect(r.message, contains('names no runtime'));
     });
 
     test('says how to install an SDK that is missing', () async {

@@ -68,6 +68,7 @@ class CrossProfile {
     this.hostToolchain = false,
     this.separateOverlay = false,
     this.hostRunnable = false,
+    this.runtimeLibDirs = const [],
   });
 
   /// Provider token that produced this profile (`arm-gnu`, `yocto-recipe`,
@@ -128,6 +129,12 @@ class CrossProfile {
   /// here. A cross build would fail with `Exec format error`.
   final bool hostRunnable;
 
+  /// Library dirs of the runtime the build runs on, when that is not the
+  /// sysroot: a flatpak SDK's Platform. An SDK ships libraries its runtime
+  /// does not, so an augment counts as provided only when its libraries are
+  /// here as well. Empty when the sysroot is what runs.
+  final List<String> runtimeLibDirs;
+
   bool get hasCMakeToolchain => cmakeToolchainFile != null;
   bool get hasMesonCross => mesonCrossFile != null;
 
@@ -162,6 +169,7 @@ class CrossProfile {
     hostToolchain: hostToolchain,
     separateOverlay: separateOverlay,
     hostRunnable: hostRunnable,
+    runtimeLibDirs: runtimeLibDirs,
   );
 
   @override

@@ -11,6 +11,7 @@ import 'package:emb_cli/src/cross/cross_keys.dart'
 import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
+import 'package:emb_cli/src/cross/runtime_provided.dart';
 import 'package:emb_cli/src/cross/toolchain_emitter.dart';
 import 'package:emb_cli/src/repo/patch_series.dart';
 import 'package:emb_cli/src/step_reporter.dart';
@@ -667,18 +668,73 @@ class OverlayBuilder {
     return bld..createSync(recursive: true);
   }
 
-  /// True when the sysroot already provides [lib] at >= its `min` version.
+  /// True when the sysroot already provides [lib] at >= its `min` version,
+  /// and, when the build runs on a different runtime
+  /// ([CrossProfile.runtimeLibDirs]), that runtime has its libraries too.
   Future<bool> _satisfied(AugmentLib lib) async {
     final sysroot = profile.pkgConfig?.sysrootDir ?? profile.targetSysroot;
-    final r = await _run(
-      'pkg-config',
-      ['--atleast-version=${lib.minVersion}', lib.pkg],
-      environment: {
-        'PKG_CONFIG_LIBDIR': (profile.pkgConfig?.libdir ?? const []).join(':'),
-        'PKG_CONFIG_SYSROOT_DIR': sysroot,
-      },
+    final env = {
+      'PKG_CONFIG_LIBDIR': (profile.pkgConfig?.libdir ?? const []).join(':'),
+      'PKG_CONFIG_SYSROOT_DIR': sysroot,
+    };
+    final r = await _run('pkg-config', [
+      '--atleast-version=${lib.minVersion}',
+      lib.pkg,
+    ], environment: env);
+    if (r.exitCode != 0) return false;
+    if (profile.runtimeLibDirs.isEmpty) return true;
+
+    final missing = await _missingFromRuntime(lib, env);
+    if (missing == null || missing.isEmpty) return true;
+    _logger?.info(
+      'augment ${lib.pkg}: building it — the SDK has it but the runtime '
+      'lacks ${missing.join(", ")}',
     );
-    return r.exitCode == 0;
+    return false;
+  }
+
+  /// File names in [CrossProfile.runtimeLibDirs], listed once per build: a
+  /// runtime's library dir holds a thousand-odd entries, and each augment
+  /// asks about several libraries.
+  ///
+  /// A dir that cannot be listed adds nothing, so its libraries read as
+  /// missing and the augment is built: slower, never a broken app.
+  late final Set<String> _runtimeFiles = {
+    for (final d in profile.runtimeLibDirs) ..._listNames(Directory(d)),
+  };
+
+  static Iterable<String> _listNames(Directory d) {
+    try {
+      return [for (final e in d.listSync()) p.basename(e.path)];
+    } on FileSystemException {
+      return const [];
+    }
+  }
+
+  /// The libraries [lib] links that the runtime lacks (see
+  /// [libsMissingFromRuntime]), or null when pkg-config cannot say.
+  ///
+  /// The SDK's library dirs are the `-L` pkg-config reports plus the dirs its
+  /// own search path implies (`<libdir>/pkgconfig` → `<libdir>`): pkgconf
+  /// drops `-L` for a system dir, which is where most libraries are.
+  Future<List<String>?> _missingFromRuntime(
+    AugmentLib lib,
+    Map<String, String> env,
+  ) async {
+    final r = await _run('pkg-config', ['--libs', lib.pkg], environment: env);
+    if (r.exitCode != 0) return null;
+    final tokens = r.stdout.split(RegExp(r'\s+'));
+    final names = [
+      for (final t in tokens)
+        if (t.startsWith('-l') && t.length > 2) t.substring(2),
+    ];
+    final dirs = [
+      for (final t in tokens)
+        if (t.startsWith('-L') && t.length > 2) t.substring(2),
+      for (final d in profile.pkgConfig?.libdir ?? const <String>[])
+        if (p.basename(d) == 'pkgconfig') p.dirname(d),
+    ];
+    return libsMissingFromRuntime(names, dirs, _runtimeFiles);
   }
 
   /// Where fetched augment tarballs + unpacked trees live. Project-local when a

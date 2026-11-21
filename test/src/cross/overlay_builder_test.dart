@@ -264,6 +264,93 @@ void main() {
     expect(inst.join(' '), contains('overlay-'));
   });
 
+  group('an SDK sysroot with a separate runtime', () {
+    // The flatpak-sdk shape: pkg-config answers from the SDK, but the app
+    // runs on the runtime, which ships fewer libraries.
+    late String sdkLib;
+    late String rtLib;
+    setUp(() {
+      sdkLib = p.join(tmp.path, 'sdk', 'usr', 'lib');
+      rtLib = p.join(tmp.path, 'runtime', 'lib');
+      Directory(sdkLib).createSync(recursive: true);
+      Directory(rtLib).createSync(recursive: true);
+      // libfoo.so is the SDK's development link to libfoo.so.1.
+      File(p.join(sdkLib, 'libfoo.so.1')).writeAsBytesSync(
+        [0x7f, 0x45, 0x4c, 0x46],
+      );
+      Link(p.join(sdkLib, 'libfoo.so')).createSync('libfoo.so.1');
+    });
+
+    CrossProfile sdkProfile({bool withRuntime = true}) => CrossProfile(
+      providerName: 'flatpak-sdk',
+      targetTriple: 'x86_64-flatpak-linux-gnu',
+      cc: 'clang',
+      cxx: 'clang++',
+      ar: 'llvm-ar',
+      strip: 'llvm-strip',
+      targetSysroot: p.join(tmp.path, 'sdk'),
+      pkgConfig: PkgConfig(
+        sysrootDir: p.join(tmp.path, 'sdk'),
+        libdir: [p.join(sdkLib, 'pkgconfig')],
+      ),
+      cmakeToolchainFile: '/tc.cmake',
+      runtimeLibDirs: withRuntime ? [rtLib] : const [],
+    );
+
+    /// Build one augment the SDK satisfies; return the pkg-config and cmake
+    /// calls made.
+    Future<List<List<String>>> build(CrossProfile profile) async {
+      prestage('vulkan-headers-1.4.309');
+      final calls = <List<String>>[];
+      Future<RunResult> run(
+        String exe,
+        List<String> args, {
+        String? workingDirectory,
+        Map<String, String>? environment,
+        bool includeParentEnvironment = true,
+        bool runInShell = false,
+        ProcessOutputMode output = ProcessOutputMode.capture,
+        String? label,
+      }) async {
+        calls.add([exe, ...args]);
+        if (exe == 'pkg-config' && args.first == '--libs') {
+          // pkgconf drops -L for a system dir; the provider's search path
+          // says where that is.
+          return const RunResult(0, '-lfoo\n', '');
+        }
+        return const RunResult(0, '', '');
+      }
+
+      final ob = OverlayBuilder(Workspace(tmp), profile, runProcess: run);
+      await ob.build([_lib(build: 'cmake')]);
+      ob.close();
+      return calls;
+    }
+
+    bool configured(List<List<String>> calls) =>
+        calls.any((c) => c.first == 'cmake' && c.contains('-S'));
+
+    test('skips an augment the runtime has too', () async {
+      File(p.join(rtLib, 'libfoo.so.1')).createSync();
+      expect(configured(await build(sdkProfile())), isFalse);
+    });
+
+    test('builds an augment only the SDK has', () async {
+      // The case #335 is about: the SDK links it, the runtime lacks it, and
+      // the flatpak would not start.
+      expect(configured(await build(sdkProfile())), isTrue);
+    });
+
+    test('asks nothing more without a runtime', () async {
+      final calls = await build(sdkProfile(withRuntime: false));
+      expect(configured(calls), isFalse);
+      expect(
+        calls.where((c) => c.first == 'pkg-config').map((c) => c[1]),
+        ['--atleast-version=1.4.309'],
+      );
+    });
+  });
+
   group('confinePackages', () {
     // The local provider's profile: no toolchain file, no sysroot.
     const native = CrossProfile(

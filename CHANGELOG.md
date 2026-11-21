@@ -17,6 +17,15 @@ unchanged.
 
 **Flatpak.**
 
+- feat(cross): a `flatpak-sdk` build skips an augment only when the runtime
+  has its libraries too (#335). The SDK ships libraries its runtime does not
+  (pkgconf in freedesktop's; curl, systemd, uuid in a Yocto-built one), and an
+  augment the SDK satisfied was skipped, so the app linked a library that was
+  not there at run time. The provider now locates the runtime the SDK's
+  `metadata` names and the augment check asks it too, following
+  `lib<name>.so` to the soname the runtime ships. An augment built for this
+  reason says so.
+
 - feat(cross): a `flatpak-sdk` provider builds against the runtime's SDK
   rather than the host (#335). A host newer than the runtime built a flatpak
   that would not start: firebase_ffi's demo needed `GLIBC_2.43` on a 25.08
