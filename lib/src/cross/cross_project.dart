@@ -756,10 +756,19 @@ class CrossProjectResolver {
       );
     }
     try {
-      final project = resolve(dir);
+      // Deferred, so a target there that does not resolve fails only the
+      // build that extends it. ivi-homescreen's board targets need emb's board
+      // library, and its flatpak-sdk targets do not (#357).
+      final project = resolve(dir, deferExtends: true);
       if (project == null) {
         throw CrossProjectException(
           'extends: no emb project at "$dir" (from "$ref").',
+        );
+      }
+      final unresolved = project.unresolved[name];
+      if (unresolved != null) {
+        throw CrossProjectException(
+          'extends: "$ref" does not resolve: ${unresolved.message}',
         );
       }
       final target = project.targets[name];

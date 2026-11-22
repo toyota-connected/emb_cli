@@ -6,6 +6,13 @@ version shipped.
 
 **Cross.**
 
+- fix(cross): `extends: <dir>#<target>` and `source#<target>` failed when any
+  other target in that project did not resolve (#357). An app extending
+  ivi-homescreen's `flatpak-sdk-x86_64` stopped on its Raspberry Pi targets,
+  which need emb's board library, before building anything. The extended
+  project's targets are now resolved one at a time, and only the one named
+  can fail the build, with its own reason.
+
 - fix(cross): the build summary said `augment : <pkg> built (0.0s)` for an
   augment it had found already built and skipped. It now names which were
   built and which cached, e.g. `firebase-cpp-sdk cached`.
