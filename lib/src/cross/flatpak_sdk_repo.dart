@@ -82,7 +82,16 @@ class FlatpakSdkRepo {
   static var _partials = 0;
 
   /// Check out [ref] (`runtime/<id>/<arch>/<branch>`) from [source], a URL or
-  /// an absolute path. With [gpgKey], its commits must be signed by that key.
+  /// an absolute path. With [gpgKey], its commits and its summary must be
+  /// signed by that key, and a URL may not move [ref] to an older commit
+  /// than the cache has.
+  ///
+  /// The summary is what maps a ref to a commit. With only commits signed,
+  /// whoever serves [source] can point [ref] at any commit the key ever
+  /// signed: last year's SDK, or another branch's. A signed summary stops a
+  /// remap; it does not stop a replay of an old signed summary, which the
+  /// timestamp check does. `pull-local` has no timestamp check, so a local
+  /// path, which is this machine's own, goes without.
   ///
   /// Holds the cache's lock shared, so builds run side by side and [gc]
   /// waits for them: it never deletes a ref a pull is updating, or a
@@ -115,17 +124,22 @@ class FlatpakSdkRepo {
             ? [
                 'pull-local',
                 '--remote=$remote',
-                if (gpgKey != null) '--gpg-verify',
+                if (gpgKey != null) ...['--gpg-verify', '--gpg-verify-summary'],
                 source,
                 ref,
               ]
-            : ['pull', remote, ref],
+            : ['pull', if (gpgKey != null) '--timestamp-check', remote, ref],
         timeout: pullTimeout,
       );
       if (r.exitCode != 0) {
         final why = r.exitCode == timedOutExitCode
             ? 'timed out after ${_span(pullTimeout)}'
             : _firstLine(r.stderr);
+        // Not a network blip: the source served something the key does not
+        // vouch for, or went back in time. Building on from the cache would
+        // hide that for as long as it lasted.
+        final refused = _refusal(r.stderr, source, ref);
+        if (refused != null) throw FlatpakSdkRepoException(refused);
         // A commit this source served before, verified then if a key was
         // set. A network blip should not stop a build the cache can do.
         final cached = await _revParse(remote, ref);
@@ -291,20 +305,47 @@ class FlatpakSdkRepo {
 
   /// The URL or path behind [remote], for a report; [remote] itself if
   /// ostree cannot say.
-  String _source(String remote) {
+  String _source(String remote) =>
+      _remoteValue(remote, 'url')?.replaceFirst('file://', '') ?? remote;
+
+  /// [key] from [remote]'s section of the repo config, or null.
+  String? _remoteValue(String remote, String key) {
     try {
       final config = File(p.join(_repo, 'config')).readAsLinesSync();
       final at = config.indexOf('[remote "$remote"]');
-      if (at < 0) return remote;
+      if (at < 0) return null;
+      final pattern = RegExp('^${RegExp.escape(key)}\\s*=\\s*(.*)\$');
       for (final l in config.skip(at + 1)) {
         if (l.startsWith('[')) break;
-        final m = RegExp(r'^url\s*=\s*(.*)$').firstMatch(l.trim());
-        if (m != null) return m[1]!.replaceFirst('file://', '');
+        final m = pattern.firstMatch(l.trim());
+        if (m != null) return m[1];
       }
     } on FileSystemException {
       // Fall through.
     }
-    return remote;
+    return null;
+  }
+
+  /// Why a failed pull must not fall back to the cache, from ostree's
+  /// [stderr]; null for a failure the cache can ride out.
+  static String? _refusal(String stderr, String source, String ref) {
+    if (stderr.contains('chronologically older')) {
+      return '$source moved $ref to a commit older than the one cached; '
+          'refusing the rollback. If it was rolled back on purpose, delete '
+          'the flatpak-sdk cache to accept it';
+    }
+    if (stderr.contains('no summary found') ||
+        stderr.contains('no summary.sig found')) {
+      return '$source has no summary signed by sdk_repo_gpg_key. With a key '
+          'set, emb requires one: it is what ties $ref to a commit. Sign it '
+          'with `flatpak build-update-repo --gpg-sign=<key>` or '
+          '`ostree summary -u --gpg-sign=<key>`';
+    }
+    if (stderr.contains('GPG') || stderr.contains('signature')) {
+      return '$ref from $source is not signed by sdk_repo_gpg_key: '
+          '${_firstLine(stderr)}';
+    }
+    return null;
   }
 
   /// Run [body] holding `<cacheDir>/lock` as [mode]: shared for builds,
@@ -359,13 +400,35 @@ class FlatpakSdkRepo {
       'remote',
       'add',
       '--if-not-exists',
-      if (gpgKey != null) '--gpg-import=$gpgKey' else '--no-gpg-verify',
+      if (gpgKey != null) ...[
+        '--gpg-import=$gpgKey',
+        '--set=gpg-verify-summary=true',
+      ] else
+        '--no-gpg-verify',
       name,
       url,
     ]);
     if (r.exitCode != 0) {
       throw FlatpakSdkRepoException(
         'could not add $url to the ostree cache: ${_firstLine(r.stderr)}',
+      );
+    }
+    // A remote added before emb verified summaries keeps its name, since the
+    // key is the same, and so its cached commits for --offline. Bring it up
+    // to date rather than re-pull under a new one.
+    if (gpgKey == null || _remoteValue(name, 'gpg-verify-summary') == 'true') {
+      return;
+    }
+    final set = await _ostree([
+      'config',
+      'set',
+      'remote "$name".gpg-verify-summary',
+      'true',
+    ]);
+    if (set.exitCode != 0) {
+      throw FlatpakSdkRepoException(
+        'could not require a signed summary from $url: '
+        '${_firstLine(set.stderr)}',
       );
     }
   }
