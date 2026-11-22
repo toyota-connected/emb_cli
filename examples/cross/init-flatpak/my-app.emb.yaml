@@ -27,6 +27,8 @@ cross:
       metainfo.xml: /share/metainfo/com.example.MyApp.metainfo.xml
     flatpak:
       app_id: com.example.MyApp
+      name: 'My App'               # the launcher's name
+      comment: 'An example Flutter app.' # the launcher's tooltip
       icon: icon.png               # a placeholder; replace it
       runtime_version: '25.08'
   targets:

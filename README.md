@@ -1621,6 +1621,7 @@ is no wrapper script.
 | flag | default | |
 |---|---|---|
 | `--app-id` | required | reverse-DNS, checked by the rule `--flatpak` enforces |
+| `--name <text>` | the pubspec name of `--app <dir>`, else the app id's last part | the app's name in AppStream and the launcher; becomes `package.flatpak.name`. The pubspec description, when there is one, becomes `package.flatpak.comment` |
 | `--app <uri\|dir>` | none | a git URI becomes `cross.app`; a directory only supplies name, version and description from its `pubspec.yaml` |
 | `--app-rev` | HEAD, resolved now | a commit; a branch or tag is written with a warning |
 | `--embedder <uri>` | ivi-homescreen | becomes `cross.source`; `https://`, `http://`, `ssh://`, `git://`, `file://` or `git@host:path` |

@@ -175,6 +175,12 @@ class InitFlatpakCommand extends Command<int> {
         mandatory: true,
       )
       ..addOption(
+        'name',
+        help:
+            'Name shown in the launcher and in AppStream (default: the '
+            "pubspec name of --app <dir>, else the app id's last part).",
+      )
+      ..addOption(
         'app',
         help:
             'The Flutter app. A git URI is written into the manifest as '
@@ -384,6 +390,14 @@ class InitFlatpakCommand extends Command<int> {
         );
       }
     }
+    final nameArg = (args['name'] as String?)?.trim();
+    if (nameArg != null &&
+        (nameArg.isEmpty || RegExp(r'[\x00-\x1f\x7f]').hasMatch(nameArg))) {
+      return _usage(
+        '--name: expected one line with no control characters; it is '
+        'written into the .desktop entry.',
+      );
+    }
     final backendArg = args['backend'] as String?;
     if (backendArg != null && !_targetPattern.hasMatch(backendArg)) {
       return _usage(
@@ -465,7 +479,7 @@ class InitFlatpakCommand extends Command<int> {
     final spec = FlatpakRepoSpec(
       appId: appId,
       id: pubspec == null ? idFromAppId(appId) : kebabCase(pubspec.name),
-      name: pubspec?.name ?? appId.split('.').last,
+      name: nameArg ?? pubspec?.name ?? appId.split('.').last,
       version: pubspec?.version ?? '0.1.0',
       summary: pubspec?.description,
       embedder: embedder,
@@ -695,6 +709,12 @@ class InitFlatpakCommand extends Command<int> {
       final target = CrossTarget.fromMap(selection.cross);
       if (target.package?.flatpak?.appId != spec.appId) {
         return 'package.flatpak.app_id did not survive';
+      }
+      if (target.package?.flatpak?.name != spec.name) {
+        return 'package.flatpak.name did not survive';
+      }
+      if (target.package?.flatpak?.comment != spec.summary) {
+        return 'package.flatpak.comment did not survive';
       }
       for (final name in spec.targets) {
         final pending = project.unresolved[name];

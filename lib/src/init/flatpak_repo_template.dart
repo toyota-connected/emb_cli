@@ -116,7 +116,8 @@ class FlatpakRepoSpec {
   /// Manifest id and package name, e.g. `my-app`. Names the manifest file.
   final String id;
 
-  /// Human-readable name for AppStream and the README.
+  /// Human-readable name for AppStream, the launcher entry
+  /// (`package.flatpak.name`) and the README.
   final String name;
   final String version;
 
@@ -130,7 +131,9 @@ class FlatpakRepoSpec {
   /// here, so the same spec still renders the same files.
   final String releaseDate;
 
-  /// One-line description for AppStream; null leaves a placeholder.
+  /// One-line description for AppStream and the launcher entry
+  /// (`package.flatpak.comment`); null leaves a placeholder in AppStream and
+  /// no `comment:`.
   final String? summary;
 
   final PinnedRepo embedder;
@@ -378,6 +381,9 @@ String _manifest(FlatpakRepoSpec s) {
     '      metainfo.xml: /share/metainfo/${s.appId}.metainfo.xml',
     '    flatpak:',
     '      app_id: ${s.appId}',
+    _line('      ', 'name', _yaml(s.name), "the launcher's name"),
+    if (s.summary != null)
+      _line('      ', 'comment', _yaml(s.summary!), "the launcher's tooltip"),
     _line('      ', 'icon', 'icon.png', 'a placeholder; replace it'),
     '      runtime_version: ${_yaml(s.runtimeVersion)}',
     if (s.allTargets.isNotEmpty) '  targets:',

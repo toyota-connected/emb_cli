@@ -350,6 +350,32 @@ void main() {
       });
     }
 
+    group('launcher entry', () {
+      Map<dynamic, dynamic> flatpak(FlatpakRepoSpec spec) =>
+          ((_manifest(spec)['cross'] as YamlMap)['package']
+                  as YamlMap)['flatpak']
+              as YamlMap;
+
+      test('name and summary are written as the .desktop name and comment', () {
+        final fp = flatpak(_spec(summary: 'Does things.'));
+        expect(fp['name'], 'My App');
+        expect(fp['comment'], 'Does things.');
+      });
+
+      test('no summary writes no comment', () {
+        expect(flatpak(_spec()).containsKey('comment'), isFalse);
+      });
+
+      // Quoted wherever YAML would read the value as anything else.
+      for (final v in ["It's: #1", 'yes', '1.0', '- x', 'a # b']) {
+        test('$v loads as itself', () {
+          final fp = flatpak(_spec(name: v, summary: v));
+          expect(fp['name'], v);
+          expect(fp['comment'], v);
+        });
+      }
+    });
+
     group('metainfo', () {
       // The version sits in an attribute, where a quote ends the value.
       test('quotes are escaped', () {
