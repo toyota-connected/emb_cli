@@ -1831,4 +1831,53 @@ void main() {
       expect(logger.errors.toString(), contains('nothing to run'));
     });
   });
+
+  // #349: the launcher took package.name, so an app built onto an embedder
+  // showed as the embedder.
+  group('flatpak launcher entry', () {
+    PackageSpec spec(Map<String, Object?> package) => CrossTarget.fromMap({
+      'provider': 'arm-gnu',
+      'toolchain_version': '12.3.rel1',
+      'image_url': 'https://x/y.img.xz',
+      'package': package,
+    }).package!;
+
+    const flatpak = {'app_id': 'com.example.Kiosk'};
+
+    test('package.flatpak.name wins over package.name', () {
+      final t = flatpakLauncherText(
+        spec({
+          'name': 'ivi-homescreen',
+          'flatpak': {...flatpak, 'name': 'Kiosk', 'comment': 'A kiosk'},
+        }),
+        'project-id',
+      );
+      expect(t.name, 'Kiosk');
+      expect(t.comment, 'A kiosk');
+    });
+
+    test('without it, package.name, as before', () {
+      final t = flatpakLauncherText(
+        spec({'name': 'ivi-homescreen', 'flatpak': flatpak}),
+        'project-id',
+      );
+      expect(t.name, 'ivi-homescreen');
+      expect(t.comment, isNull);
+    });
+
+    test('without either, the project id', () {
+      final t = flatpakLauncherText(spec({'flatpak': flatpak}), 'project-id');
+      expect(t.name, 'project-id');
+    });
+
+    // package.name is not touched: the deb and rpm keep it.
+    test('package.flatpak.name leaves package.name alone', () {
+      final s = spec({
+        'name': 'kiosk-app',
+        'flatpak': {...flatpak, 'name': 'Kiosk'},
+      });
+      expect(flatpakLauncherText(s, 'project-id').name, 'Kiosk');
+      expect(s.name, 'kiosk-app');
+    });
+  });
 }

@@ -104,6 +104,18 @@ Map<String, String> mergeBackendDefines(
   Map<String, String> backendDefines,
 ) => {...rpathDefines, ...targetDefines, ...backendDefines};
 
+/// What a flatpak's launcher entry says. `Name=` is `package.flatpak.name`,
+/// else `package.name`, else [defaultName], the project id: an app built onto
+/// an embedder would otherwise show under the embedder's package name.
+/// `Comment=` is `package.flatpak.comment`, or none.
+({String name, String? comment}) flatpakLauncherText(
+  PackageSpec spec,
+  String defaultName,
+) => (
+  name: spec.flatpak?.name ?? spec.name ?? defaultName,
+  comment: spec.flatpak?.comment,
+);
+
 /// Content-based fingerprint of a source tree: sorted relative paths with a
 /// SHA-256 digest of each file's bytes, hashed into a short hex string.
 /// Hidden entries (`.git`, `.dart_tool`, etc.) are excluded.
@@ -3401,6 +3413,7 @@ class CrossCommand extends Command<int> {
       defines: target.defines,
       vars: vars,
     );
+    final entry = flatpakLauncherText(spec, defaultName);
     final meta = FlatpakMetadata(
       appId: appId,
       command: embedder,
@@ -3412,8 +3425,8 @@ class CrossCommand extends Command<int> {
       finishArgs: fp.finishArgs.isNotEmpty
           ? fp.finishArgs
           : FlatpakMetadata.defaultFinishArgs,
-      appName: fp.name ?? spec.name ?? defaultName,
-      comment: fp.comment,
+      appName: entry.name,
+      comment: entry.comment,
       icon: icon,
       categories: fp.categories,
       env: fp.env,
