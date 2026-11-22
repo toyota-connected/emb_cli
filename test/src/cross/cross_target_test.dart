@@ -795,6 +795,41 @@ void main() {
     });
   });
 
+  group('FlatpakPackageSpec name and comment (#349)', () {
+    FlatpakPackageSpec specOf(Map<String, Object?> extra) =>
+        FlatpakPackageSpec.fromMap({'app_id': 'com.example.App', ...extra});
+
+    test('are read, trimmed', () {
+      final s = specOf({
+        'name': ' Firebase workbench ',
+        'comment': 'Firebase for desktop and embedded Linux',
+      });
+      expect(s.name, 'Firebase workbench');
+      expect(s.comment, 'Firebase for desktop and embedded Linux');
+    });
+
+    test('absent or empty are unset', () {
+      expect(specOf({}).name, isNull);
+      expect(specOf({'name': '', 'comment': '  '}).comment, isNull);
+    });
+
+    test('a newline is refused: it would start another key', () {
+      for (final key in ['name', 'comment']) {
+        expect(
+          () => specOf({key: 'App\nExec=sh -c evil'}),
+          throwsA(
+            isA<ArgumentError>().having(
+              (e) => e.message,
+              'message',
+              contains('flatpak $key: must be one line'),
+            ),
+          ),
+        );
+        expect(() => specOf({key: 'tab\there'}), throwsA(isA<ArgumentError>()));
+      }
+    });
+  });
+
   group('AugmentLib source declarations', () {
     AugmentLib augmentOf(Map<String, Object?> extra) =>
         AugmentLib.fromMap({'pkg': 'libfoo', ...extra});

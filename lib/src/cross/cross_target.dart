@@ -811,6 +811,8 @@ class FlatpakPackageSpec {
     this.sdkRepoGpgKey,
     this.finishArgs = const [],
     this.icon,
+    this.name,
+    this.comment,
     this.categories = const ['Utility'],
     this.env = const {},
     this.args = const [],
@@ -831,6 +833,8 @@ class FlatpakPackageSpec {
             .map((e) => e.toString())
             .toList(),
         icon: map['icon']?.toString(),
+        name: _desktopText(map['name'], 'name'),
+        comment: _desktopText(map['comment'], 'comment'),
         categories: (map['categories'] as List<dynamic>? ?? const ['Utility'])
             .map((e) => e.toString())
             .toList(),
@@ -886,11 +890,34 @@ class FlatpakPackageSpec {
     return s.isEmpty ? null : s;
   }
 
+  /// A `.desktop` value: one line. A newline would end the key and start
+  /// another (`Exec=`, say), so control characters are refused here rather
+  /// than escaped.
+  static String? _desktopText(Object? v, String key) {
+    final s = _nonEmpty(v);
+    if (s != null && RegExp(r'[\x00-\x1f\x7f]').hasMatch(s)) {
+      throw ArgumentError(
+        'flatpak $key: must be one line with no control characters; it is '
+        'written into the .desktop entry',
+      );
+    }
+    return s;
+  }
+
   /// Sandbox `finish-args`; empty falls back to the packager's Wayland default.
   final List<String> finishArgs;
 
   /// Icon path relative to the manifest directory (PNG/SVG). Optional.
   final String? icon;
+
+  /// The launcher's display name, `.desktop` `Name=`. Unset, it is
+  /// `package.name`, which for an app built onto an embedder names the
+  /// embedder. Only the `.desktop` entry reads it, so an app layer can set it
+  /// without renaming the deb or rpm.
+  final String? name;
+
+  /// `.desktop` `Comment=`, the launcher's tooltip. Omitted when unset.
+  final String? comment;
 
   /// `.desktop` `Categories`.
   final List<String> categories;

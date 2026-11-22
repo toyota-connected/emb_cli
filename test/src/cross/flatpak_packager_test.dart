@@ -15,6 +15,7 @@ void main() {
   // capturing the generated manifest before the context dir is removed.
   String? capturedManifest;
   String? capturedLauncher;
+  String? capturedDesktop;
   List<String>? builderArgv;
   List<String>? bundleArgv;
   setUp(() => builderArgv = null);
@@ -41,6 +42,12 @@ void main() {
       final ctx = workingDirectory!;
       capturedManifest = File(args.last).readAsStringSync();
       capturedLauncher = File(p.join(ctx, 'launcher.sh')).readAsStringSync();
+      capturedDesktop = Directory(ctx)
+          .listSync()
+          .whereType<File>()
+          .where((f) => f.path.endsWith('.desktop'))
+          .singleOrNull
+          ?.readAsStringSync();
       return const RunResult(0, '', '');
     }
     if (exe == 'flatpak' && args.first == 'build-bundle') {
@@ -652,6 +659,57 @@ void main() {
     // The human name still reaches the desktop entry.
     expect(capturedManifest, contains('com.example.RemoteManager.desktop'));
   });
+  group('the desktop entry (#349)', () {
+    Future<String> desktop(FlatpakMetadata meta) async {
+      await FlatpakPackager(runProcess: fakeRun).build(
+        bundleDir: fakeBundle(),
+        outDir: Directory(p.join(tmp.path, 'dist')),
+        meta: meta,
+      );
+      return capturedDesktop!;
+    }
+
+    test('names the app, and carries a comment when given one', () async {
+      final d = await desktop(
+        const FlatpakMetadata(
+          appId: 'io.example.Demo',
+          command: 'homescreen',
+          appName: 'Firebase workbench',
+          comment: 'Firebase for desktop and embedded Linux',
+        ),
+      );
+      expect(
+        d.split('\n'),
+        containsAllInOrder([
+          'Name=Firebase workbench',
+          'Comment=Firebase for desktop and embedded Linux',
+          'Exec=homescreen',
+        ]),
+      );
+    });
+
+    test('has no Comment= without one', () async {
+      final d = await desktop(
+        const FlatpakMetadata(appId: 'io.example.Demo', command: 'homescreen'),
+      );
+      expect(d, contains('Name=Demo\n'));
+      expect(d, isNot(contains('Comment=')));
+    });
+
+    test('a backslash is escaped, as the spec reads one', () async {
+      final d = await desktop(
+        const FlatpakMetadata(
+          appId: 'io.example.Demo',
+          command: 'homescreen',
+          appName: r'C:\ is not a path',
+          comment: r'a \n here is text',
+        ),
+      );
+      expect(d, contains(r'Name=C:\\ is not a path'));
+      expect(d, contains(r'Comment=a \\n here is text'));
+    });
+  });
+
   test('a hostile command name cannot inject a build command', () async {
     // flatpak-builder runs each build-command through a shell, so `command`
     // used to be an injection point in both `chmod` and the launcher install.

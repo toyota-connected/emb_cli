@@ -39,6 +39,15 @@ version shipped.
   shared and gc holds it exclusive, so gc waits for a pull in progress.
   `--dry-run` reports without changing anything.
 
+- feat(flatpak): `package.flatpak.name:` and `comment:` set the launcher's
+  `Name=` and `Comment=` (#349). `Name=` came from `package.name`, so an app
+  built onto ivi-homescreen showed in the launcher as `ivi-homescreen`, and
+  renaming the package to fix it renamed the deb and rpm too. Both keys reach
+  the `.desktop` entry only. `Comment=` was not written at all before. A value
+  with a newline or other control character is refused when the manifest
+  loads, since it would start another key in the entry; a backslash is
+  escaped as the Desktop Entry spec reads one.
+
 - feat(cross): a `flatpak-sdk` target whose `sdk_repo` cannot be pulled
   builds from the cache. An unreachable server or a dropped connection failed
   the build even with a usable commit cached. emb now uses the commit that

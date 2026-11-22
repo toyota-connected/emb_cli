@@ -23,6 +23,7 @@ class FlatpakMetadata {
     this.arch,
     this.finishArgs = defaultFinishArgs,
     this.appName,
+    this.comment,
     this.icon,
     this.categories = const ['Utility'],
     this.env = const {},
@@ -71,6 +72,9 @@ class FlatpakMetadata {
 
   /// `.desktop` display name; defaults to the appId's last segment.
   final String? appName;
+
+  /// `.desktop` `Comment=`; omitted when null.
+  final String? comment;
 
   /// Host path to a PNG/SVG icon installed into the hicolor theme. Optional.
   final File? icon;
@@ -528,13 +532,20 @@ class FlatpakPackager {
     final b = StringBuffer()
       ..writeln('[Desktop Entry]')
       ..writeln('Type=Application')
-      ..writeln('Name=$name')
+      ..writeln('Name=${_desktopEscape(name)}');
+    if (m.comment case final c?) b.writeln('Comment=${_desktopEscape(c)}');
+    b
       ..writeln('Exec=${m.command}')
       ..writeln('Terminal=false')
       ..writeln('Categories=${m.categories.join(';')};');
     if (m.icon != null) b.writeln('Icon=${m.appId}');
     return b.toString();
   }
+
+  /// A `.desktop` string value. The spec reads `\s`, `\n`, `\t`, `\r` and
+  /// `\\` as escapes, so a literal backslash is doubled. Control
+  /// characters were refused when the manifest loaded.
+  static String _desktopEscape(String v) => v.replaceAll(r'\', r'\\');
 
   /// Normalize an extra-file destination to an absolute `/app/...` path, and
   /// refuse one that climbs out of it. Unnormalized, a `to:` of

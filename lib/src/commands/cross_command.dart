@@ -3412,7 +3412,8 @@ class CrossCommand extends Command<int> {
       finishArgs: fp.finishArgs.isNotEmpty
           ? fp.finishArgs
           : FlatpakMetadata.defaultFinishArgs,
-      appName: spec.name ?? defaultName,
+      appName: fp.name ?? spec.name ?? defaultName,
+      comment: fp.comment,
       icon: icon,
       categories: fp.categories,
       env: fp.env,
