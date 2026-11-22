@@ -510,6 +510,9 @@ void main() {
       }
     }();
 
+    // What the last [build] reported as not built.
+    var lastCached = <String>[];
+
     String overlayOf(CrossProfile profile) => Workspace(
       tmp,
     ).platformDir('overlay-${profile.targetTriple}').path;
@@ -560,7 +563,7 @@ void main() {
 
       final ob = OverlayBuilder(Workspace(tmp), profile, runProcess: run);
       try {
-        await ob.build(
+        lastCached = (await ob.build(
           [
             // An augment ahead of it, whose version stands for any input.
             if (ahead != null)
@@ -574,7 +577,7 @@ void main() {
           ],
           confinePackages: confine,
           stageInto: stageInto,
-        );
+        )).cached;
       } finally {
         ob.close();
       }
@@ -586,7 +589,10 @@ void main() {
       skip: havePkgConfig ? false : 'pkg-config not installed',
       () async {
         expect(await build(native), 1);
+        expect(lastCached, isEmpty);
         expect(await build(native), 0);
+        // So the run's summary says cached, not built.
+        expect(lastCached, ['vulkan-headers']);
       },
     );
 
@@ -637,7 +643,11 @@ void main() {
         expect(await build(native), 1);
         expect(await build(native, ahead: '1.0.0'), 1);
         expect(await build(native, ahead: '1.0.0'), 0);
+        // The fake install writes no .pc for the one ahead, so only this one
+        // is found.
+        expect(lastCached, ['vulkan-headers']);
         expect(await build(native, ahead: '2.0.0'), 1);
+        expect(lastCached, isEmpty);
       },
     );
 
@@ -889,13 +899,14 @@ void main() {
       // Second invocation with identical inputs: cmake must not be called
       // again.
       final ob2 = OverlayBuilder(Workspace(tmp), _profile, runProcess: run);
-      await ob2.build([lib]);
+      final again = await ob2.build([lib]);
       ob2.close();
       expect(
         buildCount,
         1,
         reason: 'stamp hit — cmake skipped on second build',
       );
+      expect(again.cached, [lib.pkg]);
     },
   );
 

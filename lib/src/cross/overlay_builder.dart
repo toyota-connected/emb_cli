@@ -28,6 +28,7 @@ class OverlayPaths {
     required this.libDirs,
     required this.pkgConfigDirs,
     this.binDirs = const [],
+    this.cached = const [],
   });
 
   final String prefix;
@@ -38,6 +39,10 @@ class OverlayPaths {
   /// Host-tool bin dirs (from `host: true` augments) to prepend to the cross
   /// build's PATH so its `find_program` resolves a build-machine binary.
   final List<String> binDirs;
+
+  /// The augments [OverlayBuilder.build] found already built, or satisfied by
+  /// the sysroot, and so did not build, by `pkg`.
+  final List<String> cached;
 
   /// pkg-config env that searches the overlay first, then the sysroot.
   Map<String, String> pkgConfigEnv(CrossProfile profile) {
@@ -403,6 +408,7 @@ class OverlayBuilder {
     final binDirs = <String>[];
     // The augments ahead of each one, which it may have been built against.
     final before = <String>[];
+    final cached = <String>[];
 
     for (final lib in libs) {
       final ahead = List.of(before);
@@ -424,6 +430,7 @@ class OverlayBuilder {
           }
 
           if (buildResult.wasCached) {
+            cached.add(lib.pkg);
             onStep?.complete('${lib.pkg} host cached → ${buildResult.binPath}');
           } else {
             onStep?.complete('${lib.pkg} host built → ${buildResult.binPath}');
@@ -510,6 +517,7 @@ class OverlayBuilder {
             '${lib.pkg}: installed to ${overlay.path}', //
           );
         } else {
+          cached.add(lib.pkg);
           onStep?.complete('${lib.pkg}: cached ($cachedBy)');
         }
       } catch (e) {
@@ -518,7 +526,7 @@ class OverlayBuilder {
       }
       continue;
     }
-    return _pathsSoFar(overlay, binDirs);
+    return _pathsSoFar(overlay, binDirs, cached: cached);
   }
 
   /// The host pass of a two-pass augment, as the single-pass `host: true`
@@ -552,7 +560,11 @@ class OverlayBuilder {
   /// not its headers, not its `.pc` file, and not a `host: true` tool it needs
   /// to run. That is the general form of the Filament case: one tree needs a
   /// host pass whose executables the target pass then consumes.
-  OverlayPaths _pathsSoFar(Directory overlay, List<String> binDirs) {
+  OverlayPaths _pathsSoFar(
+    Directory overlay,
+    List<String> binDirs, {
+    List<String> cached = const [],
+  }) {
     final usr = p.join(overlay.path, 'usr');
     return OverlayPaths(
       prefix: overlay.path,
@@ -563,6 +575,7 @@ class OverlayBuilder {
         p.join(usr, 'share', 'pkgconfig'),
       ],
       binDirs: binDirs,
+      cached: cached,
     );
   }
 

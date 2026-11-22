@@ -1880,4 +1880,22 @@ void main() {
       expect(s.name, 'kiosk-app');
     });
   });
+
+  group('augment summary', () {
+    test('all built, as before', () {
+      expect(augmentSummary(['a', 'b'], const []), 'a, b built');
+    });
+
+    // Said "built (0.0s)" for a run that built nothing.
+    test('all cached', () {
+      expect(augmentSummary(['a', 'b'], const ['a', 'b']), 'a, b cached');
+    });
+
+    test('mixed, in manifest order', () {
+      expect(
+        augmentSummary(['a', 'b', 'c', 'd'], const ['b', 'c']),
+        'a built, b, c cached, d built',
+      );
+    });
+  });
 }

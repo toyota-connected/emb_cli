@@ -6,6 +6,10 @@ version shipped.
 
 **Cross.**
 
+- fix(cross): the build summary said `augment : <pkg> built (0.0s)` for an
+  augment it had found already built and skipped. It now names which were
+  built and which cached, e.g. `firebase-cpp-sdk cached`.
+
 - feat(cross): `sdk_repo_gpg_key:` now also requires the repo's summary to be
   signed by that key, and a URL may not move a ref to an older commit than
   the cache has. With only commits checked, whoever served the repo could
