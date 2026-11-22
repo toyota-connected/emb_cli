@@ -5,6 +5,8 @@ import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/cache/oci_transport.dart';
 import 'package:emb_cli/src/cache/store.dart';
 import 'package:emb_cli/src/commands/cache_command.dart';
+import 'package:emb_cli/src/cross/flatpak_sdk_repo.dart';
+import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:mason_logger/mason_logger.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
@@ -100,6 +102,56 @@ void main() {
     expect((entries.single as Map)['kind'], 'toolchain');
     expect((entries.single as Map)['complete'], true);
   });
+
+  test(
+    'cache gc also drops a flatpak SDK unused for a week',
+    skip: () {
+      try {
+        return Process.runSync('ostree', ['--version']).exitCode == 0
+            ? false
+            : 'ostree not installed';
+      } on ProcessException {
+        return 'ostree not installed';
+      }
+    }(),
+    () async {
+      const ref = 'runtime/org.test.Sdk/x86_64/1';
+      final src = p.join(tmp.path, 'src');
+      final tree = Directory(p.join(tmp.path, 'tree'))..createSync();
+      File(p.join(tree.path, 'metadata')).writeAsStringSync('[Runtime]\n');
+      Process.runSync('ostree', ['init', '--repo=$src', '--mode=archive-z2']);
+      Process.runSync('ostree', [
+        'commit',
+        '--repo=$src',
+        '--branch=$ref',
+        '--subject=t',
+        tree.path,
+      ]);
+      final sdk = Directory(p.join(tmp.path, 'flatpak-sdk'));
+      final c = await FlatpakSdkRepo(
+        sdk,
+        runProcess: defaultTimedProcessRunner,
+      ).checkout(src, ref);
+
+      var (code, out) = await run(['cache', 'gc']);
+      expect(code, ExitCode.success.code);
+      expect(out, isNot(contains('removed flatpak-sdk')));
+
+      File(p.join(sdk.path, 'used', c.commit)).writeAsStringSync(
+        DateTime.now()
+            .toUtc()
+            .subtract(const Duration(days: 8))
+            .toIso8601String(),
+      );
+      (code, out) = await run(['cache', 'gc', '--dry-run']);
+      expect(out, contains('would remove flatpak-sdk ref $ref ($src)'));
+      expect(out, contains('(before the refs above go)'));
+      (code, out) = await run(['cache', 'gc']);
+      expect(code, ExitCode.success.code);
+      expect(out, contains('removed flatpak-sdk ref $ref ($src)'));
+      expect(out, contains('flatpak-sdk objects: Deleted '));
+    },
+  );
 
   test('cache gc reports nothing to reclaim on a clean store', () async {
     final (code, out) = await run(['cache', 'gc']);

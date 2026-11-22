@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
@@ -11,6 +12,18 @@ class FlatpakSdkRepoException implements Exception {
   final String message;
   @override
   String toString() => message;
+}
+
+/// What [FlatpakSdkRepo.gc] removed, or would have.
+class SdkGcReport {
+  const SdkGcReport(this.removed, this.objects);
+
+  /// Refs and checkouts, one line each.
+  final List<String> removed;
+
+  /// ostree's own summary of the object prune (`Deleted 3 objects, 300.2 kB
+  /// freed`), or null when there was no repo.
+  final String? objects;
 }
 
 /// A flatpak ref checked out of an ostree repo: `files/` and `metadata`, the
@@ -70,7 +83,20 @@ class FlatpakSdkRepo {
 
   /// Check out [ref] (`runtime/<id>/<arch>/<branch>`) from [source], a URL or
   /// an absolute path. With [gpgKey], its commits must be signed by that key.
+  ///
+  /// Holds the cache's lock shared, so builds run side by side and [gc]
+  /// waits for them: it never deletes a ref a pull is updating, or a
+  /// checkout a build is about to use.
   Future<RepoCheckout> checkout(
+    String source,
+    String ref, {
+    String? gpgKey,
+  }) => _locked(
+    FileLock.blockingShared,
+    () => _checkout(source, ref, gpgKey: gpgKey),
+  );
+
+  Future<RepoCheckout> _checkout(
     String source,
     String ref, {
     String? gpgKey,
@@ -122,11 +148,178 @@ class FlatpakSdkRepo {
             : '$ref is not in $source',
       );
     }
+    _stamp(commit);
     return RepoCheckout(
       await _checkoutCommit(commit),
       commit,
       warning: warning,
     );
+  }
+
+  /// Reclaim what no build has used within [safetyWindow], as `Store.gc`
+  /// does for the rest of the cache:
+  ///
+  /// - a ref whose commit was last checked out before the window, so its
+  ///   objects can go; a later build pulls it again;
+  /// - a checkout last used before the window;
+  /// - a partial checkout whose process is gone;
+  /// - then every object no remaining ref's commit needs. An SDK update
+  ///   leaves the old commit's objects behind, a gigabyte a time.
+  ///
+  /// A commit with no use recorded (pulled before emb recorded them) is
+  /// recorded now and kept, so nothing goes on its first [gc].
+  Future<SdkGcReport> gc({
+    bool dryRun = false,
+    Duration safetyWindow = const Duration(days: 7),
+  }) async {
+    if (!File(p.join(_repo, 'config')).existsSync()) {
+      return const SdkGcReport([], null);
+    }
+    return _locked(FileLock.blockingExclusive, () async {
+      final removed = <String>[];
+      bool stale(String commit) =>
+          _staleStamp(commit, safetyWindow, record: !dryRun);
+
+      final refs = await _ostree(['refs']);
+      if (refs.exitCode != 0) {
+        throw FlatpakSdkRepoException(
+          'could not list the refs in $_repo: ${_firstLine(refs.stderr)}',
+        );
+      }
+      final kept = <String>{};
+      for (final line in const LineSplitter().convert(refs.stdout)) {
+        final colon = line.indexOf(':');
+        if (!line.startsWith('emb-') || colon < 0) continue;
+        final remote = line.substring(0, colon);
+        final ref = line.substring(colon + 1);
+        final head = await _revParse(remote, ref);
+        if (head == null) continue;
+        if (!stale(head)) {
+          kept.add(head);
+          continue;
+        }
+        if (!dryRun) {
+          final r = await _ostree(['refs', '--delete', line]);
+          if (r.exitCode != 0) {
+            throw FlatpakSdkRepoException(
+              'could not delete $line: ${_firstLine(r.stderr)}',
+            );
+          }
+        }
+        removed.add('flatpak-sdk ref $ref (${_source(remote)})');
+      }
+
+      final checkouts = Directory(p.join(cacheDir.path, 'checkouts'));
+      if (checkouts.existsSync()) {
+        for (final e in checkouts.listSync().whereType<Directory>()) {
+          final name = p.basename(e.path);
+          final partial = RegExp(
+            r'^[0-9a-f]{64}\.partial-(\d+)-',
+          ).firstMatch(name);
+          final remove = partial != null
+              ? !Directory('/proc/${partial[1]}').existsSync()
+              : _commit.hasMatch(name) && !kept.contains(name) && stale(name);
+          if (!remove) continue;
+          if (!dryRun) e.deleteSync(recursive: true);
+          removed.add('flatpak-sdk checkout ${name.substring(0, 12)}');
+        }
+      }
+
+      // A use recorded for a commit with nothing left to use is noise.
+      final used = Directory(p.join(cacheDir.path, 'used'));
+      if (!dryRun && used.existsSync()) {
+        for (final f in used.listSync().whereType<File>()) {
+          final c = p.basename(f.path);
+          if (!kept.contains(c) &&
+              !Directory(p.join(checkouts.path, c)).existsSync()) {
+            f.deleteSync();
+          }
+        }
+      }
+
+      final prune = await _ostree([
+        'prune',
+        '--refs-only',
+        '--depth=0',
+        if (dryRun) '--no-prune',
+      ]);
+      if (prune.exitCode != 0) {
+        throw FlatpakSdkRepoException(
+          'could not prune $_repo: ${_firstLine(prune.stderr)}',
+        );
+      }
+      final lines = const LineSplitter()
+          .convert(prune.stdout)
+          .where((l) => l.trim().isNotEmpty);
+      return SdkGcReport(removed, lines.isEmpty ? null : lines.last.trim());
+    });
+  }
+
+  static final _commit = RegExp(r'^[0-9a-f]{64}$');
+
+  File _stampOf(String commit) => File(p.join(cacheDir.path, 'used', commit));
+
+  /// Record that a build used [commit] now.
+  void _stamp(String commit) {
+    try {
+      _stampOf(commit)
+        ..parent.createSync(recursive: true)
+        ..writeAsStringSync(DateTime.now().toUtc().toIso8601String());
+    } on FileSystemException {
+      // A missed record only makes gc keep the commit a while longer.
+    }
+  }
+
+  /// Whether [commit] was last used before [window]. With no use recorded it
+  /// is not; with [record], now is recorded as its use.
+  bool _staleStamp(String commit, Duration window, {required bool record}) {
+    final f = _stampOf(commit);
+    final DateTime? at;
+    try {
+      at = f.existsSync()
+          ? DateTime.tryParse(f.readAsStringSync().trim())
+          : null;
+    } on FileSystemException {
+      return false;
+    }
+    if (at == null) {
+      if (record) _stamp(commit);
+      return false;
+    }
+    return DateTime.now().toUtc().difference(at.toUtc()) > window;
+  }
+
+  /// The URL or path behind [remote], for a report; [remote] itself if
+  /// ostree cannot say.
+  String _source(String remote) {
+    try {
+      final config = File(p.join(_repo, 'config')).readAsLinesSync();
+      final at = config.indexOf('[remote "$remote"]');
+      if (at < 0) return remote;
+      for (final l in config.skip(at + 1)) {
+        if (l.startsWith('[')) break;
+        final m = RegExp(r'^url\s*=\s*(.*)$').firstMatch(l.trim());
+        if (m != null) return m[1]!.replaceFirst('file://', '');
+      }
+    } on FileSystemException {
+      // Fall through.
+    }
+    return remote;
+  }
+
+  /// Run [body] holding `<cacheDir>/lock` as [mode]: shared for builds,
+  /// exclusive for [gc].
+  Future<T> _locked<T>(FileLock mode, Future<T> Function() body) async {
+    cacheDir.createSync(recursive: true);
+    final raf = File(p.join(cacheDir.path, 'lock')).openSync(
+      mode: FileMode.append,
+    );
+    try {
+      await raf.lock(mode);
+      return await body();
+    } finally {
+      await raf.close();
+    }
   }
 
   /// The commit [remote] last gave for [ref] in the cache, or null.

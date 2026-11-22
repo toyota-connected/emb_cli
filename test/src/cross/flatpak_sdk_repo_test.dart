@@ -179,6 +179,98 @@ void main() {
       expect(sw.elapsed, lessThan(const Duration(seconds: 20)));
     });
 
+    group('gc', () {
+      File used(String commit) =>
+          File(p.join(tmp.path, 'cache', 'used', commit));
+      Directory checkoutOf(String commit) =>
+          Directory(p.join(tmp.path, 'cache', 'checkouts', commit));
+      void age(String commit, {int days = 8}) => used(commit).writeAsStringSync(
+        DateTime.now().toUtc().subtract(Duration(days: days)).toIso8601String(),
+      );
+      String refs() =>
+          Process.runSync('ostree', [
+                '--repo=${p.join(tmp.path, 'cache', 'repo')}',
+                'refs',
+              ]).stdout
+              as String;
+
+      test('keeps what a build used this week', () async {
+        final c = await cache().checkout(sourceRepo('src'), _ref);
+        expect(used(c.commit).existsSync(), isTrue);
+        final r = await cache().gc();
+        expect(r.removed, isEmpty);
+        expect(checkoutOf(c.commit).existsSync(), isTrue);
+        expect(refs(), contains(_ref));
+      });
+
+      test('drops an SDK unused for a week, objects too', () async {
+        final src = sourceRepo('src');
+        final c = await cache().checkout(src, _ref);
+        age(c.commit);
+        final r = await cache().gc();
+        expect(r.removed, [
+          'flatpak-sdk ref $_ref ($src)',
+          'flatpak-sdk checkout ${c.commit.substring(0, 12)}',
+        ]);
+        expect(r.objects, startsWith('Deleted '));
+        expect(checkoutOf(c.commit).existsSync(), isFalse);
+        expect(used(c.commit).existsSync(), isFalse);
+        expect(refs(), isNot(contains(_ref)));
+        // The next build pulls it again.
+        final again = await cache().checkout(src, _ref);
+        expect(again.commit, c.commit);
+      });
+
+      test("an update's old commit goes, the new one stays", () async {
+        final src = sourceRepo('src');
+        final old = await cache().checkout(src, _ref);
+        sourceRepo('src', marker: 'b');
+        final cur = await cache().checkout(src, _ref);
+        expect(cur.commit, isNot(old.commit));
+        age(old.commit);
+        final r = await cache().gc();
+        expect(r.removed, [
+          'flatpak-sdk checkout ${old.commit.substring(0, 12)}',
+        ]);
+        expect(r.objects, startsWith('Deleted '));
+        expect(checkoutOf(cur.commit).existsSync(), isTrue);
+        expect(refs(), contains(_ref));
+      });
+
+      test('--dry-run changes nothing', () async {
+        final c = await cache().checkout(sourceRepo('src'), _ref);
+        age(c.commit);
+        final r = await cache().gc(dryRun: true);
+        expect(r.removed, hasLength(2));
+        expect(r.objects, isNot(startsWith('Deleted')));
+        expect(checkoutOf(c.commit).existsSync(), isTrue);
+        expect(refs(), contains(_ref));
+      });
+
+      test(
+        'an SDK from before uses were recorded is kept, and recorded',
+        () async {
+          final c = await cache().checkout(sourceRepo('src'), _ref);
+          Directory(p.join(tmp.path, 'cache', 'used')).deleteSync(
+            recursive: true,
+          );
+          expect((await cache().gc()).removed, isEmpty);
+          expect(used(c.commit).existsSync(), isTrue);
+        },
+      );
+
+      test("drops a dead run's partial checkout", () async {
+        await cache().checkout(sourceRepo('src'), _ref);
+        final dead = Process.runSync('true', const []).pid;
+        final partial = Directory(
+          p.join(tmp.path, 'cache', 'checkouts', '${'b' * 64}.partial-$dead-0'),
+        )..createSync();
+        final r = await cache().gc();
+        expect(r.removed, ['flatpak-sdk checkout ${'b' * 12}']);
+        expect(partial.existsSync(), isFalse);
+      });
+    });
+
     test('pulls a repo by URL', () async {
       final src = sourceRepo('src');
       final c = await cache().checkout('file://$src', _ref);
@@ -270,6 +362,17 @@ void main() {
       ).checkout('/srv/repo', _ref);
       expect(c.warning, contains('(timed out after 30 min)'));
     });
+  });
+
+  test('gc with no repo runs nothing', () async {
+    final calls = <List<String>>[];
+    final r = await FlatpakSdkRepo(
+      Directory(p.join(tmp.path, 'cache')),
+      runProcess: fakeOstree(calls),
+    ).gc();
+    expect(r.removed, isEmpty);
+    expect(r.objects, isNull);
+    expect(calls, isEmpty);
   });
 
   test('only the pull has a time limit', () async {

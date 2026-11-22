@@ -1817,7 +1817,9 @@ emb cross my-app.emb.yaml --target flatpak --build --flatpak
   one is pulled unverified, with a warning. `--offline` uses the cached
   commit; `emb fetch` pulls ahead. A pull that fails or runs past 30 minutes
   falls back to the commit this repo last served, with a warning; `emb.lock`
-  still flags it if the lock pins a newer one. A target's `package:` replaces
+  still flags it if the lock pins a newer one. `emb cache gc` drops a ref no
+  build has used for a week and the objects an SDK update left behind; the
+  next build pulls what it needs again. A target's `package:` replaces
   the shared one, so give it the whole `flatpak:` block:
 
   ```yaml
@@ -2020,7 +2022,7 @@ every workspace and target. Location resolves as `$EMB_CACHE_DIR`, else
 |---|---|
 | `path` | Print the resolved cache directory. |
 | `list [--json]` | List store entries (kind, key, size, live references). |
-| `gc [--dry-run]` | Remove incomplete entries and unreferenced, stale ones; report space reclaimed. |
+| `gc [--dry-run]` | Remove incomplete entries and unreferenced, stale ones; report space reclaimed. Also drops a `flatpak-sdk` SDK or runtime no build has checked out for a week, and the OSTree objects only older commits needed. |
 | `migrate [-w <ws>] [--dry-run]` | Adopt a workspace's existing toolchain/engine trees into the store (moved in place of a re-download), leaving symlinks behind. |
 | `push [<kind>/<key> …] --registry <r> [--repo <r>] [--force] [--dry-run] [--json]` | Upload store entries to an OCI registry as artifacts (via `oras`), so a team/CI shares prebuilt trees. Defaults to every complete entry; skips refs that already exist unless `--force`. |
 | `pull <kind>/<key> … --registry <r> [--repo <r>] [--link <dir>] [--json]` | Download named entries from the registry into the store (extract-staged like a local build); `--link` also symlinks each into `<dir>`. |

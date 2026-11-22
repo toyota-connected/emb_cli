@@ -7,6 +7,7 @@ import 'package:emb_cli/src/cache/cache_dir.dart';
 import 'package:emb_cli/src/cache/oci_transport.dart';
 import 'package:emb_cli/src/cache/store.dart';
 import 'package:emb_cli/src/cross/determinism.dart';
+import 'package:emb_cli/src/cross/flatpak_sdk_repo.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
 import 'package:emb_cli/src/engine/engine_artifacts.dart';
 import 'package:emb_cli/src/json_output.dart';
@@ -137,9 +138,13 @@ class CacheListCommand extends Command<int> {
 /// `emb cache gc` — remove incomplete and unreferenced-and-stale entries.
 class CacheGcCommand extends Command<int> {
   /// Creates the subcommand.
-  CacheGcCommand({required Logger logger, Map<String, String>? environment})
-    : _logger = logger,
-      _env = environment {
+  CacheGcCommand({
+    required Logger logger,
+    Map<String, String>? environment,
+    TimedProcessRunner? ostree,
+  }) : _logger = logger,
+       _env = environment,
+       _ostree = ostree ?? defaultTimedProcessRunner {
     argParser.addFlag(
       'dry-run',
       negatable: false,
@@ -149,31 +154,56 @@ class CacheGcCommand extends Command<int> {
 
   final Logger _logger;
   final Map<String, String>? _env;
+  final TimedProcessRunner _ostree;
 
   @override
   String get name => 'gc';
 
   @override
   String get description =>
-      'Remove incomplete entries and unreferenced, stale entries.';
+      'Remove incomplete entries, unreferenced stale entries, and flatpak '
+      'SDKs no build has used for a week.';
 
   @override
   Future<int> run() async {
     final dryRun = argResults?['dry-run'] == true;
-    final store = Store(resolveCacheDir(environment: _env));
+    final cache = resolveCacheDir(environment: _env);
+    final store = Store(cache);
     final report = await store.gc(dryRun: dryRun);
     if (report.removed.isEmpty) {
-      _logger.info('Nothing to reclaim.');
-      return ExitCode.success.code;
+      _logger.info('Nothing to reclaim in the store.');
+    } else {
+      for (final r in report.removed) {
+        _logger.info('${dryRun ? "would remove" : "removed"} $r');
+      }
+      _logger.info(
+        '${dryRun ? "Would reclaim" : "Reclaimed"} '
+        '${_human(report.bytesFreed)} across ${report.removed.length} entr'
+        '${report.removed.length == 1 ? "y" : "ies"}.',
+      );
     }
-    for (final r in report.removed) {
+
+    // The flatpak-sdk OSTree cache keeps its own books: its objects are
+    // shared between commits, so only ostree can say what deleting frees.
+    final SdkGcReport sdk;
+    try {
+      sdk = await FlatpakSdkRepo(
+        Directory(p.join(cache.path, 'flatpak-sdk')),
+        runProcess: _ostree,
+      ).gc(dryRun: dryRun);
+    } on FlatpakSdkRepoException catch (e) {
+      _logger.err('flatpak-sdk cache: $e');
+      return ExitCode.software.code;
+    }
+    for (final r in sdk.removed) {
       _logger.info('${dryRun ? "would remove" : "removed"} $r');
     }
-    _logger.info(
-      '${dryRun ? "Would reclaim" : "Reclaimed"} ${_human(report.bytesFreed)} '
-      'across ${report.removed.length} entr'
-      '${report.removed.length == 1 ? "y" : "ies"}.',
-    );
+    if (sdk.objects case final objects?) {
+      final note = dryRun && sdk.removed.isNotEmpty
+          ? ' (before the refs above go)'
+          : '';
+      _logger.info('flatpak-sdk objects: $objects$note');
+    }
     return ExitCode.success.code;
   }
 }
