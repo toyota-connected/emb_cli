@@ -28,6 +28,12 @@ version shipped.
 
 **Flatpak.**
 
+- feat(init): `emb init flatpak` writes `package.flatpak.name:` and, from the
+  app's pubspec description, `comment:`. The launcher showed `package.name`,
+  a kebab-case id, while AppStream showed the app's name. `--name <text>` sets
+  that name for both; it defaults to the pubspec name as before. A value with
+  a control character is a usage error.
+
 - feat(cache): `emb cache gc` prunes the `flatpak-sdk` OSTree cache. Nothing
   removed from it before, and an SDK and its runtime are about a gigabyte, so
   each update or `runtime_version` bump added that much for good. A build now

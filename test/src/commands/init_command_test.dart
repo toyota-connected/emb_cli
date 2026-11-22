@@ -356,6 +356,45 @@ void main() {
         expect(xml, contains('<release version="2.3.4" date="2027-01-01"/>'));
       });
 
+      test('the launcher entry takes the same name and summary', () async {
+        final h = _Harness();
+        final dir = app(h, 'name: kiosk_app\ndescription: A kiosk.\n');
+        expect(await h.run(['--app', dir.path]), ExitCode.success.code);
+
+        final package = h.cross('kiosk-app.emb.yaml')['package'] as YamlMap;
+        final flatpak = package['flatpak'] as YamlMap;
+        expect(flatpak['name'], 'kiosk_app');
+        expect(flatpak['comment'], 'A kiosk.');
+      });
+
+      test('--name names the app in the launcher and AppStream', () async {
+        final h = _Harness();
+        final dir = app(h, 'name: kiosk_app\n');
+        expect(
+          await h.run(['--app', dir.path, '--name', "Bob's Kiosk: #1"]),
+          ExitCode.success.code,
+        );
+
+        // The id and the package name still come from the pubspec.
+        final package = h.cross('kiosk-app.emb.yaml')['package'] as YamlMap;
+        expect(package['name'], 'kiosk-app');
+        final flatpak = package['flatpak'] as YamlMap;
+        expect(flatpak['name'], "Bob's Kiosk: #1");
+        // No description, no comment.
+        expect(flatpak.containsKey('comment'), isFalse);
+        expect(
+          h.read('metainfo.xml'),
+          contains('<name>Bob&apos;s Kiosk: #1</name>'),
+        );
+      });
+
+      test('--name with a newline is a usage error', () async {
+        final h = _Harness();
+        expect(await h.run(['--name', 'My\nApp']), ExitCode.usage.code);
+        expect(h.errors.single, contains('--name'));
+        expect(h.written, isEmpty);
+      });
+
       // A local path is this machine's, so it must not reach the manifest;
       // and with the app outside the repo a runner has nothing to build.
       test('the path is not written, and no workflow is', () async {
@@ -889,6 +928,9 @@ cross:
         '--embedder-rev': ['--force', 'a b', "a'b"],
         '--flutter-version': ['-x', 'a b', 'stable; id'],
         '--embedder-bin': ['/usr/bin/x', '../x', 'a/../b', '-x', 'a b'],
+        // Written into the .desktop entry, where a newline starts a key.
+        // `--name=a<newline>b` is refused by the parser itself; see below.
+        '--name': ['', '  ', 'My\tApp', 'My\x7fApp'],
       };
       for (final entry in bad.entries) {
         for (final value in entry.value) {
