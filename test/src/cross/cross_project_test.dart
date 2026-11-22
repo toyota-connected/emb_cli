@@ -911,6 +911,76 @@ cross:
       );
     });
 
+    // #357: ivi-homescreen's board targets need the board library and its
+    // flatpak-sdk targets do not, so one missing must not stop the other.
+    group('a target elsewhere in the extended project that fails', () {
+      File writeProject() {
+        Directory(p.join(tmp.path, 'proj', '.emb')).createSync(recursive: true);
+        File(
+          p.join(tmp.path, 'proj', '.emb', 'rpi.emb.yaml'),
+        ).writeAsStringSync(
+          '''
+id: ivi-homescreen
+cross:
+  targets:
+    board: {extends: no-such-board}
+''',
+        );
+        File(
+          p.join(tmp.path, 'proj', '.emb', 'flatpak.emb.yaml'),
+        ).writeAsStringSync('''
+cross:
+  targets:
+    flatpak-sdk-x86_64:
+      provider: flatpak-sdk
+      triple: x86_64-flatpak-linux-gnu
+''');
+        return File(p.join(tmp.path, 'app.emb.yaml'))..writeAsStringSync('''
+id: myapp
+cross:
+  targets:
+    sdk: {extends: 'proj#flatpak-sdk-x86_64'}
+    pi: {extends: 'proj#board'}
+''');
+      }
+
+      test('does not stop a target that extends another one', () {
+        final project = CrossProjectResolver(
+          const ManifestLoader(),
+          boards,
+        ).resolve(writeProject().path, deferExtends: true)!;
+        final sdk = project.targets['sdk']!.cross;
+        expect(sdk['provider'], 'flatpak-sdk');
+        expect(sdk['triple'], 'x86_64-flatpak-linux-gnu');
+      });
+
+      test('fails the one that extends it, with its own reason', () {
+        final project = CrossProjectResolver(
+          const ManifestLoader(),
+          boards,
+        ).resolve(writeProject().path, deferExtends: true)!;
+        final pi = project.unresolved['pi']!;
+        expect(pi.message, contains('"proj#board" does not resolve'));
+        expect(pi.message, contains('no-such-board'));
+      });
+
+      test('still throws when not deferred', () {
+        expect(
+          () => CrossProjectResolver(
+            const ManifestLoader(),
+            boards,
+          ).resolve(writeProject().path),
+          throwsA(
+            isA<CrossProjectException>().having(
+              (e) => e.message,
+              'message',
+              contains('"proj#board" does not resolve'),
+            ),
+          ),
+        );
+      });
+    });
+
     test('extends a missing project dir throws', () {
       final app = File(p.join(tmp.path, 'app.emb.yaml'))
         ..writeAsStringSync('''
