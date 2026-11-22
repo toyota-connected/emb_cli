@@ -104,6 +104,29 @@ Map<String, String> mergeBackendDefines(
   Map<String, String> backendDefines,
 ) => {...rpathDefines, ...targetDefines, ...backendDefines};
 
+/// The augment line of a build's summary: which of [pkgs] were built and
+/// which [cached] ones were not, in manifest order, e.g. `a, b built, c
+/// cached`. A run that built nothing said `built` before, after 0.0 s.
+String augmentSummary(List<String> pkgs, List<String> cached) {
+  final parts = <String>[];
+  var run = <String>[];
+  bool? runCached;
+  void flush() {
+    if (run.isEmpty) return;
+    parts.add('${run.join(', ')} ${runCached! ? 'cached' : 'built'}');
+    run = [];
+  }
+
+  for (final pkg in pkgs) {
+    final isCached = cached.contains(pkg);
+    if (runCached != isCached) flush();
+    runCached = isCached;
+    run.add(pkg);
+  }
+  flush();
+  return parts.join(', ');
+}
+
 /// What a flatpak's launcher entry says. `Name=` is `package.flatpak.name`,
 /// else `package.name`, else [defaultName], the project id: an app built onto
 /// an embedder would otherwise show under the embedder's package name.
@@ -1468,10 +1491,10 @@ class CrossCommand extends Command<int> {
       } finally {
         overlay.close();
       }
-      _logger.info(
-        '  augment       : ${augments.map((a) => a.pkg).join(", ")} '
-        'built (${_secs(sw)})',
-      );
+      final summary = augmentSummary([
+        for (final a in augments) a.pkg,
+      ], overlayPaths.cached);
+      _logger.info('  augment       : $summary (${_secs(sw)})');
     }
 
     // Where a staged dependency goes: the same rule the augments above follow,
