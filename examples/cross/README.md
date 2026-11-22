@@ -423,7 +423,7 @@ package:
     comment: The in-vehicle home screen    # launcher Comment=; omitted if unset
     vendor_libs: auto                      # see below
     # sdk_repo: ../repo-dev                # flatpak-sdk target: SDK from an OSTree repo
-    # sdk_repo_gpg_key: repo-dev.gpg       # require signed commits from it
+    # sdk_repo_gpg_key: repo-dev.gpg       # require its commits and summary signed
     env: {XDG_DATA_HOME: $HOME/.local/share}
     args: [--shell=xdg]
 ```

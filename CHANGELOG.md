@@ -6,6 +6,18 @@ version shipped.
 
 **Cross.**
 
+- feat(cross): `sdk_repo_gpg_key:` now also requires the repo's summary to be
+  signed by that key, and a URL may not move a ref to an older commit than
+  the cache has. With only commits checked, whoever served the repo could
+  point a ref at any commit the key ever signed: an old SDK with known bugs,
+  or another branch's. A signed summary stops the remap; `--timestamp-check`
+  stops a replay of an old signed summary. A pull that fails either check,
+  or a commit signature, is now an error rather than a fallback to the
+  cache, which would hide it. A remote cached before this keeps its commits
+  and gains the summary check. A local path is not checked for rollback:
+  OSTree's local pull cannot. Breaking for a repo that signs commits but not
+  its summary; `flatpak build-update-repo --gpg-sign` signs both.
+
 - feat(init): `emb init flatpak --sdk <x86_64|aarch64>` adds a `flatpak-sdk`
   target, `sdk-<arch>`, built against the flatpak SDK for that architecture.
   Repeatable. The README says what it needs: clang, lld and llvm, the SDK and

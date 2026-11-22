@@ -15,6 +15,14 @@ final bool _haveOstree = () {
   }
 }();
 
+final bool _haveGpg = () {
+  try {
+    return Process.runSync('gpg', ['--version']).exitCode == 0;
+  } on ProcessException {
+    return false;
+  }
+}();
+
 const _ref = 'runtime/org.test.Sdk/x86_64/1';
 
 void main() {
@@ -177,6 +185,200 @@ void main() {
       expect(again.commit, first.commit);
       expect(again.warning, contains('(timed out after 1 s)'));
       expect(sw.elapsed, lessThan(const Duration(seconds: 20)));
+    });
+
+    group('signed by sdk_repo_gpg_key', skip: _haveGpg ? false : 'no gpg', () {
+      late String home;
+      late String fpr;
+      late String key;
+
+      setUp(() {
+        home = p.join(tmp.path, 'gnupg');
+        Directory(home).createSync();
+        Process.runSync('chmod', ['700', home]);
+        final gen = Process.runSync('gpg', [
+          '--homedir=$home',
+          '--batch',
+          '--passphrase=',
+          '--quick-gen-key',
+          'emb test <test@example.invalid>',
+          'ed25519',
+          'sign',
+          'never',
+        ]);
+        expect(gen.exitCode, 0, reason: '${gen.stderr}');
+        final list = Process.runSync('gpg', [
+          '--homedir=$home',
+          '--with-colons',
+          '--list-keys',
+        ]);
+        fpr = RegExp(
+          '^fpr:+([0-9A-F]+):',
+          multiLine: true,
+        ).firstMatch('${list.stdout}')![1]!;
+        key = p.join(tmp.path, 'key.gpg');
+        final export = Process.runSync('gpg', [
+          '--homedir=$home',
+          '--export',
+          '--output=$key',
+          fpr,
+        ]);
+        expect(export.exitCode, 0, reason: '${export.stderr}');
+      });
+      tearDown(
+        () => Process.runSync('gpgconf', [
+          '--homedir=$home',
+          '--kill',
+          'gpg-agent',
+        ]),
+      );
+
+      /// [sourceRepo], its commit signed and dated [date], and its summary
+      /// signed when [signSummary].
+      String signedRepo({
+        String marker = 'a',
+        String date = '2025-01-02',
+        bool signSummary = true,
+      }) {
+        final repo = p.join(tmp.path, 'signed');
+        if (!Directory(repo).existsSync()) {
+          Process.runSync('ostree', [
+            'init',
+            '--repo=$repo',
+            '--mode=archive-z2',
+          ]);
+        }
+        final tree = Directory(p.join(tmp.path, 'signed-tree-$marker'))
+          ..createSync(recursive: true);
+        File(p.join(tree.path, 'metadata')).writeAsStringSync('#$marker\n');
+        final commit = Process.runSync('ostree', [
+          'commit',
+          '--repo=$repo',
+          '--branch=$_ref',
+          '--timestamp=$date',
+          '--gpg-sign=$fpr',
+          '--gpg-homedir=$home',
+          tree.path,
+        ]);
+        expect(commit.exitCode, 0, reason: '${commit.stderr}');
+        final summary = Process.runSync('ostree', [
+          'summary',
+          '--repo=$repo',
+          '-u',
+          if (signSummary) ...['--gpg-sign=$fpr', '--gpg-homedir=$home'],
+        ]);
+        expect(summary.exitCode, 0, reason: '${summary.stderr}');
+        return repo;
+      }
+
+      Matcher refused(String text) => throwsA(
+        isA<FlatpakSdkRepoException>().having(
+          (e) => e.message,
+          'message',
+          contains(text),
+        ),
+      );
+
+      for (final url in [false, true]) {
+        final how = url ? 'by URL' : 'by path';
+
+        test('commits and summary signed: checks out, $how', () async {
+          final src = signedRepo();
+          final c = await cache().checkout(
+            url ? 'file://$src' : src,
+            _ref,
+            gpgKey: key,
+          );
+          expect(
+            File(p.join(c.path, 'metadata')).readAsStringSync(),
+            '#a\n',
+          );
+        });
+
+        // Even with a good commit cached: the cache would hide it for good.
+        test('an unsigned summary is refused, not ridden out, $how', () async {
+          final src = signedRepo();
+          final source = url ? 'file://$src' : src;
+          await cache().checkout(source, _ref, gpgKey: key);
+          signedRepo(marker: 'b', date: '2025-02-02', signSummary: false);
+          await expectLater(
+            cache().checkout(source, _ref, gpgKey: key),
+            refused('has no summary signed by sdk_repo_gpg_key'),
+          );
+        });
+      }
+
+      test('a URL that moves the ref back in time is refused', () async {
+        final src = signedRepo();
+        await cache().checkout('file://$src', _ref, gpgKey: key);
+        // Signed by the key, so commit signatures alone would pass it.
+        signedRepo(marker: 'old', date: '2024-01-02');
+        await expectLater(
+          cache().checkout('file://$src', _ref, gpgKey: key),
+          refused('refusing the rollback'),
+        );
+      });
+
+      test('a commit signed by another key is refused', () async {
+        final src = signedRepo();
+        final other = File(p.join(tmp.path, 'other.gpg'));
+        // A key file of the right shape, holding someone else's key.
+        final home2 = p.join(tmp.path, 'gnupg2');
+        Directory(home2).createSync();
+        Process.runSync('chmod', ['700', home2]);
+        Process.runSync('gpg', [
+          '--homedir=$home2',
+          '--batch',
+          '--passphrase=',
+          '--quick-gen-key',
+          'other <other@example.invalid>',
+          'ed25519',
+          'sign',
+          'never',
+        ]);
+        Process.runSync('gpg', [
+          '--homedir=$home2',
+          '--export',
+          '--output=${other.path}',
+        ]);
+        addTearDown(
+          () => Process.runSync('gpgconf', [
+            '--homedir=$home2',
+            '--kill',
+            'gpg-agent',
+          ]),
+        );
+        await expectLater(
+          cache().checkout(src, _ref, gpgKey: other.path),
+          refused('not signed by sdk_repo_gpg_key'),
+        );
+      });
+
+      // A cache from before summaries were checked keeps its remote, and so
+      // what --offline can build from, and gains the check.
+      test('a remote added without the summary check gains it', () async {
+        final src = signedRepo();
+        final c = cache();
+        await c.checkout(src, _ref, gpgKey: key);
+        final repo = p.join(tmp.path, 'cache', 'repo');
+        final config = File(p.join(repo, 'config'));
+        config.writeAsStringSync(
+          config.readAsStringSync().replaceAll(
+            'gpg-verify-summary=true',
+            'gpg-verify-summary=false',
+          ),
+        );
+        signedRepo(marker: 'b', date: '2025-02-02', signSummary: false);
+        await expectLater(
+          c.checkout(src, _ref, gpgKey: key),
+          refused('has no summary signed by sdk_repo_gpg_key'),
+        );
+        expect(config.readAsStringSync(), contains('gpg-verify-summary=true'));
+        expect(
+          config.readAsStringSync(),
+          isNot(contains('gpg-verify-summary=false')),
+        );
+      });
     });
 
     group('gc', () {
@@ -413,7 +615,64 @@ void main() {
     expect(adds, everyElement(contains('--gpg-import=${key.path}')));
     expect(adds, everyElement(isNot(contains('--no-gpg-verify'))));
     final pullLocal = calls.singleWhere((c) => c.contains('pull-local'));
-    expect(pullLocal, contains('--gpg-verify'));
+    expect(pullLocal, containsAll(['--gpg-verify', '--gpg-verify-summary']));
+    expect(adds, everyElement(contains('--set=gpg-verify-summary=true')));
+    final pull = calls.singleWhere((c) => c.contains('pull'));
+    expect(pull, contains('--timestamp-check'));
+  });
+
+  test('without a key, nothing is verified and nothing checked', () async {
+    final calls = <List<String>>[];
+    final repo = FlatpakSdkRepo(
+      Directory(p.join(tmp.path, 'cache')),
+      runProcess: fakeOstree(calls),
+    );
+    await repo.checkout('https://example.com/repo', _ref);
+    await repo.checkout('/srv/repo', _ref);
+    final flags = calls.expand((c) => c);
+    expect(flags, contains('--no-gpg-verify'));
+    for (final f in [
+      '--gpg-verify',
+      '--gpg-verify-summary',
+      '--set=gpg-verify-summary=true',
+      '--timestamp-check',
+    ]) {
+      expect(flags, isNot(contains(f)));
+    }
+    expect(calls.where((c) => c.contains('config')), isEmpty);
+  });
+
+  group('a verification failure is not ridden out on the cache', () {
+    const failures = {
+      'error: GPG verification enabled, but no summary.sig found (use '
+              'gpg-verify-summary=false in remote config to disable)':
+          'has no summary signed by sdk_repo_gpg_key',
+      'error: GPG verification enabled, but no summary found':
+          'has no summary signed by sdk_repo_gpg_key',
+      "error: Upgrade target revision 'b' with timestamp 'x' is "
+              "chronologically older than current revision 'a'":
+          'refusing the rollback',
+      'error: GPG signatures found, but none are in trusted keyring':
+          'is not signed by sdk_repo_gpg_key: error: GPG signatures found',
+    };
+    for (final f in failures.entries) {
+      test(f.value, () async {
+        final key = File(p.join(tmp.path, 'k.gpg'))..writeAsStringSync('k');
+        await expectLater(
+          FlatpakSdkRepo(
+            Directory(p.join(tmp.path, 'cache')),
+            runProcess: fakeOstree([], pull: RunResult(1, '', f.key)),
+          ).checkout('https://example.com/repo', _ref, gpgKey: key.path),
+          throwsA(
+            isA<FlatpakSdkRepoException>().having(
+              (e) => e.message,
+              'message',
+              contains(f.value),
+            ),
+          ),
+        );
+      });
+    }
   });
 
   test('a key rotated in place gets a remote of its own', () async {

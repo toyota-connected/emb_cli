@@ -1814,10 +1814,13 @@ emb cross my-app.emb.yaml --target flatpak --build --flatpak
   manifest; a Yocto build's `repo-dev` is one. emb pulls both refs into its
   cache with OSTree and checks each commit out once, hard-linked, so this
   also reaches another architecture's SDK without `--arch` installs. Pin
-  `sdk_repo_gpg_key:` (a key file) to require signed commits; a URL without
-  one is pulled unverified, with a warning. `--offline` uses the cached
-  commit; `emb fetch` pulls ahead. A pull that fails or runs past 30 minutes
-  falls back to the commit this repo last served, with a warning; `emb.lock`
+  `sdk_repo_gpg_key:` (a key file) to require signed commits and a signed
+  summary, the index that ties each ref to a commit; a URL may then not move
+  a ref to an older commit than the cache has. `flatpak build-update-repo
+  --gpg-sign` signs both. A URL without a key is pulled unverified, with a
+  warning. `--offline` uses the cached commit; `emb fetch` pulls ahead. A
+  pull that fails or runs past 30 minutes falls back to the commit this repo
+  last served, with a warning, unless it failed verification; `emb.lock`
   still flags it if the lock pins a newer one. `emb cache gc` drops a ref no
   build has used for a week and the objects an SDK update left behind; the
   next build pulls what it needs again. A target's `package:` replaces
