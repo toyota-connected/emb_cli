@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/commands/cross_command.dart';
 import 'package:emb_cli/src/cross/cross_keys.dart';
+import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/cross/dockerfile_emitter.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
@@ -1896,6 +1897,167 @@ void main() {
         augmentSummary(['a', 'b', 'c', 'd'], const ['b', 'c']),
         'a built, b, c cached, d built',
       );
+    });
+  });
+
+  // #367: a code-asset hook's cmake did not see the augment overlay beside a
+  // flatpak-sdk sysroot. Run the wrapper for real against a cmake that
+  // reports what it was given.
+  group('the hook cmake wrapper', () {
+    const sysroot = '/sdk/sysroot';
+    const profile = CrossProfile(
+      providerName: 'flatpak-sdk',
+      targetTriple: 'x86_64-flatpak-linux-gnu',
+      cc: 'clang',
+      cxx: 'clang++',
+      ar: 'llvm-ar',
+      strip: 'llvm-strip',
+      targetSysroot: sysroot,
+      pkgConfig: PkgConfig(
+        sysrootDir: sysroot,
+        libdir: ['$sysroot/usr/lib/pkgconfig'],
+      ),
+    );
+
+    /// Runs the wrapper with [args]; returns cmake's arguments, one per
+    /// entry, then PKG_CONFIG_LIBDIR.
+    List<String> run(String script, List<String> args) {
+      final fake = File(p.join(tmp.path, 'real-cmake'))
+        ..writeAsStringSync(
+          '#!/bin/sh\n'
+          'for a in "\$@"; do echo "arg:\$a"; done\n'
+          'echo "libdir:\$PKG_CONFIG_LIBDIR"\n',
+        );
+      Process.runSync('chmod', ['+x', fake.path]);
+      final wrapper = File(p.join(tmp.path, 'cmake'))
+        ..writeAsStringSync(script.replaceAll("'REAL'", "'${fake.path}'"));
+      final r = Process.runSync('sh', [wrapper.path, ...args]);
+      expect(r.exitCode, 0, reason: '${r.stderr}');
+      return '${r.stdout}'.trim().split('\n');
+    }
+
+    test('configure gets the overlay as a find root and a prefix', () {
+      const overlay = '/ws/overlay dir';
+      final out = run(
+        hookCmakeScript(
+          realCmake: 'REAL',
+          toolchain: '/tc.cmake',
+          profile: profile,
+          overlayPrefix: overlay,
+        ),
+        ['-S', 'src', '-B', 'build'],
+      );
+      expect(out, [
+        'arg:-DCMAKE_TOOLCHAIN_FILE=/tc.cmake',
+        'arg:-DCMAKE_FIND_ROOT_PATH=$overlay',
+        'arg:-DCMAKE_PREFIX_PATH=$overlay',
+        'arg:-S',
+        'arg:src',
+        'arg:-B',
+        'arg:build',
+        'libdir:${[
+          '$overlay/usr/lib/pkgconfig',
+          '$overlay/usr/share/pkgconfig',
+          '$sysroot/usr/lib/pkgconfig',
+        ].join(':')}',
+      ]);
+    });
+
+    test('--build is passed through', () {
+      final out = run(
+        hookCmakeScript(
+          realCmake: 'REAL',
+          toolchain: '/tc.cmake',
+          profile: profile,
+          overlayPrefix: '/ws/overlay',
+        ),
+        ['--build', 'build'],
+      );
+      expect(out.where((l) => l.startsWith('arg:')), [
+        'arg:--build',
+        'arg:build',
+      ]);
+    });
+
+    // The point of it, with real cmake: a package only the overlay has is
+    // found under a toolchain that confines find_package to the sysroot.
+    test(
+      'find_package sees a package only the overlay has',
+      skip: Process.runSync('which', ['cmake']).exitCode == 0
+          ? false
+          : 'cmake not installed',
+      () {
+        final root = p.join(tmp.path, 'pkg');
+        final sr = Directory(p.join(root, 'sysroot'))
+          ..createSync(recursive: true);
+        final overlay = p.join(root, 'overlay');
+        File(p.join(overlay, 'usr', 'lib', 'cmake', 'aug', 'augConfig.cmake'))
+          ..createSync(recursive: true)
+          ..writeAsStringSync('set(aug_FOUND TRUE)\n');
+        final tc = File(p.join(root, 'tc.cmake'))
+          ..writeAsStringSync('''
+set(CMAKE_SYSTEM_NAME Linux)
+set(CMAKE_SYSROOT "${sr.path}")
+set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
+''');
+        final src = Directory(p.join(root, 'src'))..createSync();
+        File(p.join(src.path, 'CMakeLists.txt')).writeAsStringSync('''
+cmake_minimum_required(VERSION 3.16)
+project(hook NONE)
+find_package(aug CONFIG REQUIRED)
+''');
+        final real = Process.runSync('which', ['cmake']).stdout.toString();
+        ProcessResult configure(String? overlayPrefix, String build) {
+          final wrapper = File(p.join(root, 'cmake-$build'))
+            ..writeAsStringSync(
+              hookCmakeScript(
+                realCmake: real.trim(),
+                toolchain: tc.path,
+                profile: CrossProfile(
+                  providerName: 'flatpak-sdk',
+                  targetTriple: 'x86_64-flatpak-linux-gnu',
+                  cc: 'clang',
+                  cxx: 'clang++',
+                  ar: 'llvm-ar',
+                  strip: 'llvm-strip',
+                  targetSysroot: sr.path,
+                ),
+                overlayPrefix: overlayPrefix,
+              ),
+            );
+          return Process.runSync('sh', [
+            wrapper.path,
+            '-S',
+            src.path,
+            '-B',
+            p.join(root, build),
+          ]);
+        }
+
+        // As it was: the overlay unknown, find_package fails.
+        expect(configure(null, 'without').exitCode, isNot(0));
+        final r = configure(overlay, 'with');
+        expect(r.exitCode, 0, reason: '${r.stdout}${r.stderr}');
+      },
+    );
+
+    // arm-gnu stages augments into the sysroot itself.
+    test('an overlay that is the sysroot adds nothing', () {
+      final out = run(
+        hookCmakeScript(
+          realCmake: 'REAL',
+          toolchain: '/tc.cmake',
+          profile: profile,
+          overlayPrefix: sysroot,
+        ),
+        ['-S', 'src'],
+      );
+      expect(out, [
+        'arg:-DCMAKE_TOOLCHAIN_FILE=/tc.cmake',
+        'arg:-S',
+        'arg:src',
+        'libdir:$sysroot/usr/lib/pkgconfig',
+      ]);
     });
   });
 }
