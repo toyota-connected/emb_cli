@@ -488,6 +488,10 @@ class InitFlatpakCommand extends Command<int> {
       embedderBin: binArg ?? (knownEmbedder ? defaultEmbedderBin : null),
       targets: targets,
       sdkArches: sdkArches,
+      sdkBasePrefix: knownEmbedder ? defaultEmbedderSdkTargetPrefix : null,
+      sdkHostPackages: knownEmbedder && sdkArches.isNotEmpty
+          ? defaultEmbedderSdkHostPackages
+          : const [],
       backend: targets.isEmpty
           ? null
           : backendArg ?? (knownEmbedder ? defaultEmbedderBackend : null),
@@ -726,11 +730,29 @@ class InitFlatpakCommand extends Command<int> {
           return 'target "$name" has no cross.source to extend into';
         }
       }
+      var resolvedSdk = 0;
       for (final arch in spec.sdkArches) {
         final name = FlatpakRepoSpec.sdkTargetName(arch);
-        final sdk = project.selectTarget(name);
-        if (sdk == null) return 'target "$name" is missing';
-        final t = CrossTarget.fromMap(sdk.cross);
+        final base = spec.sdkBaseTarget(arch);
+        final Map<String, dynamic> block;
+        if (base != null) {
+          // Extends into the embedder, like a board target: set aside.
+          final pending = project.unresolved[name];
+          if (pending == null) return 'target "$name" is missing';
+          if (pending.block['extends'] != base) {
+            return 'target "$name" does not extend $base';
+          }
+          if (CrossTarget.repoFrom(pending.block['source']) == null) {
+            return 'target "$name" has no cross.source to extend into';
+          }
+          block = pending.block;
+        } else {
+          final sdk = project.selectTarget(name);
+          if (sdk == null) return 'target "$name" is missing';
+          block = sdk.cross;
+          resolvedSdk++;
+        }
+        final t = CrossTarget.fromMap(block);
         if (t.provider != CrossProviderKind.flatpakSdk) {
           return 'target "$name" is not a flatpak-sdk target';
         }
@@ -744,8 +766,9 @@ class InitFlatpakCommand extends Command<int> {
       }
       // With no targets a flat manifest is one implicit target of its own.
       if (spec.allTargets.isNotEmpty &&
-          (project.targets.length != spec.sdkArches.length ||
-              project.unresolved.length != spec.targets.length)) {
+          (project.targets.length != resolvedSdk ||
+              project.unresolved.length !=
+                  spec.targets.length + spec.sdkArches.length - resolvedSdk)) {
         return 'the manifest has targets that were not asked for';
       }
       return null;
