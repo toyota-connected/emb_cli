@@ -1,3 +1,9 @@
+# Unreleased
+
+Nothing yet. New entries go here, not under the heading below. The pubspec
+reads `0.8.0-dev`, and nobody can tell whether work recorded under a published
+version shipped.
+
 # 0.7.0
 
 Released from `main`. The headline is that `emb init flatpak --sdk` now
