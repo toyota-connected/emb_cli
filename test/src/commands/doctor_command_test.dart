@@ -96,6 +96,15 @@ Future<(int?, Map<String, dynamic>)> _runJson(_FakeProvisioner p) async {
   return (code, jsonDecode(logger.buffer.toString()) as Map<String, dynamic>);
 }
 
+/// Records warnings and keeps the rest of [Logger].
+class _WarnLogger extends Logger {
+  _WarnLogger(this.warnings);
+  final List<String> warnings;
+  @override
+  void warn(String? message, {String tag = 'WARN', LogStyle? style}) =>
+      warnings.add('$message');
+}
+
 void main() {
   test('checks for updates when the backend is available', () async {
     final p = _FakeProvisioner(updates: ['a', 'b', 'c']);
@@ -319,6 +328,38 @@ cross:
 
     test('the native target has no preflight tools (always ok)', () async {
       expect(await runTarget('local'), ExitCode.success.code);
+    });
+
+    // #370: the warning `emb cross` prints, shown for the target checked.
+    test('says when the target overrides the provider it extends', () async {
+      Directory(p.join(tmp.path, 'proj', '.emb')).createSync(recursive: true);
+      File(p.join(tmp.path, 'proj', '.emb', 'sdk.emb.yaml')).writeAsStringSync(
+        '''
+cross:
+  targets:
+    sdk:
+      provider: flatpak-sdk
+      triple: x86_64-flatpak-linux-gnu
+''',
+      );
+      File(manifest).writeAsStringSync('''
+id: doctor-fixture
+cross:
+  provider: arm-gnu
+  targets:
+    pi5:
+      extends: 'proj#sdk'
+      provider: arm-gnu
+      triple: aarch64-none-linux-gnu
+      image_url: https://example/os.img.xz
+''');
+      final warnings = <String>[];
+      final logger = _WarnLogger(warnings);
+      expect(await runTarget('pi5', logger: logger), ExitCode.success.code);
+      expect(
+        warnings,
+        contains(contains('target "pi5" sets provider: arm-gnu over the')),
+      );
     });
 
     test('an unknown target is a usage error', () async {

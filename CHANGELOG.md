@@ -6,6 +6,12 @@ version shipped.
 
 **Cross.**
 
+- fix(cross): `emb doctor --target` and `emb matrix` now show the warning that
+  `emb cross` and `emb fetch` give when a target's own `provider:` overrides a
+  different one from the target it extends (#370). A CI matrix built from
+  such a manifest said nothing. `emb matrix` prefixes it with
+  `<manifest>#<target>` and writes it on stderr, so `-o` output is unchanged.
+
 - fix(cross): builds of different `sdk_repo` sources at once could lose each
   other's change to the OSTree cache's config (#369). Adding a remote and
   setting its options each rewrite the whole file, and builds share the
