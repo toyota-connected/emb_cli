@@ -630,7 +630,9 @@ cross:
           ExitCode.success.code,
         );
         expect(targets(h).keys, ['sdk-aarch64']);
+        // ivi-homescreen's own flatpak-sdk target brings its host scanner.
         expect(targets(h)['sdk-aarch64'], {
+          'extends': 'source#flatpak-sdk-aarch64',
           'provider': 'flatpak-sdk',
           'triple': 'aarch64-flatpak-linux-gnu',
         });
@@ -652,6 +654,8 @@ cross:
         final ci = h.read(workflow);
         expect(ci, contains('--target sdk-x86_64 --build'));
         expect(ci, contains('clang lld llvm'));
+        // The host scanner's build dep, for ivi-homescreen's sdk target.
+        expect(ci, contains('clang lld llvm libpugixml-dev'));
         expect(ci, isNot(contains('TODO')));
         final readme = h.read('README.md');
         expect(
@@ -659,6 +663,25 @@ cross:
           contains('The CI workflow builds `--target sdk-x86_64`'),
         );
         expect(readme, isNot(contains('qemu-user')));
+      });
+
+      // Only ivi-homescreen is known to have flatpak-sdk targets.
+      test('another embedder gets the provider and triple alone', () async {
+        final h = _Harness();
+        await h.run([
+          '--sdk',
+          'x86_64',
+          '--app',
+          _appUri,
+          '--embedder',
+          'https://example.com/embedder.git',
+        ]);
+        expect(targets(h)['sdk-x86_64'], {
+          'provider': 'flatpak-sdk',
+          'triple': 'x86_64-flatpak-linux-gnu',
+        });
+        expect(h.read(workflow), isNot(contains('libpugixml-dev')));
+        expect(h.read('README.md'), isNot(contains('source#flatpak-sdk-')));
       });
 
       test('sits beside board targets, which keep their backend', () async {

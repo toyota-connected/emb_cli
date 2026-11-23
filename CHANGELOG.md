@@ -51,6 +51,14 @@ version shipped.
 
 **Flatpak.**
 
+- feat(init): with the default embedder, each `sdk-<arch>` target that
+  `emb init flatpak --sdk <arch>` writes extends ivi-homescreen's own
+  `source#flatpak-sdk-<arch>` (#360). The generated target named only the
+  provider and triple, and failed configuring on the scanner ivi-homescreen
+  builds for the host. The workflow installs `libpugixml-dev`, the scanner's
+  build dep. A generated `--sdk x86_64` repo now builds and packages in CI
+  unedited. Another embedder still gets the provider and triple alone.
+
 - feat(init): `emb init flatpak` writes `package.flatpak.name:` and, from the
   app's pubspec description, `comment:`. The launcher showed `package.name`,
   a kebab-case id, while AppStream showed the app's name. `--name <text>` sets

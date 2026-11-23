@@ -67,6 +67,16 @@ const defaultEmbedderTargetDefinesWhy = [
   'you add that checkout.',
 ];
 
+/// ivi-homescreen's own flatpak-sdk targets, `<prefix><arch>`, which an
+/// `sdk-<arch>` target of a generated repo extends. They carry what the
+/// embedder needs to build against the flatpak SDK: its host
+/// wayland-cxx-scanner, since CMake sees the build as a cross build.
+const defaultEmbedderSdkTargetPrefix = 'flatpak-sdk-';
+
+/// What the CI workflow installs for ivi-homescreen's flatpak-sdk targets:
+/// the host scanner's build dep, which they declare in `host_dev_packages`.
+const defaultEmbedderSdkHostPackages = ['libpugixml-dev'];
+
 /// The ivi-homescreen backend a board flatpak is built for when none is
 /// named: the one that runs under a compositor.
 const defaultEmbedderBackend = 'wayland-egl';
@@ -105,6 +115,8 @@ class FlatpakRepoSpec {
     this.githubCi = true,
     this.targets = const [],
     this.sdkArches = const [],
+    this.sdkBasePrefix,
+    this.sdkHostPackages = const [],
     this.backend,
     this.targetDefines = const {},
     this.targetDefinesWhy = const [],
@@ -182,6 +194,18 @@ class FlatpakRepoSpec {
 
   /// The target [arch] is built under: `sdk-<arch>`.
   static String sdkTargetName(String arch) => 'sdk-$arch';
+
+  /// When set, each `sdk-<arch>` target extends the embedder's own
+  /// `source#<sdkBasePrefix><arch>`, which knows what the embedder needs to
+  /// build against the SDK. Null writes the provider and triple alone.
+  final String? sdkBasePrefix;
+
+  /// The `source#` target an `sdk-<arch>` target extends, or null.
+  String? sdkBaseTarget(String arch) =>
+      sdkBasePrefix == null ? null : 'source#$sdkBasePrefix$arch';
+
+  /// Build-machine packages the CI workflow installs for the SDK target.
+  final List<String> sdkHostPackages;
 
   /// Every target besides `local`: the board targets, then the SDK ones.
   List<String> get allTargets => [
@@ -406,8 +430,15 @@ String _manifest(FlatpakRepoSpec s) {
       '    # Built against the flatpak SDK rather than this machine: the host',
       '    # clang and lld compile against org.freedesktop.Sdk for that',
       '    # architecture, so the app runs on the runtime named above.',
+      if (s.sdkBasePrefix != null) ...[
+        "    # Each extends the embedder's own flatpak-sdk target, which",
+        '    # brings what it needs to build against the SDK. The provider is',
+        '    # named again, as the shared one above would otherwise win.',
+      ],
       for (final a in s.sdkArches) ...[
         '    ${FlatpakRepoSpec.sdkTargetName(a)}:',
+        if (s.sdkBaseTarget(a) case final base?)
+          '      extends: ${_yaml(base)}',
         '      provider: flatpak-sdk',
         '      triple: $a-flatpak-linux-gnu',
       ],
@@ -489,6 +520,15 @@ String _sdkSection(FlatpakRepoSpec s) {
       s.buildCommandFor(FlatpakRepoSpec.sdkTargetName(a)),
   ].join('\n');
   final foreign = s.sdkArches.any((a) => a != 'x86_64');
+  final extendsNote = s.sdkBasePrefix == null
+      ? ''
+      : "Each extends the embedder's own `${s.sdkBasePrefix}<arch>` target\n"
+            '(`source#${s.sdkBasePrefix}<arch>`), which brings what the '
+            'embedder needs to\nbuild against the SDK.\n\n';
+  final hostNote = s.sdkHostPackages.isEmpty
+      ? ''
+      : ' and ${s.sdkHostPackages.map((p) => '`$p`').join(', ')} for\nthe host '
+            'tools the embedder builds,';
   return '''
 
 ## Build against the flatpak SDK
@@ -499,9 +539,9 @@ runtime can produce a flatpak that will not start, because it needs a newer
 glibc than the runtime has; these targets cannot. They also need none of the
 embedder's `-dev` packages here.
 
-This machine compiles with its own clang, so it needs `clang`, `lld` and
-`llvm` (the package names on Fedora and Ubuntu), plus the SDK and runtime for
-each architecture:
+${extendsNote}This machine compiles with its own clang, so it needs `clang`, `lld` and
+`llvm` (the package names on Fedora and Ubuntu),$hostNote plus the
+SDK and runtime for each architecture:
 
 ```sh
 flatpak install --user -y flathub $refs
@@ -668,11 +708,18 @@ String _workflow(FlatpakRepoSpec s) {
       '      # it against the flatpak SDK, whose libraries it links, so no',
       '      # -dev packages are needed. libsystemd-dev is for a native',
       '      # dependency of emb itself.',
+      if (s.sdkHostPackages.isNotEmpty) ...[
+        '      # ${s.sdkHostPackages.join(', ')}: for host tools the embedder',
+        '      # builds on this machine.',
+      ],
       '      - name: Install build tools',
       '        run: |',
       '          sudo apt-get update -qq',
       r'          sudo apt-get install -y -qq flatpak flatpak-builder binutils \',
-      '            cmake ninja-build libsystemd-dev clang lld llvm',
+      [
+        '            cmake ninja-build libsystemd-dev clang lld llvm',
+        ...s.sdkHostPackages,
+      ].join(' '),
     ],
     '      - name: Install the flatpak runtime',
     '        run: |',
