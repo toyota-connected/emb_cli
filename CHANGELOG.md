@@ -1,8 +1,33 @@
-# Unreleased
+# 0.7.0
 
-New entries go here, not under the heading below. The pubspec reads
-`0.7.0-dev`, and nobody can tell whether work recorded under a published
-version shipped.
+Released from `main`. The headline is that `emb init flatpak --sdk` now
+produces a repo whose CI builds and packages a flatpak against the runtime's
+SDK, unedited, with ivi-homescreen as the embedder. Around it: the SDK cache
+falls back when a pull fails and is pruned by `emb cache gc`, the launcher
+entry takes its own name, and a `--target local` build reuses the augments it
+already built. Upgrading from 0.6.x needs the notes below.
+
+## Upgrading
+
+**A keyed `sdk_repo` must sign its summary, and may not roll back.** With
+`sdk_repo_gpg_key:` set, emb now requires the repo's summary to be signed by
+that key, and refuses a URL that moves a ref to a commit older than the one
+cached. A repo that signs commits but not its summary stops pulling, with an
+error saying how to sign it: `flatpak build-update-repo --gpg-sign=<key>` signs
+both. A pull that fails either check, or a commit signature, is an error
+rather than a fallback to the cached commit.
+
+**A target that extends another takes that target's provider over the
+manifest's shared one.** A shared `provider:` used to outrank the extended
+target's. A manifest that relied on that now gets the extended target's
+provider; naming the provider on the target itself restores it, and emb warns
+that it differs.
+
+**A `--target local` overlay from 0.6.x is built once more.** Augments built
+into the native overlay are now stamped and skipped on a later run, and an
+overlay without stamps is rebuilt the first time. A CI cache keyed on its own
+inputs will restore that overlay, rebuild, and never save the stamps, since a
+cache does not overwrite a key it restored: change the key once.
 
 **Boards.**
 
