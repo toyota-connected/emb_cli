@@ -427,6 +427,37 @@ jobs:
             test/src/cross/flatpak_sdk_repo_test.dart \
             test/src/commands/cache_command_test.dart
 
+      # What `emb init flatpak --sdk x86_64` writes has to build and package
+      # with nothing edited (#368). It shipped broken once for three reasons in
+      # two repos and nothing here noticed. Follows ivi-homescreen's v3.0 HEAD,
+      # as `emb init` does, so a change there that breaks it shows up too.
+      # clang, lld and llvm compile against the SDK; libpugixml-dev is for the
+      # host scanner ivi-homescreen's flatpak-sdk target builds.
+      - name: 📦 Install the flatpak-sdk build tools
+        run: sudo apt-get install -y -qq clang lld llvm libpugixml-dev
+
+      - name: 🧩 emb init flatpak --sdk, end to end
+        env:
+          APP: ${{ github.workspace }}/examples/cross/app-bundle/app
+          REPO: ${{ runner.temp }}/init-sdk
+          WS: ${{ runner.temp }}/init-sdk-ws
+        run: |
+          emb="dart run $GITHUB_WORKSPACE/bin/emb.dart"
+          $emb init flatpak "$REPO" --app-id io.github.emb.HelloApp \
+            --app "$APP" --sdk x86_64 \
+            --runtime-version "$FREEDESKTOP_BRANCH" --ci none
+          cd "$REPO"
+          $emb cross hello-app.emb.yaml --target sdk-x86_64 --build --flatpak \
+            --app "$APP" -w "$WS"
+          bundle=$(find "$WS" -path '*/dist/*.flatpak')
+          if [ -z "$bundle" ] || [ "$(grep -c . <<<"$bundle")" != 1 ]; then
+            echo "::error::expected one flatpak bundle, found: ${bundle:-none}"
+            exit 1
+          fi
+          ls -l "$bundle"
+          flatpak install --user -y --noninteractive --bundle "$bundle"
+          flatpak info --user io.github.emb.HelloApp
+
   board-library:
     name: board library (installed emb)
     runs-on: ubuntu-latest
