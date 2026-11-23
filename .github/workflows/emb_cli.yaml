@@ -458,6 +458,69 @@ jobs:
           flatpak install --user -y --noninteractive --bundle "$bundle"
           flatpak info --user io.github.emb.HelloApp
 
+  # The end-to-end check in the flatpak job, for aarch64: what the boards run,
+  # and what nothing else here builds against the SDK (#373). On an arm64
+  # runner the build is native, so flatpak-builder runs the aarch64 runtime's
+  # tools without QEMU.
+  flatpak-sdk-aarch64:
+    name: emb init flatpak --sdk aarch64 (end to end)
+    runs-on: ubuntu-24.04-arm
+    env:
+      # As the flatpak job: emb's default runtime branch.
+      FREEDESKTOP_BRANCH: "25.08"
+    steps:
+      - name: 📚 Git Checkout
+        uses: actions/checkout@v7
+
+      - name: 🎯 Setup Dart
+        uses: dart-lang/setup-dart@v1.8.2
+        with:
+          sdk: "stable"
+
+      # cmake and ninja build the embedder; clang, lld and llvm compile it
+      # against the SDK; libpugixml-dev is for the host scanner
+      # ivi-homescreen's flatpak-sdk target builds; libsystemd-dev is for a
+      # native dependency of emb itself.
+      - name: 📦 Install build tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq flatpak flatpak-builder binutils \
+            cmake ninja-build libsystemd-dev clang lld llvm libpugixml-dev
+
+      - name: 🗃️ Install the freedesktop runtime and SDK
+        run: |
+          flatpak remote-add --if-not-exists --user \
+            flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user -y --noninteractive \
+            "flathub" \
+            "org.freedesktop.Platform/aarch64/$FREEDESKTOP_BRANCH" \
+            "org.freedesktop.Sdk/aarch64/$FREEDESKTOP_BRANCH"
+
+      - name: 📦 Install Dependencies
+        run: dart pub get
+
+      - name: 🧩 emb init flatpak --sdk aarch64, end to end
+        env:
+          APP: ${{ github.workspace }}/examples/cross/app-bundle/app
+          REPO: ${{ runner.temp }}/init-sdk
+          WS: ${{ runner.temp }}/init-sdk-ws
+        run: |
+          emb="dart run $GITHUB_WORKSPACE/bin/emb.dart"
+          $emb init flatpak "$REPO" --app-id io.github.emb.HelloApp \
+            --app "$APP" --sdk aarch64 \
+            --runtime-version "$FREEDESKTOP_BRANCH" --ci none
+          cd "$REPO"
+          $emb cross hello-app.emb.yaml --target sdk-aarch64 --build \
+            --flatpak --app "$APP" -w "$WS"
+          bundle=$(find "$WS" -path '*/dist/*.flatpak')
+          if [ -z "$bundle" ] || [ "$(grep -c . <<<"$bundle")" != 1 ]; then
+            echo "::error::expected one flatpak bundle, found: ${bundle:-none}"
+            exit 1
+          fi
+          ls -l "$bundle"
+          flatpak install --user -y --noninteractive --bundle "$bundle"
+          flatpak info --user io.github.emb.HelloApp
+
   board-library:
     name: board library (installed emb)
     runs-on: ubuntu-latest
