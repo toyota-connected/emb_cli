@@ -981,6 +981,77 @@ cross:
       });
     });
 
+    // #359: a manifest's shared provider is often only there to parse
+    // (`emb init` writes arm-gnu), and above a flatpak-sdk target it turned the
+    // build into an arm-gnu one.
+    group('the provider of a target that extends another', () {
+      CrossProject resolveApp(String targets, {String shared = 'arm-gnu'}) {
+        Directory(p.join(tmp.path, 'proj', '.emb')).createSync(recursive: true);
+        File(
+          p.join(tmp.path, 'proj', '.emb', 'flatpak.emb.yaml'),
+        ).writeAsStringSync('''
+cross:
+  targets:
+    sdk:
+      provider: flatpak-sdk
+      triple: x86_64-flatpak-linux-gnu
+    bare:
+      triple: x86_64-flatpak-linux-gnu
+''');
+        final app = File(p.join(tmp.path, 'app.emb.yaml'))
+          ..writeAsStringSync('''
+id: myapp
+cross:
+  provider: $shared
+  targets:
+$targets''');
+        return CrossProjectResolver(
+          const ManifestLoader(),
+          boards,
+        ).resolve(app.path, deferExtends: true)!;
+      }
+
+      test("is the extended target's over the shared one", () {
+        final project = resolveApp("    t: {extends: 'proj#sdk'}\n");
+        expect(project.targets['t']!.cross['provider'], 'flatpak-sdk');
+        expect(project.warningsFor('t'), isEmpty);
+      });
+
+      test("is the target's own when it names the same", () {
+        final project = resolveApp(
+          "    t: {extends: 'proj#sdk', provider: flatpak-sdk}\n",
+        );
+        expect(project.targets['t']!.cross['provider'], 'flatpak-sdk');
+        expect(project.warningsFor('t'), isEmpty);
+      });
+
+      test("is the target's own when it names another, with a warning", () {
+        final project = resolveApp(
+          "    t: {extends: 'proj#sdk', provider: yocto-sdk}\n",
+        );
+        expect(project.targets['t']!.cross['provider'], 'yocto-sdk');
+        const warning =
+            'target "t" sets provider: yocto-sdk over the flatpak-sdk of the '
+            'target it extends (proj#sdk)';
+        expect(project.warningsFor('t'), [warning]);
+      });
+
+      test('is the shared one when the extended target names none', () {
+        final project = resolveApp("    t: {extends: 'proj#bare'}\n");
+        expect(project.targets['t']!.cross['provider'], 'arm-gnu');
+      });
+
+      test('stays in the block of a target that does not resolve yet', () {
+        final project = resolveApp(
+          "    t: {extends: 'source#sdk', provider: flatpak-sdk}\n"
+          '    u: {extends: "source#sdk"}\n',
+        );
+        expect(project.unresolved['t']!.block['provider'], 'flatpak-sdk');
+        // The shared one, as the manifest reads, until the base is known.
+        expect(project.unresolved['u']!.block['provider'], 'arm-gnu');
+      });
+    });
+
     test('extends a missing project dir throws', () {
       final app = File(p.join(tmp.path, 'app.emb.yaml'))
         ..writeAsStringSync('''

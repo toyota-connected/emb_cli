@@ -207,6 +207,7 @@ class FetchCommand extends Command<int> {
       );
       return ExitCode.usage.code;
     }
+    project.warningsFor(selection.name).forEach(_logger.warn);
     final embedderRoot =
         FileSystemEntity.typeSync(inputPath) == FileSystemEntityType.file
         ? p.dirname(p.absolute(inputPath))

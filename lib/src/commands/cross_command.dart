@@ -672,6 +672,7 @@ class CrossCommand extends Command<int> {
       );
       return ExitCode.usage.code;
     }
+    project.warningsFor(selection.name).forEach(_logger.warn);
     final effectiveTarget = selection.name;
     final isNative = selection.isNative;
 

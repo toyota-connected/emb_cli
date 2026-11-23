@@ -14,6 +14,15 @@ version shipped.
 
 **Cross.**
 
+- fix(cross): a manifest's shared `provider:` overrode the provider of the
+  target an `extends:` named (#359). An `emb init` repo writes
+  `provider: arm-gnu` at the top because a manifest needs one to parse, so a
+  target extending ivi-homescreen's `flatpak-sdk-x86_64` without restating
+  the provider resolved as arm-gnu and failed with "no toolchain version". A
+  target that extends another now takes the extended target's provider over
+  the shared one. A `provider:` on the target itself still wins, and `emb
+  cross` and `emb fetch` warn when it differs from the one it extends.
+
 - fix(cross): `extends: <dir>#<target>` and `source#<target>` failed when any
   other target in that project did not resolve (#357). An app extending
   ivi-homescreen's `flatpak-sdk-x86_64` stopped on its Raspberry Pi targets,
