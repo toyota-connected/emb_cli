@@ -221,6 +221,11 @@ class FlatpakRepoSpec {
   /// The target the CI workflow builds.
   String get ciTarget => ciSdkTarget ?? 'local';
 
+  /// The aarch64 SDK target the workflow builds on an arm64 runner, beside
+  /// [ciTarget]. Null without one.
+  String? get ciAarch64Target =>
+      sdkArches.contains('aarch64') ? sdkTargetName('aarch64') : null;
+
   /// The backend a board build names (`--backend`). An embedder's layer can
   /// define several, and a flatpak built for more than one is packaged under
   /// `<app_id>.<backend>`, not the id in `metainfo.xml`.
@@ -519,6 +524,11 @@ String _sdkSection(FlatpakRepoSpec s) {
       s.buildCommandFor(FlatpakRepoSpec.sdkTargetName(a)),
   ].join('\n');
   final foreign = s.sdkArches.any((a) => a != 'x86_64');
+  final ciBuilt = [
+    if (s.ciSdkTarget != null) '`--target ${s.ciSdkTarget}`',
+    if (s.ciAarch64Target != null)
+      '`--target ${s.ciAarch64Target}` on an arm64 runner',
+  ];
   final extendsNote = s.sdkBasePrefix == null
       ? ''
       : "Each extends the embedder's own `${s.sdkBasePrefix}<arch>` target\n"
@@ -556,9 +566,9 @@ Then:
 ```sh
 $commands
 ```
-${s.emitsWorkflow && s.ciSdkTarget != null && s.targets.isEmpty ? '''
+${s.emitsWorkflow && ciBuilt.isNotEmpty && s.targets.isEmpty ? '''
 
-The CI workflow builds `--target ${s.ciSdkTarget}`.
+The CI workflow builds ${ciBuilt.join(' and ')}.
 ''' : ''}''';
 }
 
@@ -663,11 +673,18 @@ List<String> _installEmb(String version) {
 }
 
 String _workflow(FlatpakRepoSpec s) {
+  final arm = s.ciAarch64Target;
   final lines = <String>[
     '# ${_header(s)}',
     '#',
-    '# Builds the flatpak natively on the runner. Deliberately plain: no',
-    '# caching, one job. Add what your project needs.',
+    if (arm == null) ...[
+      '# Builds the flatpak natively on the runner. Deliberately plain: no',
+      '# caching, one job. Add what your project needs.',
+    ] else ...[
+      '# Builds the flatpak natively on the runner, and $arm natively on an',
+      '# arm64 one. Deliberately plain: no caching. Add what your project',
+      '# needs.',
+    ],
     'name: flatpak',
     '',
     'on:',
@@ -682,63 +699,100 @@ String _workflow(FlatpakRepoSpec s) {
     '  contents: read',
     '',
     'jobs:',
-    '  flatpak:',
-    '    runs-on: ubuntu-latest',
-    '    steps:',
-    '      - uses: actions/checkout@v4',
-    '        with:',
-    '          persist-credentials: false',
-    '      - uses: dart-lang/setup-dart@v1',
-    if (s.ciSdkTarget == null) ...[
-      '      # cmake and ninja build the embedder; libsystemd-dev is for a',
-      '      # native dependency of emb itself.',
-      '      - name: Install build tools',
-      '        run: |',
-      '          sudo apt-get update -qq',
-      r'          sudo apt-get install -y -qq flatpak flatpak-builder binutils \',
-      '            cmake ninja-build libsystemd-dev',
-      '      # TODO: the -dev packages your embedder links against. A native',
-      '      # build uses the host libraries, and emb cannot know them from',
-      '      # here.',
-      '      # - name: Install embedder dependencies',
-      '      #   run: sudo apt-get install -y -qq <packages>',
-    ] else ...[
-      '      # cmake and ninja build the embedder, clang, lld and llvm compile',
-      '      # it against the flatpak SDK, whose libraries it links, so no',
-      '      # -dev packages are needed. libsystemd-dev is for a native',
-      '      # dependency of emb itself.',
-      if (s.sdkHostPackages.isNotEmpty) ...[
-        '      # ${s.sdkHostPackages.join(', ')}: for host tools the embedder',
-        '      # builds on this machine.',
-      ],
-      '      - name: Install build tools',
-      '        run: |',
-      '          sudo apt-get update -qq',
-      r'          sudo apt-get install -y -qq flatpak flatpak-builder binutils \',
-      [
-        '            cmake ninja-build libsystemd-dev clang lld llvm',
-        ...s.sdkHostPackages,
-      ].join(' '),
+    ..._workflowJob(
+      s,
+      job: 'flatpak',
+      runner: 'ubuntu-latest',
+      target: s.ciTarget,
+      sdk: s.ciSdkTarget != null,
+      artifact: 'flatpak',
+    ),
+    if (arm != null) ...[
+      '',
+      '  # On an arm64 runner the aarch64 SDK build is native, so',
+      "  # flatpak-builder runs the runtime's tools without QEMU.",
+      '  # ubuntu-24.04-arm is free for public repos; a private one needs a',
+      '  # paid arm64 runner, or this job waits for one. Remove the job then.',
+      ..._workflowJob(
+        s,
+        job: 'flatpak-aarch64',
+        runner: 'ubuntu-24.04-arm',
+        target: arm,
+        sdk: true,
+        artifact: 'flatpak-aarch64',
+      ),
     ],
-    '      - name: Install the flatpak runtime',
-    '        run: |',
-    r'          flatpak remote-add --if-not-exists --user \',
-    '            flathub https://dl.flathub.org/repo/flathub.flatpakrepo',
-    r'          flatpak install --user -y --noninteractive flathub \',
-    '            org.freedesktop.Platform//${s.runtimeVersion} \\',
-    '            org.freedesktop.Sdk//${s.runtimeVersion}',
-    '      - name: Install emb',
-    ..._installEmb(s.embVersion),
-    '      - name: Build the flatpak',
-    '        run: >',
-    '          emb cross ${s.manifestName} --target ${s.ciTarget} --build',
-    '          --flatpak',
-    '      - uses: actions/upload-artifact@v4',
-    '        with:',
-    '          name: flatpak',
-    '          path: >-',
-    '            workspace/.config/flutter_workspace/cross-build-*/dist/*.flatpak',
-    '          if-no-files-found: error',
   ];
   return '${lines.join('\n')}\n';
 }
+
+/// One job of the workflow: build [target] on [runner] and upload the
+/// flatpak as [artifact]. [sdk] when the target builds against the flatpak
+/// SDK, which needs clang rather than the embedder's `-dev` packages.
+List<String> _workflowJob(
+  FlatpakRepoSpec s, {
+  required String job,
+  required String runner,
+  required String target,
+  required bool sdk,
+  required String artifact,
+}) => [
+  '  $job:',
+  '    runs-on: $runner',
+  '    steps:',
+  '      - uses: actions/checkout@v4',
+  '        with:',
+  '          persist-credentials: false',
+  '      - uses: dart-lang/setup-dart@v1',
+  if (!sdk) ...[
+    '      # cmake and ninja build the embedder; libsystemd-dev is for a',
+    '      # native dependency of emb itself.',
+    '      - name: Install build tools',
+    '        run: |',
+    '          sudo apt-get update -qq',
+    r'          sudo apt-get install -y -qq flatpak flatpak-builder binutils \',
+    '            cmake ninja-build libsystemd-dev',
+    '      # TODO: the -dev packages your embedder links against. A native',
+    '      # build uses the host libraries, and emb cannot know them from',
+    '      # here.',
+    '      # - name: Install embedder dependencies',
+    '      #   run: sudo apt-get install -y -qq <packages>',
+  ] else ...[
+    '      # cmake and ninja build the embedder, clang, lld and llvm compile',
+    '      # it against the flatpak SDK, whose libraries it links, so no',
+    '      # -dev packages are needed. libsystemd-dev is for a native',
+    '      # dependency of emb itself.',
+    if (s.sdkHostPackages.isNotEmpty) ...[
+      '      # ${s.sdkHostPackages.join(', ')}: for host tools the embedder',
+      '      # builds on this machine.',
+    ],
+    '      - name: Install build tools',
+    '        run: |',
+    '          sudo apt-get update -qq',
+    r'          sudo apt-get install -y -qq flatpak flatpak-builder binutils \',
+    [
+      '            cmake ninja-build libsystemd-dev clang lld llvm',
+      ...s.sdkHostPackages,
+    ].join(' '),
+  ],
+  "      # The runner's own architecture, which is the target's.",
+  '      - name: Install the flatpak runtime',
+  '        run: |',
+  r'          flatpak remote-add --if-not-exists --user \',
+  '            flathub https://dl.flathub.org/repo/flathub.flatpakrepo',
+  r'          flatpak install --user -y --noninteractive flathub \',
+  '            org.freedesktop.Platform//${s.runtimeVersion} \\',
+  '            org.freedesktop.Sdk//${s.runtimeVersion}',
+  '      - name: Install emb',
+  ..._installEmb(s.embVersion),
+  '      - name: Build the flatpak',
+  '        run: >',
+  '          emb cross ${s.manifestName} --target $target --build',
+  '          --flatpak',
+  '      - uses: actions/upload-artifact@v4',
+  '        with:',
+  '          name: $artifact',
+  '          path: >-',
+  '            workspace/.config/flutter_workspace/cross-build-*/dist/*.flatpak',
+  '          if-no-files-found: error',
+];

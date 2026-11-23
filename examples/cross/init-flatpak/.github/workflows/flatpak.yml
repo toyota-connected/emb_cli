@@ -35,6 +35,7 @@ jobs:
       # here.
       # - name: Install embedder dependencies
       #   run: sudo apt-get install -y -qq <packages>
+      # The runner's own architecture, which is the target's.
       - name: Install the flatpak runtime
         run: |
           flatpak remote-add --if-not-exists --user \
