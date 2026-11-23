@@ -1315,7 +1315,7 @@ edit). Rungs 1, 2, and 3 all auto-detect the multi-source subdirectory layout
 pub.dev, where nothing runs afterwards to stage files — fetch it explicitly:
 
 ```sh
-emb boards sync              # the tag matching this emb
+emb boards sync              # the tag matching this emb; main for a -dev emb
 emb boards sync --ref main   # or an explicit ref
 emb boards list              # what's loaded, and which rung it came from
 ```

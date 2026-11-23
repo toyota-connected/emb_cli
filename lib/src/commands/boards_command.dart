@@ -17,6 +17,15 @@ import 'package:emb_cli/src/version.dart';
 import 'package:mason_logger/mason_logger.dart';
 import 'package:path/path.dart' as p;
 
+/// The ref a source whose `ref` is `auto` is fetched at, for emb [version].
+///
+/// A release fetches the boards tagged with it. A `-dev` build has no tag:
+/// it is built from `main`, between releases, and `v0.7.0-dev` asked GitHub
+/// for a commit that does not exist (#358). Anything else with a pre-release,
+/// an `-rc` say, is tagged when published, so it keeps the tag.
+String defaultBoardsRef(String version) =>
+    version.endsWith('-dev') ? 'main' : 'v$version';
+
 /// {@template boards_command}
 /// `emb boards` — inspect and install the shipped board library that
 /// `extends:` resolves against.
@@ -191,8 +200,9 @@ class BoardsSyncCommand extends Command<int> {
       ..addOption(
         'ref',
         help:
-            'Git ref to fetch from (default: the tag matching this emb, '
-            'v$packageVersion). Applies to all GitHub sources unless '
+            'Git ref to fetch from (default: '
+            '${defaultBoardsRef(packageVersion)}, the tag of a released emb '
+            'or main for a -dev one). Applies to all GitHub sources unless '
             'the source config pins a specific ref.',
       )
       ..addOption(
@@ -345,7 +355,8 @@ class BoardsSyncCommand extends Command<int> {
     String? refOverride,
   ) async {
     final ref =
-        refOverride ?? (source.ref == 'auto' ? 'v$packageVersion' : source.ref);
+        refOverride ??
+        (source.ref == 'auto' ? defaultBoardsRef(packageVersion) : source.ref);
     final sourceDest = Directory(p.join(boardsRoot.path, source.name));
     final shaFile = File(p.join(sourceDest.path, _shaStamp));
 

@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/commands/boards_command.dart';
 import 'package:emb_cli/src/cross/board_source.dart';
+import 'package:emb_cli/src/version.dart';
 import 'package:mason_logger/mason_logger.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:path/path.dart' as p;
@@ -165,23 +166,25 @@ void main() {
     expect(written, isNot(contains('nested')));
   });
 
-  test('defaults to the tag matching this emb, and --ref overrides', () async {
+  test('defaults to the ref for this emb, and --ref overrides', () async {
+    // The tag of a release, main for a -dev build (#358).
+    final ref = defaultBoardsRef(packageVersion);
     await runSync([]);
     // First request is the SHA check (/commits/<ref>), second is contents.
-    expect(github.requestedPaths.first, contains('/commits/v'));
+    expect(github.requestedPaths.first, contains('/commits/$ref'));
     final listing = github.requestedPaths.firstWhere(
       (p) => p.contains('/contents/'),
     );
-    expect(listing, contains('ref=v'));
+    expect(listing, contains('ref=$ref'));
 
     github.requestedPaths.clear();
     github.commitSha = 'new-sha-001';
-    await runSync(['--ref', 'main']);
-    expect(github.requestedPaths.first, contains('/commits/main'));
+    await runSync(['--ref', 'v9.9.9']);
+    expect(github.requestedPaths.first, contains('/commits/v9.9.9'));
     final listing2 = github.requestedPaths.firstWhere(
       (p) => p.contains('/contents/'),
     );
-    expect(listing2, contains('ref=main'));
+    expect(listing2, contains('ref=v9.9.9'));
   });
 
   test('removes stale board files on re-sync', () async {

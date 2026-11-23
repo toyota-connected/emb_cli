@@ -4,6 +4,14 @@ New entries go here, not under the heading below. The pubspec reads
 `0.7.0-dev`, and nobody can tell whether work recorded under a published
 version shipped.
 
+**Boards.**
+
+- fix(boards): `emb boards sync` on a `-dev` emb asked GitHub for the tag
+  `v<version>-dev`, which never exists, and failed with HTTP 422 (#358). That
+  is the emb a generated workflow installs from git between releases. A
+  `-dev` build now fetches `main`, the branch it is built from; a release still
+  fetches its tag, and `--ref` still overrides both.
+
 **Cross.**
 
 - fix(cross): `extends: <dir>#<target>` and `source#<target>` failed when any

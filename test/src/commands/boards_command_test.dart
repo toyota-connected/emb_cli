@@ -4,6 +4,7 @@ import 'package:args/command_runner.dart';
 import 'package:emb_cli/src/commands/boards_command.dart';
 import 'package:emb_cli/src/cross/board_source.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
+import 'package:emb_cli/src/version.dart';
 import 'package:mason_logger/mason_logger.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:path/path.dart' as p;
@@ -334,14 +335,16 @@ sources:
     Future<int> runSync({
       required TimedProcessRunner runner,
       List<String> extra = const [],
+      String ref = 'main',
     }) async {
       final configDir = Directory(p.join(tmp.path, 'config', 'emb'))
         ..createSync(recursive: true);
       BoardSourceConfig([
-        const GithubBoardSource(
+        GithubBoardSource(
           name: 'priv',
           repo: 'org/priv-boards',
           transport: 'ssh',
+          ref: ref,
         ),
       ]).save(File(p.join(configDir.path, 'boards.yaml')));
 
@@ -436,6 +439,13 @@ sources:
       ).called(1);
     });
 
+    // #358: a -dev emb has no tag to fetch at.
+    test('a source at ref auto fetches the default for this emb', () async {
+      await runSync(runner: fakeRunner(), ref: 'auto');
+      expect(calls[0], contains(defaultBoardsRef(packageVersion)));
+      expect(calls[0], isNot(contains('auto')));
+    });
+
     test('passes --ref override to clone --branch', () async {
       await runSync(runner: fakeRunner(), extra: ['--ref', 'v1.0.0']);
       expect(calls[1], contains('v1.0.0'));
@@ -507,6 +517,20 @@ sources:
       verify(
         () => progress.complete(any(that: contains('up to date'))),
       ).called(1);
+    });
+  });
+
+  group('defaultBoardsRef', () {
+    test('a release fetches its own tag', () {
+      expect(defaultBoardsRef('0.6.0'), 'v0.6.0');
+    });
+
+    test('a -dev build fetches main', () {
+      expect(defaultBoardsRef('0.7.0-dev'), 'main');
+    });
+
+    test('another pre-release keeps its tag', () {
+      expect(defaultBoardsRef('0.7.0-rc.1'), 'v0.7.0-rc.1');
     });
   });
 
