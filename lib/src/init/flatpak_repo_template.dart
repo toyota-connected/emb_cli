@@ -432,8 +432,7 @@ String _manifest(FlatpakRepoSpec s) {
       '    # architecture, so the app runs on the runtime named above.',
       if (s.sdkBasePrefix != null) ...[
         "    # Each extends the embedder's own flatpak-sdk target, which",
-        '    # brings what it needs to build against the SDK. The provider is',
-        '    # named again, as the shared one above would otherwise win.',
+        '    # brings what it needs to build against the SDK.',
       ],
       for (final a in s.sdkArches) ...[
         '    ${FlatpakRepoSpec.sdkTargetName(a)}:',

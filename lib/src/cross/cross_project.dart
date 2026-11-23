@@ -28,6 +28,7 @@ class CrossTargetRef {
     this.arch,
     this.family,
     this.sourcePath,
+    this.warnings = const [],
   });
 
   /// The `--target` value that selects this entry.
@@ -50,6 +51,10 @@ class CrossTargetRef {
 
   /// The file this target was resolved from, for diagnostics + listings.
   final String? sourcePath;
+
+  /// What resolving this target found worth saying, for the command that
+  /// builds it to show. Not errors: the target resolved.
+  final List<String> warnings;
 }
 
 /// A target whose `extends:` could not be resolved yet.
@@ -164,6 +169,10 @@ class CrossProject {
       sourcePath: ref.sourcePath,
     );
   }
+
+  /// [CrossTargetRef.warnings] of the target [name]; none for the native
+  /// target or an unknown name.
+  List<String> warningsFor(String name) => this[name]?.warnings ?? const [];
 }
 
 /// How one [CrossProjectResolver.resolve] call treats `extends:`.
@@ -513,7 +522,13 @@ class CrossProjectResolver {
     Map<String, UnresolvedTarget>? unresolved,
   }) {
     // Null when the target is deferred: recorded in [unresolved], not thrown.
-    Map<String, dynamic>? apply(String name, Map<String, dynamic> block) {
+    // [recorded] is the block recorded there, when [block] was trimmed for
+    // resolving.
+    Map<String, dynamic>? apply(
+      String name,
+      Map<String, dynamic> block, {
+      Map<String, dynamic>? recorded,
+    }) {
       try {
         return _applyExtends(
           block,
@@ -525,7 +540,7 @@ class CrossProjectResolver {
         if (!opts.defer || unresolved == null) rethrow;
         unresolved[name] = UnresolvedTarget(
           name: name,
-          block: block,
+          block: recorded ?? block,
           message: e.message,
           sourcePath: sourcePath,
         );
@@ -556,7 +571,21 @@ class CrossProjectResolver {
       final override = entry.value is Map
           ? Map<String, dynamic>.from(entry.value as Map)
           : const <String, dynamic>{};
-      final merged = apply(name, _mergeSharedOverride(shared, override));
+      final block = _mergeSharedOverride(shared, override);
+      final warnings = <String>[];
+      final Map<String, dynamic>? merged;
+      if (block['extends'] == null) {
+        merged = apply(name, block);
+      } else {
+        merged = _withProvider(
+          name,
+          apply(name, {...block}..remove('provider'), recorded: block),
+          own: override['provider'],
+          shared: shared['provider'],
+          ext: block['extends'],
+          warnings: warnings,
+        );
+      }
       if (merged == null) continue;
       out[name] = CrossTargetRef(
         name: name,
@@ -565,9 +594,43 @@ class CrossProjectResolver {
         arch: _archOf(merged, supportedArchs),
         family: family,
         sourcePath: sourcePath,
+        warnings: warnings,
       );
     }
     return out;
+  }
+
+  /// The provider of a target that extends another, [resolved] having been
+  /// resolved without one so that its provider, if any, is the base's (#359).
+  ///
+  /// The target's [own] `provider:` wins, with a warning when it differs from
+  /// the base's. Otherwise the base's does, and only failing that the
+  /// [shared] one: a manifest's shared provider is often there only because
+  /// one is required to parse (`emb init` writes `arm-gnu`), and above a
+  /// flatpak-sdk target it would turn the build into an arm-gnu one.
+  static Map<String, dynamic>? _withProvider(
+    String name,
+    Map<String, dynamic>? resolved, {
+    required Object? own,
+    required Object? shared,
+    required Object? ext,
+    required List<String> warnings,
+  }) {
+    if (resolved == null) return null;
+    final base = resolved['provider'];
+    if (own != null) {
+      if (base != null && '$base' != '$own') {
+        warnings.add(
+          'target "$name" sets provider: $own over the $base of the target '
+          'it extends ($ext)',
+        );
+      }
+      return {...resolved, 'provider': own};
+    }
+    if (base == null && shared != null) {
+      return {...resolved, 'provider': shared};
+    }
+    return resolved;
   }
 
   /// A display arch: from the cross triple when present, else the first

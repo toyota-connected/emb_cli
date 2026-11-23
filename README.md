@@ -1258,6 +1258,13 @@ replaces it). `<dir>` is resolved relative to the extending manifest's project
 root (the `.emb/` parent, else the file's directory); cross-project reference
 cycles are rejected.
 
+A manifest's shared fields sit over what a target extends, as its own do,
+with one exception: `provider`. A shared `provider:` is often there only
+because a manifest needs one to parse (`emb init` writes `arm-gnu`), so a
+target that extends another takes the extended target's provider over it. A
+`provider:` on the target itself still wins, and emb warns when it differs
+from the one it extends.
+
 The third form is for a manifest that clones its embedder. The project layer
 is then inside the clone, and `source#<target>` names it without a path into
 the workspace:
