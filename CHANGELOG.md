@@ -1,8 +1,19 @@
 # Unreleased
 
-Nothing yet. New entries go here, not under the heading below. The pubspec
-reads `0.8.0-dev`, and nobody can tell whether work recorded under a published
+New entries go here, not under the heading below. The pubspec reads
+`0.8.0-dev`, and nobody can tell whether work recorded under a published
 version shipped.
+
+**Cross.**
+
+- fix(cross): builds of different `sdk_repo` sources at once could lose each
+  other's change to the OSTree cache's config (#369). Adding a remote and
+  setting its options each rewrite the whole file, and builds share the
+  cache's lock, so a remote could vanish or a signed-summary check go unset.
+  Fifty remotes added to one repo at once left 16, and 24 first builds at once
+  lost a remote about one time in three. Changes to the config now take a lock
+  of their own, `config.lock`, so they wait only for each other, not for
+  another build's pull.
 
 # 0.7.0
 

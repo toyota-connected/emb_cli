@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -115,8 +116,10 @@ class FlatpakSdkRepo {
     // created, so a key rotated in place must name a new remote, or the old
     // keyring would go on judging commits.
     final remote = 'emb-${contentHash([source, _keyDigest(gpgKey)])}';
-    await _ensureRepo();
-    await _ensureRemote(remote, local ? 'file://$source' : source, gpgKey);
+    await _configLocked(() async {
+      await _ensureRepo();
+      await _ensureRemote(remote, local ? 'file://$source' : source, gpgKey);
+    });
     String? warning;
     if (!offline) {
       final r = await _ostree(
@@ -362,6 +365,44 @@ class FlatpakSdkRepo {
       await raf.close();
     }
   }
+
+  /// Run [body] alone among everything that changes `repo/config` (#369).
+  ///
+  /// `ostree init`, `remote add` and `config set` each read the whole config
+  /// and write it back, so two at once can lose one's change: a remote gone,
+  /// or a summary check never set. Builds hold the cache's lock shared, so it
+  /// does not order them. This has its own lock, `config.lock`, rather than
+  /// taking that one exclusive, which would wait behind another build's pull.
+  ///
+  /// The file lock orders processes. A process's own locks do not exclude
+  /// each other, so builds within one are queued here first.
+  Future<T> _configLocked<T>(Future<T> Function() body) async {
+    cacheDir.createSync(recursive: true);
+    final key = cacheDir.absolute.path;
+    final before = _configQueue[key] ?? Future<void>.value();
+    final mine = Completer<void>();
+    _configQueue[key] = mine.future;
+    try {
+      await before;
+      final raf = File(p.join(cacheDir.path, 'config.lock')).openSync(
+        mode: FileMode.append,
+      );
+      try {
+        await raf.lock(FileLock.blockingExclusive);
+        return await body();
+      } finally {
+        await raf.close();
+      }
+    } finally {
+      mine.complete();
+      // The last in the queue clears it. The removed future has completed.
+      if (identical(_configQueue[key], mine.future)) {
+        unawaited(_configQueue.remove(key));
+      }
+    }
+  }
+
+  static final _configQueue = <String, Future<void>>{};
 
   /// The commit [remote] last gave for [ref] in the cache, or null.
   Future<String?> _revParse(String remote, String ref) async {

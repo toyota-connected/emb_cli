@@ -381,6 +381,35 @@ void main() {
       });
     });
 
+    // #369: remote setup rewrites repo/config, and concurrent builds of
+    // different sources used to race on it.
+    test(
+      'concurrent first checkouts of different sources keep every remote',
+      () async {
+        // A race, so several rounds: one lost a remote about one time in
+        // three before the fix.
+        const n = 24;
+        for (var round = 0; round < 3; round++) {
+          final sources = [
+            for (var i = 0; i < n; i++) sourceRepo('r$round-src$i'),
+          ];
+          await Future.wait([
+            for (final s in sources) cache().checkout(s, _ref),
+          ]);
+          final remotes = Process.runSync('ostree', [
+            '--repo=${p.join(tmp.path, 'cache', 'repo')}',
+            'remote',
+            'list',
+          ]);
+          expect(
+            '${remotes.stdout}'.trim().split('\n').where((l) => l.isNotEmpty),
+            hasLength(n * (round + 1)),
+            reason: 'round $round',
+          );
+        }
+      },
+    );
+
     group('gc', () {
       File used(String commit) =>
           File(p.join(tmp.path, 'cache', 'used', commit));
