@@ -1637,7 +1637,7 @@ is no wrapper script.
 | `--provider` | `arm-gnu` | |
 | `--target <name>` | none | a board target, by the name the embedder gives it in its `.emb/`; written as `extends: 'source#<name>'`. Repeatable. Not checked until the first build clones the embedder |
 | `--backend <name>` | `wayland-egl` for ivi-homescreen | the backend a `--target` build is for; goes into the build command the README gives, not the manifest |
-| `--sdk <x86_64\|aarch64>` | none | a `flatpak-sdk` target, `sdk-<arch>`, built against the flatpak SDK for that architecture rather than this machine. Repeatable. With the default embedder each extends ivi-homescreen's own `flatpak-sdk-<arch>` target, which builds its host tools. With `x86_64`, the CI workflow builds it and installs clang, lld, llvm and those tools' build deps instead of a `-dev` package TODO. See [Building against the flatpak SDK](#building-against-the-flatpak-sdk) |
+| `--sdk <x86_64\|aarch64>` | none | a `flatpak-sdk` target, `sdk-<arch>`, built against the flatpak SDK for that architecture rather than this machine. Repeatable. With the default embedder each extends ivi-homescreen's own `flatpak-sdk-<arch>` target, which builds its host tools. With `x86_64`, the CI workflow builds it and installs clang, lld, llvm and those tools' build deps instead of a `-dev` package TODO. With `aarch64`, it adds a job that builds that one on an arm64 runner, `ubuntu-24.04-arm`. See [Building against the flatpak SDK](#building-against-the-flatpak-sdk) |
 | `--runtime-version` | newest on flathub, else `25.08` | `YY.MM`; always written, never left to emb's default |
 | `--flutter-version` | `stable` | a branch or a tag |
 | `--ci <none\|github>` | `github` | |

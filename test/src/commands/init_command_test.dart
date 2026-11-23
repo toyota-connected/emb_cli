@@ -644,8 +644,30 @@ cross:
         expect(readme, contains(command));
         expect(readme, contains('org.freedesktop.Sdk/aarch64/'));
         expect(readme, contains('qemu-user'));
-        // The runner is x86_64: an aarch64 SDK target leaves CI native.
-        expect(h.read(workflow), contains('--target local --build'));
+        // The main job's runner is x86_64, so it builds natively; aarch64
+        // gets a job of its own on an arm64 runner (#378).
+        final ci = loadYaml(h.read(workflow)) as YamlMap;
+        final jobs = ci['jobs'] as YamlMap;
+        expect(jobs.keys, ['flatpak', 'flatpak-aarch64']);
+        String build(String job) {
+          final steps = (jobs[job] as YamlMap)['steps'] as YamlList;
+          final step = steps.cast<YamlMap>().firstWhere(
+            (s) => s['name'] == 'Build the flatpak',
+          );
+          return '${step['run']}';
+        }
+
+        expect(build('flatpak'), contains('--target local --build'));
+        final arm = jobs['flatpak-aarch64'] as YamlMap;
+        expect(arm['runs-on'], 'ubuntu-24.04-arm');
+        expect(build('flatpak-aarch64'), contains('--target sdk-aarch64'));
+        expect(h.read(workflow), contains('name: flatpak-aarch64'));
+        // A private repo has no free arm64 runner; the job says so.
+        expect(h.read(workflow), contains('free for public repos'));
+        expect(
+          readme,
+          contains('`--target sdk-aarch64` on an arm64 runner'),
+        );
       });
 
       test('with x86_64, CI builds it and needs no -dev packages', () async {
@@ -663,6 +685,24 @@ cross:
           contains('The CI workflow builds `--target sdk-x86_64`'),
         );
         expect(readme, isNot(contains('qemu-user')));
+        // No aarch64 target, so no arm64 job.
+        expect(ci, isNot(contains('ubuntu-24.04-arm')));
+      });
+
+      test('with both, CI builds each on its own runner', () async {
+        final h = _Harness();
+        await h.run(['--sdk', 'x86_64', '--sdk', 'aarch64', '--app', _appUri]);
+        final ci = h.read(workflow);
+        expect(ci, contains('--target sdk-x86_64 --build'));
+        expect(ci, contains('--target sdk-aarch64 --build'));
+        expect(ci, contains('runs-on: ubuntu-24.04-arm'));
+        expect(
+          h.read('README.md'),
+          contains(
+            'The CI workflow builds `--target sdk-x86_64` and '
+            '`--target sdk-aarch64` on an arm64 runner.',
+          ),
+        );
       });
 
       // Only ivi-homescreen is known to have flatpak-sdk targets.

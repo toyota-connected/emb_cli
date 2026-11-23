@@ -21,6 +21,16 @@ version shipped.
   of their own, `config.lock`, so they wait only for each other, not for
   another build's pull.
 
+**Flatpak.**
+
+- feat(init): with `--sdk aarch64`, the workflow `emb init flatpak` writes
+  adds a job that builds `sdk-aarch64` on GitHub's arm64 runner,
+  `ubuntu-24.04-arm`, beside the one it had (#378). An aarch64 SDK target was
+  never built in the generated repo's CI, since an x86_64 runner needs QEMU
+  for the aarch64 runtime's tools. On arm64 the build is native; emb's own CI
+  shows it works (#377). Each job uploads its own artifact. The runner is free
+  for public repos; the job says a private one needs a paid arm64 runner.
+
 # 0.7.0
 
 Released from `main`. The headline is that `emb init flatpak --sdk` now
