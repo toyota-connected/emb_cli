@@ -415,6 +415,8 @@ class DoctorCommand extends Command<int> {
       }
       selected = ref.cross;
       selectedFrom = ref.sourcePath;
+      // What resolving it found worth saying, as `emb cross` prints it (#370).
+      if (logErrors) ref.warnings.forEach(_logger.warn);
     }
 
     final embedderRoot =

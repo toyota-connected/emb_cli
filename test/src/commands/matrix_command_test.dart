@@ -247,6 +247,51 @@ cross:
     );
   });
 
+  // #370: the warning `emb cross` prints when a target's own provider
+  // overrides the one it extends, shown here too, on stderr.
+  test('says when a target overrides the provider it extends', () async {
+    Directory(p.join(tmp.path, 'proj', '.emb')).createSync(recursive: true);
+    File(p.join(tmp.path, 'proj', '.emb', 'sdk.emb.yaml')).writeAsStringSync('''
+cross:
+  targets:
+    sdk:
+      provider: flatpak-sdk
+      triple: x86_64-flatpak-linux-gnu
+''');
+    final f = write('override.emb.yaml', '''
+id: app
+type: app
+supported_host_types: [ubuntu]
+cross:
+  provider: arm-gnu
+  targets:
+    t:
+      extends: 'proj#sdk'
+      provider: arm-gnu
+      triple: aarch64-none-linux-gnu
+      toolchain_version: 12.3.rel1
+      image_url: https://example.com/os.img.xz
+''');
+    final logger = _CapturingLogger();
+    final runner = CommandRunner<int>('emb', 'test')
+      ..addCommand(MatrixCommand(logger: logger, host: _host));
+    expect(
+      await runner.run([
+        'matrix',
+        f.path,
+        '-o',
+        p.join(tmp.path, 'matrix_override.json'),
+      ]),
+      ExitCode.success.code,
+    );
+    expect(
+      logger.warnings.toString(),
+      contains(
+        '${f.path}#t: target "t" sets provider: arm-gnu over the flatpak-sdk',
+      ),
+    );
+  });
+
   test(
     'build.app_path: . still emits a deprecation warning (key presence)',
     () async {

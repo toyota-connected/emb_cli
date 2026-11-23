@@ -157,6 +157,10 @@ class MatrixCommand extends Command<int> {
         final declaring = _manifestOf(ref.sourcePath, project);
         final hosts = _hosts(declaring, hostFilter);
         if (hosts.isEmpty) continue;
+        // On stderr, as `emb cross` prints it, so -o output stays clean (#370).
+        for (final w in ref.warnings) {
+          _logger.warn('$input#$name: $w');
+        }
         if (declaresAppPath(declaring?.raw['build'])) {
           _logger.warn(
             '${ref.sourcePath ?? input}: build.app_path is deprecated and has '
