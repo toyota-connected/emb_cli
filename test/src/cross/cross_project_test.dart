@@ -306,6 +306,69 @@ cross:
         });
       });
 
+      // #381: a target only the app defines, on the project's shared fields.
+      group('appOnlySelection', () {
+        CrossProject project() {
+          final dir = Directory(p.join(appDir.path, 'project'))..createSync();
+          File(p.join(dir.path, 'emb.yaml')).writeAsStringSync('''
+id: embedder
+type: app
+cross:
+  provider: arm-gnu
+  defines: {SHARED: '1'}
+  targets:
+    board: {triple: aarch64-none-linux-gnu}
+''');
+          return CrossProjectResolver().resolve(dir.path)!;
+        }
+
+        void writeAppTarget() => writeApp('.emb/app.emb.yaml', '''
+id: my-app
+cross:
+  provider: arm-gnu
+  targets:
+    sdk-x86_64:
+      provider: flatpak-sdk
+      triple: x86_64-flatpak-linux-gnu
+''');
+
+        test('builds it on the shared fields, the app target over them', () {
+          final proj = project();
+          writeAppTarget();
+          final r = CrossProjectResolver();
+          final selection = r.appOnlySelection(proj, appDir.path, 'sdk-x86_64');
+          expect(selection, isNotNull);
+          expect(selection!.isNative, isFalse);
+          final layer = r.layered(
+            selection,
+            appDir: appDir.path,
+            appOnly: true,
+          );
+          expect(layer.cross['provider'], 'flatpak-sdk');
+          expect(layer.cross['triple'], 'x86_64-flatpak-linux-gnu');
+          expect((layer.cross['defines']! as Map)['SHARED'], '1');
+          // No project target was overridden, so nothing to warn about.
+          expect(layer.warnings, isEmpty);
+        });
+
+        test('is null for a name the app does not define', () {
+          final proj = project();
+          writeAppTarget();
+          expect(
+            CrossProjectResolver().appOnlySelection(proj, appDir.path, 'nope'),
+            isNull,
+          );
+        });
+
+        test('is null without an app, and for the native target', () {
+          final proj = project();
+          writeAppTarget();
+          final r = CrossProjectResolver();
+          expect(r.appOnlySelection(proj, null, 'sdk-x86_64'), isNull);
+          expect(r.appOnlySelection(proj, appDir.path, 'local'), isNull);
+        });
+      });
+
       test('a target the app does not name is untouched', () {
         writeApp('.emb/raspberry-pi.emb.yaml', '''
 id: my-app
