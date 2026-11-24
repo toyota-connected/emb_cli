@@ -3,6 +3,8 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:args/command_runner.dart';
+import 'package:emb_cli/src/aot/aot_builder.dart';
+import 'package:emb_cli/src/bundle/bundle_builder.dart';
 import 'package:emb_cli/src/commands/cross_command.dart';
 import 'package:emb_cli/src/cross/cross_keys.dart';
 import 'package:emb_cli/src/cross/cross_profile.dart';
@@ -53,6 +55,36 @@ class _RecordingEngine extends EngineArtifacts {
       arch: arch,
       status: EngineFetchStatus.fetched,
     );
+  }
+}
+
+/// An AOT step that builds nothing: a debug build only asks for assets.
+class _AssetsOnlyAot extends AotBuilder {
+  _AssetsOnlyAot(super.workspace, HostInfo host) : super(host: host);
+
+  @override
+  Future<bool> buildAssets({
+    required String appPath,
+    required String mode,
+    String? arch,
+  }) async => true;
+}
+
+/// A bundle with nothing in it: an empty lib/ passes the bundle audit.
+class _EmptyBundle extends BundleBuilder {
+  const _EmptyBundle(super.workspace);
+
+  @override
+  BundleResult assemble({
+    required String appPath,
+    required String mode,
+    required String arch,
+    required String outputDir,
+  }) {
+    for (final d in ['data', 'lib']) {
+      Directory(p.join(outputDir, d)).createSync(recursive: true);
+    }
+    return BundleResult(success: true, outputDir: outputDir);
   }
 }
 
@@ -1882,6 +1914,95 @@ void main() {
       expect(flatpakLauncherText(s, 'project-id').name, 'Kiosk');
       expect(s.name, 'kiosk-app');
     });
+  });
+
+  // #372: flatpakLauncherText is tested on its own; this pins what the
+  // command hands it. The launcher of an app with no package.name and no
+  // package.flatpak.name is named after the project id, not the target or
+  // the app.
+  test('--build --flatpak names the launcher after the project id', () async {
+    final ws = Directory(p.join(tmp.path, 'ws'))..createSync();
+    File(p.join(ws.path, 'flutter', 'bin', 'flutter'))
+      ..createSync(recursive: true)
+      ..writeAsStringSync('');
+    final app = Directory(p.join(tmp.path, 'my_app'))..createSync();
+    File(p.join(app.path, 'pubspec.yaml')).writeAsStringSync('name: my_app\n');
+    final pkg = pkgWith(
+      'kiosk-proj',
+      'id: kiosk-proj\ntype: app\ncross:\n  provider: arm-gnu\n'
+          '  toolchain_version: 12.3.rel1\n  image_url: https://x/y.img.xz\n'
+          '  package:\n    flatpak: {app_id: io.example.Kiosk}\n',
+    );
+    File(p.join(pkg.path, 'CMakeLists.txt')).writeAsStringSync('');
+    String? desktop;
+
+    Future<RunResult> runner(
+      String exe,
+      List<String> args, {
+      String? workingDirectory,
+      Map<String, String>? environment,
+      bool includeParentEnvironment = true,
+      bool runInShell = false,
+      ProcessOutputMode output = ProcessOutputMode.capture,
+      String? label,
+    }) async {
+      if (exe == 'command') return RunResult(0, '/usr/bin/${args.last}', '');
+      if (exe == 'cp') {
+        final r = await Process.run(
+          exe,
+          args,
+          workingDirectory: workingDirectory,
+        );
+        return RunResult(r.exitCode, '${r.stdout}', '${r.stderr}');
+      }
+      if (p.basename(exe) == 'cmake' && args.contains('--build')) {
+        final dir = args[args.indexOf('--build') + 1];
+        File('/usr/bin/true').copySync(p.join(dir, 'homescreen'));
+      }
+      if (exe == 'flatpak-builder') {
+        desktop = File(
+          p.join(workingDirectory!, 'io.example.Kiosk.desktop'),
+        ).readAsStringSync();
+        throw const _Stop();
+      }
+      return const RunResult(0, '', '');
+    }
+
+    final crossRunner = CommandRunner<int>('emb', 'test')
+      ..addCommand(
+        CrossCommand(
+          logger: Logger(),
+          host: _host,
+          processRunner: runner,
+          // The packager's context dir is under the cache; keep it in tmp.
+          environment: {
+            ...Platform.environment,
+            'EMB_CACHE_DIR': p.join(tmp.path, 'cache'),
+          },
+          aotFactory: _AssetsOnlyAot.new,
+          bundleFactory: _EmptyBundle.new,
+        ),
+      );
+    try {
+      await crossRunner.run([
+        'cross',
+        '--build',
+        '--flatpak',
+        '-t',
+        'local',
+        '--mode',
+        'debug',
+        '--app',
+        app.path,
+        '-w',
+        ws.path,
+        pkg.path,
+      ]);
+    } on _Stop {
+      // Expected: the runner stops at flatpak-builder.
+    }
+    expect(desktop, isNotNull, reason: 'never reached flatpak-builder');
+    expect(desktop, contains('\nName=kiosk-proj\n'));
   });
 
   group('augment summary', () {
