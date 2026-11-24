@@ -410,6 +410,12 @@ void main() {
 
     // #369: remote setup rewrites repo/config, and concurrent builds of
     // different sources used to race on it.
+    //
+    // 72 first checkouts take some 5 s on a 32-core machine and over 30 on
+    // a 4-core CI runner, where the default timeout failed it (#387). The
+    // timeout fails the test while its checkouts run on, and tearDown then
+    // deletes the cache under them: the "Rename failed" that followed was
+    // that, not a race in _checkoutCommit.
     test(
       'concurrent first checkouts of different sources keep every remote',
       () async {
@@ -417,10 +423,8 @@ void main() {
         // three before the fix.
         const n = 24;
         for (var round = 0; round < 3; round++) {
-          // Each with content of its own, so each is a commit of its own. The
-          // same tree in the same second is the same commit, and 24 checkouts
-          // of one commit race in _checkoutCommit, which is not what this
-          // tests (#387).
+          // Each with content of its own, so each is a commit of its own,
+          // as different SDKs are.
           final sources = [
             for (var i = 0; i < n; i++)
               sourceRepo('r$round-src$i', marker: 'r$round-src$i'),
@@ -440,6 +444,7 @@ void main() {
           );
         }
       },
+      timeout: const Timeout(Duration(minutes: 3)),
     );
 
     group('gc', () {
