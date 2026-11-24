@@ -6,6 +6,17 @@ version shipped.
 
 **Cross.**
 
+- fix(cross): a code-asset hook's `find_package` did not see the augments emb
+  had built for a `flatpak-sdk` target (#367). Those go into an overlay beside
+  the read-only SDK, and the `cmake` wrapper a hook finds on PATH passed only
+  the toolchain file, whose `CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY` re-roots
+  any other prefix under the sysroot. firebase_ffi's hook failed at
+  `find_package(firebase_cpp_sdk CONFIG)`. The wrapper now adds the overlay as
+  `CMAKE_FIND_ROOT_PATH` and `CMAKE_PREFIX_PATH` on configure, as the
+  embedder's own build gets it, and puts its pkg-config dirs ahead of the
+  sysroot's. An arm-gnu target, whose augments go into the sysroot, gets
+  nothing new.
+
 - fix(cross): `emb doctor --target` and `emb matrix` now show the warning that
   `emb cross` and `emb fetch` give when a target's own `provider:` overrides a
   different one from the target it extends (#370). A CI matrix built from

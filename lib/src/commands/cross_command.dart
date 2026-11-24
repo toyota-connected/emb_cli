@@ -127,6 +127,62 @@ String augmentSummary(List<String> pkgs, List<String> cached) {
   return parts.join(', ');
 }
 
+/// The `cmake` wrapper a code-asset hook finds on PATH: on configure it adds
+/// the cross toolchain file, and the augment overlay when it is a prefix of its
+/// own beside the sysroot; `cmake --build` is passed through.
+///
+/// The overlay is a find root and a prefix, as the embedder's own configure
+/// gets it, and its pkg-config dirs go ahead of the sysroot's. Without it a
+/// hook's `find_package` saw only the sysroot: the toolchain file's
+/// `CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY` re-roots any other path under it,
+/// so a flatpak-sdk build, whose augments cannot go into the read-only SDK,
+/// could not find what emb had just built for it (#367). An overlay that is
+/// the sysroot itself (arm-gnu stages there) adds nothing.
+String hookCmakeScript({
+  required String realCmake,
+  required String toolchain,
+  required CrossProfile profile,
+  String? overlayPrefix,
+}) {
+  String q(String s) => "'${s.replaceAll("'", r"'\''")}'";
+  final overlay =
+      overlayPrefix != null &&
+          p.normalize(overlayPrefix) != p.normalize(profile.targetSysroot)
+      ? overlayPrefix
+      : null;
+  final pkg = <String, String>{...?profile.pkgConfig?.toEnv()};
+  if (overlay != null) {
+    final dirs = [
+      p.join(overlay, 'usr', 'lib', 'pkgconfig'),
+      p.join(overlay, 'usr', 'share', 'pkgconfig'),
+    ];
+    // As OverlayPaths.pkgConfigEnv: a sysroot's search path is replaced
+    // (LIBDIR), a host's is added to (PATH).
+    final key = profile.pkgConfig == null
+        ? 'PKG_CONFIG_PATH'
+        : 'PKG_CONFIG_LIBDIR';
+    pkg[key] = [...dirs, ?pkg[key]].join(':');
+  }
+  final args = [
+    '-DCMAKE_TOOLCHAIN_FILE=$toolchain',
+    if (overlay != null) ...[
+      '-DCMAKE_FIND_ROOT_PATH=$overlay',
+      '-DCMAKE_PREFIX_PATH=$overlay',
+    ],
+  ];
+  // `set --` so each argument stays one word, a path with a space included.
+  return '#!/bin/sh\n'
+      '${pkg.entries.map((e) => 'export ${e.key}=${q(e.value)}\n').join()}'
+      'configuring=true\n'
+      'for arg in "\$@"; do\n'
+      '    if [ "\$arg" = "--build" ]; then configuring=false; fi\n'
+      'done\n'
+      'if [ "\$configuring" = "true" ]; then\n'
+      '    set -- ${args.map(q).join(' ')} "\$@"\n'
+      'fi\n'
+      'exec ${q(realCmake)} "\$@"\n';
+}
+
 /// What a flatpak's launcher entry says. `Name=` is `package.flatpak.name`,
 /// else `package.name`, else [defaultName], the project id: an app built onto
 /// an embedder would otherwise show under the embedder's package name.
@@ -2120,25 +2176,14 @@ class CrossCommand extends Command<int> {
     final realCmake = _which('cmake');
     final toolchain = profile.cmakeToolchainFile;
     if (realCmake != null && toolchain != null) {
-      final pkg = profile.pkgConfig?.toEnv() ?? const <String, String>{};
-      final exports = pkg.entries
-          .map((e) => 'export ${e.key}=${q(e.value)}\n')
-          .join();
-      File(p.join(dir.path, 'cmake'))
-        ..writeAsStringSync(
-          '#!/bin/sh\n'
-          '$exports'
-          'configuring=true\n'
-          'for arg in "\$@"; do\n'
-          '    if [ "\$arg" = "--build" ]; then configuring=false; fi\n'
-          'done\n'
-          'ARGS=""\n'
-          'if [ "\$configuring" = "true" ]; then\n'
-          '    ARGS=${q('-DCMAKE_TOOLCHAIN_FILE=$toolchain')}\n'
-          'fi\n'
-          'exec ${q(realCmake)} \$ARGS "\$@"\n',
-        )
-        ..parent;
+      File(p.join(dir.path, 'cmake')).writeAsStringSync(
+        hookCmakeScript(
+          realCmake: realCmake,
+          toolchain: toolchain,
+          profile: profile,
+          overlayPrefix: overlayPrefix,
+        ),
+      );
       Process.runSync('chmod', ['+x', p.join(dir.path, 'cmake')]);
     }
 
