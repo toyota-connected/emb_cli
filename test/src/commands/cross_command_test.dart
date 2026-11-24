@@ -2127,4 +2127,62 @@ cross:
       );
     });
   });
+
+  // #381: a target only the --app layer defines.
+  group('a target only the --app layer defines', () {
+    Directory app() {
+      final dir = Directory(p.join(tmp.path, 'app-layer'))..createSync();
+      File(p.join(dir.path, 'emb.yaml')).writeAsStringSync('''
+id: my_app
+type: app
+cross:
+  provider: arm-gnu
+  targets:
+    sdk-x86_64:
+      provider: flatpak-sdk
+      triple: x86_64-flatpak-linux-gnu
+''');
+      return dir;
+    }
+
+    Directory project() => pkgWith('embedder', '''
+id: embedder
+type: app
+cross:
+  provider: arm-gnu
+  package:
+    name: embedder
+    flatpak: {app_id: io.example.Emb, runtime_version: '25.08'}
+  targets:
+    board: {triple: aarch64-none-linux-gnu}
+''');
+
+    test('is selectable with --app', () async {
+      final (code, json) = await runJson([
+        'cross',
+        '--dry-run',
+        '--json',
+        '--app',
+        app().path,
+        '--target',
+        'sdk-x86_64',
+        project().path,
+      ]);
+      expect(code, ExitCode.success.code);
+      expect((json['data'] as Map)['provider'], 'flatpak-sdk');
+    });
+
+    test('is unknown without --app', () async {
+      expect(
+        await run([
+          'cross',
+          '--dry-run',
+          '--target',
+          'sdk-x86_64',
+          project().path,
+        ]),
+        ExitCode.usage.code,
+      );
+    });
+  });
 }

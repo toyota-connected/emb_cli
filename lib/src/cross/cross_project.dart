@@ -254,6 +254,38 @@ class CrossProjectResolver {
     return _single(m.raw, fallback: m.id, sourcePath: m.sourcePath, opts: opts);
   }
 
+  /// [name] as a target only [appDir]'s layer defines, or null (#381).
+  ///
+  /// It is built on [project]'s shared fields, the block its native build
+  /// reads, and the app's target is layered over that by [layered] with
+  /// `appOnly`, as it would be over a project target of that name. Null when
+  /// there is no app, [name] is the native target, or the app does not
+  /// define it either.
+  ({
+    Map<String, dynamic> cross,
+    bool isNative,
+    String name,
+    String? sourcePath,
+  })?
+  appOnlySelection(CrossProject project, String? appDir, String? name) {
+    if (appDir == null || name == null || name == 'local' || name == 'host') {
+      return null;
+    }
+    final CrossProject? app;
+    try {
+      app = resolve(appDir);
+    } on CrossProjectException {
+      return null;
+    }
+    if (app?[name] == null) return null;
+    return (
+      name: name,
+      isNative: false,
+      cross: project.nativeCross,
+      sourcePath: project.nativeSourcePath,
+    );
+  }
+
   /// Merge an app-owned manifest layer over a project target's resolved
   /// `cross:` block.
   ///
@@ -281,13 +313,16 @@ class CrossProjectResolver {
   /// only because a manifest needs one to parse, and over a flatpak-sdk target
   /// it turned the build into an arm-gnu one (#380). A `provider:` on the app's
   /// target itself still wins, and [warnings] gets a line when it differs from
-  /// the project target's, as `extends:` does (#364).
+  /// the project target's, as `extends:` does (#364). With [appOnly] there is
+  /// no project target, only its shared fields, so nothing is overridden and
+  /// nothing is said.
   Map<String, dynamic> applyAppLayer({
     required Map<String, dynamic> cross,
     required String appDir,
     required String targetName,
     bool native = false,
     List<String>? warnings,
+    bool appOnly = false,
   }) {
     final CrossProject? app;
     try {
@@ -306,7 +341,7 @@ class CrossProjectResolver {
       final base = cross['provider'];
       if (own == null) {
         layer = {...layer}..remove('provider');
-      } else if (base != null && '$base' != '$own') {
+      } else if (!appOnly && base != null && '$base' != '$own') {
         warnings?.add(
           'the app layer\'s target "$targetName" sets provider: $own over '
           'the $base of the project target it is layered on',
@@ -336,6 +371,7 @@ class CrossProjectResolver {
     })
     selection, {
     String? appDir,
+    bool appOnly = false,
   }) {
     final cross = _stampAugmentSource(selection.cross, selection.sourcePath);
     if (appDir == null) {
@@ -352,6 +388,7 @@ class CrossProjectResolver {
       targetName: selection.name,
       native: selection.isNative,
       warnings: warnings,
+      appOnly: appOnly,
     );
     final layerSource = appLayerSourcePath(
       appDir: appDir,

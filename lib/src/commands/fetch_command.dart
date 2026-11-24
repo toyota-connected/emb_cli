@@ -199,11 +199,20 @@ class FetchCommand extends Command<int> {
         return ExitCode.usage.code;
       }
     }
-    final selection = picked;
+    // A target only the --app layer defines, built on the project's shared
+    // fields (#381).
+    final selection =
+        picked ??
+        _project.appOnlySelection(project, args['app'] as String?, targetArg);
+    final appOnly = picked == null && selection != null;
     if (selection == null) {
+      final declared = CrossTarget.repoFrom(project.nativeCross['app']);
       _logger.err(
         'Unknown target "${args['target']}". '
-        'Available: ${project.targets.keys.join(", ")}',
+        'Available: ${project.targets.keys.join(", ")}'
+        '${args['app'] == null && declared != null ? '. A target the app '
+                  "defines is selectable with --app <dir>; cross.app's own "
+                  'layer is not read until it is fetched' : ''}',
       );
       return ExitCode.usage.code;
     }
@@ -255,7 +264,11 @@ class FetchCommand extends Command<int> {
         : p.absolute(appArg);
     // The app can add to the sysroot the build needs (a `-dev` package its
     // hooks link against), so the closure is resolved with its layer merged.
-    final layer = _project.layered(selection, appDir: appArg);
+    final layer = _project.layered(
+      selection,
+      appDir: appArg,
+      appOnly: appOnly,
+    );
     layer.warnings.forEach(_logger.warn);
     final CrossTarget target;
     try {

@@ -6,6 +6,15 @@ version shipped.
 
 **Cross.**
 
+- fix(cross): a target only the `--app` layer defines could not be selected
+  (#381). `--target sdk-x86_64`, declared in the app's manifest and not in the
+  embedder's, gave "Unknown target", listing the embedder's. It is now built
+  on the embedder's shared fields with the app's target over them, as a
+  project target of that name would be; its own `provider:` applies without
+  a warning, since it overrides nothing. `emb fetch` does the same. When the
+  manifest declares `cross.app` and no `--app` is given, the error says a
+  target the app defines needs `--app`.
+
 - fix(cross): an `--app` layer's shared `provider:` overrode the provider of
   the project target it was layered on (#380). The app layer merges by
   target name rather than through `extends:`, so 0.7.0's provider rule did

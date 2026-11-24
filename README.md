@@ -777,7 +777,7 @@ emb cross <project-dir|manifest.yaml> [options]
 | `--build` | off | Configure + build the embedder under the resolved profile, one build per `cross.backends` entry. Skipped when a prior `--prepare` already built it and the source is unchanged. |
 | `--backend <name>` | all | Build only the named `cross.backends` entries. Repeatable. |
 | `--deb` | off | With `--build`: package each backend binary into a root-free `.deb` (Depends auto-derived from the binary's needed libraries). |
-| `--app <dir>` | — | With `--build`: also build this Flutter app for the target and assemble a **runnable bundle** (embedder + engine + flutter_assets + icudtl + libapp), runnable as `./<embedder> -b .` (or the manifest's `cross.run.command`). |
+| `--app <dir>` | — | With `--build`: also build this Flutter app for the target and assemble a **runnable bundle** (embedder + engine + flutter_assets + icudtl + libapp), runnable as `./<embedder> -b .` (or the manifest's `cross.run.command`). The app's own `.emb/` layer is merged over the target; a `--target` only that layer defines is built on the project's shared fields. |
 | `-m`, `--mode <mode>` | `release` | Runtime mode for the `--app` bundle (`debug`/`profile`/`release`). |
 | `--tar` | off | Also produce a `.tar.gz` of each runnable bundle. |
 | `--deploy <target>` | — | With `--app`: send each runnable bundle to the board. `<user@host>` uses SSH — rsync when the target has it, else a tar-over-SSH fallback (port/opts reused from `cross.sysroot` when device-sourced). `adb` or `adb:<serial>` uses adb instead; so does any value when `cross.sysroot.transport: adb`. With `--deb`: SSH only. |
