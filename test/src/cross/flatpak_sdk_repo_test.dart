@@ -390,8 +390,13 @@ void main() {
         // three before the fix.
         const n = 24;
         for (var round = 0; round < 3; round++) {
+          // Each with content of its own, so each is a commit of its own. The
+          // same tree in the same second is the same commit, and 24 checkouts
+          // of one commit race in _checkoutCommit, which is not what this
+          // tests (#387).
           final sources = [
-            for (var i = 0; i < n; i++) sourceRepo('r$round-src$i'),
+            for (var i = 0; i < n; i++)
+              sourceRepo('r$round-src$i', marker: 'r$round-src$i'),
           ];
           await Future.wait([
             for (final s in sources) cache().checkout(s, _ref),
