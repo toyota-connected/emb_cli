@@ -29,6 +29,7 @@ class CrossTargetRef {
     this.family,
     this.sourcePath,
     this.warnings = const [],
+    this.ownProvider,
   });
 
   /// The `--target` value that selects this entry.
@@ -55,6 +56,12 @@ class CrossTargetRef {
   /// What resolving this target found worth saying, for the command that
   /// builds it to show. Not errors: the target resolved.
   final List<String> warnings;
+
+  /// The `provider:` written on this target itself, as opposed to one from
+  /// its manifest's shared fields or a target it extends; null when it names
+  /// none. An app layer's shared provider must not override the project's
+  /// (#380), and this is how [CrossProjectResolver.applyAppLayer] tells.
+  final Object? ownProvider;
 }
 
 /// A target whose `extends:` could not be resolved yet.
@@ -269,11 +276,18 @@ class CrossProjectResolver {
   ///
   /// Returns [cross] unchanged when [appDir] has no manifest, or none naming
   /// [targetName] — an app with nothing extra to say costs nothing.
+  ///
+  /// The app's shared `provider:` is not part of the layer: it is often there
+  /// only because a manifest needs one to parse, and over a flatpak-sdk target
+  /// it turned the build into an arm-gnu one (#380). A `provider:` on the app's
+  /// target itself still wins, and [warnings] gets a line when it differs from
+  /// the project target's, as `extends:` does (#364).
   Map<String, dynamic> applyAppLayer({
     required Map<String, dynamic> cross,
     required String appDir,
     required String targetName,
     bool native = false,
+    List<String>? warnings,
   }) {
     final CrossProject? app;
     try {
@@ -284,8 +298,21 @@ class CrossProjectResolver {
       return cross;
     }
     if (app == null) return cross;
-    final layer = native ? app.nativeCross : app[targetName]?.cross;
+    final ref = native ? null : app[targetName];
+    var layer = native ? app.nativeCross : ref?.cross;
     if (layer == null || layer.isEmpty) return cross;
+    if (ref != null) {
+      final own = ref.ownProvider;
+      final base = cross['provider'];
+      if (own == null) {
+        layer = {...layer}..remove('provider');
+      } else if (base != null && '$base' != '$own') {
+        warnings?.add(
+          'the app layer\'s target "$targetName" sets provider: $own over '
+          'the $base of the project target it is layered on',
+        );
+      }
+    }
     return _mergeCross(cross, layer);
   }
 
@@ -299,7 +326,8 @@ class CrossProjectResolver {
   ///
   /// `emb cross` and `emb fetch` share this, so the closure a fetch
   /// materializes is the one the build asks for.
-  ({Map<String, dynamic> cross, String? sourcePath}) layered(
+  ({Map<String, dynamic> cross, String? sourcePath, List<String> warnings})
+  layered(
     ({
       Map<String, dynamic> cross,
       bool isNative,
@@ -310,12 +338,20 @@ class CrossProjectResolver {
     String? appDir,
   }) {
     final cross = _stampAugmentSource(selection.cross, selection.sourcePath);
-    if (appDir == null) return (cross: cross, sourcePath: selection.sourcePath);
+    if (appDir == null) {
+      return (
+        cross: cross,
+        sourcePath: selection.sourcePath,
+        warnings: const <String>[],
+      );
+    }
+    final warnings = <String>[];
     final merged = applyAppLayer(
       cross: cross,
       appDir: appDir,
       targetName: selection.name,
       native: selection.isNative,
+      warnings: warnings,
     );
     final layerSource = appLayerSourcePath(
       appDir: appDir,
@@ -326,7 +362,11 @@ class CrossProjectResolver {
     if (layerSource != null) {
       _stampAugmentSource(merged, layerSource, onlyUnstamped: true);
     }
-    return (cross: merged, sourcePath: layerSource ?? selection.sourcePath);
+    return (
+      cross: merged,
+      sourcePath: layerSource ?? selection.sourcePath,
+      warnings: warnings,
+    );
   }
 
   /// Tag each augment map in [cross] with `_source: [sourcePath]` so
@@ -595,6 +635,7 @@ class CrossProjectResolver {
         family: family,
         sourcePath: sourcePath,
         warnings: warnings,
+        ownProvider: override['provider'],
       );
     }
     return out;

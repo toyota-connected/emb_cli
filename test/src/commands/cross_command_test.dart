@@ -9,8 +9,10 @@ import 'package:emb_cli/src/cross/cross_profile.dart';
 import 'package:emb_cli/src/cross/cross_target.dart';
 import 'package:emb_cli/src/cross/dockerfile_emitter.dart';
 import 'package:emb_cli/src/cross/process_runner.dart';
+import 'package:emb_cli/src/cross/source_checkout.dart';
 import 'package:emb_cli/src/engine/engine_artifacts.dart';
 import 'package:emb_cli/src/host/host_info.dart';
+import 'package:emb_cli/src/workspace/workspace.dart';
 import 'package:mason_logger/mason_logger.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
@@ -2058,6 +2060,71 @@ find_package(aug CONFIG REQUIRED)
         'arg:src',
         'libdir:$sysroot/usr/lib/pkgconfig',
       ]);
+    });
+  });
+
+  // #380: a dry run applied no layer for a declared cross.app, so its plan
+  // was not the build's.
+  group('--dry-run with a declared cross.app', () {
+    const appRepo = {
+      'uri': 'https://example.com/me/my_app.git',
+      'rev': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    };
+    Directory project() => pkgWith('declared', '''
+id: declared
+type: app
+cross:
+  provider: flatpak-sdk
+  triple: x86_64-flatpak-linux-gnu
+  app: {uri: ${appRepo['uri']}, rev: ${appRepo['rev']}}
+  package:
+    name: declared
+    flatpak: {app_id: io.example.Declared, runtime_version: '25.08'}
+''');
+
+    test('uses the app already cloned, layer and all', () async {
+      final pkg = project();
+      final ws = Directory(p.join(tmp.path, 'ws'))..createSync();
+      final clone = sourceCheckoutDir(
+        CrossTarget.repoFrom(appRepo)!,
+        Workspace(ws),
+      );
+      File(p.join(clone.path, '.emb', 'app.emb.yaml'))
+        ..createSync(recursive: true)
+        ..writeAsStringSync('''
+id: my_app
+cross:
+  provider: arm-gnu
+  targets:
+    declared: {provider: yocto-sdk}
+''');
+      final (code, json) = await runJson([
+        'cross',
+        '--dry-run',
+        '--json',
+        '-w',
+        ws.path,
+        pkg.path,
+      ]);
+      expect(code, ExitCode.success.code);
+      // The app's own target provider, which only its layer could give.
+      expect((json['data'] as Map)['provider'], 'yocto-sdk');
+    });
+
+    test('says when the app is not cloned', () async {
+      final pkg = project();
+      final ws = Directory(p.join(tmp.path, 'ws2'))..createSync();
+      final logger = _CaptureLogger();
+      final runner = CommandRunner<int>('emb', 'test')
+        ..addCommand(CrossCommand(logger: logger, host: _host));
+      expect(
+        await runner.run(['cross', '--dry-run', '-w', ws.path, pkg.path]),
+        ExitCode.success.code,
+      );
+      expect(
+        logger.errors.toString(),
+        contains('is not fetched, so its layer is not in this plan'),
+      );
     });
   });
 }

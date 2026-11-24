@@ -783,6 +783,26 @@ class CrossCommand extends Command<int> {
         ? CrossTarget.repoFrom(selection.cross['app'])
         : null;
 
+    // A dry run fetches nothing, but an app already cloned is there to read.
+    // Without its layer the plan is not the build's: it said flatpak-sdk while
+    // the build, with the layer, resolved arm-gnu (#380).
+    if (inspecting && appDirArg == null) {
+      if (CrossTarget.repoFrom(selection.cross['app']) case final app?) {
+        final dir = sourceCheckoutDir(app, workspace);
+        if (dir.existsSync()) {
+          final sub = app.pubspecPath;
+          appDirArg = sub == null || sub.isEmpty
+              ? dir.path
+              : p.join(dir.path, sub);
+        } else {
+          _logger.warn(
+            'cross.app (${app.uri}) is not fetched, so its layer is not in '
+            'this plan. `emb fetch` fetches it.',
+          );
+        }
+      }
+    }
+
     // An `--app` may carry its own `.emb/` layer, merged over the project's.
     // The project owns the board profile its apps share; this is where one app
     // states what only it needs — a `-dev` package its Dart build hooks link
@@ -791,9 +811,12 @@ class CrossCommand extends Command<int> {
     // shared `cross:` block, the same one the project's native build uses:
     // `sysroot` has nothing to add to on the host, but `defines` and `augment`
     // apply to a host build exactly as they do to a cross one.
+    final warned = <String>{};
     CrossTarget? resolveTarget() {
       final appDir = appDirArg;
       final layer = _project.layered(selection, appDir: appDir);
+      // Resolved again once a cloned app is in: say each once.
+      layer.warnings.where(warned.add).forEach(_logger.warn);
       final selected = layer.cross;
       final CrossTarget t;
       try {

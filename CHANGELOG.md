@@ -6,6 +6,18 @@ version shipped.
 
 **Cross.**
 
+- fix(cross): an `--app` layer's shared `provider:` overrode the provider of
+  the project target it was layered on (#380). The app layer merges by
+  target name rather than through `extends:`, so 0.7.0's provider rule did
+  not reach it, and an app manifest's `provider: arm-gnu` turned a
+  `flatpak-sdk` build into an arm-gnu one that failed with "no toolchain
+  version". The app's shared provider is now left out of the layer; a
+  `provider:` on the app's own target still wins, with a warning when it
+  differs. And `--dry-run` applied no layer for an app declared in
+  `cross.app`, so its plan said flatpak-sdk while the build, with the layer,
+  resolved arm-gnu. A dry run now uses the app's clone when the workspace has
+  one, and says when it does not.
+
 - fix(cross): a code-asset hook's `find_package` did not see the augments emb
   had built for a `flatpak-sdk` target (#367). Those go into an overlay beside
   the read-only SDK, and the `cmake` wrapper a hook finds on PATH passed only

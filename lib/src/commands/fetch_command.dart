@@ -256,6 +256,7 @@ class FetchCommand extends Command<int> {
     // The app can add to the sysroot the build needs (a `-dev` package its
     // hooks link against), so the closure is resolved with its layer merged.
     final layer = _project.layered(selection, appDir: appArg);
+    layer.warnings.forEach(_logger.warn);
     final CrossTarget target;
     try {
       target = CrossTarget.fromMap(layer.cross).withResolvedPaths(
