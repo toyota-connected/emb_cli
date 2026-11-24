@@ -308,16 +308,43 @@ void main() {
         });
       }
 
-      test('a URL that moves the ref back in time is refused', () async {
-        final src = signedRepo();
-        await cache().checkout('file://$src', _ref, gpgKey: key);
-        // Signed by the key, so commit signatures alone would pass it.
-        signedRepo(marker: 'old', date: '2024-01-02');
-        await expectLater(
-          cache().checkout('file://$src', _ref, gpgKey: key),
-          refused('refusing the rollback'),
-        );
-      });
+      // A URL is pulled with --timestamp-check; a path with pull-local,
+      // which has none, so emb compares the dates itself (#371).
+      for (final url in [false, true]) {
+        final how = url ? 'a URL' : 'a path';
+
+        test('$how that moves the ref back in time is refused, and the '
+            'cache keeps its commit', () async {
+          final src = signedRepo();
+          final source = url ? 'file://$src' : src;
+          await cache().checkout(source, _ref, gpgKey: key);
+          // Signed by the key, so commit signatures alone would pass it.
+          signedRepo(marker: 'old', date: '2024-01-02');
+          await expectLater(
+            cache().checkout(source, _ref, gpgKey: key),
+            refused('refusing the rollback'),
+          );
+          final kept = await cache(
+            offline: true,
+          ).checkout(source, _ref, gpgKey: key);
+          expect(
+            File(p.join(kept.path, 'metadata')).readAsStringSync(),
+            '#a\n',
+          );
+        });
+
+        test('$how that moves the ref forward is pulled', () async {
+          final src = signedRepo();
+          final source = url ? 'file://$src' : src;
+          await cache().checkout(source, _ref, gpgKey: key);
+          signedRepo(marker: 'new', date: '2025-03-02');
+          final c = await cache().checkout(source, _ref, gpgKey: key);
+          expect(
+            File(p.join(c.path, 'metadata')).readAsStringSync(),
+            '#new\n',
+          );
+        });
+      }
 
       test('a commit signed by another key is refused', () async {
         final src = signedRepo();

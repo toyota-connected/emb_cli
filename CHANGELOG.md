@@ -63,6 +63,13 @@ version shipped.
   of their own, `config.lock`, so they wait only for each other, not for
   another build's pull.
 
+- feat(cross): a keyed `sdk_repo` given as a local path may not roll a ref
+  back either (#371). A URL is pulled with `--timestamp-check`; a path is
+  pulled with OSTree's `pull-local`, which has no such option, so a repo
+  restored from an old backup could move the ref back unnoticed. emb now
+  compares the two commits' dates after the pull, and when the new one is
+  older puts the ref back and refuses, as for a URL.
+
 **Flatpak.**
 
 - feat(init): with `--sdk aarch64`, the workflow `emb init flatpak` writes
