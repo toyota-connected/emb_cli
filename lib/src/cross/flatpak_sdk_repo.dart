@@ -91,8 +91,8 @@ class FlatpakSdkRepo {
   /// whoever serves [source] can point [ref] at any commit the key ever
   /// signed: last year's SDK, or another branch's. A signed summary stops a
   /// remap; it does not stop a replay of an old signed summary, which the
-  /// timestamp check does. `pull-local` has no timestamp check, so a local
-  /// path, which is this machine's own, goes without.
+  /// timestamp check does. `pull-local` has no timestamp check, so for a
+  /// local path emb compares the two commits' dates itself (#371).
   ///
   /// Holds the cache's lock shared, so builds run side by side and [gc]
   /// waits for them: it never deletes a ref a pull is updating, or a
@@ -122,6 +122,9 @@ class FlatpakSdkRepo {
     });
     String? warning;
     if (!offline) {
+      final before = local && gpgKey != null
+          ? await _revParse(remote, ref)
+          : null;
       final r = await _ostree(
         local
             ? [
@@ -154,6 +157,8 @@ class FlatpakSdkRepo {
         warning =
             'could not pull $ref from $source ($why); building with the '
             'cached commit ${cached.substring(0, 12)}, which may be stale';
+      } else if (before != null) {
+        await _refuseLocalRollback(remote, ref, source, before);
       }
     }
     final commit = await _revParse(remote, ref);
@@ -332,11 +337,7 @@ class FlatpakSdkRepo {
   /// Why a failed pull must not fall back to the cache, from ostree's
   /// [stderr]; null for a failure the cache can ride out.
   static String? _refusal(String stderr, String source, String ref) {
-    if (stderr.contains('chronologically older')) {
-      return '$source moved $ref to a commit older than the one cached; '
-          'refusing the rollback. If it was rolled back on purpose, delete '
-          'the flatpak-sdk cache to accept it';
-    }
+    if (stderr.contains('chronologically older')) return _rollback(source, ref);
     if (stderr.contains('no summary found') ||
         stderr.contains('no summary.sig found')) {
       return '$source has no summary signed by sdk_repo_gpg_key. With a key '
@@ -349,6 +350,59 @@ class FlatpakSdkRepo {
           '${_firstLine(stderr)}';
     }
     return null;
+  }
+
+  static String _rollback(String source, String ref) =>
+      '$source moved $ref to a commit older than the one cached; refusing '
+      'the rollback. If it was rolled back on purpose, delete the '
+      'flatpak-sdk cache to accept it';
+
+  /// What `pull --timestamp-check` does, for `pull-local`, which has no such
+  /// option: when the pull moved [ref] from [before] to an older commit, put
+  /// it back and refuse. Equal dates pass, as they do there.
+  Future<void> _refuseLocalRollback(
+    String remote,
+    String ref,
+    String source,
+    String before,
+  ) async {
+    final after = await _revParse(remote, ref);
+    if (after == null || after == before) return;
+    if (!(await _commitDate(after)).isBefore(await _commitDate(before))) {
+      return;
+    }
+    final reset = await _ostree([
+      'refs',
+      '--create=$remote:$ref',
+      '--force',
+      before,
+    ]);
+    if (reset.exitCode != 0) {
+      throw FlatpakSdkRepoException(
+        '${_rollback(source, ref)}. The cache now holds the older commit, '
+        'and putting back ${before.substring(0, 12)} failed: '
+        '${_firstLine(reset.stderr)}',
+      );
+    }
+    throw FlatpakSdkRepoException(_rollback(source, ref));
+  }
+
+  /// [commit]'s date, from `ostree show`, which prints it in UTC to the
+  /// second: the commit's own resolution.
+  Future<DateTime> _commitDate(String commit) async {
+    final r = await _ostree(['show', commit]);
+    final m = RegExp(
+      r'^Date:\s+(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) \+0000$',
+      multiLine: true,
+    ).firstMatch(r.stdout);
+    final date = m == null ? null : DateTime.tryParse('${m[1]}Z');
+    if (r.exitCode != 0 || date == null) {
+      throw FlatpakSdkRepoException(
+        'cannot read the date of commit ${commit.substring(0, 12)}, so '
+        'cannot rule out a rollback: ${_firstLine(r.stderr)}',
+      );
+    }
+    return date;
   }
 
   /// Run [body] holding `<cacheDir>/lock` as [mode]: shared for builds,
