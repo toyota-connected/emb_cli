@@ -1,8 +1,26 @@
-# Unreleased
+# 0.8.0
 
-New entries go here, not under the heading below. The pubspec reads
-`0.8.0-dev`, and nobody can tell whether work recorded under a published
-version shipped.
+Released from `main`. The headline is that a Dart code-asset hook builds
+against a `flatpak-sdk` target's augments as the embedder does: its `cmake`
+finds them with `find_package` and pkg-config, where firebase_ffi's hook
+failed (#367). Around it: an `--app` layer keeps to the provider of the target
+it is layered on and can add targets of its own, builds of different
+`sdk_repo` sources at once no longer lose each other's remotes, a keyed local
+`sdk_repo` may not roll back, and `emb init flatpak --sdk aarch64` builds on
+an arm64 runner. Upgrading from 0.7.x needs the notes below.
+
+## Upgrading
+
+**An `--app` layer's shared `provider:` no longer applies.** The app
+manifest's top-level `cross.provider` used to override the provider of the
+project target it was layered on. It is now left out of the layer, so a build
+that relied on it resolves the embedder's provider instead. Name the provider
+on the app's own target to keep it; emb warns that it differs.
+
+**A keyed local `sdk_repo` may not roll back.** With `sdk_repo_gpg_key:` set, a
+path is now held to what a URL already was: a pull that moves a ref to a
+commit older than the one cached is put back and refused. If the repo was
+rolled back on purpose, delete the flatpak-sdk cache to accept it.
 
 **Cross.**
 
