@@ -237,6 +237,75 @@ cross:
         });
       });
 
+      // #380: the app's shared provider is there to parse; over a
+      // flatpak-sdk target it turned the build into an arm-gnu one.
+      group('provider', () {
+        Map<String, dynamic> sdkCross() => {
+          'provider': 'flatpak-sdk',
+          'triple': 'x86_64-flatpak-linux-gnu',
+        };
+
+        test("the app's shared one does not override the target's", () {
+          writeApp('.emb/app.emb.yaml', '''
+id: my-app
+cross:
+  provider: arm-gnu
+  targets:
+    sdk: {defines: {APP_FLAG: 'ON'}}
+''');
+          final warnings = <String>[];
+          final merged = CrossProjectResolver().applyAppLayer(
+            cross: sdkCross(),
+            appDir: appDir.path,
+            targetName: 'sdk',
+            warnings: warnings,
+          );
+          expect(merged['provider'], 'flatpak-sdk');
+          expect((merged['defines']! as Map)['APP_FLAG'], 'ON');
+          expect(warnings, isEmpty);
+        });
+
+        test("the app target's own wins, with a warning", () {
+          writeApp('.emb/app.emb.yaml', '''
+id: my-app
+cross:
+  provider: arm-gnu
+  targets:
+    sdk: {provider: yocto-sdk}
+''');
+          final warnings = <String>[];
+          final merged = CrossProjectResolver().applyAppLayer(
+            cross: sdkCross(),
+            appDir: appDir.path,
+            targetName: 'sdk',
+            warnings: warnings,
+          );
+          expect(merged['provider'], 'yocto-sdk');
+          expect(warnings, [
+            contains('"sdk" sets provider: yocto-sdk over the flatpak-sdk'),
+          ]);
+        });
+
+        test("the app target's own, when the same, says nothing", () {
+          writeApp('.emb/app.emb.yaml', '''
+id: my-app
+cross:
+  provider: arm-gnu
+  targets:
+    sdk: {provider: flatpak-sdk}
+''');
+          final warnings = <String>[];
+          final merged = CrossProjectResolver().applyAppLayer(
+            cross: sdkCross(),
+            appDir: appDir.path,
+            targetName: 'sdk',
+            warnings: warnings,
+          );
+          expect(merged['provider'], 'flatpak-sdk');
+          expect(warnings, isEmpty);
+        });
+      });
+
       test('a target the app does not name is untouched', () {
         writeApp('.emb/raspberry-pi.emb.yaml', '''
 id: my-app
