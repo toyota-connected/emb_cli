@@ -2043,6 +2043,96 @@ find_package(aug CONFIG REQUIRED)
       },
     );
 
+    // #382: pkg-config rebases an overlay .pc's paths under the sysroot, so
+    // the overlay's dirs go into the flags CMake adds to the toolchain's.
+    test('configure gets the overlay in CFLAGS, CXXFLAGS and LDFLAGS', () {
+      final fake = File(p.join(tmp.path, 'flags-cmake'))
+        ..writeAsStringSync(
+          '#!/bin/sh\n'
+          'echo "CFLAGS=\$CFLAGS"\n'
+          'echo "CXXFLAGS=\$CXXFLAGS"\n'
+          'echo "LDFLAGS=\$LDFLAGS"\n',
+        );
+      Process.runSync('chmod', ['+x', fake.path]);
+      final wrapper = File(p.join(tmp.path, 'cmake-flags'))
+        ..writeAsStringSync(
+          hookCmakeScript(
+            realCmake: fake.path,
+            toolchain: '/tc.cmake',
+            profile: profile,
+            overlayPrefix: '/ws/overlay',
+          ),
+        );
+      final r = Process.runSync(
+        'sh',
+        [wrapper.path, '-S', 'src'],
+        // What the hook's environment had is kept, after the overlay's.
+        environment: {'CFLAGS': '-O2', 'LDFLAGS': '-Wl,--as-needed'},
+      );
+      expect(r.exitCode, 0, reason: '${r.stderr}');
+      expect('${r.stdout}'.trim().split('\n'), [
+        'CFLAGS=-I/ws/overlay/usr/include -O2',
+        'CXXFLAGS=-I/ws/overlay/usr/include',
+        'LDFLAGS=-L/ws/overlay/usr/lib -Wl,--as-needed',
+      ]);
+    });
+
+    // And with real cmake: the env flags join the toolchain's own, not
+    // replace them.
+    test(
+      "CMake takes the overlay's flags alongside the toolchain's",
+      skip:
+          Process.runSync('which', ['cmake']).exitCode == 0 &&
+              Process.runSync('which', ['cc']).exitCode == 0
+          ? false
+          : 'cmake or cc not installed',
+      () {
+        final root = p.join(tmp.path, 'flags');
+        final sr = Directory(p.join(root, 'sysroot'))
+          ..createSync(recursive: true);
+        final overlay = p.join(root, 'overlay');
+        final tc = File(p.join(root, 'tc.cmake'))
+          ..writeAsStringSync('set(CMAKE_C_FLAGS_INIT "-DFROM_TOOLCHAIN")');
+        final src = Directory(p.join(root, 'src'))..createSync();
+        File(p.join(src.path, 'CMakeLists.txt')).writeAsStringSync(r'''
+cmake_minimum_required(VERSION 3.16)
+project(hook C)
+message(STATUS "flags=[${CMAKE_C_FLAGS}]")
+''');
+        final real = '${Process.runSync('which', ['cmake']).stdout}'.trim();
+        final wrapper = File(p.join(root, 'cmake'))
+          ..writeAsStringSync(
+            hookCmakeScript(
+              realCmake: real,
+              toolchain: tc.path,
+              profile: CrossProfile(
+                providerName: 'flatpak-sdk',
+                targetTriple: 'x86_64-flatpak-linux-gnu',
+                cc: 'cc',
+                cxx: 'c++',
+                ar: 'ar',
+                strip: 'strip',
+                targetSysroot: sr.path,
+              ),
+              overlayPrefix: overlay,
+            ),
+          );
+        final r = Process.runSync('sh', [
+          wrapper.path,
+          '-S',
+          src.path,
+          '-B',
+          p.join(root, 'build'),
+        ]);
+        expect(r.exitCode, 0, reason: '${r.stdout}${r.stderr}');
+        final flags = RegExp(
+          r'flags=\[(.*)\]',
+        ).firstMatch('${r.stdout}')![1]!;
+        expect(flags, contains('-DFROM_TOOLCHAIN'));
+        expect(flags, contains('-I$overlay/usr/include'));
+      },
+    );
+
     // arm-gnu stages augments into the sysroot itself.
     test('an overlay that is the sysroot adds nothing', () {
       final out = run(

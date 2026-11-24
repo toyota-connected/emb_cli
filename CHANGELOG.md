@@ -6,6 +6,16 @@ version shipped.
 
 **Cross.**
 
+- fix(cross): a code-asset hook that took an augment from pkg-config got its
+  paths under the SDK sysroot (#382). The hook's `cmake` wrapper puts the
+  overlay's `.pc` files first, but `PKG_CONFIG_SYSROOT_DIR` still names the
+  SDK, and pkg-config prepends it to the `-I` and `-L` an overlay `.pc` gives,
+  where nothing is. The wrapper now also puts the overlay's include and
+  library dirs at the front of the C, C++ and linker flags in its
+  environment, as the embedder's own build does. CMake adds those to the
+  toolchain's flags, so the headers and libraries are found whatever
+  pkg-config reports.
+
 - fix(cross): a target only the `--app` layer defines could not be selected
   (#381). `--target sdk-x86_64`, declared in the app's manifest and not in the
   embedder's, gave "Unknown target", listing the embedder's. It is now built

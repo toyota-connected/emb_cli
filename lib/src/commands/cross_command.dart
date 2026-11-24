@@ -138,6 +138,13 @@ String augmentSummary(List<String> pkgs, List<String> cached) {
 /// so a flatpak-sdk build, whose augments cannot go into the read-only SDK,
 /// could not find what emb had just built for it (#367). An overlay that is
 /// the sysroot itself (arm-gnu stages there) adds nothing.
+///
+/// The overlay's include and library dirs also go ahead of `CFLAGS`,
+/// `CXXFLAGS` and `LDFLAGS`, as `OverlayPaths.addSearchFlags` does for the
+/// embedder (#382). pkg-config rebases an overlay `.pc`'s paths under the
+/// sysroot, where they do not exist; CMake adds these to the toolchain's own
+/// flags on the first configure, so the overlay's headers and libraries are
+/// found whatever pkg-config reports.
 String hookCmakeScript({
   required String realCmake,
   required String toolchain,
@@ -163,6 +170,14 @@ String hookCmakeScript({
         : 'PKG_CONFIG_LIBDIR';
     pkg[key] = [...dirs, ?pkg[key]].join(':');
   }
+  // Prepended to what the hook's environment already has, if anything.
+  String prepend(String name, String flags) =>
+      'export $name=${q(flags)}"\${$name:+ \$$name}"\n';
+  final searchFlags = overlay == null
+      ? ''
+      : prepend('CFLAGS', '-I${p.join(overlay, 'usr', 'include')}') +
+            prepend('CXXFLAGS', '-I${p.join(overlay, 'usr', 'include')}') +
+            prepend('LDFLAGS', '-L${p.join(overlay, 'usr', 'lib')}');
   final args = [
     '-DCMAKE_TOOLCHAIN_FILE=$toolchain',
     if (overlay != null) ...[
@@ -173,6 +188,7 @@ String hookCmakeScript({
   // `set --` so each argument stays one word, a path with a space included.
   return '#!/bin/sh\n'
       '${pkg.entries.map((e) => 'export ${e.key}=${q(e.value)}\n').join()}'
+      '$searchFlags'
       'configuring=true\n'
       'for arg in "\$@"; do\n'
       '    if [ "\$arg" = "--build" ]; then configuring=false; fi\n'
